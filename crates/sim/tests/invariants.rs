@@ -84,10 +84,12 @@ fn controls_clamp() {
     let sane = Controls {
         thrust_body: DVec3::new(0.0, 0.0, 1.0),
         torque_body: DVec3::ZERO,
+        ..Default::default()
     };
     let insane = Controls {
         thrust_body: DVec3::new(0.0, 0.0, 1000.0),
         torque_body: DVec3::ZERO,
+        ..Default::default()
     };
     let a = run(&params, state0, 600, sane);
     let b = run(&params, state0, 600, insane);
@@ -126,6 +128,7 @@ fn scale_invariance() {
     let controls = Controls {
         thrust_body: DVec3::new(0.1, 0.0, 0.3),
         torque_body: DVec3::ZERO,
+        ..Default::default()
     };
     let a = run(&base, a0, 2_400, controls); // 20 s
     let b = run(&scaled, b0, 2_400, controls);
@@ -144,6 +147,7 @@ fn determinism_run_twice() {
     let controls = Controls {
         thrust_body: DVec3::new(0.3, -0.2, 0.9),
         torque_body: DVec3::new(0.1, 0.4, -0.5),
+        ..Default::default()
     };
     let a = run(&params, state0, 5_000, controls);
     let b = run(&params, state0, 5_000, controls);
@@ -162,6 +166,7 @@ fn golden_hash() {
     let controls = Controls {
         thrust_body: DVec3::new(0.5, 0.1, 1.0),
         torque_body: DVec3::new(-0.2, 0.3, 0.7),
+        ..Default::default()
     };
     let end = run(&params, state0, 1_000, controls);
     let hash = state_hash(&end);
@@ -185,6 +190,7 @@ fn print_golden() {
     let controls = Controls {
         thrust_body: DVec3::new(0.5, 0.1, 1.0),
         torque_body: DVec3::new(-0.2, 0.3, 0.7),
+        ..Default::default()
     };
     let end = run(&params, state0, 1_000, controls);
     println!("GOLDEN = {:#018x}", state_hash(&end));
