@@ -33,6 +33,12 @@ pub struct Levels {
     /// Attitude-thruster demand 0..1 (largest torque axis): the RCS voice.
     /// Rolling is flying too, and a silent manoeuvre reads as a broken game.
     pub rcs: f32,
+    /// Atmosphere-interface intensity 0..1: peaks while punching INTO air at
+    /// speed, zero in clean vacuum and in settled flight. Drives the entry
+    /// drama — plasma sputter through the transition and one thunderous boom
+    /// at the threshold. This is not sound in space; it is the sound of
+    /// arriving.
+    pub entry: f32,
     /// Master gain 0..1.
     pub master: f32,
 }
@@ -45,6 +51,7 @@ impl Default for Levels {
             vacuum: 1.0,
             brake: 0.0,
             rcs: 0.0,
+            entry: 0.0,
             master: 0.8,
         }
     }
@@ -68,6 +75,38 @@ impl Smooth {
     fn next(&mut self, target: f32) -> f32 {
         self.value += (target - self.value) * self.alpha;
         self.value
+    }
+}
+
+/// Edge detector for the entry boom: fires once when intensity crosses the
+/// threshold rising, and cannot fire again until it falls back below the
+/// re-arm level. Pure, so the one-shot-ness is provable in a test instead of
+/// hoped for — a boom that machine-guns on a noisy signal would be the worst
+/// sound in the game.
+#[derive(Clone, Copy)]
+pub struct BoomTrigger {
+    armed: bool,
+}
+
+impl BoomTrigger {
+    pub fn new() -> Self {
+        Self { armed: true }
+    }
+    pub fn update(&mut self, entry: f32) -> bool {
+        if self.armed && entry > 0.30 {
+            self.armed = false;
+            return true;
+        }
+        if !self.armed && entry < 0.10 {
+            self.armed = true;
+        }
+        false
+    }
+}
+
+impl Default for BoomTrigger {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -111,6 +150,14 @@ pub struct Synth {
     brake_hp: f32,
     // Vacuum mute.
     vacuum: Smooth,
+    // Entry drama.
+    entry: Smooth,
+    boom_trigger: BoomTrigger,
+    boom_env: f32,
+    boom_phase: f32,
+    boom_sub_phase: f32,
+    sputter_gate: f32,
+    sputter_lp: f32,
     // RCS thrusters.
     rcs: Smooth,
     rcs_phase: f32,
@@ -146,6 +193,13 @@ impl Synth {
             brake_bp: 0.0,
             brake_hp: 0.0,
             vacuum: Smooth::new(sample_rate, 0.30),
+            entry: Smooth::new(sample_rate, 0.10),
+            boom_trigger: BoomTrigger::new(),
+            boom_env: 0.0,
+            boom_phase: 0.0,
+            boom_sub_phase: 0.0,
+            sputter_gate: 0.0,
+            sputter_lp: 0.0,
             rcs: Smooth::new(sample_rate, 0.06),
             rcs_phase: 0.0,
             rcs_lp: 0.0,
@@ -244,6 +298,41 @@ impl Synth {
             rcs_out = (tri * 0.45 + self.rcs_lp * 0.8) * rcs * 0.11;
         }
 
+        // ---- atmosphere entry ------------------------------------------
+        // Plasma sputter: noise chopped by a decaying random gate, the crackle
+        // of air tearing at the hull through the interface — and one boom when
+        // the ship punches through, a pitch-dropping sub thud with a noise
+        // slam, long decay. The trigger is a hysteresis edge: once per entry.
+        let entry = self.entry.next(levels.entry.clamp(0.0, 1.0));
+        let mut entry_out = 0.0;
+        if self.boom_trigger.update(entry) {
+            self.boom_env = 1.0;
+            self.boom_phase = 0.0;
+            self.boom_sub_phase = 0.0;
+        }
+        if entry > 0.01 {
+            // Fire-like gate: random impulses that decay, squared for bite.
+            let spark = self.rng_r.white();
+            if spark > 0.9993 - entry * 0.004 {
+                self.sputter_gate = 1.0;
+            }
+            self.sputter_gate *= 0.9990;
+            let n = self.rng_l.white();
+            let lp = self.lp_coeff(900.0);
+            self.sputter_lp += (n - self.sputter_lp) * lp;
+            entry_out += self.sputter_lp * self.sputter_gate * self.sputter_gate * entry * 0.55;
+        }
+        if self.boom_env > 1e-3 {
+            // Pitch drops with the envelope: thunder, not a beep.
+            let f = 24.0 + 42.0 * self.boom_env;
+            self.boom_phase = (self.boom_phase + f / self.rate).fract();
+            self.boom_sub_phase = (self.boom_sub_phase + (f * 0.52) / self.rate).fract();
+            let body = (tau * self.boom_phase).sin() + 0.6 * (tau * self.boom_sub_phase).sin();
+            let slam = self.rng_l.white() * self.boom_env * self.boom_env * 0.5;
+            entry_out += (body * 0.8 + slam) * self.boom_env * 0.9;
+            self.boom_env *= 1.0 - 1.0 / (self.rate * 1.6);
+        }
+
         // ---- brake ------------------------------------------------------
         let brake = self.brake.next(levels.brake.clamp(0.0, 1.0));
         let mut hiss = 0.0;
@@ -260,7 +349,7 @@ impl Synth {
         let master = self.master.next(levels.master.clamp(0.0, 1.0));
         // Silence multiplies EVERYTHING: past the atmosphere border there is
         // no sound at all, not a quieter version of it.
-        let mono = engine + hiss + rcs_out;
+        let mono = engine + hiss + rcs_out + entry_out;
         let l = ((mono + wind.0) * master * silence).tanh();
         let r = ((mono + wind.1) * master * silence).tanh();
 
@@ -273,7 +362,10 @@ impl Synth {
         self.dc_x.1 = r;
         self.dc_y.1 = out_r;
 
-        (out_l, out_r)
+        // The DC blocker is a filter and can overshoot the tanh's ±1 by a few
+        // thousandths — inaudible, but out-of-range samples are the DAC's
+        // problem to mangle, and the bounds test rightly refuses them.
+        (out_l.clamp(-1.0, 1.0), out_r.clamp(-1.0, 1.0))
     }
 
     /// Fill an interleaved stereo buffer.
@@ -317,6 +409,7 @@ mod tests {
                 vacuum: 0.0,
                 brake: 1.0,
                 rcs: 1.0,
+                entry: 1.0,
                 master: 1.0,
             },
             Levels {
@@ -325,6 +418,7 @@ mod tests {
                 vacuum: 9.0,
                 brake: 2.0,
                 rcs: 44.0,
+                entry: 7.0,
                 master: 5.0,
             },
         ];
@@ -467,6 +561,53 @@ mod tests {
         );
     }
 
+    /// The boom fires exactly once per entry: rising edge triggers, and it
+    /// cannot re-fire until the intensity falls away and returns. A boom that
+    /// machine-guns on a noisy interface would be the worst sound in the game.
+    #[test]
+    fn boom_fires_once_per_entry() {
+        let mut t = BoomTrigger::new();
+        let mut fires = 0;
+        // Noisy climb through the threshold, hold, wobble, fall, re-enter.
+        let signal = [
+            0.0, 0.05, 0.2, 0.28, 0.33, 0.31, 0.5, 0.8, 0.6, 0.4, 0.35, 0.32, 0.2, 0.15, 0.05,
+            0.02, 0.3, 0.6,
+        ];
+        for v in signal {
+            if t.update(v) {
+                fires += 1;
+            }
+        }
+        assert_eq!(fires, 2, "one boom per entry, two entries in the signal");
+    }
+
+    /// Entry drama is audible mid-interface (partial air, so the master mute
+    /// does not eat it) and silent in settled flight.
+    #[test]
+    fn entry_interface_is_loud_then_gone() {
+        let during = rms(&render_secs(
+            Levels {
+                entry: 0.9,
+                vacuum: 0.5,
+                ..Default::default()
+            },
+            0.6,
+        ));
+        let settled = rms(&render_secs(
+            Levels {
+                entry: 0.0,
+                vacuum: 0.0,
+                ..Default::default()
+            },
+            0.6,
+        ));
+        assert!(during > 0.02, "entry inaudible: {during:.4}");
+        assert!(
+            during > settled * 3.0,
+            "entry should dominate settled flight: {during:.4} vs {settled:.4}"
+        );
+    }
+
     /// Same seed, same inputs, same samples — the synth's own determinism,
     /// so a future golden-audio test is possible at all.
     #[test]
@@ -477,6 +618,7 @@ mod tests {
             vacuum: 0.2,
             brake: 0.5,
             rcs: 0.4,
+            entry: 0.3,
             master: 0.9,
         };
         let a = render_secs(levels, 0.25);

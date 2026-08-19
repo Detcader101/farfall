@@ -21,6 +21,7 @@ use farfall_audio::Audio;
 use farfall_render::{
     bake::BakedMaps,
     blit::BlitPass,
+    gauge::{GaugeFade, GaugePass, GaugeUniforms},
     hud::HudPass,
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
     starfield::StarfieldPass,
@@ -174,6 +175,7 @@ struct Gpu {
     blit: BlitPass,
     starfield: StarfieldPass,
     planet: PlanetPass,
+    gauge: GaugePass,
     /// Owns the baked textures the planet pass samples.
     _baked: BakedMaps,
     hud: HudPass,
@@ -298,6 +300,8 @@ struct Game {
     /// Smoothed thrust effort in [0,1], driving the camera's response.
     /// Render-side only — it must never feed back into the sim.
     effort: f32,
+    /// Relevance fade for the velocity hologram. Render-side only.
+    gauge_fade: GaugeFade,
     /// Which world we are looking at. Cycled with the number keys until there
     /// is a real settings panel.
     appearance: PlanetAppearance,
@@ -324,6 +328,7 @@ impl Game {
             last_frame: now,
             started: now,
             effort: 0.0,
+            gauge_fade: GaugeFade::new(),
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
         }
@@ -331,12 +336,21 @@ impl Game {
 
     /// Advance the sim by wall time, in whole fixed steps (SPEC §7.2).
     fn tick(&mut self) {
-        if self.frozen {
-            return;
-        }
         let now = Instant::now();
         let mut frame_dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
+
+        // Instruments are presentation, not physics: the velocity hologram
+        // keeps living even when the sim is frozen for a benchmark —
+        // otherwise every perf capture shows an empty cockpit.
+        self.gauge_fade.update(
+            frame_dt.min(0.25) as f32,
+            self.state.ship.vel_mps.length() as f32,
+        );
+
+        if self.frozen {
+            return;
+        }
         // Death-spiral guard: never simulate more than 0.25 s per frame.
         frame_dt = frame_dt.min(0.25);
         self.accumulator += frame_dt;
@@ -411,6 +425,12 @@ impl Game {
 
         let controls = self.input.controls(self.assist);
 
+        // Entry intensity: peaks mid-transition (air·(1−air) is zero in both
+        // clean vacuum and full atmosphere) and scales with speed — a slow
+        // descent whispers in, an orbital-speed plunge arrives with thunder.
+        let air = (rho_ratio * 12.0).clamp(0.0, 1.0);
+        let entry = (air * (1.0 - air) * 4.0 * (speed / 500.0)).clamp(0.0, 1.0);
+
         farfall_audio::Levels {
             effort: self.input.thrust_effort(self.params.ship.boost_multiplier) as f32,
             wind_q: ((q / q_ref) as f32).clamp(0.0, 1.0),
@@ -419,6 +439,7 @@ impl Game {
             // Attitude thrusters: the largest torque demand. Rolling is
             // flying, and a silent manoeuvre reads as a broken game.
             rcs: controls.torque_body.abs().max_element() as f32,
+            entry: entry as f32,
             master: 0.8,
         }
     }
@@ -579,6 +600,7 @@ impl App {
         // planet pass reads per pixel is generated here, by shader, once.
         let baked = BakedMaps::bake(&device, &queue);
         let planet = PlanetPass::new(&device, config.format, cfg.msaa, &baked);
+        let gauge = GaugePass::new(&device, config.format, cfg.msaa);
         // The HUD draws straight onto the swapchain, after the upscale, so it
         // is always native resolution and single-sampled however low the scene
         // scale goes (P1: the readout must never soften).
@@ -609,6 +631,7 @@ impl App {
             blit,
             starfield,
             planet,
+            gauge,
             _baked: baked,
             hud,
             text: TextBitmap::new(),
@@ -706,12 +729,84 @@ impl ApplicationHandler for App {
                     wgpu::CurrentSurfaceTexture::Success(frame) => frame,
                     wgpu::CurrentSurfaceTexture::Timeout
                     | wgpu::CurrentSurfaceTexture::Occluded => {
-                        // A benchmark must still finish while occluded, or it
-                        // sits forever as an invisible window nobody can quit.
-                        if gpu.cfg.bench
-                            && game.started.elapsed().as_secs_f64() > gpu.cfg.bench_seconds
-                        {
-                            event_loop.exit();
+                        // Benchmarks must neither hang nor lie when occluded:
+                        // the window being buried is no reason to skip the
+                        // capture, because the scene target is offscreen and
+                        // needs no swapchain. Render it headless and save.
+                        // (This is the seed of the golden-image harness: a
+                        // frame produced with no visible window at all.)
+                        if gpu.cfg.bench {
+                            let t = game.started.elapsed().as_secs_f64();
+                            if t > gpu.cfg.bench_seconds * 0.5 && !gpu.bench_captured {
+                                gpu.bench_captured = true;
+                                if gpu.scene.ensure(
+                                    &gpu.device,
+                                    gpu.config.width,
+                                    gpu.config.height,
+                                ) {
+                                    if let Some(view) = gpu.scene.colour_view() {
+                                        gpu.blit.rebind(&gpu.device, view);
+                                    }
+                                }
+                                let aspect = gpu.config.width as f32 / gpu.config.height as f32;
+                                let cam = game.camera(aspect);
+                                gpu.starfield
+                                    .update(&gpu.queue, &FrameUniforms::from_camera(&cam));
+                                gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
+                                gpu.gauge.update(
+                                    &gpu.queue,
+                                    &GaugeUniforms::new(
+                                        game.state.ship.vel_mps.length() as f32,
+                                        game.gauge_fade.level(),
+                                        cam.time_s,
+                                        aspect,
+                                        gpu.scene.size().1 as f32,
+                                    ),
+                                );
+                                let mut encoder = gpu.device.create_command_encoder(
+                                    &wgpu::CommandEncoderDescriptor {
+                                        label: Some("headless"),
+                                    },
+                                );
+                                {
+                                    let mut pass =
+                                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                            label: Some("scene headless"),
+                                            color_attachments: &[Some(
+                                                gpu.scene.colour_attachment(),
+                                            )],
+                                            depth_stencil_attachment: None,
+                                            timestamp_writes: None,
+                                            occlusion_query_set: None,
+                                            multiview_mask: None,
+                                        });
+                                    gpu.starfield.draw(&mut pass);
+                                    gpu.planet.draw(&mut pass);
+                                    gpu.gauge.draw(&mut pass);
+                                }
+                                let capture = gpu.scene.colour_texture().map(|tex| {
+                                    let path = std::env::temp_dir()
+                                        .join(format!("farfall-{:.0}.png", t * 1000.0));
+                                    Capture::record(&gpu.device, &mut encoder, tex, path)
+                                });
+                                gpu.queue.submit([encoder.finish()]);
+                                if let Some(capture) = capture {
+                                    let bgra = matches!(
+                                        gpu.scene.format(),
+                                        wgpu::TextureFormat::Bgra8Unorm
+                                            | wgpu::TextureFormat::Bgra8UnormSrgb
+                                    );
+                                    match capture.save(&gpu.device, bgra) {
+                                        Ok(path) => {
+                                            log::info!("screenshot: {}", path.display())
+                                        }
+                                        Err(e) => log::warn!("headless capture failed: {e}"),
+                                    }
+                                }
+                            }
+                            if t > gpu.cfg.bench_seconds {
+                                event_loop.exit();
+                            }
                         }
                         gpu.window.request_redraw();
                         return;
@@ -746,6 +841,16 @@ impl ApplicationHandler for App {
                 gpu.starfield
                     .update(&gpu.queue, &FrameUniforms::from_camera(&cam));
                 gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
+                gpu.gauge.update(
+                    &gpu.queue,
+                    &GaugeUniforms::new(
+                        game.state.ship.vel_mps.length() as f32,
+                        game.gauge_fade.level(),
+                        cam.time_s,
+                        aspect,
+                        gpu.scene.size().1 as f32,
+                    ),
+                );
 
                 // Scale the readout with the surface so it keeps the same
                 // apparent size on a retina fullscreen and a small window.
@@ -769,6 +874,7 @@ impl ApplicationHandler for App {
                     });
                     gpu.starfield.draw(&mut pass);
                     gpu.planet.draw(&mut pass);
+                    gpu.gauge.draw(&mut pass);
                 }
                 {
                     // Pass 2: upscale, then the HUD at native resolution.

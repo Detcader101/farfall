@@ -10,6 +10,7 @@ pub const PLANET: &str = include_str!("../../../shaders/planet.wgsl");
 pub const HUD: &str = include_str!("../../../shaders/hud.wgsl");
 pub const BLIT: &str = include_str!("../../../shaders/blit.wgsl");
 pub const BAKE: &str = include_str!("../../../shaders/bake.wgsl");
+pub const GAUGE: &str = include_str!("../../../shaders/gauge.wgsl");
 
 /// Every pass: display name, source, and required entry points.
 pub const PASSES: &[(&str, &str, &[&str])] = &[
