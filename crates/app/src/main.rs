@@ -52,7 +52,11 @@ const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 ///   FARFALL_WINDOWED=1     (start windowed instead of borderless fullscreen)
 ///   FARFALL_BENCH=1        (freeze the sim at spawn so every run renders the
 ///                           identical frame — without this the ship drifts and
-///                           two perf runs are not comparable)
+///                           two perf runs are not comparable. Forces a window
+///                           rather than fullscreen and exits by itself, so a
+///                           benchmark can never be left sitting on screen
+///                           being mistaken for a game with broken controls.)
+///   FARFALL_BENCH_SECONDS  (how long a benchmark runs before quitting; 20)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
 struct Config {
     msaa: u32,
@@ -60,6 +64,7 @@ struct Config {
     gpu_sync: bool,
     windowed: bool,
     bench: bool,
+    bench_seconds: f64,
     scale: f32,
 }
 
@@ -84,7 +89,7 @@ impl Config {
             std::env::var("FARFALL_GPU_SYNC").as_deref(),
             Ok("1" | "on" | "true")
         );
-        let windowed = matches!(
+        let mut windowed = matches!(
             std::env::var("FARFALL_WINDOWED").as_deref(),
             Ok("1" | "on" | "true")
         );
@@ -95,6 +100,14 @@ impl Config {
             std::env::var("FARFALL_BENCH").as_deref(),
             Ok("1" | "on" | "true")
         );
+        if bench {
+            // Never fullscreen: a benchmark must be visibly not the game.
+            windowed = true;
+        }
+        let bench_seconds = std::env::var("FARFALL_BENCH_SECONDS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(20.0);
         let scale = std::env::var("FARFALL_SCALE")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
@@ -106,6 +119,7 @@ impl Config {
             gpu_sync,
             windowed,
             bench,
+            bench_seconds,
             scale,
         }
     }
@@ -671,6 +685,12 @@ impl ApplicationHandler for App {
                 gpu.queue.present(frame);
                 if gpu.cfg.gpu_sync {
                     let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+                }
+                // A benchmark stops itself. Left running, it is a frozen window
+                // that looks exactly like the game and answers no controls.
+                if gpu.cfg.bench && game.started.elapsed().as_secs_f64() > gpu.cfg.bench_seconds {
+                    log::info!("benchmark complete, exiting");
+                    event_loop.exit();
                 }
                 gpu.frame_timing(
                     cpu_seconds,

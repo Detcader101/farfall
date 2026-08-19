@@ -67,6 +67,38 @@ fn fbm3(p: vec3<f32>) -> f32 {
     return sum / 0.875;
 }
 
+// Detail-limited fbm: octaves are added until they reach the resolution limit
+// `max_freq`, then stop.
+//
+// This is the whole "spend samples where they read" idea in one function. A
+// fixed octave count is wrong in both directions at once: from orbit the fine
+// octaves land far below a pixel and cost real time to contribute nothing but
+// shimmer, while up close the field runs out of octaves entirely and the
+// surface goes smooth. Driving the count from the pixel's footprint gives
+// cheap distant worlds and detailed near ones from the same call.
+//
+// The last octave fades in rather than appearing, so crossing a threshold is
+// invisible; and the sum is normalised by the weight actually accumulated, so
+// the field keeps a mean of 0.5 at any octave count — otherwise every coastline
+// would creep as the ship approached it.
+fn fbm_lod(p: vec3<f32>, max_freq: f32, max_octaves: i32) -> f32 {
+    var sum = 0.0;
+    var amp = 0.5;
+    var freq = 1.0;
+    var norm = 0.0;
+    for (var i = 0; i < max_octaves; i += 1) {
+        let weight = clamp(max_freq / freq - 1.0, 0.0, 1.0);
+        if (weight <= 0.0) {
+            break;
+        }
+        sum += amp * weight * vnoise(p * freq);
+        norm += amp * weight;
+        amp *= 0.5;
+        freq *= 2.03;
+    }
+    return sum / max(norm, 1e-6);
+}
+
 // Normalised to [0,1]: five octaves, for terrain-scale structure.
 fn fbm5(p: vec3<f32>) -> f32 {
     var sum = 0.0;

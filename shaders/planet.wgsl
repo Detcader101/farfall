@@ -54,6 +54,11 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 }
 
 const SEA_LEVEL: f32 = 0.5;
+/// Base frequency of the elevation field, in units of the unit sphere.
+const TERRAIN_BASE_FREQ: f32 = 1.7;
+/// Ceiling on elevation octaves. This is the quality dial: it bounds the cost
+/// of a screen full of ground, which is the worst case for this renderer.
+const TERRAIN_MAX_OCTAVES: i32 = 9;
 
 // Cloud density on the shell at direction `n`, in [0,1].
 //
@@ -214,15 +219,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // puts at exactly zero, so the usual origin terms vanish.
         let along = dot(ray, centre);
         let discriminant = max(along * along - (dot(centre, centre) - radius * radius), 0.0);
-        let hit = ray * (along - sqrt(discriminant));
+        let hit_t = along - sqrt(discriminant);
+        let hit = ray * hit_t;
         let normal = normalize(hit - centre);
+
+        // How much of the world one pixel covers at this hit point, in the
+        // noise's own units — the basis for choosing how much detail to
+        // compute. Foreshortening counts: a pixel near the horizon smears
+        // across far more ground than one directly below.
+        let view_cos_lod = max(dot(normal, -ray), 0.08);
+        let footprint_m = hit_t * 2.0 * pixel_angle / view_cos_lod;
+        let footprint_noise = footprint_m * TERRAIN_BASE_FREQ / radius;
+        // Nyquist: anything finer than two pixels is not detail, it is noise.
+        let detail_limit = clamp(1.0 / max(footprint_noise * 2.0, 1e-9), 1.0, 4096.0);
 
         // Value-noise fbm is a sum of independent samples, so it clusters hard
         // around 0.5 (central limit). Used raw against a sea level of 0.5 it
         // gives a knife-edge coastline everywhere and almost no dry land.
         // Expanding the deviation about the midpoint turns noise into
         // continents.
-        let elevation = 0.5 + (fbm5(normal * 1.7 + 11.3) - 0.5) * 2.9;
+        let elevation = 0.5
+            + (fbm_lod(
+                normal * TERRAIN_BASE_FREQ + 11.3,
+                detail_limit,
+                TERRAIN_MAX_OCTAVES,
+            ) - 0.5) * 2.9;
         let albedo = surface_albedo(normal, elevation);
 
         // Lighting. A crisp terminator over a soft one: readability first (P1).
