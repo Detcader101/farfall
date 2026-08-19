@@ -189,9 +189,6 @@ struct Game {
 impl Game {
     fn new() -> Self {
         let params = sim::presets::earth_compact();
-        // 120 km up on a 63.7 km planet: the disc subtends ~20 degrees, so it
-        // reads as a *body* in the frame. At 20 km it subtends ~50 and fills the
-        // view like a wall, which loses the one thing a planet has to convey.
         let mut state = sim::presets::circular_orbit(&params, SPAWN_ALTITUDE_M);
         state.ship.orient = spawn_attitude();
         let now = Instant::now();
@@ -278,10 +275,17 @@ impl Game {
 }
 
 /// How far the nose is pitched down from prograde at spawn, degrees.
-const SPAWN_PITCH_DEG: f64 = 72.0;
-/// Close enough that the surface is a place rather than a backdrop, and close
-/// enough to make an approach — and eventually a collision — a short trip.
-const SPAWN_ALTITUDE_M: f64 = 60_000.0;
+///
+/// Near level, and it has to be: with the flight computer steering velocity
+/// toward the nose, attitude *is* trajectory. Hold the horizon and the orbit
+/// holds; pitch down and you descend. A steeply nose-down spawn would fly the
+/// ship into the ground before the pilot touched anything.
+const SPAWN_PITCH_DEG: f64 = 12.0;
+/// Low enough that the horizon cuts across the frame while looking where you
+/// are going — above roughly 14 km the planet drops entirely out of a
+/// forward-facing view, because the surface is always 90 degrees off prograde.
+/// Also close enough to make an approach, and eventually a collision, short.
+const SPAWN_ALTITUDE_M: f64 = 12_000.0;
 
 /// Base vertical field of view, radians.
 const BASE_FOV: f32 = 70.0;
@@ -567,9 +571,6 @@ mod tests {
 
     fn fly(keys: &[KeyCode], secs: u64) -> sim::ShipState {
         let params = sim::presets::earth_compact();
-        // 120 km up on a 63.7 km planet: the disc subtends ~20 degrees, so it
-        // reads as a *body* in the frame. At 20 km it subtends ~50 and fills the
-        // view like a wall, which loses the one thing a planet has to convey.
         let mut state = sim::presets::circular_orbit(&params, SPAWN_ALTITUDE_M);
         state.ship.orient = DQuat::IDENTITY;
         state.ship.vel_mps = DVec3::ZERO; // isolate control response from orbit
@@ -711,49 +712,44 @@ mod tests {
             angular_radius.to_degrees(),
             half_fov.to_degrees(),
         );
-        // ...and it must not fill the view either: a wall of surface reads as
-        // terrain, not as a planet.
+        // ...and the *limb* must be on screen, not just some surface: a frame
+        // filled edge to edge with ground reads as terrain, not as a world. The
+        // horizon crossing the view is what sells the curve.
+        let limb_offset = (angle - angular_radius).abs();
         assert!(
-            angular_radius.to_degrees() < 35.0,
-            "planet fills the frame: angular radius {:.1} deg",
-            angular_radius.to_degrees()
+            limb_offset < half_fov,
+            "horizon is off screen: limb sits {:.1} deg from forward, half-FOV {:.1}",
+            (angle - angular_radius).to_degrees(),
+            half_fov.to_degrees(),
         );
     }
 
-    /// The spawn attitude is nose-down, and that is forced rather than chosen:
-    /// in any orbit the planet lies 90 degrees off prograde, so a ship looking
-    /// where it is going cannot see the world it is orbiting. Looking down is
-    /// the only attitude that frames the planet at all.
+    /// The ship starts flying where it is looking. With the flight computer
+    /// steering velocity toward the nose, any large angle between the two is a
+    /// trajectory change the pilot never asked for — so the spawn attitude must
+    /// be close to prograde or the ship immediately departs its own orbit.
     #[test]
-    fn spawn_attitude_looks_at_the_planet() {
+    fn spawn_flies_where_it_looks() {
         let game = Game::new();
         let nose = game.state.ship.orient * DVec3::NEG_Z;
-        let to_planet = (-game.state.ship.pos_m).normalize();
-        let off_axis = nose.dot(to_planet).clamp(-1.0, 1.0).acos().to_degrees();
-        assert!(
-            off_axis < 25.0,
-            "nose is {off_axis:.1} deg off the planet — it will not be in frame"
-        );
-    }
-
-    /// Prograde should read as "up-screen", so the direction of travel is
-    /// legible from the attitude rather than only from the instruments.
-    #[test]
-    fn spawn_attitude_puts_prograde_up_screen() {
-        let game = Game::new();
-        let up = (game.state.ship.orient * DVec3::Y).normalize();
         let prograde = game.state.ship.vel_mps.normalize();
+        let off = nose.dot(prograde).clamp(-1.0, 1.0).acos().to_degrees();
+        assert!(off < 20.0, "nose is {off:.1} deg off prograde at spawn");
+    }
+
+    /// The planet is underfoot, not overhead: the ship is the right way up.
+    #[test]
+    fn spawn_attitude_puts_the_planet_below() {
+        let game = Game::new();
+        let down = (game.state.ship.orient * DVec3::NEG_Y).normalize();
+        let to_planet = (-game.state.ship.pos_m).normalize();
         assert!(
-            up.dot(prograde) > 0.5,
-            "prograde is not up-screen: {:.2}",
-            up.dot(prograde)
+            down.dot(to_planet) > 0.8,
+            "planet is not below the ship: {:.2}",
+            down.dot(to_planet)
         );
     }
 
-    /// Controls are first-person, always: thrust follows the ship's own axes at
-    /// any attitude, with no reference to the planet, the orbit, or the world
-    /// frame. Rotate the hull to something arbitrary and "forward" must still be
-    /// wherever the nose points.
     #[test]
     fn thrust_is_ship_relative_at_any_attitude() {
         let params = sim::presets::earth_compact();

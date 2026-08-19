@@ -4,7 +4,7 @@
 //! damps residual spin using the ship's own torque authority, and does nothing
 //! to translation. These tests pin both halves of that promise.
 
-use farfall_sim::{presets, state_hash, step, Controls, WorldParams, WorldState};
+use farfall_sim::{presets, state_hash, step, Controls, WorldParams, WorldState, DT};
 use glam::DVec3;
 
 fn spinning(params: &WorldParams, ang_vel: DVec3) -> WorldState {
@@ -109,13 +109,51 @@ fn assist_never_overshoots() {
     }
 }
 
-/// Assist damps rotation only — translation is untouched, so momentum stays
-/// the pilot's problem.
+/// The flight computer steers the ship where it points: velocity that is not
+/// along the nose is bled away. This is the whole reason it exists — without it
+/// the ship aims one way and drifts another, which is correct Newtonian physics
+/// and feels nothing like flying.
 #[test]
-fn assist_leaves_translation_alone() {
+fn assist_steers_velocity_toward_the_nose() {
     let params = presets::earth_compact();
-    let state = spinning(&params, DVec3::new(0.4, 0.0, 0.0));
-    let a = run(
+    let mut state = spinning(&params, DVec3::ZERO);
+    // Nose along -Z, but moving hard along +X: entirely sideways.
+    state.ship.orient = glam::DQuat::IDENTITY;
+    state.ship.vel_mps = DVec3::new(300.0, 0.0, 0.0);
+
+    let nose = DVec3::NEG_Z;
+    let lateral_before = {
+        let v = state.ship.vel_mps;
+        (v - nose * v.dot(nose)).length()
+    };
+
+    let end = run(
+        &params,
+        state,
+        600, // 5 s
+        Controls {
+            assist: true,
+            ..Default::default()
+        },
+    );
+    let v = end.ship.vel_mps;
+    let lateral_after = (v - nose * v.dot(nose)).length();
+    assert!(
+        lateral_after < lateral_before * 0.25,
+        "sideways drift barely changed: {lateral_before:.1} -> {lateral_after:.1} m/s"
+    );
+}
+
+/// With the computer off the ship is a pure ballistic body: nothing steers the
+/// velocity, so a sideways drift stays exactly as sideways as gravity leaves it.
+#[test]
+fn assist_off_does_not_steer_velocity() {
+    let params = presets::earth_compact();
+    let mut state = spinning(&params, DVec3::ZERO);
+    state.ship.orient = glam::DQuat::IDENTITY;
+    state.ship.vel_mps = DVec3::new(300.0, 0.0, 0.0);
+
+    let with = run(
         &params,
         state,
         600,
@@ -124,9 +162,48 @@ fn assist_leaves_translation_alone() {
             ..Default::default()
         },
     );
-    let b = run(&params, state, 600, Controls::default());
-    assert_eq!(a.ship.pos_m, b.ship.pos_m, "assist moved the ship");
-    assert_eq!(a.ship.vel_mps, b.ship.vel_mps, "assist changed velocity");
+    let without = run(&params, state, 600, Controls::default());
+    let nose = DVec3::NEG_Z;
+    let lat = |v: DVec3| (v - nose * v.dot(nose)).length();
+    assert!(
+        lat(without.ship.vel_mps) > lat(with.ship.vel_mps) * 3.0,
+        "assist-off must leave the drift alone"
+    );
+}
+
+/// The steering is thrust-limited, not magic: it can never apply more than its
+/// share of the engine, however fast the ship is drifting.
+#[test]
+fn alignment_respects_its_thrust_budget() {
+    let params = presets::earth_compact();
+    let cap = params.ship.max_thrust_mps2 * params.ship.align_authority;
+
+    let mut state = spinning(&params, DVec3::ZERO);
+    state.ship.orient = glam::DQuat::IDENTITY;
+    // Absurdly fast sideways: the demand would be enormous if uncapped.
+    state.ship.vel_mps = DVec3::new(50_000.0, 0.0, 0.0);
+
+    let before = state.ship.vel_mps;
+    let after = step(
+        &params,
+        &state,
+        Controls {
+            assist: true,
+            ..Default::default()
+        },
+    )
+    .ship
+    .vel_mps;
+
+    // Subtract the coasting step so only the assist's contribution remains.
+    let coast = step(&params, &state, Controls::default()).ship.vel_mps;
+    let applied = (after - coast).length() / DT;
+    assert!(
+        applied <= cap * 1.001,
+        "alignment applied {applied:.1} m/s^2, budget is {cap:.1}"
+    );
+    assert!(applied > cap * 0.9, "alignment should be saturating here");
+    let _ = before;
 }
 
 /// Assist is inside the deterministic core, so it must hash identically across

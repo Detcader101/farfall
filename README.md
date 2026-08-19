@@ -27,8 +27,14 @@ cargo run --release -p farfall-app    # fly it (Esc to quit)
 ```
 
 **Controls** — WASD translate, R/F up/down, arrows pitch/yaw, Q/E roll,
-**Left Shift** boosts, X toggles flight assist, Esc quits. All translation is
-ship-relative at any attitude: "forward" is always where the nose points.
+**Left Shift** boosts, **X** toggles the flight computer, Esc quits.
+
+Everything is ship-relative at any attitude: "forward" is always where the nose
+points. With the flight computer **on** (default) the ship also *goes* where it
+points — velocity is steered toward the nose within a fixed slice of the engine,
+so it handles like a VTOL: hold the horizon and the orbit holds, pitch down and
+you descend. Switch it **off** and the ship is a pure ballistic body: attitude
+and velocity are independent, and orbits are conserved exactly.
 
 **Runtime knobs** (env vars, no rebuild needed):
 

@@ -49,6 +49,11 @@ pub struct ShipParams {
     pub max_thrust_mps2: f64,
     /// Multiplier applied to thrust while boosting.
     pub boost_multiplier: f64,
+    /// Fraction of thrust the flight computer may spend steering the velocity
+    /// vector toward the nose. Zero makes the ship a pure Newtonian body.
+    pub align_authority: f64,
+    /// Time constant for that steering, seconds. Larger feels heavier.
+    pub align_tau_s: f64,
     /// Max angular acceleration about each body axis at |control| = 1, rad/s².
     pub max_torque_radps2: f64,
     /// Drag coefficient × reference area, m² (F_drag = ½·ρ·|v|²·CdA, opposing v).
@@ -83,11 +88,20 @@ pub struct Controls {
     pub thrust_body: DVec3,
     /// Torque demand, body frame (pitch, yaw, roll).
     pub torque_body: DVec3,
-    /// Rotational flight assist: bleed off residual spin using the ship's own
-    /// torque authority. Rotation only — there is deliberately no translational
-    /// brake, so momentum stays the pilot's problem (SPEC: weight over comfort).
+    /// The flight computer. It does two things: bleeds off residual spin, and
+    /// steers the velocity vector toward the nose so the ship goes where it is
+    /// pointed.
+    ///
+    /// The second half is a deliberate departure from Newton. In a vacuum,
+    /// velocity is independent of attitude: you aim somewhere, burn, and still
+    /// drift the way you were going. That is correct, and it feels wrong —
+    /// an X-wing, a helicopter and a VTOL all go where they point, because air
+    /// couples heading to motion. The assist plays the part of that air, using
+    /// nothing but the ship's own thrust, capped by `align_authority`.
+    ///
     /// Off by default, which keeps the physics contract (and the golden hash)
-    /// identical to a world where this feature doesn't exist.
+    /// identical to a world where this feature doesn't exist. With it off the
+    /// ship is a pure ballistic body and orbits are conserved exactly.
     pub assist: bool,
     /// Engage the overdrive: same thrust axes, much more of it.
     pub boost: bool,
@@ -131,6 +145,10 @@ pub mod presets {
                 // deliberate while translation answers immediately.
                 max_thrust_mps2: 85.0,
                 boost_multiplier: 3.5,
+                // Half the engine is available to bend the velocity vector
+                // toward the nose; the rest is the pilot's.
+                align_authority: 0.5,
+                align_tau_s: 1.4,
                 max_torque_radps2: 1.5,
                 cd_area_m2: 8.0,
             },
@@ -201,8 +219,27 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
         ship.orient * (c.thrust_body * params.ship.max_thrust_mps2)
     };
 
-    // Kick, then drift.
-    let vel = ship.vel_mps + (a_gravity + a_drag + a_thrust) * DT;
+    // The flight computer's translational half: cancel the velocity that is not
+    // along the nose, within a fixed slice of the engine. Rate-limited rather
+    // than instant, so heading changes feel like a ship swinging its momentum
+    // around rather than a cursor being dragged.
+    let a_align = if c.assist {
+        let nose = ship.orient * DVec3::NEG_Z;
+        let lateral = ship.vel_mps - nose * ship.vel_mps.dot(nose);
+        let demand = -lateral / params.ship.align_tau_s;
+        let cap = params.ship.max_thrust_mps2 * params.ship.align_authority;
+        demand.clamp_length_max(cap)
+    } else {
+        DVec3::ZERO
+    };
+
+    // Kick, then drift. The assist-off branch is kept textually identical, so a
+    // flight computer the pilot never switches on cannot perturb the contract.
+    let vel = if c.assist {
+        ship.vel_mps + (a_gravity + a_drag + a_thrust + a_align) * DT
+    } else {
+        ship.vel_mps + (a_gravity + a_drag + a_thrust) * DT
+    };
     let pos = ship.pos_m + vel * DT;
 
     // Rotation: identity inertia tensor for now (SPEC: revisit with ship variety).

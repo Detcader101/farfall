@@ -148,8 +148,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // liquid rather than merely dark.
         let land_amount = smoothstep(SEA_LEVEL - 0.006, SEA_LEVEL + 0.006, elevation);
         let half_vec = normalize(sun - ray);
-        let spec = pow(max(dot(normal, half_vec), 0.0), 80.0) * (1.0 - land_amount) * day;
-        surface += vec3<f32>(1.0, 0.95, 0.86) * spec * 0.55;
+        // Tight exponent: from low altitude a broad lobe reads as a blurry
+        // smear across the ocean rather than as the sun's reflection.
+        let spec = pow(max(dot(normal, half_vec), 0.0), 420.0) * (1.0 - land_amount) * day;
+        surface += vec3<f32>(1.0, 0.95, 0.86) * spec * 0.9;
 
         // Night side: settlement clusters on habitable land near the coast.
         let night = 1.0 - day;
