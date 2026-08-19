@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capture::Capture;
+use farfall_audio::Audio;
 use farfall_render::{
     bake::BakedMaps,
     blit::BlitPass,
@@ -64,6 +65,7 @@ const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 ///                           worst case, a screen filled edge to edge with
 ///                           ground, which is where this renderer hurts)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
+///   FARFALL_MUTE=1         (no audio stream at all)
 struct Config {
     msaa: u32,
     vsync: bool,
@@ -383,6 +385,50 @@ impl Game {
         );
     }
 
+    /// The ship's voice, from the sim's own physics (SPEC P2, in sound):
+    /// wind is the actual dynamic pressure ½ρv², vacuum is the actual air
+    /// density at altitude, load is the actual felt acceleration. Nothing
+    /// here is a sound "event" — the audio is a continuous function of the
+    /// world's state, so it cannot desync from what the pilot sees.
+    fn audio_levels(&self) -> farfall_audio::Levels {
+        let ship = &self.state.ship;
+        let planet = &self.params.planet;
+        let r = ship.pos_m.length();
+        let rho = sim::atmo_density(planet, r);
+        let rho_ratio = rho / planet.atmo_rho0;
+        let speed = ship.vel_mps.length();
+
+        // Dynamic pressure against a "full roar" reference: sea level at
+        // 300 m/s pins the top of the wind's range.
+        let q = 0.5 * rho * speed * speed;
+        let q_ref = 0.5 * planet.atmo_rho0 * 300.0 * 300.0;
+
+        let controls = self.input.controls(self.assist);
+        // Felt acceleration: thrust + drag + brake. Gravity is free fall and
+        // is deliberately absent — an orbiting hull is unloaded.
+        let thrust_a = (controls.thrust_body * self.params.ship.max_thrust_mps2).length()
+            * if controls.boost {
+                self.params.ship.boost_multiplier
+            } else {
+                1.0
+            };
+        let drag_a = q * self.params.ship.cd_area_m2 / self.params.ship.mass_kg;
+        let brake_a = if controls.brake {
+            (speed / self.params.ship.brake_tau_s).min(self.params.ship.brake_mps2)
+        } else {
+            0.0
+        };
+
+        farfall_audio::Levels {
+            effort: self.input.thrust_effort(self.params.ship.boost_multiplier) as f32,
+            wind_q: ((q / q_ref) as f32).clamp(0.0, 1.0),
+            vacuum: 1.0 - ((rho_ratio * 12.0) as f32).clamp(0.0, 1.0),
+            load_g: ((thrust_a + drag_a + brake_a) / 9.81) as f32,
+            brake: if controls.brake { 1.0 } else { 0.0 },
+            master: 0.8,
+        }
+    }
+
     /// Log why and where the session ended. Every exit path goes through this:
     /// a silent exit and a deliberate quit are indistinguishable in a log, and
     /// telling them apart is the difference between "the pilot stopped" and
@@ -465,6 +511,7 @@ fn spawn_attitude() -> DQuat {
 struct App {
     gpu: Option<Gpu>,
     game: Option<Game>,
+    audio: Option<Audio>,
 }
 
 impl App {
@@ -544,6 +591,20 @@ impl App {
         let hud = HudPass::new(&device, config.format, 1);
 
         window.request_redraw();
+        // Audio: live synthesis, muted for benchmarks (a frozen sim droning
+        // at full volume helps nobody) and by FARFALL_MUTE.
+        let mute = cfg.bench
+            || matches!(
+                std::env::var("FARFALL_MUTE").as_deref(),
+                Ok("1" | "on" | "true")
+            );
+        if !mute {
+            self.audio = Audio::start();
+            if self.audio.is_none() {
+                log::warn!("audio: no output device, running silent");
+            }
+        }
+
         self.gpu = Some(Gpu {
             window,
             device,
@@ -635,6 +696,9 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let tick_start = Instant::now();
                 game.tick();
+                if let Some(audio) = &self.audio {
+                    audio.set(&game.audio_levels());
+                }
 
                 // Acquiring a swapchain image BLOCKS until one is free, which
                 // when the GPU is the bottleneck means blocking for roughly a

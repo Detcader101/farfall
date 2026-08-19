@@ -1,0 +1,10 @@
+[package]
+name = "farfall-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Live-synthesised ship audio. No samples, no files: every sound is DSP driven by sim state."
+
+[dependencies]
+cpal = "0.18"
+log = { workspace = true }

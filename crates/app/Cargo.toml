@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 farfall-sim = { path = "../sim" }
 farfall-render = { path = "../render" }
+farfall-audio = { path = "../audio" }
 wgpu = { workspace = true }
 winit = { workspace = true }
 glam = { workspace = true }
