@@ -85,6 +85,24 @@ impl Game {
         }
     }
 
+    /// Log why and where the session ended. Every exit path goes through this:
+    /// a silent exit and a deliberate quit are indistinguishable in a log, and
+    /// telling them apart is the difference between "the pilot stopped" and
+    /// "the event loop died".
+    fn log_exit(&self, reason: &str) {
+        let ship = &self.state.ship;
+        log::info!(
+            "exit ({reason}): sim t={:.1}s alt={:.0}m speed={:.0}m/s spin={:.3}rad/s \
+             assist={} hash={:#018x}",
+            self.state.time_s,
+            ship.pos_m.length() - self.params.planet.radius_m,
+            ship.vel_mps.length(),
+            ship.ang_vel_radps.length(),
+            if self.assist { "on" } else { "off" },
+            sim::state_hash(&self.state),
+        );
+    }
+
     /// Camera pose for this frame: ride the hull, look down the nose. The view
     /// is the ship's orientation, so steering turns the world rather than
     /// sliding a detached camera around it.
@@ -197,11 +215,7 @@ impl ApplicationHandler for App {
         };
         match event {
             WindowEvent::CloseRequested => {
-                log::info!(
-                    "exit: sim t={:.1}s hash={:#018x}",
-                    game.state.time_s,
-                    sim::state_hash(&game.state)
-                );
+                game.log_exit("window closed");
                 event_loop.exit();
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -210,7 +224,10 @@ impl ApplicationHandler for App {
                 };
                 let pressed = event.state == ElementState::Pressed;
                 match code {
-                    KeyCode::Escape if pressed => event_loop.exit(),
+                    KeyCode::Escape if pressed => {
+                        game.log_exit("escape");
+                        event_loop.exit();
+                    }
                     // Edge-triggered, and `repeat` is filtered: holding the key
                     // must not strobe the toggle.
                     KeyCode::KeyX if pressed && !event.repeat => {
