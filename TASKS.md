@@ -37,13 +37,16 @@ Each task: (files) → tests to write FIRST → acceptance.
    at offset 1e9 m, SSIM > 0.995 on static scene.
    Accept: no visible jitter at extreme offsets.
 
-2. **Input → Controls mapping** (`app/src/input.rs`)
+2. ~~**Input → Controls mapping**~~ ✅ DONE (`app/src/input.rs`)
    Tests first: sim-side clamp tests already exist; add mapping unit tests
    (key state → Controls vector, all components within [-1,1], no NaN).
    Keyboard: WASD+RF translation, arrows+QE rotation; gamepad optional (gilrs, MIT/Apache — verify).
    Accept: hand-flyable ship, controls feel weighty (max accel/torque from ShipParams, no instant stops).
 
-3. **Flight assist toggle** (`sim/src/assist.rs`)
+3. ~~**Flight assist toggle**~~ ✅ DONE — implemented inside `sim::step` rather than a
+   separate `assist.rs`: it is ~8 lines that belong in the rotation integrator, and
+   splitting it would have separated the damping from the arithmetic it must not
+   perturb. Tests live in `sim/tests/assist.rs`.
    Tests first: with assist on and zero input, angular velocity decays to < 1e-3 rad/s
    within 3 s; without, it persists exactly (conservation).
    Rotational damping only (Souls-weight: no magic translation brakes).

@@ -4,21 +4,24 @@
 //! sim → render translation. The sim is authoritative (SPEC §5.2): this loop
 //! feeds it inputs and *reads* state; nothing here mutates the world directly.
 //!
-//! M0 scope: no input mapping yet — the ship coasts in orbit, the camera rides
-//! it looking prograde with a slow survey roll, and the starfield renders at
-//! MSAA 4x. Input arrives in M1 (TASKS M1.2).
+//! M1 scope: the ship is hand-flown. Keys map to sim [`Controls`] (see
+//! [`input`]), the camera rides the hull looking down the nose, and rotational
+//! flight assist is toggleable. Planet, HUD, and sun arrive in M1 tasks 4-6.
+
+mod input;
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use farfall_render::{starfield::StarfieldPass, CameraFrame, FrameUniforms, MsaaTarget};
 use farfall_sim as sim;
-use glam::DQuat;
+use glam::{DQuat, DVec3};
+use input::InputState;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::{Key, NamedKey},
+    keyboard::{KeyCode, PhysicalKey},
     window::Window,
 };
 
@@ -38,6 +41,10 @@ struct Gpu {
 struct Game {
     params: sim::WorldParams,
     state: sim::WorldState,
+    input: InputState,
+    /// Rotational assist. On by default: the ship is hard enough to fly with
+    /// momentum intact, and the pilot can turn it off to feel that.
+    assist: bool,
     accumulator: f64,
     last_frame: Instant,
     started: Instant,
@@ -52,6 +59,8 @@ impl Game {
         Self {
             params,
             state,
+            input: InputState::default(),
+            assist: true,
             accumulator: 0.0,
             last_frame: now,
             started: now,
@@ -66,20 +75,24 @@ impl Game {
         // Death-spiral guard: never simulate more than 0.25 s per frame.
         frame_dt = frame_dt.min(0.25);
         self.accumulator += frame_dt;
+        // Controls are sampled once per frame, not per step: every fixed step in
+        // this frame sees the same input, which is what a networked client would
+        // send upstream (SPEC §5.2).
+        let controls = self.input.controls(self.assist);
         while self.accumulator >= sim::DT {
-            self.state = sim::step(&self.params, &self.state, sim::Controls::default());
+            self.state = sim::step(&self.params, &self.state, controls);
             self.accumulator -= sim::DT;
         }
     }
 
-    /// Camera pose for this frame: ride the ship, look prograde, slow survey roll.
+    /// Camera pose for this frame: ride the hull, look down the nose. The view
+    /// is the ship's orientation, so steering turns the world rather than
+    /// sliding a detached camera around it.
     fn camera(&self, aspect: f32) -> CameraFrame {
         let ship = &self.state.ship;
-        let prograde = ship.vel_mps.normalize_or_zero();
-        let up = ship.pos_m.normalize_or_zero(); // radial out
-        let look = look_along(prograde, up);
-        let roll = DQuat::from_axis_angle(prograde, 0.03 * self.state.time_s);
-        let orient = (roll * look).as_quat();
+        let nose = ship.orient * DVec3::Z;
+        let up = ship.orient * DVec3::Y;
+        let orient = look_along(nose, up).as_quat();
         CameraFrame {
             orient,
             fov_y: 70f32.to_radians(),
@@ -192,10 +205,24 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.logical_key == Key::Named(NamedKey::Escape) {
-                    event_loop.exit();
+                let PhysicalKey::Code(code) = event.physical_key else {
+                    return;
+                };
+                let pressed = event.state == ElementState::Pressed;
+                match code {
+                    KeyCode::Escape if pressed => event_loop.exit(),
+                    // Edge-triggered, and `repeat` is filtered: holding the key
+                    // must not strobe the toggle.
+                    KeyCode::KeyX if pressed && !event.repeat => {
+                        game.assist = !game.assist;
+                        log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
+                    }
+                    _ => game.input.set(code, pressed),
                 }
             }
+            // A key held while the window loses focus never sees its release
+            // event; without this the ship keeps thrusting unattended.
+            WindowEvent::Focused(false) => game.input.release_all(),
             WindowEvent::Resized(size) => {
                 gpu.config.width = size.width.max(1);
                 gpu.config.height = size.height.max(1);
@@ -257,4 +284,93 @@ fn main() {
     env_logger::init();
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.run_app(&mut App::default()).expect("run");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use farfall_sim::Controls;
+
+    fn basis_of(q: glam::Quat) -> (glam::Vec3, glam::Vec3, glam::Vec3) {
+        CameraFrame {
+            orient: q,
+            fov_y: 1.0,
+            aspect: 1.0,
+            time_s: 0.0,
+            exposure: 1.0,
+        }
+        .basis()
+    }
+
+    /// `look_along` must produce an orthonormal, right-handed basis whose
+    /// forward is the requested direction — a mirrored basis would flip the
+    /// whole world and is exactly the kind of bug that hides until you read
+    /// text in-world.
+    #[test]
+    fn look_along_is_orthonormal_and_right_handed() {
+        for (f, up) in [
+            (DVec3::Z, DVec3::Y),
+            (DVec3::X, DVec3::Y),
+            (DVec3::new(1.0, 2.0, -3.0), DVec3::Y),
+            (DVec3::NEG_Z, DVec3::new(0.1, 1.0, 0.0)),
+        ] {
+            let q = look_along(f, up).as_quat();
+            let (r, u, fwd) = basis_of(q);
+            assert!(
+                (fwd - f.normalize().as_vec3()).length() < 1e-5,
+                "forward mismatch for {f:?}"
+            );
+            assert!((r.length() - 1.0).abs() < 1e-5, "right not unit");
+            assert!((u.length() - 1.0).abs() < 1e-5, "up not unit");
+            assert!(r.dot(u).abs() < 1e-5, "basis not orthogonal");
+            // Right-handed: right x up == -forward for a -Z-forward camera.
+            assert!(
+                (r.cross(u) + fwd).length() < 1e-5,
+                "basis is mirrored for {f:?}"
+            );
+        }
+    }
+
+    /// The camera rides the hull: yawing the ship must swing the view by the
+    /// same angle. This is what makes steering turn the world instead of
+    /// sliding a detached camera around it.
+    #[test]
+    fn camera_follows_ship_orientation() {
+        let mut game = Game::new();
+        game.state.ship.orient = DQuat::IDENTITY;
+        let before = basis_of(game.camera(1.0).orient).2;
+
+        // Yaw 90 degrees about the body up axis.
+        game.state.ship.orient = DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2);
+        let after = basis_of(game.camera(1.0).orient).2;
+
+        let angle = before.dot(after).clamp(-1.0, 1.0).acos();
+        assert!(
+            (angle - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "view swung {angle} rad, expected pi/2"
+        );
+    }
+
+    /// Yaw input must actually rotate the ship, in the documented direction:
+    /// right yaw swings the nose toward body +X.
+    #[test]
+    fn yaw_input_turns_the_nose() {
+        let params = sim::presets::earth_compact();
+        let mut state = sim::presets::circular_orbit(&params, 20_000.0);
+        state.ship.orient = DQuat::IDENTITY;
+        let controls = Controls {
+            torque_body: DVec3::new(0.0, 1.0, 0.0),
+            assist: true,
+            ..Default::default()
+        };
+        for _ in 0..120 {
+            state = sim::step(&params, &state, controls);
+        }
+        let nose = state.ship.orient * DVec3::Z;
+        assert!(
+            nose.x > 0.05,
+            "yaw-right did not swing the nose right: {nose:?}"
+        );
+        assert!(nose.z > 0.0, "nose flipped past 90 degrees in 1 s");
+    }
 }

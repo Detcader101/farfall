@@ -75,6 +75,12 @@ pub struct Controls {
     pub thrust_body: DVec3,
     /// Torque demand, body frame (pitch, yaw, roll).
     pub torque_body: DVec3,
+    /// Rotational flight assist: bleed off residual spin using the ship's own
+    /// torque authority. Rotation only — there is deliberately no translational
+    /// brake, so momentum stays the pilot's problem (SPEC: weight over comfort).
+    /// Off by default, which keeps the physics contract (and the golden hash)
+    /// identical to a world where this feature doesn't exist.
+    pub assist: bool,
 }
 
 impl Controls {
@@ -86,6 +92,7 @@ impl Controls {
             torque_body: self
                 .torque_body
                 .clamp(DVec3::splat(-1.0), DVec3::splat(1.0)),
+            assist: self.assist,
         }
     }
 }
@@ -173,7 +180,26 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     let pos = ship.pos_m + vel * DT;
 
     // Rotation: identity inertia tensor for now (SPEC: revisit with ship variety).
-    let ang_vel = ship.ang_vel_radps + c.torque_body * (params.ship.max_torque_radps2 * DT);
+    //
+    // The assist-off branch reproduces the original expression *exactly*, down
+    // to the parenthesisation: float multiplication isn't associative, so
+    // `t * (m * DT)` and `(t * m) * DT` can differ in the last bit — enough to
+    // move the golden hash. A feature that is off by default must not perturb
+    // the physics contract, so the two paths stay textually separate.
+    let ang_vel = if c.assist {
+        // Torque-limited damping toward zero spin, blended per axis by how much
+        // the pilot is *not* commanding that axis: full input means no fighting
+        // the pilot, no input means full damping, and partial input blends.
+        // The damping term is the acceleration that would exactly cancel the
+        // current spin in one step, clipped to the ship's real authority — so
+        // it converges to precisely zero and can never overshoot into a wobble.
+        let max = params.ship.max_torque_radps2;
+        let cancel = (-ship.ang_vel_radps / DT).clamp(DVec3::splat(-max), DVec3::splat(max));
+        let gain = DVec3::ONE - c.torque_body.abs();
+        ship.ang_vel_radps + (c.torque_body * max + gain * cancel) * DT
+    } else {
+        ship.ang_vel_radps + c.torque_body * (params.ship.max_torque_radps2 * DT)
+    };
     // dq/dt = ½·ω_world·q, ω in world frame = orient · ω_body
     let w_world = ship.orient * ang_vel;
     let dq = DQuat::from_xyzw(w_world.x, w_world.y, w_world.z, 0.0) * ship.orient;
