@@ -9,13 +9,18 @@
 //! flight assist is toggleable. Planet, HUD, and sun arrive in M1 tasks 4-6.
 
 mod input;
+mod telemetry;
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use farfall_render::{starfield::StarfieldPass, CameraFrame, FrameUniforms, MsaaTarget};
+use farfall_render::{
+    hud::HudPass, starfield::StarfieldPass, text::TextBitmap, CameraFrame, FrameUniforms,
+    MsaaTarget,
+};
 use farfall_sim as sim;
 use input::InputState;
+use telemetry::FrameStats;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
@@ -24,8 +29,80 @@ use winit::{
     window::Window,
 };
 
-const MSAA_SAMPLES: u32 = 4;
 const STAR_DENSITY: f64 = 1.0;
+/// How often the frame-time window is summarised to the log.
+const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
+
+/// Runtime knobs, read from the environment so a perf A/B needs no rebuild:
+///   FARFALL_MSAA=1|2|4|8   (default 4)
+///   FARFALL_VSYNC=on|off   (default on; off uncaps the frame rate so the
+///                           renderer's real headroom is measurable rather
+///                           than hidden behind the display's refresh rate)
+///   FARFALL_GPU_SYNC=1     (profiling only: block until the GPU finishes each
+///                           frame before timing it)
+///   FARFALL_WINDOWED=1     (start windowed instead of borderless fullscreen)
+struct Config {
+    msaa: u32,
+    vsync: bool,
+    gpu_sync: bool,
+    windowed: bool,
+}
+
+impl Config {
+    fn from_env() -> Self {
+        let msaa = std::env::var("FARFALL_MSAA")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|n| matches!(n, 1 | 2 | 4 | 8))
+            .unwrap_or(4);
+        let vsync = !matches!(
+            std::env::var("FARFALL_VSYNC").as_deref(),
+            Ok("off" | "0" | "false")
+        );
+        // Without this, CPU-side frame timing measures how fast we can *submit*
+        // work, not how long the GPU takes: submission is asynchronous, so the
+        // CPU runs ahead and reports sub-millisecond "frames" while the GPU is
+        // still busy. Blocking on completion makes the wall clock mean
+        // something. It costs pipelining, so it is a profiling mode, not a
+        // default.
+        let gpu_sync = matches!(
+            std::env::var("FARFALL_GPU_SYNC").as_deref(),
+            Ok("1" | "on" | "true")
+        );
+        let windowed = matches!(
+            std::env::var("FARFALL_WINDOWED").as_deref(),
+            Ok("1" | "on" | "true")
+        );
+        Self {
+            msaa,
+            vsync,
+            gpu_sync,
+            windowed,
+        }
+    }
+}
+
+/// Presentation-side timing. Separate from the sim clock: the sim advances in
+/// fixed steps regardless of how long a frame took, and conflating the two
+/// would make the perf numbers a function of the physics rate.
+struct Perf {
+    stats: FrameStats,
+    last_frame: Instant,
+    last_log: Instant,
+    last_title: Instant,
+}
+
+impl Perf {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            stats: FrameStats::default(),
+            last_frame: now,
+            last_log: now,
+            last_title: now,
+        }
+    }
+}
 
 struct Gpu {
     window: Arc<Window>,
@@ -35,6 +112,54 @@ struct Gpu {
     config: wgpu::SurfaceConfiguration,
     msaa: MsaaTarget,
     starfield: StarfieldPass,
+    hud: HudPass,
+    text: TextBitmap,
+    cfg: Config,
+    perf: Perf,
+}
+
+impl Gpu {
+    /// Close out the frame: record its duration, refresh the live readout in
+    /// the title bar, and periodically summarise the window to the log.
+    fn frame_timing(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.perf.last_frame).as_secs_f64();
+        self.perf.last_frame = now;
+        self.perf.stats.record(dt);
+
+        // 4 Hz is fast enough to feel live and slow enough to stay readable.
+        if now.duration_since(self.perf.last_title) >= Duration::from_millis(250) {
+            self.perf.last_title = now;
+            let fps = self.perf.stats.smoothed_fps();
+            let low = self.perf.stats.recent_low_1pct_fps();
+            self.text.clear();
+            self.text.draw(0, 0, &format!("{fps:.0} FPS"));
+            self.text.draw(0, 6, &format!("1% LOW {low:.0}"));
+            self.text.draw(0, 12, &format!("{}X MSAA", self.cfg.msaa));
+        }
+
+        if now.duration_since(self.perf.last_log) >= PERF_LOG_EVERY {
+            self.perf.last_log = now;
+            if let Some(s) = self.perf.stats.take_summary() {
+                log::info!(
+                    "perf {}x{} {}xMSAA vsync={} gpu_sync={}: {:.1} fps avg \
+                     | 1% low {:.1} fps | frame avg {:.2}ms worst {:.2}ms \
+                     best {:.2}ms | {} frames",
+                    self.config.width,
+                    self.config.height,
+                    self.cfg.msaa,
+                    if self.cfg.vsync { "on" } else { "off" },
+                    self.cfg.gpu_sync,
+                    s.avg_fps,
+                    s.low_1pct_fps,
+                    s.avg_ms,
+                    s.worst_ms,
+                    s.best_ms,
+                    s.frames,
+                );
+            }
+        }
+    }
 }
 
 struct Game {
@@ -128,11 +253,14 @@ struct App {
 
 impl App {
     fn init_gpu(&mut self, event_loop: &ActiveEventLoop) {
-        let window = Arc::new(
-            event_loop
-                .create_window(Window::default_attributes().with_title("FARFALL — M0 bedrock"))
-                .expect("create window"),
-        );
+        let cfg = Config::from_env();
+        let mut attrs = Window::default_attributes().with_title("FARFALL");
+        if !cfg.windowed {
+            // Borderless fullscreen on the current monitor: no mode switch, so
+            // alt-tab stays instant and the resolution is the desktop's.
+            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+        }
+        let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
 
         let display_handle = event_loop.owned_display_handle();
         let instance = wgpu::Instance::new(
@@ -163,15 +291,28 @@ impl App {
                 .await
                 .expect("request device");
             let size = window.inner_size();
-            let config = surface
+            let mut config = surface
                 .get_default_config(&adapter, size.width.max(1), size.height.max(1))
                 .expect("surface unsupported by adapter");
+            config.present_mode = if Config::from_env().vsync {
+                wgpu::PresentMode::AutoVsync
+            } else {
+                wgpu::PresentMode::AutoNoVsync
+            };
             surface.configure(&device, &config);
             (device, queue, config)
         });
 
-        let msaa = MsaaTarget::new(MSAA_SAMPLES, config.format);
-        let starfield = StarfieldPass::new(&device, config.format, MSAA_SAMPLES, STAR_DENSITY);
+        log::info!(
+            "renderer: {}x MSAA, vsync {}, gpu_sync {}, {:?}",
+            cfg.msaa,
+            if cfg.vsync { "on" } else { "off" },
+            cfg.gpu_sync,
+            config.format
+        );
+        let msaa = MsaaTarget::new(cfg.msaa, config.format);
+        let starfield = StarfieldPass::new(&device, config.format, cfg.msaa, STAR_DENSITY);
+        let hud = HudPass::new(&device, config.format, cfg.msaa);
 
         window.request_redraw();
         self.gpu = Some(Gpu {
@@ -182,6 +323,10 @@ impl App {
             config,
             msaa,
             starfield,
+            hud,
+            text: TextBitmap::new(),
+            cfg,
+            perf: Perf::new(),
         });
         self.game = Some(Game::new());
     }
@@ -234,6 +379,9 @@ impl ApplicationHandler for App {
                 gpu.config.width = size.width.max(1);
                 gpu.config.height = size.height.max(1);
                 gpu.surface.configure(&gpu.device, &gpu.config);
+                // Reconfiguring the swapchain stalls; that frame is not the
+                // renderer's fault and must not pollute the worst-frame stat.
+                gpu.perf.stats.skip_next_frame();
                 gpu.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -263,6 +411,12 @@ impl ApplicationHandler for App {
                 let cam = game.camera(aspect);
                 gpu.starfield
                     .update(&gpu.queue, &FrameUniforms::from_camera(&cam));
+                // Scale the readout with the surface so it keeps the same
+                // apparent size on a retina fullscreen and a small window.
+                let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
+                let hud_margin = hud_scale * 4.0;
+                gpu.hud
+                    .update(&gpu.queue, &gpu.text, [hud_margin, hud_margin], hud_scale);
 
                 let mut encoder = gpu
                     .device
@@ -277,9 +431,14 @@ impl ApplicationHandler for App {
                         multiview_mask: None,
                     });
                     gpu.starfield.draw(&mut pass);
+                    gpu.hud.draw(&mut pass);
                 }
                 gpu.queue.submit([encoder.finish()]);
                 gpu.queue.present(frame);
+                if gpu.cfg.gpu_sync {
+                    let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+                }
+                gpu.frame_timing();
                 gpu.window.request_redraw();
             }
             _ => {}

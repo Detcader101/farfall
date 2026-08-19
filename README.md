@@ -22,9 +22,25 @@ and the living spec. Not yet a game — deliberately (see the milestones in
 
 ```sh
 # toolchain is pinned by rust-toolchain.toml; rustup handles it
-cargo test --workspace       # the whole contract: physics, determinism, shaders
-cargo run --release -p farfall-app   # starfield window (Esc to quit)
+cargo test --workspace                # physics, determinism, input, shaders, text
+cargo run --release -p farfall-app    # fly it (Esc to quit)
 ```
+
+**Controls** — WASD translate, R/F up/down, arrows pitch/yaw, Q/E roll,
+X toggles flight assist, Esc quits.
+
+**Runtime knobs** (env vars, no rebuild needed):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FARFALL_WINDOWED=1` | off | Start windowed instead of borderless fullscreen |
+| `FARFALL_MSAA=1\|2\|4\|8` | 4 | MSAA sample count |
+| `FARFALL_VSYNC=off` | on | Uncap the frame rate to see real headroom |
+| `FARFALL_GPU_SYNC=1` | off | Profiling: block on GPU completion so timings measure the GPU, not submission |
+
+Frame stats appear on-screen and are summarised to the log every 5 s at
+`RUST_LOG=info`. The number that matters is the **1% low**, not the average —
+an average hides the stutter that a 90 Hz headset would not.
 
 ## Layout
 
