@@ -140,6 +140,8 @@ struct Perf {
     /// two is the GPU (plus any vsync wait), and keeping them apart is the only
     /// way to know which half is actually the bottleneck.
     cpu: FrameStats,
+    /// Time blocked acquiring a swapchain image — GPU and vsync, not CPU.
+    wait: FrameStats,
     last_frame: Instant,
     last_log: Instant,
     last_title: Instant,
@@ -151,6 +153,7 @@ impl Perf {
         Self {
             stats: FrameStats::default(),
             cpu: FrameStats::default(),
+            wait: FrameStats::default(),
             last_frame: now,
             last_log: now,
             last_title: now,
@@ -180,8 +183,15 @@ struct Gpu {
 impl Gpu {
     /// Close out the frame: record its duration, refresh the live readout in
     /// the title bar, and periodically summarise the window to the log.
-    fn frame_timing(&mut self, cpu_seconds: f64, altitude_m: f64, speed_mps: f64) {
+    fn frame_timing(
+        &mut self,
+        cpu_seconds: f64,
+        wait_seconds: f64,
+        altitude_m: f64,
+        speed_mps: f64,
+    ) {
         self.perf.cpu.record(cpu_seconds);
+        self.perf.wait.record(wait_seconds);
         let now = Instant::now();
         let dt = now.duration_since(self.perf.last_frame).as_secs_f64();
         self.perf.last_frame = now;
@@ -244,12 +254,17 @@ impl Gpu {
                     s.best_ms,
                     s.frames,
                 );
-                if let Some(c) = self.perf.cpu.take_summary() {
+                if let (Some(c), Some(w)) =
+                    (self.perf.cpu.take_summary(), self.perf.wait.take_summary())
+                {
                     log::info!(
-                        "perf cpu: {:.3}ms avg, worst {:.3}ms — the remainder of \
-                         each frame is GPU (and vsync wait, if enabled)",
+                        "perf split: cpu {:.3}ms avg (worst {:.3}) | swapchain wait \
+                         {:.2}ms avg (worst {:.2}) — the wait is GPU and vsync, \
+                         not CPU",
                         c.avg_ms,
                         c.worst_ms,
+                        w.avg_ms,
+                        w.worst_ms,
                     );
                 }
             }
@@ -611,9 +626,17 @@ impl ApplicationHandler for App {
                 gpu.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                let cpu_start = Instant::now();
+                let tick_start = Instant::now();
                 game.tick();
 
+                // Acquiring a swapchain image BLOCKS until one is free, which
+                // when the GPU is the bottleneck means blocking for roughly a
+                // GPU frame. Timing it as CPU work made the readout claim 37 ms
+                // of CPU against a real figure of half a millisecond — the
+                // renderer's own instrument accusing the wrong half of the
+                // machine. It is measured separately and reported as WAIT.
+                let sim_seconds = tick_start.elapsed().as_secs_f64();
+                let acquire_start = Instant::now();
                 let frame = match gpu.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(frame) => frame,
                     wgpu::CurrentSurfaceTexture::Timeout
@@ -635,6 +658,8 @@ impl ApplicationHandler for App {
                         return;
                     }
                 };
+                let wait_seconds = acquire_start.elapsed().as_secs_f64();
+                let encode_start = Instant::now();
                 let view = frame
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
@@ -720,9 +745,8 @@ impl ApplicationHandler for App {
                 };
 
                 gpu.queue.submit([encoder.finish()]);
-                // Everything above is CPU work: simulation, uniform packing,
-                // command encoding. Everything below waits on the GPU.
-                let cpu_seconds = cpu_start.elapsed().as_secs_f64();
+                // Genuine CPU work: simulation, uniform packing, encoding.
+                let cpu_seconds = sim_seconds + encode_start.elapsed().as_secs_f64();
 
                 if let Some(capture) = pending {
                     let bgra = matches!(
@@ -760,6 +784,7 @@ impl ApplicationHandler for App {
                 }
                 gpu.frame_timing(
                     cpu_seconds,
+                    wait_seconds,
                     game.state.ship.pos_m.length() - game.params.planet.radius_m,
                     game.state.ship.vel_mps.length(),
                 );
