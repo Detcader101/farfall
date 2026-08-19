@@ -8,6 +8,7 @@
 //! [`input`]), the camera rides the hull looking down the nose, and rotational
 //! flight assist is toggleable. Planet, HUD, and sun arrive in M1 tasks 4-6.
 
+mod capture;
 mod input;
 mod telemetry;
 
@@ -15,6 +16,7 @@ use glam::{DQuat, DVec3};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use capture::Capture;
 use farfall_render::{
     blit::BlitPass,
     hud::HudPass,
@@ -57,6 +59,9 @@ const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 ///                           benchmark can never be left sitting on screen
 ///                           being mistaken for a game with broken controls.)
 ///   FARFALL_BENCH_SECONDS  (how long a benchmark runs before quitting; 20)
+///   FARFALL_BENCH_ALT      (frozen altitude in metres; low values are the
+///                           worst case, a screen filled edge to edge with
+///                           ground, which is where this renderer hurts)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
 struct Config {
     msaa: u32,
@@ -167,6 +172,9 @@ struct Gpu {
     text: TextBitmap,
     cfg: Config,
     perf: Perf,
+    /// Set by a key press; consumed by the next frame.
+    capture_requested: bool,
+    bench_captured: bool,
 }
 
 impl Gpu {
@@ -273,7 +281,11 @@ struct Game {
 impl Game {
     fn new() -> Self {
         let params = sim::presets::earth_compact();
-        let mut state = sim::presets::circular_orbit(&params, SPAWN_ALTITUDE_M);
+        let altitude = std::env::var("FARFALL_BENCH_ALT")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(SPAWN_ALTITUDE_M);
+        let mut state = sim::presets::circular_orbit(&params, altitude);
         state.ship.orient = spawn_attitude();
         let now = Instant::now();
         Self {
@@ -525,6 +537,8 @@ impl App {
             text: TextBitmap::new(),
             cfg,
             perf: Perf::new(),
+            capture_requested: false,
+            bench_captured: false,
         });
         self.game = Some(Game::new());
     }
@@ -564,6 +578,9 @@ impl ApplicationHandler for App {
                     // Edge-triggered, and `repeat` is filtered: holding the key
                     // must not strobe the toggle.
                     KeyCode::KeyC if pressed && !event.repeat => game.cycle_appearance(),
+                    KeyCode::F12 | KeyCode::KeyP if pressed && !event.repeat => {
+                        gpu.capture_requested = true;
+                    }
                     KeyCode::BracketLeft | KeyCode::BracketRight if pressed && !event.repeat => {
                         let step = if code == KeyCode::BracketRight {
                             0.1
@@ -601,6 +618,13 @@ impl ApplicationHandler for App {
                     wgpu::CurrentSurfaceTexture::Success(frame) => frame,
                     wgpu::CurrentSurfaceTexture::Timeout
                     | wgpu::CurrentSurfaceTexture::Occluded => {
+                        // A benchmark must still finish while occluded, or it
+                        // sits forever as an invisible window nobody can quit.
+                        if gpu.cfg.bench
+                            && game.started.elapsed().as_secs_f64() > gpu.cfg.bench_seconds
+                        {
+                            event_loop.exit();
+                        }
                         gpu.window.request_redraw();
                         return;
                     }
@@ -677,10 +701,42 @@ impl ApplicationHandler for App {
                     gpu.blit.draw(&mut pass);
                     gpu.hud.draw(&mut pass);
                 }
+                // Screenshot: recorded into the same command buffer, so it
+                // captures exactly the frame that was just drawn.
+                let pending = if gpu.capture_requested {
+                    gpu.capture_requested = false;
+                    if gpu.scene.colour_texture().is_none() {
+                        log::warn!("capture skipped: scene target has no colour texture");
+                    }
+                    gpu.scene.colour_texture().map(|tex| {
+                        let path = std::env::temp_dir().join(format!(
+                            "farfall-{:.0}.png",
+                            game.started.elapsed().as_secs_f64() * 1000.0
+                        ));
+                        Capture::record(&gpu.device, &mut encoder, tex, path)
+                    })
+                } else {
+                    None
+                };
+
                 gpu.queue.submit([encoder.finish()]);
                 // Everything above is CPU work: simulation, uniform packing,
                 // command encoding. Everything below waits on the GPU.
                 let cpu_seconds = cpu_start.elapsed().as_secs_f64();
+
+                if let Some(capture) = pending {
+                    let bgra = matches!(
+                        gpu.scene.format(),
+                        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+                    );
+                    match capture.save(&gpu.device, bgra) {
+                        Ok(path) => log::info!("screenshot: {}", path.display()),
+                        Err(e) => log::warn!("screenshot failed: {e}"),
+                    }
+                    // The readback blocks on the GPU; that frame's timing says
+                    // nothing about the renderer.
+                    gpu.perf.stats.skip_next_frame();
+                }
 
                 gpu.queue.present(frame);
                 if gpu.cfg.gpu_sync {
@@ -688,9 +744,19 @@ impl ApplicationHandler for App {
                 }
                 // A benchmark stops itself. Left running, it is a frozen window
                 // that looks exactly like the game and answers no controls.
-                if gpu.cfg.bench && game.started.elapsed().as_secs_f64() > gpu.cfg.bench_seconds {
-                    log::info!("benchmark complete, exiting");
-                    event_loop.exit();
+                if gpu.cfg.bench {
+                    let t = game.started.elapsed().as_secs_f64();
+                    // One automatic capture partway through, so a headless
+                    // benchmark leaves a picture of what it measured.
+                    if t > gpu.cfg.bench_seconds * 0.5 && !gpu.bench_captured {
+                        gpu.bench_captured = true;
+                        gpu.capture_requested = true;
+                        log::info!("benchmark capture requested at t={t:.1}s");
+                    }
+                    if t > gpu.cfg.bench_seconds {
+                        log::info!("benchmark complete, exiting");
+                        event_loop.exit();
+                    }
                 }
                 gpu.frame_timing(
                     cpu_seconds,
@@ -754,7 +820,11 @@ mod tests {
 
     fn fly(keys: &[KeyCode], secs: u64) -> sim::ShipState {
         let params = sim::presets::earth_compact();
-        let mut state = sim::presets::circular_orbit(&params, SPAWN_ALTITUDE_M);
+        let altitude = std::env::var("FARFALL_BENCH_ALT")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(SPAWN_ALTITUDE_M);
+        let mut state = sim::presets::circular_orbit(&params, altitude);
         state.ship.orient = DQuat::IDENTITY;
         state.ship.vel_mps = DVec3::ZERO; // isolate control response from orbit
         let mut input = InputState::default();

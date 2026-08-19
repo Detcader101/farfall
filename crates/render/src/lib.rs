@@ -164,6 +164,7 @@ pub struct SceneTarget {
     format: wgpu::TextureFormat,
     scale: f32,
     msaa_view: Option<wgpu::TextureView>,
+    colour: Option<wgpu::Texture>,
     colour_view: Option<wgpu::TextureView>,
     size: (u32, u32),
 }
@@ -175,6 +176,7 @@ impl SceneTarget {
             format,
             scale: scale.clamp(0.25, 1.0),
             msaa_view: None,
+            colour: None,
             colour_view: None,
             size: (0, 0),
         }
@@ -199,6 +201,15 @@ impl SceneTarget {
         self.colour_view.as_ref()
     }
 
+    /// The resolved scene texture itself, for readback.
+    pub fn colour_texture(&self) -> Option<&wgpu::Texture> {
+        self.colour.as_ref()
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
     /// (Re)create the textures for a surface of this size. Returns true when
     /// they were recreated, so the caller knows to rebind anything sampling
     /// them — a stale bind group here points at a destroyed view.
@@ -210,35 +221,42 @@ impl SceneTarget {
         }
 
         let make = |label, samples, extra_usage| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: samples,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: self.format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | extra_usage,
-                    view_formats: &[],
-                })
-                .create_view(&wgpu::TextureViewDescriptor::default())
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | extra_usage,
+                view_formats: &[],
+            })
         };
 
-        self.colour_view = Some(make(
+        // COPY_SRC so the frame can be read back. The app screenshots itself
+        // rather than asking the operating system for permission to look at its
+        // own pixels — and this is the same readback the golden-image tests
+        // need, so it is test infrastructure, not a debugging convenience.
+        let colour = make(
             "scene colour",
             1,
-            wgpu::TextureUsages::TEXTURE_BINDING,
-        ));
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        );
+        self.colour_view = Some(colour.create_view(&wgpu::TextureViewDescriptor::default()));
+        self.colour = Some(colour);
         self.msaa_view = if self.sample_count > 1 {
-            Some(make(
-                "scene msaa",
-                self.sample_count,
-                wgpu::TextureUsages::empty(),
-            ))
+            Some(
+                make(
+                    "scene msaa",
+                    self.sample_count,
+                    wgpu::TextureUsages::empty(),
+                )
+                .create_view(&wgpu::TextureViewDescriptor::default()),
+            )
         } else {
             None
         };

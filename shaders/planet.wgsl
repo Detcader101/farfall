@@ -358,9 +358,35 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Because the same rim term is added on both sides of the limb, the two
     // sides agree by construction rather than by tuning two coefficients to
     // match.
-    // Clouds sit over the body, so they occlude it and each other in order.
-    let alpha = cloud_a + coverage * (1.0 - cloud_a);
-    if (alpha < 0.002 && rim <= 0.0) {
+    // Sky. Not the limb glow — the air the camera is actually inside.
+    //
+    // The rim is a shell seen edge-on, which is the whole story from orbit and
+    // nothing like the story from underneath it: looking up from inside an
+    // atmosphere, the rim contributes nothing, so there was simply no sky being
+    // drawn and the stars shone straight through a clear blue day. This adds
+    // the missing in-scattering, in every direction, thickening as the ship
+    // descends and brightening toward the sun.
+    let altitude = distance_to_centre - radius;
+    let air_scale_height = max(radius * 0.025, 1.0);
+    let air_here = exp(-altitude / air_scale_height) * clamp(planet.atmosphere.w * 12.0, 0.0, 1.0);
+    let toward_sun = max(dot(ray, sun), 0.0);
+    // Daylight only: the night side keeps its stars.
+    let daylight = clamp(dot(-to_centre, sun) * 2.0 + 0.35, 0.0, 1.0);
+    let sky_density = clamp(air_here * daylight, 0.0, 1.0);
+    let sky_rgb = planet.atmosphere.rgb
+        * sky_density
+        * (0.55 + 0.85 * toward_sun * toward_sun);
+
+    let sky_opacity = clamp(
+        rim * (0.30 + planet.atmosphere.w * 3.0) + sky_density,
+        0.0,
+        1.0,
+    );
+
+    // Clouds sit over the body, so they occlude it and each other in order;
+    // the sky occludes whatever is beyond all of them.
+    let alpha = max(cloud_a + coverage * (1.0 - cloud_a), sky_opacity);
+    if (alpha < 0.002 && rim <= 0.0 && sky_density < 0.002) {
         discard;
     }
 
@@ -369,7 +395,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let surface_ldr = tonemap(surface, exposure);
     let cloud_ldr = tonemap(cloud_rgb, exposure);
     let rim_ldr = tonemap(rim_colour, exposure);
+    let sky_ldr = tonemap(sky_rgb, exposure);
     var rgb = cloud_ldr * cloud_a + surface_ldr * coverage * (1.0 - cloud_a) + rim_ldr;
+    // Air sits in front of everything, including the clouds.
+    rgb = mix(rgb, sky_ldr, sky_density * 0.85);
     rgb += vec3<f32>(dither_px(in.pos.xy)) * max(alpha, rim);
     return vec4<f32>(rgb, alpha);
 }
