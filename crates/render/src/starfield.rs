@@ -5,8 +5,6 @@
 
 use crate::FrameUniforms;
 
-const SHADER_SRC: &str = include_str!("../../../shaders/starfield.wgsl");
-
 pub struct StarfieldPass {
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
@@ -22,7 +20,9 @@ impl StarfieldPass {
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("starfield"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+            source: wgpu::ShaderSource::Wgsl(
+                crate::shaders::compose(crate::shaders::STARFIELD).into(),
+            ),
         });
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {

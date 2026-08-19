@@ -11,6 +11,8 @@
 use glam::{Mat4, Quat, Vec3};
 
 pub mod hud;
+pub mod planet;
+pub mod shaders;
 pub mod starfield;
 pub mod text;
 

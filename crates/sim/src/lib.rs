@@ -47,6 +47,8 @@ pub struct ShipParams {
     pub mass_kg: f64,
     /// Max thrust acceleration along each body axis at |control| = 1, m/s².
     pub max_thrust_mps2: f64,
+    /// Multiplier applied to thrust while boosting.
+    pub boost_multiplier: f64,
     /// Max angular acceleration about each body axis at |control| = 1, rad/s².
     pub max_torque_radps2: f64,
     /// Drag coefficient × reference area, m² (F_drag = ½·ρ·|v|²·CdA, opposing v).
@@ -87,6 +89,8 @@ pub struct Controls {
     /// Off by default, which keeps the physics contract (and the golden hash)
     /// identical to a world where this feature doesn't exist.
     pub assist: bool,
+    /// Engage the overdrive: same thrust axes, much more of it.
+    pub boost: bool,
 }
 
 impl Controls {
@@ -99,6 +103,7 @@ impl Controls {
                 .torque_body
                 .clamp(DVec3::splat(-1.0), DVec3::splat(1.0)),
             assist: self.assist,
+            boost: self.boost,
         }
     }
 }
@@ -122,7 +127,10 @@ pub mod presets {
             },
             ship: ShipParams {
                 mass_kg: 12_000.0,
-                max_thrust_mps2: 30.0,
+                // Heavy on the stick, quick off the line: rotation stays
+                // deliberate while translation answers immediately.
+                max_thrust_mps2: 85.0,
+                boost_multiplier: 3.5,
                 max_torque_radps2: 1.5,
                 cd_area_m2: 8.0,
             },
@@ -180,8 +188,18 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
         DVec3::ZERO
     };
 
-    // Thrust: body-frame demand rotated into world frame.
-    let a_thrust = ship.orient * (c.thrust_body * params.ship.max_thrust_mps2);
+    // Thrust: body-frame demand rotated into world frame. Rotating the demand
+    // by the ship's own orientation is what makes the controls ship-relative —
+    // "forward" is always where the nose points, at any attitude, with no
+    // reference to the planet, the orbit, or the camera.
+    //
+    // The unboosted expression is kept textually intact so that a boost the
+    // pilot never engages cannot perturb the physics contract.
+    let a_thrust = if c.boost {
+        ship.orient * (c.thrust_body * (params.ship.max_thrust_mps2 * params.ship.boost_multiplier))
+    } else {
+        ship.orient * (c.thrust_body * params.ship.max_thrust_mps2)
+    };
 
     // Kick, then drift.
     let vel = ship.vel_mps + (a_gravity + a_drag + a_thrust) * DT;

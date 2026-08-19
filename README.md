@@ -27,7 +27,8 @@ cargo run --release -p farfall-app    # fly it (Esc to quit)
 ```
 
 **Controls** — WASD translate, R/F up/down, arrows pitch/yaw, Q/E roll,
-X toggles flight assist, Esc quits.
+**Left Shift** boosts, X toggles flight assist, Esc quits. All translation is
+ship-relative at any attitude: "forward" is always where the nose points.
 
 **Runtime knobs** (env vars, no rebuild needed):
 

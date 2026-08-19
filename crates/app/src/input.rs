@@ -59,6 +59,9 @@ const AXES: [(Action, bool, usize, f64); Action::COUNT] = [
     (Action::RollRight, true, 2, -1.0),
 ];
 
+/// Boost is a modifier rather than an axis, so it sits outside [`AXES`].
+const BOOST_KEY: KeyCode = KeyCode::ShiftLeft;
+
 /// Physical-key bindings. Physical (not logical) keys so the layout is the same
 /// shape on QWERTY, AZERTY, and Dvorak.
 const BINDINGS: [(KeyCode, Action); Action::COUNT] = [
@@ -91,19 +94,34 @@ pub fn action_for(key: KeyCode) -> Option<Action> {
 #[derive(Clone, Copy, Default, Debug)]
 pub struct InputState {
     held: [bool; Action::COUNT],
+    boost: bool,
 }
 
 impl InputState {
     pub fn set(&mut self, key: KeyCode, pressed: bool) {
+        if key == BOOST_KEY {
+            self.boost = pressed;
+        }
         if let Some(action) = action_for(key) {
             self.held[action as usize] = pressed;
         }
+    }
+
+    /// Fraction of maximum available thrust currently demanded, in [0, 1].
+    /// Render-side only: it drives the camera's response to acceleration, and
+    /// must never feed back into the sim.
+    pub fn thrust_effort(&self, boost_multiplier: f64) -> f64 {
+        let c = self.controls(false);
+        let axes = c.thrust_body.abs().max_element();
+        let scale = if self.boost { boost_multiplier } else { 1.0 };
+        (axes * scale / boost_multiplier).clamp(0.0, 1.0)
     }
 
     /// Drop all held keys. Called on focus loss — otherwise a key held while
     /// alt-tabbing away never receives its release and the ship flies off alone.
     pub fn release_all(&mut self) {
         self.held = [false; Action::COUNT];
+        self.boost = false;
     }
 
     /// Assemble sim controls. Opposing keys cancel; every component lands in
@@ -121,6 +139,7 @@ impl InputState {
             thrust_body: DVec3::from_array(thrust),
             torque_body: DVec3::from_array(torque),
             assist,
+            boost: self.boost,
         }
     }
 }
@@ -206,6 +225,34 @@ mod tests {
         s.set(KeyCode::KeyZ, true);
         s.set(KeyCode::Space, true);
         assert_eq!(s.controls(false).thrust_body, DVec3::ZERO);
+    }
+
+    #[test]
+    fn boost_is_a_modifier_not_an_axis() {
+        let s = held(&[KeyCode::KeyW, KeyCode::ShiftLeft]);
+        let c = s.controls(false);
+        assert!(c.boost, "shift must engage boost");
+        // Boost must not disturb the axes it multiplies.
+        assert_eq!(c.thrust_body, DVec3::NEG_Z);
+        assert_eq!(c.torque_body, DVec3::ZERO);
+    }
+
+    #[test]
+    fn thrust_effort_reports_the_camera_signal() {
+        let mult = 3.5;
+        assert_eq!(InputState::default().thrust_effort(mult), 0.0);
+        let cruise = held(&[KeyCode::KeyW]).thrust_effort(mult);
+        let boosting = held(&[KeyCode::KeyW, KeyCode::ShiftLeft]).thrust_effort(mult);
+        assert!(boosting > cruise, "boost must read as more effort");
+        assert!((boosting - 1.0).abs() < 1e-9, "full boost is full effort");
+        assert!(cruise > 0.0 && cruise < 1.0);
+    }
+
+    #[test]
+    fn focus_loss_releases_boost_too() {
+        let mut s = held(&[KeyCode::KeyW, KeyCode::ShiftLeft]);
+        s.release_all();
+        assert!(!s.controls(false).boost);
     }
 
     /// Assist is passed through untouched and never leaks into the axes.

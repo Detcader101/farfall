@@ -2,8 +2,6 @@
 
 use crate::text::{TextBitmap, ROWS, ROW_WORDS};
 
-const SHADER_SRC: &str = include_str!("../../../shaders/hud.wgsl");
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct HudUniforms {
@@ -30,7 +28,7 @@ impl HudPass {
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("hud"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+            source: wgpu::ShaderSource::Wgsl(crate::shaders::compose(crate::shaders::HUD).into()),
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hud uniforms"),

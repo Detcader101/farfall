@@ -11,12 +11,16 @@
 mod input;
 mod telemetry;
 
+use glam::{DQuat, DVec3};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use farfall_render::{
-    hud::HudPass, starfield::StarfieldPass, text::TextBitmap, CameraFrame, FrameUniforms,
-    MsaaTarget,
+    hud::HudPass,
+    planet::{PlanetPass, PlanetUniforms},
+    starfield::StarfieldPass,
+    text::TextBitmap,
+    CameraFrame, FrameUniforms, MsaaTarget,
 };
 use farfall_sim as sim;
 use input::InputState;
@@ -30,6 +34,10 @@ use winit::{
 };
 
 const STAR_DENSITY: f64 = 1.0;
+/// World-space direction to the sun. Fixed for now: a moving sun is a sim
+/// concern (planet rotation, orbit) and does not belong in the renderer.
+/// Chosen so the terminator crosses the visible face at spawn.
+const SUN_DIR: glam::Vec3 = glam::Vec3::new(0.62, 0.42, -0.66);
 /// How often the frame-time window is summarised to the log.
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 
@@ -112,6 +120,7 @@ struct Gpu {
     config: wgpu::SurfaceConfiguration,
     msaa: MsaaTarget,
     starfield: StarfieldPass,
+    planet: PlanetPass,
     hud: HudPass,
     text: TextBitmap,
     cfg: Config,
@@ -172,13 +181,19 @@ struct Game {
     accumulator: f64,
     last_frame: Instant,
     started: Instant,
+    /// Smoothed thrust effort in [0,1], driving the camera's response.
+    /// Render-side only — it must never feed back into the sim.
+    effort: f32,
 }
 
 impl Game {
     fn new() -> Self {
         let params = sim::presets::earth_compact();
-        // 20 km up: black sky, planet below (drawn from M1).
-        let state = sim::presets::circular_orbit(&params, 20_000.0);
+        // 120 km up on a 63.7 km planet: the disc subtends ~20 degrees, so it
+        // reads as a *body* in the frame. At 20 km it subtends ~50 and fills the
+        // view like a wall, which loses the one thing a planet has to convey.
+        let mut state = sim::presets::circular_orbit(&params, SPAWN_ALTITUDE_M);
+        state.ship.orient = spawn_attitude();
         let now = Instant::now();
         Self {
             params,
@@ -188,6 +203,7 @@ impl Game {
             accumulator: 0.0,
             last_frame: now,
             started: now,
+            effort: 0.0,
         }
     }
 
@@ -207,6 +223,22 @@ impl Game {
             self.state = sim::step(&self.params, &self.state, controls);
             self.accumulator -= sim::DT;
         }
+
+        // Camera response to the ship's own physics. Exponential smoothing,
+        // framerate-independent: at 30 fps and at 240 fps the view opens up over
+        // the same wall-clock time, so the ship's weight is a property of the
+        // ship and not of the machine.
+        let target = self.input.thrust_effort(self.params.ship.boost_multiplier) as f32;
+        let alpha = 1.0 - (-(frame_dt as f32) / FOV_RESPONSE_S).exp();
+        self.effort += (target - self.effort) * alpha;
+    }
+
+    /// Planet as the camera sees it. The world-space subtraction happens here,
+    /// in f64, and only the *relative* offset is narrowed to f32 — which is the
+    /// whole floating-origin discipline in one line (SPEC P3).
+    fn planet_uniforms(&self, cam: &CameraFrame) -> PlanetUniforms {
+        let centre_rel = (DVec3::ZERO - self.state.ship.pos_m).as_vec3();
+        PlanetUniforms::new(cam, centre_rel, self.params.planet.radius_m as f32, SUN_DIR)
     }
 
     /// Log why and where the session ended. Every exit path goes through this:
@@ -237,12 +269,47 @@ impl Game {
         let orient = self.state.ship.orient.as_quat();
         CameraFrame {
             orient,
-            fov_y: 70f32.to_radians(),
+            fov_y: (BASE_FOV + FOV_THRUST_GAIN * self.effort).to_radians(),
             aspect,
             time_s: self.started.elapsed().as_secs_f32(),
             exposure: 1.6,
         }
     }
+}
+
+/// How far the nose is pitched down from prograde at spawn, degrees.
+const SPAWN_PITCH_DEG: f64 = 72.0;
+/// Close enough that the surface is a place rather than a backdrop, and close
+/// enough to make an approach — and eventually a collision — a short trip.
+const SPAWN_ALTITUDE_M: f64 = 60_000.0;
+
+/// Base vertical field of view, radians.
+const BASE_FOV: f32 = 70.0;
+/// How much the view opens up under full boost, degrees. The camera reads the
+/// ship's own thrust demand, so acceleration is *seen*, not just measured — the
+/// cheapest honest speed cue there is, and it costs nothing but a lerp.
+const FOV_THRUST_GAIN: f32 = 14.0;
+/// Seconds for the view to catch up to a change in effort. Long enough that the
+/// ship feels like it has mass, short enough that it still feels answerable.
+const FOV_RESPONSE_S: f32 = 0.28;
+
+/// Orbital attitude at spawn: nose prograde, belly toward the planet, pitched
+/// down far enough that the disc is in frame immediately.
+///
+/// The preset leaves orientation at identity so the sim's golden hash stays a
+/// property of the *orbit*, not of where the camera happens to be pointing —
+/// choosing an attitude is the app's business, not the physics'.
+fn spawn_attitude() -> DQuat {
+    // The orbit starts at +X with velocity along -Z, so rolling -90 degrees
+    // about the body Z axis puts the body's up (+Y) along world +X: radially
+    // out, planet underfoot.
+    let belly_down = DQuat::from_rotation_z(-std::f64::consts::FRAC_PI_2);
+    // Then pitch the nose down toward the planet. In orbit the planet sits a
+    // full 90 degrees off prograde — straight down — so a modest pitch does not
+    // come close to reaching it: the disc has to be brought most of the way to
+    // nadir before it enters the frame at all. `planet_is_in_view_at_spawn`
+    // pins this down, because guessing at it got the framing wrong twice.
+    belly_down * DQuat::from_rotation_x(-SPAWN_PITCH_DEG.to_radians())
 }
 
 #[derive(Default)]
@@ -312,6 +379,7 @@ impl App {
         );
         let msaa = MsaaTarget::new(cfg.msaa, config.format);
         let starfield = StarfieldPass::new(&device, config.format, cfg.msaa, STAR_DENSITY);
+        let planet = PlanetPass::new(&device, config.format, cfg.msaa);
         let hud = HudPass::new(&device, config.format, cfg.msaa);
 
         window.request_redraw();
@@ -323,6 +391,7 @@ impl App {
             config,
             msaa,
             starfield,
+            planet,
             hud,
             text: TextBitmap::new(),
             cfg,
@@ -411,6 +480,7 @@ impl ApplicationHandler for App {
                 let cam = game.camera(aspect);
                 gpu.starfield
                     .update(&gpu.queue, &FrameUniforms::from_camera(&cam));
+                gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
                 // Scale the readout with the surface so it keeps the same
                 // apparent size on a retina fullscreen and a small window.
                 let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
@@ -431,6 +501,7 @@ impl ApplicationHandler for App {
                         multiview_mask: None,
                     });
                     gpu.starfield.draw(&mut pass);
+                    gpu.planet.draw(&mut pass);
                     gpu.hud.draw(&mut pass);
                 }
                 gpu.queue.submit([encoder.finish()]);
@@ -496,7 +567,10 @@ mod tests {
 
     fn fly(keys: &[KeyCode], secs: u64) -> sim::ShipState {
         let params = sim::presets::earth_compact();
-        let mut state = sim::presets::circular_orbit(&params, 20_000.0);
+        // 120 km up on a 63.7 km planet: the disc subtends ~20 degrees, so it
+        // reads as a *body* in the frame. At 20 km it subtends ~50 and fills the
+        // view like a wall, which loses the one thing a planet has to convey.
+        let mut state = sim::presets::circular_orbit(&params, SPAWN_ALTITUDE_M);
         state.ship.orient = DQuat::IDENTITY;
         state.ship.vel_mps = DVec3::ZERO; // isolate control response from orbit
         let mut input = InputState::default();
@@ -608,6 +682,161 @@ mod tests {
             (nose - prograde).length() < 1e-9,
             "nose {nose:?} is not prograde {prograde:?}"
         );
+    }
+
+    /// The planet must be in frame on the very first frame. Getting the spawn
+    /// attitude right is pure geometry and I got it wrong twice by reasoning
+    /// about it in prose, so it is asserted instead: the angle from the camera's
+    /// forward axis to the planet's centre, minus the disc's angular radius,
+    /// has to land inside the vertical half-FOV.
+    #[test]
+    fn planet_is_in_view_at_spawn() {
+        let game = Game::new();
+        let cam = game.camera(16.0 / 9.0);
+        let forward = cam.basis().2.as_dvec3();
+
+        let to_planet = (-game.state.ship.pos_m).normalize();
+        let angle = forward.dot(to_planet).clamp(-1.0, 1.0).acos();
+
+        let r = game.params.planet.radius_m;
+        let d = game.state.ship.pos_m.length();
+        let angular_radius = (r / d).asin();
+
+        let half_fov = (cam.fov_y as f64) * 0.5;
+        assert!(
+            angle - angular_radius < half_fov,
+            "planet off screen at spawn: centre {:.1} deg from forward, disc radius \
+             {:.1} deg, half-FOV {:.1} deg",
+            angle.to_degrees(),
+            angular_radius.to_degrees(),
+            half_fov.to_degrees(),
+        );
+        // ...and it must not fill the view either: a wall of surface reads as
+        // terrain, not as a planet.
+        assert!(
+            angular_radius.to_degrees() < 35.0,
+            "planet fills the frame: angular radius {:.1} deg",
+            angular_radius.to_degrees()
+        );
+    }
+
+    /// The spawn attitude is nose-down, and that is forced rather than chosen:
+    /// in any orbit the planet lies 90 degrees off prograde, so a ship looking
+    /// where it is going cannot see the world it is orbiting. Looking down is
+    /// the only attitude that frames the planet at all.
+    #[test]
+    fn spawn_attitude_looks_at_the_planet() {
+        let game = Game::new();
+        let nose = game.state.ship.orient * DVec3::NEG_Z;
+        let to_planet = (-game.state.ship.pos_m).normalize();
+        let off_axis = nose.dot(to_planet).clamp(-1.0, 1.0).acos().to_degrees();
+        assert!(
+            off_axis < 25.0,
+            "nose is {off_axis:.1} deg off the planet — it will not be in frame"
+        );
+    }
+
+    /// Prograde should read as "up-screen", so the direction of travel is
+    /// legible from the attitude rather than only from the instruments.
+    #[test]
+    fn spawn_attitude_puts_prograde_up_screen() {
+        let game = Game::new();
+        let up = (game.state.ship.orient * DVec3::Y).normalize();
+        let prograde = game.state.ship.vel_mps.normalize();
+        assert!(
+            up.dot(prograde) > 0.5,
+            "prograde is not up-screen: {:.2}",
+            up.dot(prograde)
+        );
+    }
+
+    /// Controls are first-person, always: thrust follows the ship's own axes at
+    /// any attitude, with no reference to the planet, the orbit, or the world
+    /// frame. Rotate the hull to something arbitrary and "forward" must still be
+    /// wherever the nose points.
+    #[test]
+    fn thrust_is_ship_relative_at_any_attitude() {
+        let params = sim::presets::earth_compact();
+        let attitudes = [
+            DQuat::IDENTITY,
+            DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2),
+            DQuat::from_rotation_x(-1.1),
+            DQuat::from_euler(glam::EulerRot::YXZ, 2.3, -0.9, 1.7).normalize(),
+        ];
+        for (key, body_axis) in [
+            (KeyCode::KeyW, DVec3::NEG_Z),
+            (KeyCode::KeyD, DVec3::X),
+            (KeyCode::KeyR, DVec3::Y),
+        ] {
+            for orient in attitudes {
+                let mut state = sim::presets::circular_orbit(&params, 60_000.0);
+                state.ship.orient = orient;
+                state.ship.vel_mps = DVec3::ZERO;
+                let mut input = InputState::default();
+                input.set(key, true);
+
+                let coast = {
+                    let mut s = state;
+                    for _ in 0..120 {
+                        s = sim::step(&params, &s, InputState::default().controls(false));
+                    }
+                    s.ship.vel_mps
+                };
+                let mut s = state;
+                for _ in 0..120 {
+                    s = sim::step(&params, &s, input.controls(false));
+                }
+
+                // Gravity cancels; what remains must lie along the ship's axis.
+                let delta = (s.ship.vel_mps - coast).normalize();
+                let expected = (orient * body_axis).normalize();
+                assert!(
+                    (delta - expected).length() < 1e-4,
+                    "{key:?} at attitude {orient:?}: thrust went {delta:?}, expected {expected:?}"
+                );
+            }
+        }
+    }
+
+    /// Boost multiplies thrust without steering it somewhere new.
+    #[test]
+    fn boost_adds_thrust_along_the_same_axis() {
+        let params = sim::presets::earth_compact();
+        let mut base = sim::presets::circular_orbit(&params, 60_000.0);
+        base.ship.orient = DQuat::IDENTITY;
+        base.ship.vel_mps = DVec3::ZERO;
+
+        let run = |boost: bool| {
+            let mut input = InputState::default();
+            input.set(KeyCode::KeyW, true);
+            if boost {
+                input.set(KeyCode::ShiftLeft, true);
+            }
+            let controls = input.controls(false);
+            let mut s = base;
+            for _ in 0..120 {
+                s = sim::step(&params, &s, controls);
+            }
+            s.ship.vel_mps
+        };
+        let coast = {
+            let mut s = base;
+            for _ in 0..120 {
+                s = sim::step(&params, &s, InputState::default().controls(false));
+            }
+            s.ship.vel_mps
+        };
+
+        let plain = run(false) - coast;
+        let boosted = run(true) - coast;
+        let ratio = boosted.length() / plain.length();
+        assert!(
+            (ratio - params.ship.boost_multiplier).abs() < 0.01,
+            "boost gave {ratio:.2}x, expected {:.2}x",
+            params.ship.boost_multiplier
+        );
+        // Same direction, only more of it.
+        assert!((boosted.normalize() - plain.normalize()).length() < 1e-6);
     }
 
     #[test]

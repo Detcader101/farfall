@@ -139,6 +139,7 @@ fn assist_is_deterministic() {
         thrust_body: DVec3::new(0.3, 0.0, 0.8),
         torque_body: DVec3::new(0.2, -0.4, 0.0),
         assist: true,
+        ..Default::default()
     };
     let a = run(&params, state, 2_000, controls);
     let b = run(&params, state, 2_000, controls);

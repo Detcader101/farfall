@@ -184,7 +184,10 @@ fn golden_hash() {
 //                       preset's orbital velocity flipped sign so the nose
 //                       starts prograde. Initial conditions changed, not the
 //                       integrator.
-const GOLDEN: u64 = 0x9dcd701e43a1c80e;
+//   0x36b7f436e10c2d65  ship thrust raised 30 -> 85 m/s^2 for a quicker,
+//                       X-wing-ish feel. A ship parameter, not a law of
+//                       physics: the integrator is untouched again.
+const GOLDEN: u64 = 0x36b7f436e10c2d65;
 
 /// Not an assertion — prints the current golden value for setup/updates:
 /// `cargo test -p farfall-sim print_golden -- --ignored --nocapture`

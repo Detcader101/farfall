@@ -1,53 +1,63 @@
-//! Static validation of every WGSL shader in `shaders/` (SPEC §8, "Shader static").
+//! Static validation of every WGSL shader (SPEC §8, "Shader static").
 //!
 //! Runs in plain `cargo test` on any machine — no GPU, no window. Catches parse
 //! errors, type errors, missing entry points, and binding mistakes before a
-//! human ever launches the app. If you add a shader, this picks it up
-//! automatically; if it needs specific entry points, add them to EXPECTED.
+//! human ever launches the app. Sources come from `render::shaders::PASSES`, so
+//! a pass cannot be added to the renderer without also being checked here.
 
-use std::path::PathBuf;
+use farfall_render::shaders::{compose, COMMON, PASSES};
 
-/// Per-shader entry-point expectations. A shader listed here must expose
-/// exactly these entry points; unlisted shaders just need to validate.
-const EXPECTED: &[(&str, &[&str])] = &[("starfield.wgsl", &["vs_main", "fs_main"])];
-
-fn shaders_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../shaders")
+fn validate(name: &str, src: &str) -> naga::Module {
+    let module = naga::front::wgsl::parse_str(src)
+        .unwrap_or_else(|e| panic!("{name}: WGSL parse error:\n{}", e.emit_to_string(src)));
+    let mut validator = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    );
+    validator
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{name}: validation error: {e:?}"));
+    module
 }
 
 #[test]
-fn all_wgsl_shaders_validate() {
-    let dir = shaders_dir();
-    let mut checked = 0;
-    for entry in std::fs::read_dir(&dir).expect("shaders/ directory missing") {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("wgsl") {
-            continue;
+fn every_pass_compiles_with_the_prelude() {
+    assert!(!PASSES.is_empty());
+    for (name, src, entries) in PASSES {
+        let module = validate(name, &compose(src));
+        for entry in *entries {
+            assert!(
+                module.entry_points.iter().any(|ep| ep.name == *entry),
+                "{name}: missing entry point `{entry}`"
+            );
         }
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
-        let src = std::fs::read_to_string(&path).unwrap();
-
-        let module = naga::front::wgsl::parse_str(&src)
-            .unwrap_or_else(|e| panic!("{name}: WGSL parse error:\n{}", e.emit_to_string(&src)));
-
-        let mut validator = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::all(),
-        );
-        let info = validator
-            .validate(&module)
-            .unwrap_or_else(|e| panic!("{name}: validation error: {e:?}"));
-        let _ = info;
-
-        if let Some((_, entries)) = EXPECTED.iter().find(|(n, _)| *n == name) {
-            for expected in *entries {
-                assert!(
-                    module.entry_points.iter().any(|ep| ep.name == *expected),
-                    "{name}: missing entry point `{expected}`"
-                );
-            }
-        }
-        checked += 1;
     }
-    assert!(checked > 0, "no .wgsl files found in {}", dir.display());
+}
+
+/// The prelude must stand on its own, so a broken helper is reported once
+/// rather than N times with a confusing pass name attached.
+#[test]
+fn the_prelude_is_self_contained() {
+    validate("common", COMMON);
+}
+
+/// Passes must not redefine prelude helpers: two divergent copies of a noise
+/// function is how two parts of the same world stop agreeing.
+#[test]
+fn passes_do_not_shadow_prelude_helpers() {
+    let helpers = [
+        "fn hash31(",
+        "fn vnoise(",
+        "fn fbm3(",
+        "fn fbm5(",
+        "fn tonemap(",
+    ];
+    for (name, src, _) in PASSES {
+        for helper in helpers {
+            assert!(
+                !src.contains(helper),
+                "{name} redefines prelude helper `{helper}` — use the shared one"
+            );
+        }
+    }
 }
