@@ -127,14 +127,18 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
     let p = (oct_encode(dir) * 0.5 + 0.5) * grid;
     let base = vec2<i32>(floor(p));
 
-    // Grid-units-per-pixel from screen-space derivatives (RMS of the Jacobian).
-    // Measuring star distance in PIXELS makes every star the same on-screen
-    // size regardless of octahedral distortion, perspective stretch at wide
-    // FOV, or resolution — a point star's footprint is a camera property, not
-    // a map property. Clamped: derivatives explode across oct seams.
+    // Screen-space Jacobian of the grid coords. Star distances are measured in
+    // PIXELS by pushing the grid-space offset through the FULL inverse Jacobian:
+    // that makes every star the same round few-pixel dot regardless of
+    // octahedral distortion (which is anisotropic — a scalar/RMS normalization
+    // leaves stars elliptical), perspective stretch at wide FOV, or resolution.
+    // A point star's footprint is a camera property, not a map property.
+    // det clamped: derivatives explode across oct seams (the grid-space window
+    // below still bounds any garbage to one cell neighborhood).
     let jx = vec2<f32>(dpdx(p.x), dpdy(p.x));
     let jy = vec2<f32>(dpdx(p.y), dpdy(p.y));
-    let cell_per_px = clamp(sqrt(0.5 * (dot(jx, jx) + dot(jy, jy))), 1e-4, 0.5);
+    let det = jx.x * jy.y - jx.y * jy.x;
+    let inv_det = 1.0 / (sign(det) * max(abs(det), 1e-8));
 
     var col = vec3<f32>(0.0);
     // 3×3 neighborhood so stars survive cell boundaries.
@@ -156,8 +160,10 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
             // tail (e.g. 1/(1+d²)) clips at the neighborhood edge and turns the
             // sky into a quilt of glowing cells.
             let window = smoothstep(1.2, 0.6, d);
-            let d_px = d / cell_per_px;
-            let core = mag * exp(-d_px * d_px * 0.4) * window;
+            let v = p - star_pos;
+            let offs_px = vec2<f32>(jy.y * v.x - jx.y * v.y, -jy.x * v.x + jx.x * v.y) * inv_det;
+            let d_px2 = dot(offs_px, offs_px);
+            let core = mag * exp(-d_px2 * 0.4) * window;
             col += star_tint(fract((h.x + h.y) * 7.91)) * core;
         }
     }
