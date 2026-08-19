@@ -10,6 +10,7 @@
 
 use glam::{Mat4, Quat, Vec3};
 
+pub mod blit;
 pub mod hud;
 pub mod planet;
 pub mod shaders;
@@ -148,5 +149,139 @@ impl MsaaTarget {
                 },
             },
         }
+    }
+}
+
+/// Offscreen target the scene renders into, at a fraction of the swapchain's
+/// resolution (SPEC §6.3, P4).
+///
+/// Shading cost here is dominated by per-pixel noise, so pixel count is the
+/// single biggest quality/performance lever available — far bigger than any
+/// individual effect. Keeping the HUD out of this target means the readout and
+/// instruments stay sharp however far the scene is scaled down.
+pub struct SceneTarget {
+    sample_count: u32,
+    format: wgpu::TextureFormat,
+    scale: f32,
+    msaa_view: Option<wgpu::TextureView>,
+    colour_view: Option<wgpu::TextureView>,
+    size: (u32, u32),
+}
+
+impl SceneTarget {
+    pub fn new(sample_count: u32, format: wgpu::TextureFormat, scale: f32) -> Self {
+        Self {
+            sample_count,
+            format,
+            scale: scale.clamp(0.25, 1.0),
+            msaa_view: None,
+            colour_view: None,
+            size: (0, 0),
+        }
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale.clamp(0.25, 1.0);
+        // Force recreation on the next ensure().
+        self.size = (0, 0);
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// The texture the blit pass samples.
+    pub fn colour_view(&self) -> Option<&wgpu::TextureView> {
+        self.colour_view.as_ref()
+    }
+
+    /// (Re)create the textures for a surface of this size. Returns true when
+    /// they were recreated, so the caller knows to rebind anything sampling
+    /// them — a stale bind group here points at a destroyed view.
+    pub fn ensure(&mut self, device: &wgpu::Device, surface_w: u32, surface_h: u32) -> bool {
+        let w = ((surface_w as f32 * self.scale).round() as u32).max(1);
+        let h = ((surface_h as f32 * self.scale).round() as u32).max(1);
+        if self.size == (w, h) && self.colour_view.is_some() {
+            return false;
+        }
+
+        let make = |label, samples, extra_usage| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: samples,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | extra_usage,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+
+        self.colour_view = Some(make(
+            "scene colour",
+            1,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+        ));
+        self.msaa_view = if self.sample_count > 1 {
+            Some(make(
+                "scene msaa",
+                self.sample_count,
+                wgpu::TextureUsages::empty(),
+            ))
+        } else {
+            None
+        };
+        self.size = (w, h);
+        true
+    }
+
+    pub fn colour_attachment(&self) -> wgpu::RenderPassColorAttachment<'_> {
+        let colour = self.colour_view.as_ref().expect("ensure() before use");
+        match &self.msaa_view {
+            Some(msaa) => wgpu::RenderPassColorAttachment {
+                view: msaa,
+                depth_slice: None,
+                resolve_target: Some(colour),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Discard,
+                },
+            },
+            None => wgpu::RenderPassColorAttachment {
+                view: colour,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod scene_target_tests {
+    use super::*;
+
+    #[test]
+    fn scale_is_clamped_to_something_renderable() {
+        let mut t = SceneTarget::new(4, wgpu::TextureFormat::Bgra8UnormSrgb, 9.0);
+        assert_eq!(t.scale(), 1.0);
+        t.set_scale(0.0);
+        assert_eq!(t.scale(), 0.25);
+        t.set_scale(0.75);
+        assert_eq!(t.scale(), 0.75);
     }
 }

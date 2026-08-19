@@ -117,9 +117,13 @@ fn assist_never_overshoots() {
 fn assist_steers_velocity_toward_the_nose() {
     let params = presets::earth_compact();
     let mut state = spinning(&params, DVec3::ZERO);
-    // Nose along -Z, but moving hard along +X: entirely sideways.
+    // Nose along -Z, but moving sideways along +X.
+    //
+    // The figure matters: steering is capped by the *lateral* thrusters, so the
+    // ship can only bend drift as fast as those can push. Asserting a rate the
+    // hull cannot physically deliver would be testing the wishes, not the ship.
     state.ship.orient = glam::DQuat::IDENTITY;
-    state.ship.vel_mps = DVec3::new(300.0, 0.0, 0.0);
+    state.ship.vel_mps = DVec3::new(120.0, 0.0, 0.0);
 
     let nose = DVec3::NEG_Z;
     let lateral_before = {
@@ -151,7 +155,7 @@ fn assist_off_does_not_steer_velocity() {
     let params = presets::earth_compact();
     let mut state = spinning(&params, DVec3::ZERO);
     state.ship.orient = glam::DQuat::IDENTITY;
-    state.ship.vel_mps = DVec3::new(300.0, 0.0, 0.0);
+    state.ship.vel_mps = DVec3::new(120.0, 0.0, 0.0);
 
     let with = run(
         &params,
@@ -176,7 +180,7 @@ fn assist_off_does_not_steer_velocity() {
 #[test]
 fn alignment_respects_its_thrust_budget() {
     let params = presets::earth_compact();
-    let cap = params.ship.max_thrust_mps2 * params.ship.align_authority;
+    let cap = params.ship.max_thrust_mps2.min_element() * params.ship.align_authority;
 
     let mut state = spinning(&params, DVec3::ZERO);
     state.ship.orient = glam::DQuat::IDENTITY;

@@ -187,7 +187,10 @@ fn golden_hash() {
 //   0x36b7f436e10c2d65  ship thrust raised 30 -> 85 m/s^2 for a quicker,
 //                       X-wing-ish feel. A ship parameter, not a law of
 //                       physics: the integrator is untouched again.
-const GOLDEN: u64 = 0x36b7f436e10c2d65;
+//   0xb6609f61c0695e89  thrust and torque became per-axis: a 165 m/s^2 main
+//                       engine against 45 m/s^2 thrusters, and roll slowed to
+//                       0.8 rad/s^2 against 1.7 pitch. Ship parameters again.
+const GOLDEN: u64 = 0xb6609f61c0695e89;
 
 /// Not an assertion — prints the current golden value for setup/updates:
 /// `cargo test -p farfall-sim print_golden -- --ignored --nocapture`

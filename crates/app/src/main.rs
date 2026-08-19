@@ -16,11 +16,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use farfall_render::{
+    blit::BlitPass,
     hud::HudPass,
-    planet::{PlanetPass, PlanetUniforms},
+    planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
     starfield::StarfieldPass,
     text::TextBitmap,
-    CameraFrame, FrameUniforms, MsaaTarget,
+    CameraFrame, FrameUniforms, SceneTarget,
 };
 use farfall_sim as sim;
 use input::InputState;
@@ -49,11 +50,17 @@ const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 ///   FARFALL_GPU_SYNC=1     (profiling only: block until the GPU finishes each
 ///                           frame before timing it)
 ///   FARFALL_WINDOWED=1     (start windowed instead of borderless fullscreen)
+///   FARFALL_BENCH=1        (freeze the sim at spawn so every run renders the
+///                           identical frame — without this the ship drifts and
+///                           two perf runs are not comparable)
+///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
 struct Config {
     msaa: u32,
     vsync: bool,
     gpu_sync: bool,
     windowed: bool,
+    bench: bool,
+    scale: f32,
 }
 
 impl Config {
@@ -81,11 +88,25 @@ impl Config {
             std::env::var("FARFALL_WINDOWED").as_deref(),
             Ok("1" | "on" | "true")
         );
+        // Screen coverage is what this renderer costs, and coverage depends on
+        // altitude — so a moving ship makes every measurement a different
+        // scene. Freezing it is the difference between profiling and guessing.
+        let bench = matches!(
+            std::env::var("FARFALL_BENCH").as_deref(),
+            Ok("1" | "on" | "true")
+        );
+        let scale = std::env::var("FARFALL_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(1.0)
+            .clamp(0.25, 1.0);
         Self {
             msaa,
             vsync,
             gpu_sync,
             windowed,
+            bench,
+            scale,
         }
     }
 }
@@ -95,6 +116,11 @@ impl Config {
 /// would make the perf numbers a function of the physics rate.
 struct Perf {
     stats: FrameStats,
+    /// Time spent on the CPU building and encoding the frame, measured
+    /// separately from the wall-clock frame time. The difference between the
+    /// two is the GPU (plus any vsync wait), and keeping them apart is the only
+    /// way to know which half is actually the bottleneck.
+    cpu: FrameStats,
     last_frame: Instant,
     last_log: Instant,
     last_title: Instant,
@@ -105,6 +131,7 @@ impl Perf {
         let now = Instant::now();
         Self {
             stats: FrameStats::default(),
+            cpu: FrameStats::default(),
             last_frame: now,
             last_log: now,
             last_title: now,
@@ -118,7 +145,8 @@ struct Gpu {
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    msaa: MsaaTarget,
+    scene: SceneTarget,
+    blit: BlitPass,
     starfield: StarfieldPass,
     planet: PlanetPass,
     hud: HudPass,
@@ -130,7 +158,8 @@ struct Gpu {
 impl Gpu {
     /// Close out the frame: record its duration, refresh the live readout in
     /// the title bar, and periodically summarise the window to the log.
-    fn frame_timing(&mut self) {
+    fn frame_timing(&mut self, cpu_seconds: f64) {
+        self.perf.cpu.record(cpu_seconds);
         let now = Instant::now();
         let dt = now.duration_since(self.perf.last_frame).as_secs_f64();
         self.perf.last_frame = now;
@@ -144,7 +173,32 @@ impl Gpu {
             self.text.clear();
             self.text.draw(0, 0, &format!("{fps:.0} FPS"));
             self.text.draw(0, 6, &format!("1% LOW {low:.0}"));
-            self.text.draw(0, 12, &format!("{}X MSAA", self.cfg.msaa));
+
+            // CPU against total, side by side, because "the CPU feels busy" is
+            // a hypothesis and this is the measurement that settles it.
+            let frame_ms = if fps > 0.0 { 1000.0 / fps } else { 0.0 };
+            let cpu_fps = self.perf.cpu.smoothed_fps();
+            let cpu_ms = if cpu_fps > 0.0 { 1000.0 / cpu_fps } else { 0.0 };
+            self.text.draw(0, 12, &format!("CPU {cpu_ms:.1}MS"));
+            self.text.draw(
+                0,
+                18,
+                &format!("REST {:.1}MS", (frame_ms - cpu_ms).max(0.0)),
+            );
+            let (sw, sh) = self.scene.size();
+            self.text.draw(
+                0,
+                24,
+                &format!(
+                    "{}X MSAA  {:.0}%",
+                    self.cfg.msaa,
+                    self.scene.scale() * 100.0
+                ),
+            );
+            self.text.draw(0, 30, &format!("{sw}X{sh}"));
+            if self.cfg.bench {
+                self.text.draw(0, 36, "BENCH SIM FROZEN");
+            }
         }
 
         if now.duration_since(self.perf.last_log) >= PERF_LOG_EVERY {
@@ -166,6 +220,14 @@ impl Gpu {
                     s.best_ms,
                     s.frames,
                 );
+                if let Some(c) = self.perf.cpu.take_summary() {
+                    log::info!(
+                        "perf cpu: {:.3}ms avg, worst {:.3}ms — the remainder of \
+                         each frame is GPU (and vsync wait, if enabled)",
+                        c.avg_ms,
+                        c.worst_ms,
+                    );
+                }
             }
         }
     }
@@ -178,12 +240,18 @@ struct Game {
     /// Rotational assist. On by default: the ship is hard enough to fly with
     /// momentum intact, and the pilot can turn it off to feel that.
     assist: bool,
+    /// Freeze the simulation, for repeatable measurement.
+    frozen: bool,
     accumulator: f64,
     last_frame: Instant,
     started: Instant,
     /// Smoothed thrust effort in [0,1], driving the camera's response.
     /// Render-side only — it must never feed back into the sim.
     effort: f32,
+    /// Which world we are looking at. Cycled with the number keys until there
+    /// is a real settings panel.
+    appearance: PlanetAppearance,
+    appearance_index: usize,
 }
 
 impl Game {
@@ -197,15 +265,21 @@ impl Game {
             state,
             input: InputState::default(),
             assist: true,
+            frozen: Config::from_env().bench,
             accumulator: 0.0,
             last_frame: now,
             started: now,
             effort: 0.0,
+            appearance: PlanetAppearance::EARTHLIKE,
+            appearance_index: 0,
         }
     }
 
     /// Advance the sim by wall time, in whole fixed steps (SPEC §7.2).
     fn tick(&mut self) {
+        if self.frozen {
+            return;
+        }
         let now = Instant::now();
         let mut frame_dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
@@ -215,6 +289,8 @@ impl Game {
         // Controls are sampled once per frame, not per step: every fixed step in
         // this frame sees the same input, which is what a networked client would
         // send upstream (SPEC §5.2).
+        // Advance the input ramp on wall time, before sampling it.
+        self.input.update(frame_dt);
         let controls = self.input.controls(self.assist);
         while self.accumulator >= sim::DT {
             self.state = sim::step(&self.params, &self.state, controls);
@@ -235,7 +311,30 @@ impl Game {
     /// whole floating-origin discipline in one line (SPEC P3).
     fn planet_uniforms(&self, cam: &CameraFrame) -> PlanetUniforms {
         let centre_rel = (DVec3::ZERO - self.state.ship.pos_m).as_vec3();
-        PlanetUniforms::new(cam, centre_rel, self.params.planet.radius_m as f32, SUN_DIR)
+        PlanetUniforms::new(
+            cam,
+            centre_rel,
+            self.params.planet.radius_m as f32,
+            SUN_DIR,
+            &self.appearance,
+            // Weather advances on sim time, so the sky is a function of the
+            // world's clock rather than of how long the window has been open.
+            self.state.time_s as f32 * 0.05,
+        )
+    }
+
+    /// Step through the atmosphere presets. A stand-in for the settings panel:
+    /// an alien world is not new code, it is different numbers.
+    fn cycle_appearance(&mut self) {
+        self.appearance_index = (self.appearance_index + 1) % PlanetAppearance::PRESETS.len();
+        self.appearance = PlanetAppearance::PRESETS[self.appearance_index];
+        log::info!(
+            "atmosphere: {} (density {:.2}, cloud cover {:.0}%, deck {:.0} m)",
+            self.appearance.name,
+            self.appearance.atmosphere_density,
+            self.appearance.cloud_coverage * 100.0,
+            self.appearance.cloud_altitude_m,
+        );
     }
 
     /// Log why and where the session ended. Every exit path goes through this:
@@ -325,7 +424,12 @@ struct App {
 impl App {
     fn init_gpu(&mut self, event_loop: &ActiveEventLoop) {
         let cfg = Config::from_env();
-        let mut attrs = Window::default_attributes().with_title("FARFALL");
+        let title = if cfg.bench {
+            "FARFALL — BENCHMARK (simulation frozen, controls inert)"
+        } else {
+            "FARFALL"
+        };
+        let mut attrs = Window::default_attributes().with_title(title);
         if !cfg.windowed {
             // Borderless fullscreen on the current monitor: no mode switch, so
             // alt-tab stays instant and the resolution is the desktop's.
@@ -381,10 +485,14 @@ impl App {
             cfg.gpu_sync,
             config.format
         );
-        let msaa = MsaaTarget::new(cfg.msaa, config.format);
+        let scene = SceneTarget::new(cfg.msaa, config.format, cfg.scale);
+        let blit = BlitPass::new(&device, config.format);
         let starfield = StarfieldPass::new(&device, config.format, cfg.msaa, STAR_DENSITY);
         let planet = PlanetPass::new(&device, config.format, cfg.msaa);
-        let hud = HudPass::new(&device, config.format, cfg.msaa);
+        // The HUD draws straight onto the swapchain, after the upscale, so it
+        // is always native resolution and single-sampled however low the scene
+        // scale goes (P1: the readout must never soften).
+        let hud = HudPass::new(&device, config.format, 1);
 
         window.request_redraw();
         self.gpu = Some(Gpu {
@@ -393,7 +501,8 @@ impl App {
             queue,
             surface,
             config,
-            msaa,
+            scene,
+            blit,
             starfield,
             planet,
             hud,
@@ -438,6 +547,17 @@ impl ApplicationHandler for App {
                     }
                     // Edge-triggered, and `repeat` is filtered: holding the key
                     // must not strobe the toggle.
+                    KeyCode::KeyC if pressed && !event.repeat => game.cycle_appearance(),
+                    KeyCode::BracketLeft | KeyCode::BracketRight if pressed && !event.repeat => {
+                        let step = if code == KeyCode::BracketRight {
+                            0.1
+                        } else {
+                            -0.1
+                        };
+                        let next = gpu.scene.scale() + step;
+                        gpu.scene.set_scale(next);
+                        log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
+                    }
                     KeyCode::KeyX if pressed && !event.repeat => {
                         game.assist = !game.assist;
                         log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
@@ -458,6 +578,7 @@ impl ApplicationHandler for App {
                 gpu.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                let cpu_start = Instant::now();
                 game.tick();
 
                 let frame = match gpu.surface.get_current_texture() {
@@ -478,13 +599,24 @@ impl ApplicationHandler for App {
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
 
-                gpu.msaa
-                    .ensure(&gpu.device, gpu.config.width, gpu.config.height);
+                if gpu
+                    .scene
+                    .ensure(&gpu.device, gpu.config.width, gpu.config.height)
+                {
+                    // The scene textures were recreated; a bind group still
+                    // pointing at the old view would sample a destroyed
+                    // resource.
+                    let view = gpu.scene.colour_view().expect("scene target");
+                    gpu.blit.rebind(&gpu.device, view);
+                    gpu.perf.stats.skip_next_frame();
+                }
+
                 let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                 let cam = game.camera(aspect);
                 gpu.starfield
                     .update(&gpu.queue, &FrameUniforms::from_camera(&cam));
                 gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
+
                 // Scale the readout with the surface so it keeps the same
                 // apparent size on a retina fullscreen and a small window.
                 let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
@@ -496,9 +628,10 @@ impl ApplicationHandler for App {
                     .device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                 {
+                    // Pass 1: the expensive world, at whatever scale is set.
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("sky"),
-                        color_attachments: &[Some(gpu.msaa.color_attachment(&view))],
+                        label: Some("scene"),
+                        color_attachments: &[Some(gpu.scene.colour_attachment())],
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
                         occlusion_query_set: None,
@@ -506,14 +639,38 @@ impl ApplicationHandler for App {
                     });
                     gpu.starfield.draw(&mut pass);
                     gpu.planet.draw(&mut pass);
+                }
+                {
+                    // Pass 2: upscale, then the HUD at native resolution.
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("present"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    gpu.blit.draw(&mut pass);
                     gpu.hud.draw(&mut pass);
                 }
                 gpu.queue.submit([encoder.finish()]);
+                // Everything above is CPU work: simulation, uniform packing,
+                // command encoding. Everything below waits on the GPU.
+                let cpu_seconds = cpu_start.elapsed().as_secs_f64();
+
                 gpu.queue.present(frame);
                 if gpu.cfg.gpu_sync {
                     let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
                 }
-                gpu.frame_timing();
+                gpu.frame_timing(cpu_seconds);
                 gpu.window.request_redraw();
             }
             _ => {}
@@ -578,7 +735,7 @@ mod tests {
         for k in keys {
             input.set(*k, true);
         }
-        let controls = input.controls(false);
+        let controls = input.controls_immediate(false);
         for _ in 0..(secs * 120) {
             state = sim::step(&params, &state, controls);
         }
@@ -780,7 +937,7 @@ mod tests {
                 };
                 let mut s = state;
                 for _ in 0..120 {
-                    s = sim::step(&params, &s, input.controls(false));
+                    s = sim::step(&params, &s, input.controls_immediate(false));
                 }
 
                 // Gravity cancels; what remains must lie along the ship's axis.
@@ -808,7 +965,7 @@ mod tests {
             if boost {
                 input.set(KeyCode::ShiftLeft, true);
             }
-            let controls = input.controls(false);
+            let controls = input.controls_immediate(false);
             let mut s = base;
             for _ in 0..120 {
                 s = sim::step(&params, &s, controls);

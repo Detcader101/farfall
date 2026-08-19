@@ -45,8 +45,12 @@ pub struct PlanetParams {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShipParams {
     pub mass_kg: f64,
-    /// Max thrust acceleration along each body axis at |control| = 1, m/s².
-    pub max_thrust_mps2: f64,
+    /// Max thrust acceleration per body axis at |control| = 1, m/s².
+    /// x: lateral, y: vertical, z: the main engine. They are deliberately
+    /// unequal — a ship with one big motor behind it and small thrusters
+    /// everywhere else accelerates far better forwards than sideways, and that
+    /// asymmetry is most of what makes it feel like a ship rather than a cursor.
+    pub max_thrust_mps2: DVec3,
     /// Multiplier applied to thrust while boosting.
     pub boost_multiplier: f64,
     /// Fraction of thrust the flight computer may spend steering the velocity
@@ -54,8 +58,11 @@ pub struct ShipParams {
     pub align_authority: f64,
     /// Time constant for that steering, seconds. Larger feels heavier.
     pub align_tau_s: f64,
-    /// Max angular acceleration about each body axis at |control| = 1, rad/s².
-    pub max_torque_radps2: f64,
+    /// Max angular acceleration per body axis at |control| = 1, rad/s².
+    /// x: pitch, y: yaw, z: roll. Roll is the slowest on purpose: it is the axis
+    /// that most easily disorients, and a ship that rolls lazily reads as
+    /// heavy while still turning quickly where it matters.
+    pub max_torque_radps2: DVec3,
     /// Drag coefficient × reference area, m² (F_drag = ½·ρ·|v|²·CdA, opposing v).
     pub cd_area_m2: f64,
 }
@@ -143,13 +150,14 @@ pub mod presets {
                 mass_kg: 12_000.0,
                 // Heavy on the stick, quick off the line: rotation stays
                 // deliberate while translation answers immediately.
-                max_thrust_mps2: 85.0,
+                // Main engine roughly 3.5x the manoeuvring thrusters.
+                max_thrust_mps2: DVec3::new(45.0, 45.0, 165.0),
                 boost_multiplier: 3.5,
-                // Half the engine is available to bend the velocity vector
-                // toward the nose; the rest is the pilot's.
-                align_authority: 0.5,
-                align_tau_s: 1.4,
-                max_torque_radps2: 1.5,
+                // Most of the manoeuvring thrusters are the flight computer's
+                // to spend on steering; the main engine stays the pilot's.
+                align_authority: 0.8,
+                align_tau_s: 1.1,
+                max_torque_radps2: DVec3::new(1.7, 1.4, 0.8),
                 cd_area_m2: 8.0,
             },
         }
@@ -227,7 +235,9 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
         let nose = ship.orient * DVec3::NEG_Z;
         let lateral = ship.vel_mps - nose * ship.vel_mps.dot(nose);
         let demand = -lateral / params.ship.align_tau_s;
-        let cap = params.ship.max_thrust_mps2 * params.ship.align_authority;
+        // The weakest axis sets the budget: steering can point any direction,
+        // so it may only promise what the ship can deliver in every direction.
+        let cap = params.ship.max_thrust_mps2.min_element() * params.ship.align_authority;
         demand.clamp_length_max(cap)
     } else {
         DVec3::ZERO
@@ -257,11 +267,11 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
         // current spin in one step, clipped to the ship's real authority — so
         // it converges to precisely zero and can never overshoot into a wobble.
         let max = params.ship.max_torque_radps2;
-        let cancel = (-ship.ang_vel_radps / DT).clamp(DVec3::splat(-max), DVec3::splat(max));
+        let cancel = (-ship.ang_vel_radps / DT).clamp(-max, max);
         let gain = DVec3::ONE - c.torque_body.abs();
         ship.ang_vel_radps + (c.torque_body * max + gain * cancel) * DT
     } else {
-        ship.ang_vel_radps + c.torque_body * (params.ship.max_torque_radps2 * DT)
+        ship.ang_vel_radps + c.torque_body * params.ship.max_torque_radps2 * DT
     };
     // dq/dt = ½·ω_world·q, ω in world frame = orient · ω_body
     let w_world = ship.orient * ang_vel;

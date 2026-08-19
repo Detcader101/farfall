@@ -90,11 +90,26 @@ pub fn action_for(key: KeyCode) -> Option<Action> {
     None
 }
 
-/// Which control keys are currently held.
+/// Seconds for a control axis to reach ~63% of a newly pressed key's demand.
+/// Short enough to feel immediate, long enough that the ship eases into a turn.
+const ATTACK_S: f64 = 0.13;
+/// Seconds to fall back to neutral on release. Slower than the attack, so
+/// letting go coasts out of the manoeuvre rather than snapping out of it.
+const RELEASE_S: f64 = 0.22;
+
+/// Which control keys are held, plus the smoothed axis values they drive.
+///
+/// A key is binary and a stick is not. Feeding raw 0/1 into the sim makes every
+/// input a step change — instant full deflection, instant full stop — which
+/// reads as twitchy however heavy the ship's physics are. Ramping each axis
+/// toward its target gives keyboard control the shape of an analog input, and
+/// costs one lerp per axis per frame.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct InputState {
     held: [bool; Action::COUNT],
     boost: bool,
+    /// Smoothed axis values: [thrust xyz, torque xyz].
+    axes: [f64; 6],
 }
 
 impl InputState {
@@ -119,25 +134,72 @@ impl InputState {
 
     /// Drop all held keys. Called on focus loss — otherwise a key held while
     /// alt-tabbing away never receives its release and the ship flies off alone.
+    /// The smoothed axes are zeroed too: easing out of a burn the pilot can no
+    /// longer see would be worse than stopping it.
     pub fn release_all(&mut self) {
         self.held = [false; Action::COUNT];
         self.boost = false;
+        self.axes = [0.0; 6];
     }
 
-    /// Assemble sim controls. Opposing keys cancel; every component lands in
-    /// [-1, 1] by construction, so the sim's clamp is a backstop, not a crutch.
-    pub fn controls(&self, assist: bool) -> Controls {
-        let mut thrust = [0.0f64; 3];
-        let mut torque = [0.0f64; 3];
-        for (action, is_torque, component, sign) in AXES {
-            if self.held[action as usize] {
-                let axis = if is_torque { &mut torque } else { &mut thrust };
-                axis[component] += sign;
+    /// Advance the smoothing by `dt` seconds.
+    ///
+    /// Exponential, and framerate-independent by construction: the same key
+    /// press takes the same wall-clock time to reach full deflection at 30 fps
+    /// and at 240. A per-frame lerp constant would make the ship handle
+    /// differently on every machine.
+    pub fn update(&mut self, dt: f64) {
+        let target = self.raw_axes();
+        for (axis, want) in self.axes.iter_mut().zip(target) {
+            let tau = if want.abs() > axis.abs() {
+                ATTACK_S
+            } else {
+                RELEASE_S
+            };
+            let alpha = 1.0 - (-dt / tau).exp();
+            *axis += (want - *axis) * alpha;
+            // Snap the last sliver. An exponential only approaches its target,
+            // and "99.99% thrust forever" is both a lie about what the pilot
+            // asked for and a trickle of input that never lets the ship settle.
+            if (want - *axis).abs() < 1e-4 {
+                *axis = want;
             }
         }
+    }
+
+    /// The instantaneous demand from held keys, before smoothing.
+    fn raw_axes(&self) -> [f64; 6] {
+        let mut out = [0.0f64; 6];
+        for (action, is_torque, component, sign) in AXES {
+            if self.held[action as usize] {
+                out[if is_torque { 3 + component } else { component }] += sign;
+            }
+        }
+        out
+    }
+
+    /// Assemble sim controls from the smoothed axes. Opposing keys cancel; every
+    /// component lands in [-1, 1] by construction, so the sim's clamp is a
+    /// backstop, not a crutch.
+    pub fn controls(&self, assist: bool) -> Controls {
         Controls {
-            thrust_body: DVec3::from_array(thrust),
-            torque_body: DVec3::from_array(torque),
+            thrust_body: DVec3::new(self.axes[0], self.axes[1], self.axes[2]),
+            torque_body: DVec3::new(self.axes[3], self.axes[4], self.axes[5]),
+            assist,
+            boost: self.boost,
+        }
+    }
+
+    /// Controls as if smoothing had already settled — the pilot's intent rather
+    /// than the ship's current response to it. Used by the tests that check how
+    /// the sim maps a control to motion, where waiting out the ramp would only
+    /// obscure what is being tested.
+    #[cfg(test)]
+    pub fn controls_immediate(&self, assist: bool) -> Controls {
+        let a = self.raw_axes();
+        Controls {
+            thrust_body: DVec3::new(a[0], a[1], a[2]),
+            torque_body: DVec3::new(a[3], a[4], a[5]),
             assist,
             boost: self.boost,
         }
@@ -148,10 +210,15 @@ impl InputState {
 mod tests {
     use super::*;
 
+    /// Hold keys and let the smoothing settle, so tests see steady-state
+    /// deflection rather than the first frame of the ramp.
     fn held(keys: &[KeyCode]) -> InputState {
         let mut s = InputState::default();
         for k in keys {
             s.set(*k, true);
+        }
+        for _ in 0..600 {
+            s.update(1.0 / 120.0);
         }
         s
     }
@@ -207,7 +274,72 @@ mod tests {
     fn release_clears_the_axis() {
         let mut s = held(&[KeyCode::KeyW]);
         s.set(KeyCode::KeyW, false);
-        assert_eq!(s.controls(false).thrust_body, DVec3::ZERO);
+        for _ in 0..600 {
+            s.update(1.0 / 120.0);
+        }
+        assert_eq!(
+            s.controls(false).thrust_body,
+            DVec3::ZERO,
+            "a released key must reach exactly neutral, not merely approach it"
+        );
+    }
+
+    /// The ramp is monotonic, never overshoots, and actually gets there.
+    #[test]
+    fn smoothing_ramps_without_overshoot() {
+        let mut s = InputState::default();
+        s.set(KeyCode::KeyW, true);
+        let mut last = 0.0;
+        for _ in 0..240 {
+            s.update(1.0 / 120.0);
+            let v = -s.controls(false).thrust_body.z; // nose is -Z
+            assert!(v >= last - 1e-12, "ramp went backwards");
+            assert!(v <= 1.0 + 1e-12, "ramp overshot to {v}");
+            last = v;
+        }
+        assert!(last > 0.99, "ramp never arrived: {last}");
+    }
+
+    /// Ramp time is wall-clock, not frame count: the ship must handle
+    /// identically on a 30 fps machine and a 240 fps one.
+    #[test]
+    fn smoothing_is_framerate_independent() {
+        let settle = |steps: u32, dt: f64| {
+            let mut s = InputState::default();
+            s.set(KeyCode::KeyW, true);
+            for _ in 0..steps {
+                s.update(dt);
+            }
+            -s.controls(false).thrust_body.z
+        };
+        // Half a second of holding, at 30 fps and at 240 fps.
+        let slow = settle(15, 1.0 / 30.0);
+        let fast = settle(120, 1.0 / 240.0);
+        assert!(
+            (slow - fast).abs() < 0.01,
+            "frame rate changed the handling: {slow:.4} vs {fast:.4}"
+        );
+    }
+
+    /// Smoothing must not turn a released key into a slow drift in the opposite
+    /// direction, nor stall a reversal.
+    #[test]
+    fn reversing_passes_through_neutral() {
+        let mut s = held(&[KeyCode::KeyW]);
+        s.set(KeyCode::KeyW, false);
+        s.set(KeyCode::KeyS, true);
+        let mut crossed = false;
+        for _ in 0..240 {
+            s.update(1.0 / 120.0);
+            if s.controls(false).thrust_body.z.abs() < 0.02 {
+                crossed = true;
+            }
+        }
+        assert!(crossed, "reversal never passed through neutral");
+        assert!(
+            s.controls(false).thrust_body.z > 0.9,
+            "reversal did not complete"
+        );
     }
 
     #[test]

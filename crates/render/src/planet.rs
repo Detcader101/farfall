@@ -7,6 +7,91 @@
 use crate::CameraFrame;
 use glam::Vec3;
 
+/// Everything about how a world looks, as opposed to where it is.
+///
+/// This is the slider panel in struct form: an "alien planet" is not new code,
+/// it is different numbers here. Kept separate from the uniform layout so the
+/// fields can be named and clamped meaningfully rather than packed into vec4s
+/// at the call site.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanetAppearance {
+    pub name: &'static str,
+    /// Colour of the air: the rim, and what the surface fades into.
+    pub atmosphere_colour: Vec3,
+    /// Optical density. Roughly "how many airmasses before the ground is gone".
+    /// 0.05 is a crisp thin sky; 0.6 is a soup where the horizon dissolves.
+    pub atmosphere_density: f32,
+    /// 0 clears the sky, 1 overcasts it.
+    pub cloud_coverage: f32,
+    /// Height of the cloud deck above the surface, metres. This is what gives
+    /// clouds parallax against the terrain.
+    pub cloud_altitude_m: f32,
+    /// Edge hardness. Below 1 softens and spreads, above 1 tightens into
+    /// well-defined banks.
+    pub cloud_sharpness: f32,
+    pub cloud_colour: Vec3,
+    /// How dark a shadow the deck throws on the ground.
+    pub cloud_shadow: f32,
+}
+
+impl PlanetAppearance {
+    pub const EARTHLIKE: Self = Self {
+        name: "EARTHLIKE",
+        atmosphere_colour: Vec3::new(0.28, 0.48, 0.95),
+        atmosphere_density: 0.055,
+        cloud_coverage: 0.42,
+        cloud_altitude_m: 2_200.0,
+        cloud_sharpness: 0.85,
+        cloud_colour: Vec3::new(1.0, 1.0, 1.02),
+        cloud_shadow: 0.45,
+    };
+
+    /// Runaway greenhouse: the ground is barely there through the murk.
+    pub const VENUSIAN: Self = Self {
+        name: "VENUSIAN",
+        atmosphere_colour: Vec3::new(0.95, 0.72, 0.35),
+        atmosphere_density: 0.60,
+        cloud_coverage: 0.92,
+        cloud_altitude_m: 5_000.0,
+        cloud_sharpness: 0.45,
+        cloud_colour: Vec3::new(1.0, 0.88, 0.62),
+        cloud_shadow: 0.25,
+    };
+
+    /// Thin, cold, dusty. A hairline halo and a sky that hides nothing.
+    pub const THIN: Self = Self {
+        name: "THIN",
+        atmosphere_colour: Vec3::new(0.85, 0.55, 0.42),
+        atmosphere_density: 0.025,
+        cloud_coverage: 0.10,
+        cloud_altitude_m: 1_200.0,
+        cloud_sharpness: 1.6,
+        cloud_colour: Vec3::new(0.95, 0.82, 0.72),
+        cloud_shadow: 0.15,
+    };
+
+    /// Something else entirely: high violet banks over a green sky.
+    pub const ALIEN: Self = Self {
+        name: "ALIEN",
+        atmosphere_colour: Vec3::new(0.42, 0.95, 0.55),
+        atmosphere_density: 0.20,
+        cloud_coverage: 0.62,
+        cloud_altitude_m: 9_000.0,
+        cloud_sharpness: 2.2,
+        cloud_colour: Vec3::new(0.72, 0.45, 0.95),
+        cloud_shadow: 0.6,
+    };
+
+    /// Cycling order for the debug key.
+    pub const PRESETS: [Self; 4] = [Self::EARTHLIKE, Self::VENUSIAN, Self::THIN, Self::ALIEN];
+}
+
+impl Default for PlanetAppearance {
+    fn default() -> Self {
+        Self::EARTHLIKE
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PlanetUniforms {
@@ -19,13 +104,26 @@ pub struct PlanetUniforms {
     centre_radius: [f32; 4],
     /// xyz: unit vector toward the sun
     sun_dir: [f32; 4],
+    /// rgb: atmosphere colour, w: optical density
+    atmosphere: [f32; 4],
+    /// x: coverage, y: shell altitude (m), z: sharpness, w: weather phase
+    cloud_shape: [f32; 4],
+    /// rgb: cloud albedo, w: shadow strength
+    cloud_look: [f32; 4],
 }
 
 impl PlanetUniforms {
     /// `centre_rel` must already be camera-relative: the world-space
     /// subtraction happens in f64 on the caller's side, so this f32 only ever
     /// carries a local offset (SPEC P3).
-    pub fn new(cam: &CameraFrame, centre_rel: Vec3, radius_m: f32, sun_dir: Vec3) -> Self {
+    pub fn new(
+        cam: &CameraFrame,
+        centre_rel: Vec3,
+        radius_m: f32,
+        sun_dir: Vec3,
+        look: &PlanetAppearance,
+        weather_phase: f32,
+    ) -> Self {
         let (right, up, forward) = cam.basis();
         let sun = sun_dir.normalize_or_zero();
         Self {
@@ -40,6 +138,24 @@ impl PlanetUniforms {
             ],
             centre_radius: [centre_rel.x, centre_rel.y, centre_rel.z, radius_m],
             sun_dir: [sun.x, sun.y, sun.z, 0.0],
+            atmosphere: [
+                look.atmosphere_colour.x,
+                look.atmosphere_colour.y,
+                look.atmosphere_colour.z,
+                look.atmosphere_density.max(0.0),
+            ],
+            cloud_shape: [
+                look.cloud_coverage.clamp(0.0, 1.0),
+                look.cloud_altitude_m.max(0.0),
+                look.cloud_sharpness.max(0.05),
+                weather_phase,
+            ],
+            cloud_look: [
+                look.cloud_colour.x,
+                look.cloud_colour.y,
+                look.cloud_colour.z,
+                look.cloud_shadow.clamp(0.0, 1.0),
+            ],
         }
     }
 
@@ -161,6 +277,17 @@ mod tests {
     use super::*;
     use glam::Quat;
 
+    fn uniforms(centre: Vec3, radius: f32) -> PlanetUniforms {
+        PlanetUniforms::new(
+            &cam(),
+            centre,
+            radius,
+            Vec3::X,
+            &PlanetAppearance::EARTHLIKE,
+            0.0,
+        )
+    }
+
     fn cam() -> CameraFrame {
         CameraFrame {
             orient: Quat::IDENTITY,
@@ -174,7 +301,7 @@ mod tests {
     #[test]
     fn angular_radius_matches_geometry() {
         // 20 km above a 63.71 km planet: centre is 83.71 km away.
-        let u = PlanetUniforms::new(&cam(), Vec3::new(0.0, -83_710.0, 0.0), 63_710.0, Vec3::X);
+        let u = uniforms(Vec3::new(0.0, -83_710.0, 0.0), 63_710.0);
         let expected = (63_710.0f32 / 83_710.0).asin();
         assert!((u.angular_radius() - expected).abs() < 1e-6);
         // Sanity: that is a very large planet in the sky, ~50 degrees.
@@ -183,21 +310,71 @@ mod tests {
 
     #[test]
     fn angular_radius_shrinks_with_distance() {
-        let near = PlanetUniforms::new(&cam(), Vec3::new(0.0, 0.0, -1.0e5), 63_710.0, Vec3::X);
-        let far = PlanetUniforms::new(&cam(), Vec3::new(0.0, 0.0, -1.0e7), 63_710.0, Vec3::X);
+        let near = uniforms(Vec3::new(0.0, 0.0, -1.0e5), 63_710.0);
+        let far = uniforms(Vec3::new(0.0, 0.0, -1.0e7), 63_710.0);
         assert!(near.angular_radius() > far.angular_radius());
         assert!(far.angular_radius() > 0.0);
     }
 
     #[test]
     fn inside_the_planet_reports_zero_rather_than_nan() {
-        let u = PlanetUniforms::new(&cam(), Vec3::new(0.0, 0.0, -100.0), 63_710.0, Vec3::X);
+        let u = uniforms(Vec3::new(0.0, 0.0, -100.0), 63_710.0);
         assert_eq!(u.angular_radius(), 0.0);
+    }
+
+    /// Out-of-range appearance values must be clamped at the boundary rather
+    /// than reaching the shader, where a negative coverage or a zero sharpness
+    /// would produce NaNs across the whole cloud deck.
+    #[test]
+    fn appearance_values_are_clamped() {
+        let wild = PlanetAppearance {
+            cloud_coverage: 4.0,
+            cloud_sharpness: -1.0,
+            cloud_shadow: 9.0,
+            atmosphere_density: -3.0,
+            cloud_altitude_m: -500.0,
+            ..PlanetAppearance::EARTHLIKE
+        };
+        let u = PlanetUniforms::new(&cam(), Vec3::NEG_Y * 1.0e5, 6.0e4, Vec3::X, &wild, 0.0);
+        assert_eq!(u.cloud_shape[0], 1.0);
+        assert!(u.cloud_shape[1] >= 0.0);
+        assert!(u.cloud_shape[2] > 0.0);
+        assert_eq!(u.cloud_look[3], 1.0);
+        assert_eq!(u.atmosphere[3], 0.0);
+    }
+
+    /// Every preset must be renderable: no NaNs, no negatives sneaking through.
+    #[test]
+    fn every_preset_is_sane() {
+        for look in PlanetAppearance::PRESETS {
+            let u = PlanetUniforms::new(&cam(), Vec3::NEG_Y * 1.0e5, 6.0e4, Vec3::X, &look, 3.0);
+            for v in u
+                .atmosphere
+                .iter()
+                .chain(&u.cloud_shape)
+                .chain(&u.cloud_look)
+            {
+                assert!(v.is_finite(), "{} produced a non-finite uniform", look.name);
+            }
+            assert!(
+                u.cloud_shape[0] >= 0.0 && u.cloud_shape[0] <= 1.0,
+                "{}",
+                look.name
+            );
+            assert!(u.atmosphere[3] >= 0.0, "{}", look.name);
+        }
     }
 
     #[test]
     fn sun_direction_is_normalised() {
-        let u = PlanetUniforms::new(&cam(), Vec3::NEG_Y * 1.0e5, 6.0e4, Vec3::new(3.0, 4.0, 0.0));
+        let u = PlanetUniforms::new(
+            &cam(),
+            Vec3::NEG_Y * 1.0e5,
+            6.0e4,
+            Vec3::new(3.0, 4.0, 0.0),
+            &PlanetAppearance::EARTHLIKE,
+            0.0,
+        );
         let len = (u.sun_dir[0] * u.sun_dir[0] + u.sun_dir[1] * u.sun_dir[1]).sqrt();
         assert!((len - 1.0).abs() < 1e-6, "sun dir not unit: {len}");
     }
