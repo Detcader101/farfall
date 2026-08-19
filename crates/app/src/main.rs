@@ -410,26 +410,11 @@ impl Game {
         let q_ref = 0.5 * planet.atmo_rho0 * 300.0 * 300.0;
 
         let controls = self.input.controls(self.assist);
-        // Felt acceleration: thrust + drag + brake. Gravity is free fall and
-        // is deliberately absent — an orbiting hull is unloaded.
-        let thrust_a = (controls.thrust_body * self.params.ship.max_thrust_mps2).length()
-            * if controls.boost {
-                self.params.ship.boost_multiplier
-            } else {
-                1.0
-            };
-        let drag_a = q * self.params.ship.cd_area_m2 / self.params.ship.mass_kg;
-        let brake_a = if controls.brake {
-            (speed / self.params.ship.brake_tau_s).min(self.params.ship.brake_mps2)
-        } else {
-            0.0
-        };
 
         farfall_audio::Levels {
             effort: self.input.thrust_effort(self.params.ship.boost_multiplier) as f32,
             wind_q: ((q / q_ref) as f32).clamp(0.0, 1.0),
             vacuum: 1.0 - ((rho_ratio * 12.0) as f32).clamp(0.0, 1.0),
-            load_g: ((thrust_a + drag_a + brake_a) / 9.81) as f32,
             brake: if controls.brake { 1.0 } else { 0.0 },
             // Attitude thrusters: the largest torque demand. Rolling is
             // flying, and a silent manoeuvre reads as a broken game.

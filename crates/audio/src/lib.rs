@@ -23,7 +23,6 @@ struct Shared {
     effort: AtomicU32,
     wind_q: AtomicU32,
     vacuum: AtomicU32,
-    load_g: AtomicU32,
     brake: AtomicU32,
     rcs: AtomicU32,
     master: AtomicU32,
@@ -34,7 +33,6 @@ impl Shared {
         self.effort.store(l.effort.to_bits(), Ordering::Relaxed);
         self.wind_q.store(l.wind_q.to_bits(), Ordering::Relaxed);
         self.vacuum.store(l.vacuum.to_bits(), Ordering::Relaxed);
-        self.load_g.store(l.load_g.to_bits(), Ordering::Relaxed);
         self.brake.store(l.brake.to_bits(), Ordering::Relaxed);
         self.rcs.store(l.rcs.to_bits(), Ordering::Relaxed);
         self.master.store(l.master.to_bits(), Ordering::Relaxed);
@@ -44,7 +42,6 @@ impl Shared {
             effort: f32::from_bits(self.effort.load(Ordering::Relaxed)),
             wind_q: f32::from_bits(self.wind_q.load(Ordering::Relaxed)),
             vacuum: f32::from_bits(self.vacuum.load(Ordering::Relaxed)),
-            load_g: f32::from_bits(self.load_g.load(Ordering::Relaxed)),
             brake: f32::from_bits(self.brake.load(Ordering::Relaxed)),
             rcs: f32::from_bits(self.rcs.load(Ordering::Relaxed)),
             master: f32::from_bits(self.master.load(Ordering::Relaxed)),
