@@ -127,6 +127,15 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
     let p = (oct_encode(dir) * 0.5 + 0.5) * grid;
     let base = vec2<i32>(floor(p));
 
+    // Grid-units-per-pixel from screen-space derivatives (RMS of the Jacobian).
+    // Measuring star distance in PIXELS makes every star the same on-screen
+    // size regardless of octahedral distortion, perspective stretch at wide
+    // FOV, or resolution — a point star's footprint is a camera property, not
+    // a map property. Clamped: derivatives explode across oct seams.
+    let jx = vec2<f32>(dpdx(p.x), dpdy(p.x));
+    let jy = vec2<f32>(dpdx(p.y), dpdy(p.y));
+    let cell_per_px = clamp(sqrt(0.5 * (dot(jx, jx) + dot(jy, jy))), 1e-4, 0.5);
+
     var col = vec3<f32>(0.0);
     // 3×3 neighborhood so stars survive cell boundaries.
     for (var dy = -1; dy <= 1; dy += 1) {
@@ -147,7 +156,8 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
             // tail (e.g. 1/(1+d²)) clips at the neighborhood edge and turns the
             // sky into a quilt of glowing cells.
             let window = smoothstep(1.2, 0.6, d);
-            let core = mag * exp(-d * d * 90.0) * window;
+            let d_px = d / cell_per_px;
+            let core = mag * exp(-d_px * d_px * 0.4) * window;
             col += star_tint(fract((h.x + h.y) * 7.91)) * core;
         }
     }
