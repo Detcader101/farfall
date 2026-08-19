@@ -1,0 +1,14 @@
+# Normalize line endings so the repo is identical on macOS, Linux, and Windows —
+# a stray CRLF in a .wgsl or .rs file is a diff that means nothing and a merge
+# conflict that costs an hour.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ktx2 binary
+
+# Keep generated lockfiles out of diff review noise, but still versioned.
+Cargo.lock -diff
+
+# GitHub language stats: this is a Rust + WGSL project, not a docs project.
+*.wgsl linguist-language=WGSL

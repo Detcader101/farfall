@@ -1,0 +1,19 @@
+#!/bin/sh
+# Pre-commit gate — the same checks CI runs, minus the cross-platform matrix.
+# Rationale (SPEC P6): a contributor with no context should be unable to commit
+# a formatting mess, a clippy warning, or a broken physics invariant by accident.
+#
+# Skip deliberately with:  git commit --no-verify
+set -e
+
+# Only run for commits that touch code — docs-only commits shouldn't pay for a
+# full test run.
+if git diff --cached --name-only | grep -qE '\.(rs|wgsl|toml)$'; then
+    echo "pre-commit: fmt"
+    cargo fmt --all --check
+    echo "pre-commit: clippy"
+    cargo clippy --workspace --all-targets -- -D warnings
+    echo "pre-commit: tests"
+    cargo test --workspace --quiet
+    echo "pre-commit: ok"
+fi

@@ -268,7 +268,10 @@ Each milestone ends with a demonstrable artifact and its acceptance tests green.
   attribution.
 - No real star-catalog data yet (HYG/AT-HYG are CC-BY-SA; fine later as a clearly
   separated data package, but procedural stars avoid the question).
-- Repo: private GitHub, invited collaborators. Conventional commits, PRs after M0.
+- Repo: **local git for now** (no remote); private GitHub when a remote is wanted.
+  Milestones are annotated tags (`v0.1.0-m0`). Short-lived branches per task,
+  merged into `main` with `--no-ff` so each task stays a reviewable unit.
+  `core.hooksPath=.githooks` gates commits on fmt + clippy + tests.
 
 ## 11. Open questions (each with the experiment that settles it)
 

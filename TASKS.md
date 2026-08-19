@@ -20,8 +20,11 @@ SPEC.md. Read SPEC.md first; section references (§) point there.
       camera at ship, starfield rendering
 - [x] CI: fmt, clippy -D warnings, tests on macos-14 + ubuntu (golden-hash cross-check),
       wasm32 `cargo check` for sim+render, cargo-deny license audit
-- [ ] Push to private GitHub repo; invite collaborators
-- [ ] Eyeball pass on starfield (open question §11.1); tune density/brightness constants
+- [x] ~~Push to private GitHub repo~~ — deferred: local-only git for now (owner's call).
+      Repo is tagged `v0.1.0-m0`; push when a remote is wanted.
+- [x] Eyeball pass on starfield (§11.1) — three structural defects found and fixed:
+      infinite-tail falloff (cell quilt), scalar Jacobian (size gradient),
+      missing anisotropy (elliptical stars). Owner signed off on the result.
 
 ## M1 — Orbit
 
