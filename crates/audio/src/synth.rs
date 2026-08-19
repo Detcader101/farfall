@@ -32,6 +32,9 @@ pub struct Levels {
     pub load_g: f32,
     /// Air-brake engagement 0..1.
     pub brake: f32,
+    /// Attitude-thruster demand 0..1 (largest torque axis): the RCS voice.
+    /// Rolling is flying too, and a silent manoeuvre reads as a broken game.
+    pub rcs: f32,
     /// Master gain 0..1.
     pub master: f32,
 }
@@ -44,6 +47,7 @@ impl Default for Levels {
             vacuum: 1.0,
             load_g: 0.0,
             brake: 0.0,
+            rcs: 0.0,
             master: 0.8,
         }
     }
@@ -114,6 +118,19 @@ pub struct Synth {
     brake: Smooth,
     brake_bp: f32,
     brake_hp: f32,
+    // RCS thrusters.
+    rcs: Smooth,
+    rcs_phase: f32,
+    rcs_lp: f32,
+    // Hull crackle: sparse metallic pops when the airframe is loaded in
+    // vacuum. One retriggered damped resonator; its own RNG so event timing
+    // cannot disturb the wind noise sequence.
+    crackle_rng: Rng,
+    crackle_countdown: f32,
+    crackle_env: f32,
+    crackle_decay: f32,
+    crackle_freq: f32,
+    crackle_phase: f32,
     // Master.
     master: Smooth,
     dc_x: (f32, f32),
@@ -145,6 +162,15 @@ impl Synth {
             brake: Smooth::new(sample_rate, 0.04),
             brake_bp: 0.0,
             brake_hp: 0.0,
+            rcs: Smooth::new(sample_rate, 0.06),
+            rcs_phase: 0.0,
+            rcs_lp: 0.0,
+            crackle_rng: Rng(seed.wrapping_mul(2654435761) | 1),
+            crackle_countdown: 0.4,
+            crackle_env: 0.0,
+            crackle_decay: 0.999,
+            crackle_freq: 150.0,
+            crackle_phase: 0.0,
             master: Smooth::new(sample_rate, 0.05),
             dc_x: (0.0, 0.0),
             dc_y: (0.0, 0.0),
@@ -168,11 +194,18 @@ impl Synth {
     fn frame(&mut self, levels: &Levels) -> (f32, f32) {
         let tau = core::f32::consts::TAU;
 
+        // Vacuum first: it muffles everything airborne. In space the only
+        // path from engine to ear is conduction through the hull, so the burn
+        // drops to a low structural mutter rather than a roar.
+        let vac = self.vacuum.next(levels.vacuum.clamp(0.0, 1.0));
+        let muffle_amp = 1.0 - 0.62 * vac;
+        let muffle_cut = 1.0 - 0.55 * vac;
+
         // ---- engine -----------------------------------------------------
         let effort = levels.effort.clamp(0.0, 1.0);
         let freq = self.eng_freq.next(Self::engine_pitch(effort));
         let amp = self.eng_amp.next(if effort > 0.003 {
-            0.16 + 0.34 * effort.powf(0.8)
+            (0.16 + 0.34 * effort.powf(0.8)) * muffle_amp
         } else {
             0.0
         });
@@ -188,8 +221,8 @@ impl Synth {
         let drive = 1.0 + 2.2 * effort;
         let mut engine = (0.6 * saw + 0.4 * pulse) * growl * amp;
         engine = (engine * drive).tanh();
-        // Keep it in the chest: low-pass hard.
-        let k = self.lp_coeff(95.0 + 240.0 * effort);
+        // Keep it in the chest: low-pass hard, harder still in vacuum.
+        let k = self.lp_coeff((95.0 + 240.0 * effort) * muffle_cut);
         self.eng_lp += (engine - self.eng_lp) * k;
         let engine = self.eng_lp;
 
@@ -215,7 +248,6 @@ impl Synth {
         }
 
         // ---- hull, in vacuum -------------------------------------------
-        let vac = self.vacuum.next(levels.vacuum.clamp(0.0, 1.0));
         let load = self.load.next(levels.load_g.clamp(0.0, 4.0));
         // Leaky integrator of white noise = brown rumble; the leak keeps it
         // bounded without a hard clamp.
@@ -223,8 +255,55 @@ impl Synth {
         self.drone_phase = (self.drone_phase + 31.0 / self.rate).fract();
         self.drift_phase = (self.drift_phase + 0.11 / self.rate).fract();
         let drift = 0.6 + 0.4 * (tau * self.drift_phase).sin();
-        let hull_amp = vac * (0.035 + 0.05 * load) * drift;
+        // "Almost muted": the resting rumble sits just above perception, so
+        // the crackle and the muffled burn read against near-silence.
+        let hull_amp = vac * (0.016 + 0.045 * load) * drift;
         let hull = (self.brown * 2.2 + 0.5 * (tau * self.drone_phase).sin()) * hull_amp;
+
+        // ---- hull crackle ----------------------------------------------
+        // Sparse Poisson-ish pops: metal relieving stress. Rate rises with
+        // load, exists only in vacuum — in air the wind owns this band and
+        // real airframes groan under aero load anyway, which drag supplies.
+        let crackle_rate = vac * (0.25 + 2.8 * load);
+        let mut crackle = 0.0;
+        if crackle_rate > 0.01 {
+            self.crackle_countdown -= 1.0 / self.rate;
+            if self.crackle_countdown <= 0.0 {
+                let u = self.crackle_rng.white() * 0.5 + 0.5;
+                let v = self.crackle_rng.white() * 0.5 + 0.5;
+                self.crackle_countdown = (0.15 + 1.7 * u) / crackle_rate;
+                // Mostly quick ticks, occasionally a low groan.
+                if v > 0.85 {
+                    self.crackle_freq = 52.0 + 40.0 * u;
+                    self.crackle_decay = (-1.0 / (self.rate * 0.45)).exp();
+                    self.crackle_env = 0.22 + 0.18 * v;
+                } else {
+                    self.crackle_freq = 95.0 + 240.0 * u;
+                    self.crackle_decay = (-1.0 / (self.rate * (0.03 + 0.09 * v))).exp();
+                    self.crackle_env = 0.12 + 0.22 * v;
+                }
+            }
+        }
+        if self.crackle_env > 1e-4 {
+            self.crackle_phase = (self.crackle_phase + self.crackle_freq / self.rate).fract();
+            crackle = (tau * self.crackle_phase).sin() * self.crackle_env * vac;
+            self.crackle_env *= self.crackle_decay;
+        }
+
+        // ---- rcs thrusters ---------------------------------------------
+        // Attitude jets: a small motor whine plus valve noise, an octave-ish
+        // above the main engine and far quieter — and muffled in vacuum the
+        // same way, since it reaches the ear through the same hull.
+        let rcs = self.rcs.next(levels.rcs.clamp(0.0, 1.0));
+        let mut rcs_out = 0.0;
+        if rcs > 0.004 {
+            self.rcs_phase = (self.rcs_phase + 142.0 / self.rate).fract();
+            let tri = 2.0 * (2.0 * (self.rcs_phase - 0.5)).abs() - 1.0;
+            let n = self.rng_r.white();
+            let lp = self.lp_coeff(420.0 * muffle_cut);
+            self.rcs_lp += (n - self.rcs_lp) * lp;
+            rcs_out = (tri * 0.45 + self.rcs_lp * 0.8) * rcs * 0.11 * muffle_amp;
+        }
 
         // ---- brake ------------------------------------------------------
         let brake = self.brake.next(levels.brake.clamp(0.0, 1.0));
@@ -240,7 +319,7 @@ impl Synth {
 
         // ---- mix --------------------------------------------------------
         let master = self.master.next(levels.master.clamp(0.0, 1.0));
-        let mono = engine + hull + hiss;
+        let mono = engine + hull + hiss + crackle + rcs_out;
         let l = ((mono + wind.0) * master).tanh();
         let r = ((mono + wind.1) * master).tanh();
 
@@ -297,6 +376,7 @@ mod tests {
                 vacuum: 0.0,
                 load_g: 4.0,
                 brake: 1.0,
+                rcs: 1.0,
                 master: 1.0,
             },
             Levels {
@@ -305,6 +385,7 @@ mod tests {
                 vacuum: 9.0,
                 load_g: 1e9,
                 brake: 2.0,
+                rcs: 44.0,
                 master: 5.0,
             },
         ];
@@ -317,24 +398,35 @@ mod tests {
         }
     }
 
-    /// Space is quiet: vacuum-idle is a whisper next to full burn, but not
-    /// digital silence — the hull rumble is the point.
+    /// Space is almost muted — but punctuated. A flat RMS cannot tell "quiet
+    /// with pops" from "loud", so this measures the shape of the brief
+    /// directly: the FLOOR between events (median of short chunks) is a
+    /// whisper against an in-air burn, while the loudest chunk stands well
+    /// off that floor — the crackle exists, in silence.
     #[test]
-    fn vacuum_idle_is_a_whisper_not_silence() {
-        let idle = render_secs(Levels::default(), 0.5);
-        let burn = render_secs(
+    fn vacuum_idle_is_near_silence_with_events() {
+        let idle = render_secs(Levels::default(), 2.0);
+        let burn = rms(&render_secs(
             Levels {
                 effort: 1.0,
+                vacuum: 0.0,
                 ..Default::default()
             },
             0.5,
-        );
-        let idle_rms = rms(&idle);
-        let burn_rms = rms(&burn);
-        assert!(idle_rms > 1e-4, "hull rumble missing: rms {idle_rms:e}");
+        ));
+        let chunk = 4800; // 50 ms of stereo
+        let mut chunks: Vec<f32> = idle.chunks(chunk).map(rms).collect();
+        chunks.sort_by(f32::total_cmp);
+        let floor = chunks[chunks.len() / 2];
+        let peak = chunks[chunks.len() - 1];
+        assert!(floor > 1e-5, "hull presence missing entirely: {floor:e}");
         assert!(
-            idle_rms < burn_rms * 0.25,
-            "space is not quiet: idle {idle_rms:.4} vs burn {burn_rms:.4}"
+            floor < burn * 0.12,
+            "space floor not quiet: {floor:.4} vs burn {burn:.4}"
+        );
+        assert!(
+            peak > floor * 2.0,
+            "no events above the floor: peak {peak:.4} floor {floor:.4}"
         );
     }
 
@@ -408,6 +500,83 @@ mod tests {
         assert!(max_jump < 0.30, "click on effort step: jump {max_jump:.3}");
     }
 
+    /// In vacuum the burn is a structural mutter, not a roar: same effort,
+    /// clearly quieter than in air. The engine reaches the ear only through
+    /// the hull.
+    #[test]
+    fn engine_is_muffled_in_vacuum() {
+        let in_air = rms(&render_secs(
+            Levels {
+                effort: 1.0,
+                vacuum: 0.0,
+                ..Default::default()
+            },
+            0.5,
+        ));
+        let in_space = rms(&render_secs(
+            Levels {
+                effort: 1.0,
+                vacuum: 1.0,
+                ..Default::default()
+            },
+            0.5,
+        ));
+        assert!(
+            in_space < in_air * 0.62,
+            "vacuum burn not muffled: {in_space:.4} vs {in_air:.4}"
+        );
+        assert!(in_space > 0.005, "vacuum burn should still mutter");
+    }
+
+    /// A loaded hull in vacuum crackles: load makes noise beyond the drone.
+    #[test]
+    fn hull_crackles_under_load_in_vacuum() {
+        let unloaded = rms(&render_secs(
+            Levels {
+                vacuum: 1.0,
+                load_g: 0.0,
+                ..Default::default()
+            },
+            2.0,
+        ));
+        let loaded = rms(&render_secs(
+            Levels {
+                vacuum: 1.0,
+                load_g: 3.0,
+                ..Default::default()
+            },
+            2.0,
+        ));
+        assert!(
+            loaded > unloaded * 1.25,
+            "no crackle under load: {loaded:.4} vs {unloaded:.4}"
+        );
+    }
+
+    /// Rolling is flying: torque alone must make sound.
+    #[test]
+    fn rcs_torque_is_audible() {
+        let quiet = rms(&render_secs(
+            Levels {
+                vacuum: 0.0,
+                ..Default::default()
+            },
+            0.4,
+        ));
+        let rolling = rms(&render_secs(
+            Levels {
+                vacuum: 0.0,
+                rcs: 1.0,
+                ..Default::default()
+            },
+            0.4,
+        ));
+        assert!(
+            rolling > quiet * 1.5,
+            "rcs inaudible: {rolling:.5} vs {quiet:.5}"
+        );
+    }
+
     /// Same seed, same inputs, same samples — the synth's own determinism,
     /// so a future golden-audio test is possible at all.
     #[test]
@@ -418,6 +587,7 @@ mod tests {
             vacuum: 0.2,
             load_g: 1.0,
             brake: 0.5,
+            rcs: 0.4,
             master: 0.9,
         };
         let a = render_secs(levels, 0.25);

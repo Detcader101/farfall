@@ -194,6 +194,7 @@ impl Gpu {
         wait_seconds: f64,
         altitude_m: f64,
         speed_mps: f64,
+        assist: bool,
     ) {
         self.perf.cpu.record(cpu_seconds);
         self.perf.wait.record(wait_seconds);
@@ -235,8 +236,13 @@ impl Gpu {
             self.text.draw(0, 30, &format!("{sw}X{sh}"));
             self.text.draw(0, 36, &format!("ALT {altitude_m:.0}M"));
             self.text.draw(0, 42, &format!("VEL {speed_mps:.0}M/S"));
+            // The flight computer's state lives on the HUD because the log is
+            // invisible in fullscreen — X seemed broken when it was merely
+            // silent.
+            self.text
+                .draw(0, 48, if assist { "FC ON" } else { "FC OFF" });
             if self.cfg.bench {
-                self.text.draw(0, 48, "BENCH SIM FROZEN");
+                self.text.draw(0, 54, "BENCH SIM FROZEN");
             }
         }
 
@@ -425,6 +431,9 @@ impl Game {
             vacuum: 1.0 - ((rho_ratio * 12.0) as f32).clamp(0.0, 1.0),
             load_g: ((thrust_a + drag_a + brake_a) / 9.81) as f32,
             brake: if controls.brake { 1.0 } else { 0.0 },
+            // Attitude thrusters: the largest torque demand. Rolling is
+            // flying, and a silent manoeuvre reads as a broken game.
+            rcs: controls.torque_body.abs().max_element() as f32,
             master: 0.8,
         }
     }
@@ -858,6 +867,7 @@ impl ApplicationHandler for App {
                     wait_seconds,
                     game.state.ship.pos_m.length() - game.params.planet.radius_m,
                     game.state.ship.vel_mps.length(),
+                    game.assist,
                 );
                 gpu.window.request_redraw();
             }

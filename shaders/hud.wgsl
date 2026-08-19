@@ -9,7 +9,7 @@
 // mipmaps, no subpixel drift.
 
 const COLS: u32 = 128u;
-const ROWS: u32 = 16u;
+const ROWS: u32 = 64u;
 
 struct Hud {
     // xy: top-left origin in physical pixels, z: pixels per font pixel, w: unused
@@ -20,7 +20,7 @@ struct Hud {
     // Background panel colour; alpha 0 disables the panel.
     backdrop: vec4<f32>,
     // COLS bits per row, four u32 per row.
-    rows: array<vec4<u32>, 16>,
+    rows: array<vec4<u32>, 64>,
 }
 
 @group(0) @binding(0) var<uniform> hud: Hud;

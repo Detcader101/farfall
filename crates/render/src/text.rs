@@ -14,9 +14,12 @@ pub const GLYPH_H: usize = 5;
 /// One font pixel of tracking between glyphs.
 pub const ADVANCE: usize = GLYPH_W + 1;
 
-/// Bitmap dimensions, in font pixels. 128 columns is ~32 characters.
+/// Bitmap dimensions, in font pixels. 128 columns is ~32 characters; 64 rows
+/// is ten text lines at the standard 6-pixel pitch. (At 16 rows, every HUD
+/// line below the third was silently clipped — including the altitude and
+/// speed readouts, which simply never appeared.)
 pub const COLS: usize = 128;
-pub const ROWS: usize = 16;
+pub const ROWS: usize = 64;
 /// `COLS` bits per row, as four `u32`s (a `vec4<u32>` on the GPU).
 pub const ROW_WORDS: usize = COLS / 32;
 
