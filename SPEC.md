@@ -183,7 +183,12 @@ WorldState  { time_s: f64, ship: ShipState }             // the whole mutable wo
 ShipState   { pos_m: DVec3, vel_mps: DVec3, orient: DQuat, ang_vel: DVec3 }
 Controls    { thrust_body: DVec3, torque_body: DVec3 }   // each component in [-1,1]
 ```
-Planet-centered inertial frame, SI units, f64. No ECS until entity counts demand it
+Planet-centered inertial frame, SI units, f64. Body frame is **right-handed:
++X right, +Y up, −Z forward (the nose)** — the glam/OpenGL convention, shared
+by the sim and the camera so no fix-up rotation exists to get a sign wrong.
+Declaring "+Z forward" beside "+X right, +Y up" describes a *left*-handed frame
+and silently mirrors yaw, roll, and strafe; that shipped once and was caught by
+flying it, not by a test, which is why `sim_directions` now asserts all six. No ECS until entity counts demand it
 (revisit at first milestone that needs > ~100 dynamic entities).
 
 ### 7.2 Integration

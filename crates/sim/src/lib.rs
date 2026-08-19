@@ -9,6 +9,12 @@
 //!   determinism tests and, later, netcode desync detection.
 //!
 //! Frame: planet-centered inertial. Units: SI (meters, seconds, kilograms, radians).
+//!
+//! Body frame is **right-handed**: +X right, +Y up, **−Z forward (the nose)**.
+//! This is the glam/OpenGL convention and it is not negotiable — declaring
+//! "+Z forward" alongside "+X right, +Y up" describes a *left*-handed frame,
+//! which silently mirrors yaw, roll, and strafe against right-handed rotation
+//! math. (It did exactly that here until it was caught by flying it.)
 
 #![forbid(unsafe_code)]
 
@@ -71,7 +77,7 @@ pub struct ShipState {
 /// so out-of-range input cannot break determinism or physics.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Controls {
-    /// Thrust demand, body frame (x right, y up, z forward).
+    /// Thrust demand, body frame (+x right, +y up, −z forward).
     pub thrust_body: DVec3,
     /// Torque demand, body frame (pitch, yaw, roll).
     pub torque_body: DVec3,
@@ -123,7 +129,9 @@ pub mod presets {
         }
     }
 
-    /// A ship in a circular prograde orbit at `altitude_m`, flying +Z (prograde).
+    /// A ship in a circular orbit at `altitude_m`, coasting nose-first: with an
+    /// identity orientation the nose (−Z) points along the velocity, so the
+    /// pilot starts looking where they are going.
     pub fn circular_orbit(params: &WorldParams, altitude_m: f64) -> WorldState {
         let r = params.planet.radius_m + altitude_m;
         let speed = libm::sqrt(params.planet.mu / r);
@@ -131,7 +139,7 @@ pub mod presets {
             time_s: 0.0,
             ship: ShipState {
                 pos_m: DVec3::new(r, 0.0, 0.0),
-                vel_mps: DVec3::new(0.0, 0.0, speed),
+                vel_mps: DVec3::new(0.0, 0.0, -speed),
                 orient: DQuat::IDENTITY,
                 ang_vel_radps: DVec3::ZERO,
             },

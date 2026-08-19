@@ -9,7 +9,7 @@
 //! last bit — which, once controls travel over a wire to an authoritative
 //! server, is exactly how two machines silently desync.
 //!
-//! Body frame is right-handed: +X right, +Y up, +Z forward (nose).
+//! Body frame is right-handed: +X right, +Y up, **−Z forward (the nose)**.
 
 use farfall_sim::Controls;
 use glam::DVec3;
@@ -38,22 +38,23 @@ impl Action {
 
 /// Which axis each action drives: (action, is_torque, component, sign).
 ///
-/// Rotation signs follow from the right-handed body frame:
-/// - pitch: a positive rotation about +X swings the nose (+Z) toward −Y, i.e.
-///   *down* — so nose-up is negative X torque.
-/// - yaw: a positive rotation about +Y swings the nose toward +X, i.e. *right*.
-/// - roll: a positive rotation about +Z lifts the right wing, i.e. rolls *left*.
+/// Rotation signs, derived in the right-handed body frame with the nose at −Z.
+/// These are counter-intuitive enough that `sim_directions` in `main.rs` asserts
+/// every one of them against the actual integrator rather than trusting comments:
+/// - pitch up: +X torque swings the nose (−Z) toward +Y.
+/// - yaw right: −Y torque swings the nose toward +X.
+/// - roll right: −Z torque tips the up vector (+Y) toward +X (right wing down).
 const AXES: [(Action, bool, usize, f64); Action::COUNT] = [
-    (Action::ThrustForward, false, 2, 1.0),
-    (Action::ThrustBack, false, 2, -1.0),
+    (Action::ThrustForward, false, 2, -1.0),
+    (Action::ThrustBack, false, 2, 1.0),
     (Action::StrafeLeft, false, 0, -1.0),
     (Action::StrafeRight, false, 0, 1.0),
     (Action::ThrustUp, false, 1, 1.0),
     (Action::ThrustDown, false, 1, -1.0),
-    (Action::PitchUp, true, 0, -1.0),
-    (Action::PitchDown, true, 0, 1.0),
-    (Action::YawLeft, true, 1, -1.0),
-    (Action::YawRight, true, 1, 1.0),
+    (Action::PitchUp, true, 0, 1.0),
+    (Action::PitchDown, true, 0, -1.0),
+    (Action::YawLeft, true, 1, 1.0),
+    (Action::YawRight, true, 1, -1.0),
     (Action::RollLeft, true, 2, 1.0),
     (Action::RollRight, true, 2, -1.0),
 ];
@@ -146,7 +147,11 @@ mod tests {
     #[test]
     fn forward_key_thrusts_along_nose() {
         let c = held(&[KeyCode::KeyW]).controls(false);
-        assert_eq!(c.thrust_body, DVec3::new(0.0, 0.0, 1.0));
+        assert_eq!(
+            c.thrust_body,
+            DVec3::NEG_Z,
+            "nose is -Z in a right-handed frame"
+        );
         assert_eq!(c.torque_body, DVec3::ZERO);
     }
 

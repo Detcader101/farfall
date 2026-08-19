@@ -15,7 +15,6 @@ use std::time::Instant;
 
 use farfall_render::{starfield::StarfieldPass, CameraFrame, FrameUniforms, MsaaTarget};
 use farfall_sim as sim;
-use glam::{DQuat, DVec3};
 use input::InputState;
 use winit::{
     application::ApplicationHandler,
@@ -107,10 +106,10 @@ impl Game {
     /// is the ship's orientation, so steering turns the world rather than
     /// sliding a detached camera around it.
     fn camera(&self, aspect: f32) -> CameraFrame {
-        let ship = &self.state.ship;
-        let nose = ship.orient * DVec3::Z;
-        let up = ship.orient * DVec3::Y;
-        let orient = look_along(nose, up).as_quat();
+        // The camera *is* the ship's orientation: both use the same
+        // right-handed frame with the nose at -Z, so no fix-up rotation is
+        // needed. Any conversion here would be a sign bug waiting to happen.
+        let orient = self.state.ship.orient.as_quat();
         CameraFrame {
             orient,
             fov_y: 70f32.to_radians(),
@@ -119,15 +118,6 @@ impl Game {
             exposure: 1.6,
         }
     }
-}
-
-/// Orientation whose -Z is `forward` and whose +Y approximates `up`.
-fn look_along(forward: glam::DVec3, up: glam::DVec3) -> DQuat {
-    let f = forward.normalize_or_zero();
-    let r = f.cross(up).normalize_or_zero();
-    let u = r.cross(f);
-    // Column-major basis: camera space +X=r, +Y=u, -Z=f (right-handed view).
-    DQuat::from_mat3(&glam::DMat3::from_cols(r, u, -f))
 }
 
 #[derive(Default)]
@@ -306,61 +296,38 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use farfall_sim::Controls;
+    use glam::{DQuat, DVec3};
+    use input::{Action, InputState};
+    use winit::keyboard::KeyCode;
 
-    fn basis_of(q: glam::Quat) -> (glam::Vec3, glam::Vec3, glam::Vec3) {
-        CameraFrame {
-            orient: q,
-            fov_y: 1.0,
-            aspect: 1.0,
-            time_s: 0.0,
-            exposure: 1.0,
-        }
-        .basis()
-    }
-
-    /// `look_along` must produce an orthonormal, right-handed basis whose
-    /// forward is the requested direction — a mirrored basis would flip the
-    /// whole world and is exactly the kind of bug that hides until you read
-    /// text in-world.
+    /// The camera basis must agree with the ship's own axes exactly. If these
+    /// ever diverge, the world is mirrored or rolled relative to the hull.
     #[test]
-    fn look_along_is_orthonormal_and_right_handed() {
-        for (f, up) in [
-            (DVec3::Z, DVec3::Y),
-            (DVec3::X, DVec3::Y),
-            (DVec3::new(1.0, 2.0, -3.0), DVec3::Y),
-            (DVec3::NEG_Z, DVec3::new(0.1, 1.0, 0.0)),
+    fn camera_basis_matches_ship_axes() {
+        let mut game = Game::new();
+        game.state.ship.orient = DQuat::from_euler(glam::EulerRot::YXZ, 0.7, -0.3, 0.2).normalize();
+        let (right, up, forward) = game.camera(1.0).basis();
+        let ship = game.state.ship.orient;
+        for (got, want, name) in [
+            (right, ship * DVec3::X, "right"),
+            (up, ship * DVec3::Y, "up"),
+            (forward, ship * DVec3::NEG_Z, "forward"),
         ] {
-            let q = look_along(f, up).as_quat();
-            let (r, u, fwd) = basis_of(q);
             assert!(
-                (fwd - f.normalize().as_vec3()).length() < 1e-5,
-                "forward mismatch for {f:?}"
-            );
-            assert!((r.length() - 1.0).abs() < 1e-5, "right not unit");
-            assert!((u.length() - 1.0).abs() < 1e-5, "up not unit");
-            assert!(r.dot(u).abs() < 1e-5, "basis not orthogonal");
-            // Right-handed: right x up == -forward for a -Z-forward camera.
-            assert!(
-                (r.cross(u) + fwd).length() < 1e-5,
-                "basis is mirrored for {f:?}"
+                (got - want.as_vec3()).length() < 1e-5,
+                "camera {name} {got:?} != ship {name} {want:?}"
             );
         }
     }
 
-    /// The camera rides the hull: yawing the ship must swing the view by the
-    /// same angle. This is what makes steering turn the world instead of
-    /// sliding a detached camera around it.
+    /// Steering the ship must swing the view by the same angle.
     #[test]
     fn camera_follows_ship_orientation() {
         let mut game = Game::new();
         game.state.ship.orient = DQuat::IDENTITY;
-        let before = basis_of(game.camera(1.0).orient).2;
-
-        // Yaw 90 degrees about the body up axis.
+        let before = game.camera(1.0).basis().2;
         game.state.ship.orient = DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2);
-        let after = basis_of(game.camera(1.0).orient).2;
-
+        let after = game.camera(1.0).basis().2;
         let angle = before.dot(after).clamp(-1.0, 1.0).acos();
         assert!(
             (angle - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
@@ -368,26 +335,124 @@ mod tests {
         );
     }
 
-    /// Yaw input must actually rotate the ship, in the documented direction:
-    /// right yaw swings the nose toward body +X.
-    #[test]
-    fn yaw_input_turns_the_nose() {
+    fn fly(keys: &[KeyCode], secs: u64) -> sim::ShipState {
         let params = sim::presets::earth_compact();
         let mut state = sim::presets::circular_orbit(&params, 20_000.0);
         state.ship.orient = DQuat::IDENTITY;
-        let controls = Controls {
-            torque_body: DVec3::new(0.0, 1.0, 0.0),
-            assist: true,
-            ..Default::default()
-        };
-        for _ in 0..120 {
+        state.ship.vel_mps = DVec3::ZERO; // isolate control response from orbit
+        let mut input = InputState::default();
+        for k in keys {
+            input.set(*k, true);
+        }
+        let controls = input.controls(false);
+        for _ in 0..(secs * 120) {
             state = sim::step(&params, &state, controls);
         }
-        let nose = state.ship.orient * DVec3::Z;
+        state.ship
+    }
+
+    /// Every control direction, asserted against the real integrator from the
+    /// pilot's point of view. Comments lie; this is what caught the frame being
+    /// declared left-handed while the rotation math was right-handed, which
+    /// silently mirrored yaw, roll, and strafe.
+    #[test]
+    fn sim_directions() {
+        // Translation: compare against an unthrusted control run so gravity —
+        // which pulls toward the planet regardless of input — cancels out and
+        // only the thrust contribution remains.
+        let coast = fly(&[], 1).vel_mps;
+        let cases: [(KeyCode, DVec3, &str); 6] = [
+            (KeyCode::KeyW, DVec3::NEG_Z, "W thrusts along the nose"),
+            (KeyCode::KeyS, DVec3::Z, "S thrusts backward"),
+            (KeyCode::KeyD, DVec3::X, "D strafes right"),
+            (KeyCode::KeyA, DVec3::NEG_X, "A strafes left"),
+            (KeyCode::KeyR, DVec3::Y, "R thrusts up"),
+            (KeyCode::KeyF, DVec3::NEG_Y, "F thrusts down"),
+        ];
+        for (key, want, what) in cases {
+            let v = (fly(&[key], 1).vel_mps - coast).normalize();
+            assert!(
+                (v - want).length() < 1e-4,
+                "{what}: got {v:?}, want {want:?}"
+            );
+        }
+
+        // Rotation: after a short burn the named axis must have moved the right way.
+        let nose_up = fly(&[KeyCode::ArrowUp], 1).orient * DVec3::NEG_Z;
         assert!(
-            nose.x > 0.05,
-            "yaw-right did not swing the nose right: {nose:?}"
+            nose_up.y > 0.05,
+            "Up arrow must pitch the nose up: {nose_up:?}"
         );
-        assert!(nose.z > 0.0, "nose flipped past 90 degrees in 1 s");
+
+        let nose_down = fly(&[KeyCode::ArrowDown], 1).orient * DVec3::NEG_Z;
+        assert!(
+            nose_down.y < -0.05,
+            "Down arrow must pitch the nose down: {nose_down:?}"
+        );
+
+        let nose_right = fly(&[KeyCode::ArrowRight], 1).orient * DVec3::NEG_Z;
+        assert!(
+            nose_right.x > 0.05,
+            "Right arrow must yaw the nose right: {nose_right:?}"
+        );
+
+        let nose_left = fly(&[KeyCode::ArrowLeft], 1).orient * DVec3::NEG_Z;
+        assert!(
+            nose_left.x < -0.05,
+            "Left arrow must yaw the nose left: {nose_left:?}"
+        );
+
+        // Roll right = right wing down = the up vector tips toward +X.
+        let up_right = fly(&[KeyCode::KeyE], 1).orient * DVec3::Y;
+        assert!(
+            up_right.x > 0.05,
+            "E must roll right: up tipped to {up_right:?}"
+        );
+
+        let up_left = fly(&[KeyCode::KeyQ], 1).orient * DVec3::Y;
+        assert!(
+            up_left.x < -0.05,
+            "Q must roll left: up tipped to {up_left:?}"
+        );
+    }
+
+    /// A rotation must not bleed into the other two axes.
+    #[test]
+    fn rotation_axes_do_not_cross_couple() {
+        for (key, axis) in [
+            (KeyCode::ArrowUp, 0usize),
+            (KeyCode::ArrowRight, 1),
+            (KeyCode::KeyE, 2),
+        ] {
+            let w = fly(&[key], 1).ang_vel_radps;
+            for other in 0..3 {
+                if other != axis {
+                    assert!(
+                        w[other].abs() < 1e-12,
+                        "{key:?} leaked {} rad/s into axis {other}",
+                        w[other]
+                    );
+                }
+            }
+        }
+    }
+
+    /// The nose starts pointing along the velocity: the pilot begins looking
+    /// where they are going, not backwards.
+    #[test]
+    fn orbit_preset_starts_nose_prograde() {
+        let params = sim::presets::earth_compact();
+        let s = sim::presets::circular_orbit(&params, 20_000.0).ship;
+        let nose = s.orient * DVec3::NEG_Z;
+        let prograde = s.vel_mps.normalize();
+        assert!(
+            (nose - prograde).length() < 1e-9,
+            "nose {nose:?} is not prograde {prograde:?}"
+        );
+    }
+
+    #[test]
+    fn action_count_matches_bindings() {
+        assert_eq!(Action::COUNT, 12);
     }
 }

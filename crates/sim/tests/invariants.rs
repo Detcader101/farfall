@@ -176,9 +176,15 @@ fn golden_hash() {
     );
 }
 
-// Generated on macOS-arm64, rustc pinned in rust-toolchain.toml. Placeholder is
-// replaced by the value printed by `print_golden` on first setup.
-const GOLDEN: u64 = 0xa73194421bbda8a7;
+// Generated on macOS-arm64, rustc pinned in rust-toolchain.toml.
+//
+// History (a changed value always means the simulated world changed):
+//   0xa73194421bbda8a7  M0 bedrock, original orbit preset
+//   0x9dcd701e43a1c80e  body frame corrected to right-handed (-Z forward); the
+//                       preset's orbital velocity flipped sign so the nose
+//                       starts prograde. Initial conditions changed, not the
+//                       integrator.
+const GOLDEN: u64 = 0x9dcd701e43a1c80e;
 
 /// Not an assertion — prints the current golden value for setup/updates:
 /// `cargo test -p farfall-sim print_golden -- --ignored --nocapture`
