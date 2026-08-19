@@ -45,10 +45,10 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 
 // ---------------------------------------------------------------- hashing
 
-// PCG-ish 2D integer hash → 4 independent floats in [0,1).
+// pcg2d integer hash (Jarzynski & Olano) → 4 independent floats in [0,1).
 fn hash4(cell: vec2<i32>) -> vec4<f32> {
     var v = vec2<u32>(bitcast<u32>(cell.x), bitcast<u32>(cell.y));
-    v = v * vec2<u32>(1664525u, 1013904223u);
+    v = v * 1664525u + 1013904223u;
     v.x += v.y * 1664525u;
     v.y += v.x * 1013904223u;
     v = v ^ (v >> vec2<u32>(16u));
@@ -137,12 +137,18 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
             if (h.z > 0.55) {
                 continue;
             }
-            let star_pos = vec2<f32>(cell) + h.xy;
+            // Keep the star inside its cell so the 3×3 search always covers it.
+            let star_pos = vec2<f32>(cell) + h.xy * 0.8 + 0.1;
             let d = length(p - star_pos);
             // Power-law brightness: many dim, few brilliant.
-            let mag = pow(h.w, 12.0) * 40.0 + pow(h.w, 3.0) * 0.6;
-            let core = mag / (1.0 + d * d * 260.0);
-            col += star_tint(fract(h.z * 9.31)) * core;
+            let mag = pow(h.w, 14.0) * 60.0 + pow(h.w, 4.0) * 1.2 + 0.02;
+            // Compact support is load-bearing: a tight gaussian core, windowed
+            // to zero well inside the search radius. A falloff with an infinite
+            // tail (e.g. 1/(1+d²)) clips at the neighborhood edge and turns the
+            // sky into a quilt of glowing cells.
+            let window = smoothstep(1.2, 0.6, d);
+            let core = mag * exp(-d * d * 90.0) * window;
+            col += star_tint(fract((h.x + h.y) * 7.91)) * core;
         }
     }
     return col;
