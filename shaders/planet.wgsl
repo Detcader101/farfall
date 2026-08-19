@@ -1,19 +1,23 @@
-// planet.wgsl — analytic planet (SPEC §6.5, pass: planet)
+// planet.wgsl — analytic planet with baked fields (SPEC §6.5, pass: planet)
 //
-// Lane: A (vertex+fragment only). Cost class: moderate (one ray-sphere
-// intersection plus ~8 noise evaluations, only on covered pixels).
+// Lane: A (vertex+fragment only). Cost class: cheap — the heavy noise stacks
+// were moved to a one-time bake (bake.wgsl); per pixel this pass does a few
+// texture fetches and closed-form lighting. See the bake header for why.
 //
-// The planet is not geometry. There is no mesh, no tessellation, no LOD chunking
-// and no heightmap texture: a fullscreen triangle casts one ray per pixel at an
-// analytic sphere, and everything you see — continents, ice, cities, the
-// terminator — is computed at the hit point. Curvature is therefore exact at
-// every altitude, and the whole planet costs zero bytes of asset budget (P2).
+// The planet is not geometry: a fullscreen triangle casts one ray per pixel at
+// an analytic sphere, and the surface, clouds and sky are computed at the hit.
+// Antialiasing is analytic (from the angular width of one pixel) because the
+// limb is a shader edge MSAA cannot see.
 //
-// Antialiasing is analytic, not MSAA. The limb is a *shader* edge, not a
-// geometry edge, so multisampling cannot see it (measured: 4x MSAA costs the
-// same as 1x and changes nothing). Coverage is instead derived from the angular
-// width of one pixel via fwidth, which gives a true one-pixel edge at any
-// resolution and any apparent size.
+// The atmosphere is ONE model, composited strictly back-to-front:
+//
+//     ground  →  cloud deck  →  air between camera and all of it
+//
+// Its previous life as three independent patches — an additive rim glow, an
+// aerial-perspective mix, and a bolted-on in-scatter term — produced exactly
+// the artifacts three unsynchronised systems produce: seams where they met,
+// stars through the daytime sky, and a razor-edged cloud ceiling. One optical
+// depth, one sky colour, one `over` stack.
 
 struct Planet {
     right: vec4<f32>,
@@ -21,23 +25,26 @@ struct Planet {
     forward: vec4<f32>,
     // x: tan(fov_y/2), y: aspect, z: time_s, w: exposure
     params: vec4<f32>,
-    // xyz: planet centre relative to the camera, metres. w: radius, metres.
-    // Camera-relative: the subtraction happens in f64 on the CPU, so f32 here
-    // only ever carries a *local* offset and never a world coordinate (P3).
+    // xyz: planet centre relative to the camera, metres (subtracted in f64 on
+    // the CPU; f32 here only ever holds a local offset — P3). w: radius, m.
     centre_radius: vec4<f32>,
-    // xyz: unit vector pointing at the sun.
+    // xyz: unit vector toward the sun.
     sun_dir: vec4<f32>,
-    // rgb: atmosphere colour. w: optical density — how much air the line of
-    // sight has to cross before the surface disappears into it.
+    // rgb: atmosphere colour. w: optical density.
     atmosphere: vec4<f32>,
-    // x: cloud coverage in [0,1]. y: cloud shell altitude, metres.
-    // z: edge sharpness. w: weather phase (advances the flow field).
+    // x: cloud coverage [0,1], y: deck altitude (m), z: edge sharpness,
+    // w: weather phase (drifts the deck).
     cloud_shape: vec4<f32>,
-    // rgb: cloud albedo. w: strength of the shadow clouds cast on the surface.
+    // rgb: cloud albedo. w: cloud shadow strength.
     cloud_look: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> planet: Planet;
+// Baked fields (bake.wgsl): R elevation, G dryness, B light speckle, A ice.
+@group(0) @binding(1) var surface_tex: texture_2d<f32>;
+// R: raw cloud field, thresholded live so presets need no re-bake.
+@group(0) @binding(2) var cloud_tex: texture_2d<f32>;
+@group(0) @binding(3) var maps_samp: sampler;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -54,82 +61,78 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 }
 
 const SEA_LEVEL: f32 = 0.5;
-/// Base frequency of the elevation field, in units of the unit sphere.
-const TERRAIN_BASE_FREQ: f32 = 1.7;
-/// Ceiling on elevation octaves. This is the quality dial: it bounds the cost
-/// of a screen full of ground, which is the worst case for this renderer.
-const TERRAIN_MAX_OCTAVES: i32 = 9;
+const TAU: f32 = 6.28318531;
+const PI: f32 = 3.14159265;
 
-// Cloud density on the shell at direction `n`, in [0,1].
-//
-// Domain warping is what turns noise into weather: displacing the sample point
-// by another noise field bends the bands into fronts, swirls and cyclones
-// instead of the isotropic cotton-wool that plain fbm gives. The warp is the
-// difference between "procedural texture" and "sky".
-// Cost matters here: this is evaluated per pixel over most of the screen, and
-// the first version (three warp octaves plus a five-octave field, twice per
-// pixel for the shadow) cost more than half the frame. Two warp components and
-// a three-octave field give the same read for roughly a third of the taps.
-fn cloud_density(n: vec3<f32>, coverage: f32, sharpness: f32, phase: f32) -> f32 {
-    let drift = vec3<f32>(phase * 0.05, 0.0, phase * 0.02);
-    // Two warp components, and plain vnoise rather than fbm: a warp only has to
-    // bend the field, and the extra octaves are invisible after thresholding
-    // while costing three lattice evaluations each.
-    let warp = vec2<f32>(
-        vnoise(n * 2.6 + drift),
-        vnoise(n * 2.6 + vec3<f32>(5.2, 1.3, 8.7) + drift),
-    ) - vec2<f32>(0.5);
-
-    // Latitude banding, the way a rotating atmosphere organises itself, folded
-    // into the warp rather than paid for as a separate octave.
-    let warped = n * 5.5
-        + vec3<f32>(warp.x, warp.y * 0.45, warp.y) * 1.7
-        + drift;
-    let field = fbm3(warped);
-
-    // Coverage is a threshold on that field: 0 clears the sky, 1 overcasts it.
-    // The soft edge keeps cloud borders from aliasing.
-    let cut = 1.0 - coverage;
-    let d = smoothstep(cut - 0.20, cut + 0.20, field);
-    return pow(clamp(d, 0.0, 1.0), max(sharpness, 0.05));
+// Equirect sample with wrap-aware gradients. The longitude seam makes uv.x
+// jump 1→0 across one pixel; naive derivative-based mip selection reads that
+// as an enormous footprint and drops to the smallest mip, drawing a blurry
+// meridian down the planet. Wrapping the gradient fixes the seam for the cost
+// of two fracts.
+fn sample_equirect(tex: texture_2d<f32>, n: vec3<f32>) -> vec4<f32> {
+    let uv = vec2<f32>(
+        atan2(n.z, n.x) / TAU + 0.5,
+        acos(clamp(n.y, -1.0, 1.0)) / PI,
+    );
+    var du = dpdx(uv);
+    var dv = dpdy(uv);
+    du.x = fract(du.x + 0.5) - 0.5;
+    dv.x = fract(dv.x + 0.5) - 0.5;
+    return textureSampleGrad(tex, maps_samp, uv, du, dv);
 }
 
-// Surface colour at a point on the unit sphere, before lighting.
-fn surface_albedo(n: vec3<f32>, elevation: f32) -> vec3<f32> {
+// Cloud density at direction `n`, from the baked field. Coverage is a live
+// threshold (0 clears the sky, 1 overcasts it); drift rotates the lookup so
+// the deck moves without re-baking.
+fn cloud_density(n: vec3<f32>) -> f32 {
+    let a = planet.cloud_shape.w * 0.05;
+    let rotated = vec3<f32>(
+        n.x * cos(a) - n.z * sin(a),
+        n.y,
+        n.x * sin(a) + n.z * cos(a),
+    );
+    let field = sample_equirect(cloud_tex, rotated).r;
+    // One-sided threshold: density exists only ABOVE the cut. The previous
+    // band straddled it, which floated a ~30% veil over the entire sky —
+    // "42% coverage" rendered as a ninety-percent white sheet, because a veil
+    // everywhere plus banks somewhere covers everything.
+    let cut = 1.0 - planet.cloud_shape.x;
+    let d = smoothstep(cut, cut + 0.30, field);
+    return pow(clamp(d, 0.0, 1.0), max(planet.cloud_shape.z, 0.05));
+}
+
+// Surface colour from the baked fields, before lighting.
+fn surface_albedo(fields: vec4<f32>) -> vec3<f32> {
+    let elevation = fields.r;
     let land_amount = smoothstep(SEA_LEVEL - 0.006, SEA_LEVEL + 0.006, elevation);
 
-    // Ocean: deep basins darken away from the coast. No noise — the elevation
-    // field already sampled is enough.
     let deep = vec3<f32>(0.010, 0.042, 0.115);
     let shallow = vec3<f32>(0.045, 0.200, 0.330);
     let ocean = mix(deep, shallow, smoothstep(SEA_LEVEL - 0.07, SEA_LEVEL, elevation));
-
-    // Roughly half a water world is water, and none of those pixels need the
-    // biome or ice fields. Bailing here removes two noise evaluations from
-    // every ocean pixel on screen.
     if (land_amount < 0.002) {
         return ocean;
     }
 
-    // Land: a dryness field pushes vegetation toward desert.
-    let dryness = 0.5 + (fbm3(n * 4.0 + 4.7) - 0.5) * 2.2;
     let verdant = vec3<f32>(0.085, 0.230, 0.080);
     let arid = vec3<f32>(0.330, 0.265, 0.150);
-    var land = mix(verdant, arid, smoothstep(0.35, 0.62, dryness));
-
-    // Higher ground goes grey and bare.
+    var land = mix(verdant, arid, smoothstep(0.35, 0.62, fields.g));
     land = mix(
         land,
         vec3<f32>(0.28, 0.26, 0.24),
         smoothstep(SEA_LEVEL + 0.10, SEA_LEVEL + 0.20, elevation),
     );
-
-    // Ice caps, with a ragged edge so the poles are not two clean circles.
-    let latitude = abs(n.y) + (fbm3(n * 7.0) - 0.5) * 0.22;
+    let latitude = abs_lat_with_noise(fields.a);
     let ice = smoothstep(0.70, 0.84, latitude);
     land = mix(land, vec3<f32>(0.90, 0.94, 0.98), ice);
+    return mix(ocean, land, land_amount);
+}
 
-    return mix(ocean, mix(land, vec3<f32>(0.86, 0.92, 0.97), ice * 0.6), land_amount);
+// The ice band needs |latitude| perturbed by noise; the noise is baked, but
+// latitude is per-pixel. Passed through a global set in fs_main because WGSL
+// has no closures — kept adjacent so the hack is at least visible.
+var<private> current_abs_y: f32;
+fn abs_lat_with_noise(ice_noise: f32) -> f32 {
+    return current_abs_y + (ice_noise - 0.5) * 0.22;
 }
 
 @fragment
@@ -142,263 +145,206 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     let centre = planet.centre_radius.xyz;
     let radius = planet.centre_radius.w;
-    let distance_to_centre = length(centre);
-    // Below the surface. Until there is collision, the ship can end up inside
-    // the planet, and discarding here deleted the world and left the pilot
-    // staring at the starfield through solid ground. Filling with dense
-    // unlit air reads as "you are inside something", which is at least true.
-    if (distance_to_centre <= radius) {
-        let murk = planet.atmosphere.rgb * 0.02;
-        return vec4<f32>(tonemap(murk, planet.params.w), 1.0);
+    let d_centre = length(centre);
+    let sun = normalize(planet.sun_dir.xyz);
+    let density = planet.atmosphere.w;
+    // Visual scale height of the air, tied to the planet so presets transfer
+    // between worlds of different sizes.
+    let h_air = radius * 0.03;
+
+    // Below the surface (no collision escape yet): dense unlit murk, opaque.
+    if (d_centre <= radius) {
+        return vec4<f32>(tonemap(planet.atmosphere.rgb * 0.02, exposure), 1.0);
     }
+    let h_cam = d_centre - radius;
 
-    // Angular geometry, which is what both the antialiasing and the atmosphere
-    // rim are naturally expressed in.
-    let to_centre = centre / distance_to_centre;
+    // ---- geometry ------------------------------------------------------
+    let to_centre = centre / d_centre;
     let angle = acos(clamp(dot(ray, to_centre), -1.0, 1.0));
-    let limb = asin(clamp(radius / distance_to_centre, 0.0, 1.0));
+    let limb = asin(clamp(radius / d_centre, 0.0, 1.0));
 
-    // Half a pixel of angular width, from the true gradient magnitude.
-    //
-    // fwidth() is the L1 norm |dpdx| + |dpdy|, which is already about a whole
-    // pixel AND over-reads the real gradient by up to sqrt(2) on diagonals — so
-    // using it as the smoothstep half-width gives a two-pixel edge that is
-    // measurably softer at the disc's diagonals than at its sides. The L2 norm,
-    // halved, is a genuine one-pixel edge in every direction.
-    //
-    // (acos is safe here despite its derivative diverging at 1: `angle` is a
-    // geodesic distance on the direction sphere, so |grad| == 1 everywhere.)
+    // Analytic AA: half a pixel of angular width from the true gradient
+    // magnitude (fwidth is an L1 norm and over-reads diagonals — measured).
     let grad = vec2<f32>(dpdx(angle), dpdy(angle));
     let pixel_angle = max(0.5 * length(grad), 1e-7);
     let coverage = 1.0 - smoothstep(limb - pixel_angle, limb + pixel_angle, angle);
 
-    // Atmosphere rim: a thin shell of glow hugging the limb from BOTH sides,
-    // scaled to apparent size so it stays proportionate at any distance. A cheap
-    // stand-in for the scattering LUTs of M2, but it reads as air rather than as
-    // a hard edge.
-    //
-    // The falloff must be symmetric about the limb. Using max(angle - limb, 0)
-    // makes the exponent zero across the entire disc, so exp() returns 1 and the
-    // "rim" floods the whole planet with a flat blue wash — which is exactly
-    // what the first version did.
-    // Thickness scales with the atmosphere's density, so a soupy world wears a
-    // fat halo and a thin one a hairline.
-    let rim_falloff = max(limb * 0.05 * (0.5 + planet.atmosphere.w * 2.5), 1e-6);
-    // Windowed to reach exactly zero. A bare exponential never does, so the
-    // pixel-kill threshold below becomes a visible arc wherever the glow is
-    // still bright enough to see when it is cut off — which additive
-    // compositing made obvious.
-    let from_limb = abs(angle - limb);
-    let rim = exp(-from_limb / rim_falloff)
-        * smoothstep(8.0 * rim_falloff, 3.0 * rim_falloff, from_limb);
-    let sun = normalize(planet.sun_dir.xyz);
+    // Ray-sphere. Camera at the origin by construction (camera-relative).
+    let along = dot(ray, centre);
+    let disc_body = along * along - (d_centre * d_centre - radius * radius);
+    let hit_t = along - sqrt(max(disc_body, 0.0));
 
-    // Only the lit side of the limb glows — which requires the normal at *this
-    // pixel's* point on the limb, not the direction to the planet's centre. The
-    // latter is constant across the whole screen, so using it makes the ring
-    // glow with one uniform brightness the whole way round, night side included.
-    // For a grazing ray the limb normal satisfies dot(n, to_centre) = -R/d.
-    let sin_limb = radius / distance_to_centre;
-    let perp = ray - to_centre * dot(ray, to_centre);
-    // No normalize(): perp goes to zero at the disc's centre, where the rim has
-    // already faded out anyway, and normalize(0) is a NaN waiting to happen.
-    let tangent = perp / max(length(perp), 1e-6);
-    let limb_normal = -to_centre * sin_limb
-        + tangent * sqrt(max(1.0 - sin_limb * sin_limb, 0.0));
-    let rim_lit = smoothstep(-0.25, 0.25, dot(limb_normal, sun));
-    // Halved relative to the alpha-blended version: additive compositing
-    // delivers the full value instead of a coverage-weighted fraction of it.
-    let rim_colour = planet.atmosphere.rgb * rim * rim_lit * 0.5;
+    // Closest-approach altitude for rays that miss: how deep the sightline
+    // dips into the air. Looking away from the planet, the closest point is
+    // the camera itself.
+    let perp2 = max(d_centre * d_centre - along * along, 0.0);
+    let h_min = select(h_cam, max(sqrt(perp2) - radius, 0.0), along > 0.0);
 
-    // --- surface -------------------------------------------------------
-    // Only shade pixels the disc actually covers; the noise here is the
-    // expensive part of the frame.
+    // ---- ground --------------------------------------------------------
     var surface = vec3<f32>(0.0);
+    var ground_normal = to_centre; // placeholder when no hit
     if (coverage > 0.001) {
-        // Ray-sphere: the origin is the camera, which camera-relative rendering
-        // puts at exactly zero, so the usual origin terms vanish.
-        let along = dot(ray, centre);
-        let discriminant = max(along * along - (dot(centre, centre) - radius * radius), 0.0);
-        let hit_t = along - sqrt(discriminant);
         let hit = ray * hit_t;
         let normal = normalize(hit - centre);
+        ground_normal = normal;
+        current_abs_y = abs(normal.y);
 
-        // How much of the world one pixel covers at this hit point, in the
-        // noise's own units — the basis for choosing how much detail to
-        // compute. Foreshortening counts: a pixel near the horizon smears
-        // across far more ground than one directly below.
-        let view_cos_lod = max(dot(normal, -ray), 0.08);
-        let footprint_m = hit_t * 2.0 * pixel_angle / view_cos_lod;
-        let footprint_noise = footprint_m * TERRAIN_BASE_FREQ / radius;
-        // Nyquist: anything finer than two pixels is not detail, it is noise.
-        let detail_limit = clamp(1.0 / max(footprint_noise * 2.0, 1e-9), 1.0, 4096.0);
+        let fields = sample_equirect(surface_tex, normal);
+        let albedo = surface_albedo(fields);
+        let elevation = fields.r;
+        let land_amount = smoothstep(SEA_LEVEL - 0.006, SEA_LEVEL + 0.006, elevation);
 
-        // Value-noise fbm is a sum of independent samples, so it clusters hard
-        // around 0.5 (central limit). Used raw against a sea level of 0.5 it
-        // gives a knife-edge coastline everywhere and almost no dry land.
-        // Expanding the deviation about the midpoint turns noise into
-        // continents.
-        let elevation = 0.5
-            + (fbm_lod(
-                normal * TERRAIN_BASE_FREQ + 11.3,
-                detail_limit,
-                TERRAIN_MAX_OCTAVES,
-            ) - 0.5) * 2.9;
-        let albedo = surface_albedo(normal, elevation);
-
-        // Lighting. A crisp terminator over a soft one: readability first (P1).
+        // Crisp terminator over a soft one: readability first (P1).
         let n_dot_l = dot(normal, sun);
         let day = smoothstep(-0.05, 0.09, n_dot_l);
         surface = albedo * day * 1.35;
 
-        // Specular on water only — it is what tells you the dark parts are
-        // liquid rather than merely dark.
-        let land_amount = smoothstep(SEA_LEVEL - 0.006, SEA_LEVEL + 0.006, elevation);
+        // Specular on water only.
         let half_vec = normalize(sun - ray);
-        // Tight exponent: from low altitude a broad lobe reads as a blurry
-        // smear across the ocean rather than as the sun's reflection.
         let spec = pow(max(dot(normal, half_vec), 0.0), 420.0) * (1.0 - land_amount) * day;
         surface += vec3<f32>(1.0, 0.95, 0.86) * spec * 0.9;
 
-        // Night side: settlement clusters on habitable land near the coast.
-        let night = 1.0 - day;
-        let coastal = 1.0 - smoothstep(0.0, 0.10, abs(elevation - (SEA_LEVEL + 0.035)));
-        let habitable = 1.0 - smoothstep(0.55, 0.78, abs(normal.y));
-        // ~1.4 sigma above the (now correctly centred) mean of fbm3.
-    let lights = step(0.67, fbm3(normal * 150.0)) * land_amount * coastal * habitable;
-        surface += vec3<f32>(1.0, 0.72, 0.38) * lights * night * 2.2;
-
-        // A little ambient so the dark side is a silhouette, not a hole.
-        surface += albedo * 0.02;
-
-        // Clouds cast shadows: sample the shell along the direction of the sun,
-        // so the shadow lands offset from the cloud that throws it. Skipped on
-        // the night side, where it would be a second full noise evaluation
-        // multiplied by zero.
+        // Cloud shadows, offset toward the sun.
         if (day > 0.01 && planet.cloud_look.w > 0.001) {
-            let shadow_dir = normalize(normal + sun * 0.10);
-            let shadow = cloud_density(
-                shadow_dir,
-                planet.cloud_shape.x,
-                planet.cloud_shape.z,
-                planet.cloud_shape.w,
-            );
+            let shadow = cloud_density(normalize(normal + sun * 0.10));
             surface *= 1.0 - shadow * planet.cloud_look.w * day;
         }
 
-        // Limb darkening: the line of sight leaves at a grazing angle near the
-        // edge.
-        surface *= mix(1.0, 0.80, smoothstep(0.5, 1.0, angle / max(limb, 1e-6)));
+        // Night-side settlements, on habitable coastal land.
+        let night = 1.0 - day;
+        if (night > 0.01) {
+            let coastal = 1.0 - smoothstep(0.0, 0.10, abs(elevation - (SEA_LEVEL + 0.035)));
+            let habitable = 1.0 - smoothstep(0.55, 0.78, abs(normal.y));
+            let lights = step(0.67, fields.b) * land_amount * coastal * habitable;
+            surface += vec3<f32>(1.0, 0.72, 0.38) * lights * night * 2.2;
+        }
 
-        // Aerial perspective. The air column the view crosses grows as the
-        // surface turns away, so the ground fades into the sky toward the limb
-        // — Beer-Lambert on an approximate airmass. This is the "fog", and it
-        // is what makes a thick atmosphere feel thick rather than merely
-        // coloured: at high density the horizon dissolves entirely.
-        // The 1/cos airmass diverges at the horizon, and taken literally it
-        // erases the whole lower half of the frame from low orbit. Clamping the
-        // grazing angle keeps the horizon hazy rather than solid.
-        let view_cos = max(dot(normal, -ray), 0.18);
-        let airmass = planet.atmosphere.w / view_cos;
-        let haze = 1.0 - exp(-airmass);
-        let sky = planet.atmosphere.rgb * (0.35 + 0.65 * day);
-        surface = mix(surface, sky, clamp(haze, 0.0, 1.0));
+        surface += albedo * 0.02;
+        // Grazing incidence darkens the limb.
+        surface *= mix(1.0, 0.80, smoothstep(0.5, 1.0, angle / max(limb, 1e-6)));
     }
 
-    // --- clouds ---------------------------------------------------------
-    // A shell above the surface, intersected separately. Giving the clouds
-    // their own radius is what buys parallax against the ground: they slide
-    // over the terrain as the ship moves instead of being painted onto it.
+    // ---- cloud deck ----------------------------------------------------
     var cloud_rgb = vec3<f32>(0.0);
     var cloud_a = 0.0;
     let cloud_radius = radius + planet.cloud_shape.y;
+    let inside_deck = d_centre < cloud_radius;
     if (planet.cloud_shape.x > 0.001) {
-        let along_c = dot(ray, centre);
-        let disc_c = along_c * along_c - (dot(centre, centre) - cloud_radius * cloud_radius);
+        let disc_c = along * along - (d_centre * d_centre - cloud_radius * cloud_radius);
         if (disc_c > 0.0) {
             let root = sqrt(disc_c);
-            // Near root normally; the far one once the ship is inside the deck,
-            // so clouds stay overhead rather than vanishing on descent.
-            let near = along_c - root;
-            let t_c = select(along_c + root, near, near > 0.0);
-            if (t_c > 0.0) {
+            let near = along - root;
+            // Inside the deck the near root is behind the camera: take the far
+            // one, so the deck stays overhead on descent.
+            let t_c = select(near, along + root, inside_deck || near <= 0.0);
+            // The deck only shows where the ray crosses it BEFORE any ground:
+            // from under the deck, rays to the ground never reach it.
+            let before_ground = coverage < 0.5 || t_c < hit_t;
+            if (t_c > 0.0 && before_ground) {
                 let shell_normal = normalize(ray * t_c - centre);
-                let density = cloud_density(
-                    shell_normal,
-                    planet.cloud_shape.x,
-                    planet.cloud_shape.z,
-                    planet.cloud_shape.w,
-                );
-
-                // Lit like a diffuse sheet, with a little wrap so the
-                // terminator does not cut them off as a hard line.
+                let dens = cloud_density(shell_normal);
                 let lit = clamp(dot(shell_normal, sun) * 0.5 + 0.5, 0.0, 1.0);
                 cloud_rgb = planet.cloud_look.rgb * (lit * lit * 1.25 + 0.03);
 
-                // The shell has its own limb, and it needs the same analytic
-                // edge as the body or the cloud deck ends in a hard arc.
-                let shell_limb = asin(clamp(cloud_radius / distance_to_centre, 0.0, 1.0));
-                let shell_cov = 1.0 - smoothstep(
-                    shell_limb - pixel_angle, shell_limb + pixel_angle, angle
-                );
-                cloud_a = clamp(density, 0.0, 1.0) * shell_cov;
+                // From outside, the deck has its own limb and needs the same
+                // analytic edge as the body. From inside it has no edge at all
+                // — every direction crosses it — which is precisely the fix
+                // for the razor-sharp ceiling line: that line WAS the shell
+                // limb being drawn from underneath.
+                var shell_cov = 1.0;
+                if (!inside_deck) {
+                    let shell_limb = asin(clamp(cloud_radius / d_centre, 0.0, 1.0));
+                    shell_cov = 1.0 - smoothstep(
+                        shell_limb - pixel_angle, shell_limb + pixel_angle, angle
+                    );
+                }
+                cloud_a = clamp(dens, 0.0, 1.0) * shell_cov;
             }
         }
     }
 
-    // --- compositing ----------------------------------------------------
-    // Premultiplied alpha. Only the *body* occludes: alpha is the disc's
-    // coverage alone, and the atmosphere is added on top of whatever is behind
-    // it. An outer glow has an optical depth far below one, so compositing it
-    // with `over` would dim the starfield in a wide ring around the planet —
-    // and giving the glow a coverage-weighted alpha inside the limb while it
-    // composited at full strength outside is what drew a dark ring around the
-    // first version.
+    // ---- the air, once -------------------------------------------------
+    // One optical-depth model, evaluated per path segment from the endpoint
+    // altitudes of an exponential shell:
     //
-    // Because the same rim term is added on both sides of the limb, the two
-    // sides agree by construction rather than by tuning two coefficients to
-    // match.
-    // Sky. Not the limb glow — the air the camera is actually inside.
+    //   vertical column between h0 and h1  ∝  |e^(-h0/H) − e^(-h1/H)|
+    //   slanted                            ∝  that / |cos of the path|
+    //   tangent chord at depth h_min       ∝  e^(-h_min/H) · sqrt(2R/H)
     //
-    // The rim is a shell seen edge-on, which is the whole story from orbit and
-    // nothing like the story from underneath it: looking up from inside an
-    // atmosphere, the rim contributes nothing, so there was simply no sky being
-    // drawn and the stars shone straight through a clear blue day. This adds
-    // the missing in-scattering, in every direction, thickening as the ship
-    // descends and brightening toward the sun.
-    let altitude = distance_to_centre - radius;
-    let air_scale_height = max(radius * 0.025, 1.0);
-    let air_here = exp(-altitude / air_scale_height) * clamp(planet.atmosphere.w * 12.0, 0.0, 1.0);
-    let toward_sun = max(dot(ray, sun), 0.0);
-    // Daylight only: the night side keeps its stars.
-    let daylight = clamp(dot(-to_centre, sun) * 2.0 + 0.35, 0.0, 1.0);
-    let sky_density = clamp(air_here * daylight, 0.0, 1.0);
-    let sky_rgb = planet.atmosphere.rgb
-        * sky_density
-        * (0.55 + 0.85 * toward_sun * toward_sun);
+    // and split at the cloud deck: the air IN FRONT of the deck veils it, the
+    // air BEHIND it sits over the stars but under the clouds. The previous
+    // version applied the whole column in front of everything, which whited
+    // out a deck 200 m overhead with air that was almost entirely beyond it.
+    let cos_up = -dot(ray, to_centre);
+    let rho_cam = exp(-h_cam / h_air);
+    // sqrt(2R/H) for this planet ≈ 8: how much longer a grazing chord runs
+    // than a vertical column.
+    let chord_boost = sqrt(2.0 * radius / h_air) * 0.98;
 
-    let sky_opacity = clamp(
-        rim * (0.30 + planet.atmosphere.w * 3.0) + sky_density,
-        0.0,
-        1.0,
-    );
-
-    // Clouds sit over the body, so they occlude it and each other in order;
-    // the sky occludes whatever is beyond all of them.
-    let alpha = max(cloud_a + coverage * (1.0 - cloud_a), sky_opacity);
-    if (alpha < 0.002 && rim <= 0.0 && sky_density < 0.002) {
-        discard;
+    var od_total: f32;
+    if (coverage > 0.001) {
+        // Camera to ground: the column below the camera, along the slant.
+        // The 0.6 keeps the nadir view readable (P1): full physical depth
+        // washed the map out from any altitude above the scale height.
+        od_total = density * 0.6 * max(1.0 - rho_cam, 0.015) / max(abs(cos_up), 0.08);
+    } else {
+        // Through the shell and out: steep rays cross the column above the
+        // camera once; grazing rays run the tangent chord at their lowest dip.
+        let up_od = density * rho_cam / max(cos_up, 0.10);
+        let chord_od = density * exp(-h_min / h_air) * chord_boost;
+        od_total = mix(chord_od, up_od, smoothstep(0.03, 0.25, cos_up));
     }
 
-    // Tonemap each layer before combining: tonemapping an already-blended
-    // premultiplied colour is a different operation and darkens the edge.
+    // Split at the deck.
+    var od_front = od_total;
+    if (cloud_a > 0.001) {
+        let rho_deck = exp(-planet.cloud_shape.y / h_air);
+        od_front = min(
+            density * abs(rho_cam - rho_deck) / max(abs(cos_up), 0.10),
+            od_total,
+        );
+    }
+    let od_behind = od_total - od_front;
+
+    // The sky's own light, shared by both segments.
+    let air_normal = select(
+        normalize(-to_centre * 0.7 + ray * 0.3),
+        ground_normal,
+        coverage > 0.001,
+    );
+    let air_day = smoothstep(-0.15, 0.25, dot(air_normal, sun));
+    let toward_sun = max(dot(ray, sun), 0.0);
+    let air_light = planet.atmosphere.rgb
+        * air_day
+        * (0.75 + 0.9 * toward_sun * toward_sun);
+
+    // Bright air hides what is behind it: occlusion follows the segment's own
+    // scattered luminance, so a brilliant noon sky erases stars while a night
+    // sky of identical depth — no light — leaves them alone.
+    let lum_w = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let emit_front = air_light * (1.0 - exp(-od_front));
+    let emit_behind = air_light * (1.0 - exp(-od_behind));
+    let over_front = clamp(1.0 - exp(-dot(emit_front, lum_w) * 13.0), 0.0, 1.0);
+    let over_behind = clamp(1.0 - exp(-dot(emit_behind, lum_w) * 13.0), 0.0, 1.0);
+
+    // ---- compose: ground, far air, deck, near air ----------------------
     let surface_ldr = tonemap(surface, exposure);
     let cloud_ldr = tonemap(cloud_rgb, exposure);
-    let rim_ldr = tonemap(rim_colour, exposure);
-    let sky_ldr = tonemap(sky_rgb, exposure);
-    var rgb = cloud_ldr * cloud_a + surface_ldr * coverage * (1.0 - cloud_a) + rim_ldr;
-    // Air sits in front of everything, including the clouds.
-    rgb = mix(rgb, sky_ldr, sky_density * 0.85);
-    rgb += vec3<f32>(dither_px(in.pos.xy)) * max(alpha, rim);
+    let front_ldr = tonemap(emit_front / max(over_front, 1e-4), exposure);
+    let behind_ldr = tonemap(emit_behind / max(over_behind, 1e-4), exposure);
+
+    var rgb = surface_ldr * coverage;
+    var alpha = coverage;
+    rgb = behind_ldr * over_behind + rgb * (1.0 - over_behind);
+    alpha = over_behind + alpha * (1.0 - over_behind);
+    rgb = cloud_ldr * cloud_a + rgb * (1.0 - cloud_a);
+    alpha = cloud_a + alpha * (1.0 - cloud_a);
+    rgb = front_ldr * over_front + rgb * (1.0 - over_front);
+    alpha = over_front + alpha * (1.0 - over_front);
+
+    if (alpha < 0.002) {
+        discard;
+    }
+    rgb += vec3<f32>(dither_px(in.pos.xy)) * alpha;
     return vec4<f32>(rgb, alpha);
 }

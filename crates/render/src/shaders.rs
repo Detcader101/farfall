@@ -9,6 +9,7 @@ pub const STARFIELD: &str = include_str!("../../../shaders/starfield.wgsl");
 pub const PLANET: &str = include_str!("../../../shaders/planet.wgsl");
 pub const HUD: &str = include_str!("../../../shaders/hud.wgsl");
 pub const BLIT: &str = include_str!("../../../shaders/blit.wgsl");
+pub const BAKE: &str = include_str!("../../../shaders/bake.wgsl");
 
 /// Every pass: display name, source, and required entry points.
 pub const PASSES: &[(&str, &str, &[&str])] = &[
@@ -16,6 +17,11 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("planet", PLANET, &["vs_main", "fs_main"]),
     ("hud", HUD, &["vs_main", "fs_main"]),
     ("blit", BLIT, &["vs_main", "fs_main"]),
+    (
+        "bake",
+        BAKE,
+        &["vs_main", "fs_surface", "fs_cloud", "fs_downsample"],
+    ),
 ];
 
 /// Prepend the shared prelude to a pass source.

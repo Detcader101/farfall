@@ -4,6 +4,7 @@
 //! the analytic limb, so the planet's edge is antialiased without MSAA (which
 //! cannot see a shader edge — see the pass header in `shaders/planet.wgsl`).
 
+use crate::bake::BakedMaps;
 use crate::CameraFrame;
 use glam::Vec3;
 
@@ -18,8 +19,9 @@ pub struct PlanetAppearance {
     pub name: &'static str,
     /// Colour of the air: the rim, and what the surface fades into.
     pub atmosphere_colour: Vec3,
-    /// Optical density. Roughly "how many airmasses before the ground is gone".
-    /// 0.05 is a crisp thin sky; 0.6 is a soup where the horizon dissolves.
+    /// Optical density of the whole air column. Under the unified scattering
+    /// model this is a true optical depth: ~0.45 reads as Earth, ~0.1 as thin
+    /// and dusty, above ~1.5 the ground dissolves into the sky.
     pub atmosphere_density: f32,
     /// 0 clears the sky, 1 overcasts it.
     pub cloud_coverage: f32,
@@ -38,7 +40,7 @@ impl PlanetAppearance {
     pub const EARTHLIKE: Self = Self {
         name: "EARTHLIKE",
         atmosphere_colour: Vec3::new(0.28, 0.48, 0.95),
-        atmosphere_density: 0.055,
+        atmosphere_density: 0.45,
         cloud_coverage: 0.42,
         cloud_altitude_m: 2_200.0,
         cloud_sharpness: 0.85,
@@ -50,7 +52,7 @@ impl PlanetAppearance {
     pub const VENUSIAN: Self = Self {
         name: "VENUSIAN",
         atmosphere_colour: Vec3::new(0.95, 0.72, 0.35),
-        atmosphere_density: 0.60,
+        atmosphere_density: 1.60,
         cloud_coverage: 0.92,
         cloud_altitude_m: 5_000.0,
         cloud_sharpness: 0.45,
@@ -62,7 +64,7 @@ impl PlanetAppearance {
     pub const THIN: Self = Self {
         name: "THIN",
         atmosphere_colour: Vec3::new(0.85, 0.55, 0.42),
-        atmosphere_density: 0.025,
+        atmosphere_density: 0.08,
         cloud_coverage: 0.10,
         cloud_altitude_m: 1_200.0,
         cloud_sharpness: 1.6,
@@ -74,7 +76,7 @@ impl PlanetAppearance {
     pub const ALIEN: Self = Self {
         name: "ALIEN",
         atmosphere_colour: Vec3::new(0.42, 0.95, 0.55),
-        atmosphere_density: 0.20,
+        atmosphere_density: 0.70,
         cloud_coverage: 0.62,
         cloud_altitude_m: 9_000.0,
         cloud_sharpness: 2.2,
@@ -185,6 +187,7 @@ impl PlanetPass {
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
         sample_count: u32,
+        maps: &BakedMaps,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("planet"),
@@ -198,26 +201,60 @@ impl PlanetPass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let texture_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("planet bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                texture_entry(1),
+                texture_entry(2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("planet bg"),
             layout: &bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniforms.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&maps.surface_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&maps.cloud_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&maps.sampler),
+                },
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("planet layout"),

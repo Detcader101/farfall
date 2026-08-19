@@ -10,6 +10,7 @@
 
 use glam::{Mat4, Quat, Vec3};
 
+pub mod bake;
 pub mod blit;
 pub mod hud;
 pub mod planet;

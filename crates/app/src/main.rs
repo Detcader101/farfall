@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use capture::Capture;
 use farfall_render::{
+    bake::BakedMaps,
     blit::BlitPass,
     hud::HudPass,
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
@@ -171,6 +172,8 @@ struct Gpu {
     blit: BlitPass,
     starfield: StarfieldPass,
     planet: PlanetPass,
+    /// Owns the baked textures the planet pass samples.
+    _baked: BakedMaps,
     hud: HudPass,
     text: TextBitmap,
     cfg: Config,
@@ -531,7 +534,10 @@ impl App {
         let scene = SceneTarget::new(cfg.msaa, config.format, cfg.scale);
         let blit = BlitPass::new(&device, config.format);
         let starfield = StarfieldPass::new(&device, config.format, cfg.msaa, STAR_DENSITY);
-        let planet = PlanetPass::new(&device, config.format, cfg.msaa);
+        // Bake the static world fields before the first frame. Everything the
+        // planet pass reads per pixel is generated here, by shader, once.
+        let baked = BakedMaps::bake(&device, &queue);
+        let planet = PlanetPass::new(&device, config.format, cfg.msaa, &baked);
         // The HUD draws straight onto the swapchain, after the upscale, so it
         // is always native resolution and single-sampled however low the scene
         // scale goes (P1: the readout must never soften).
@@ -548,6 +554,7 @@ impl App {
             blit,
             starfield,
             planet,
+            _baked: baked,
             hud,
             text: TextBitmap::new(),
             cfg,
