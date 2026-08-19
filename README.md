@@ -27,7 +27,8 @@ cargo run --release -p farfall-app    # fly it (Esc to quit)
 ```
 
 **Controls** — WASD translate, R/F up/down, arrows pitch/yaw, Q/E roll,
-**Left Shift** boosts, **X** toggles the flight computer, Esc quits.
+**Left Shift** boosts, **Space** air-brakes, **X** toggles the flight computer,
+**C** cycles atmospheres, **[** / **]** set render scale, Esc quits.
 
 Everything is ship-relative at any attitude: "forward" is always where the nose
 points. With the flight computer **on** (default) the ship also *goes* where it

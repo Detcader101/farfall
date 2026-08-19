@@ -58,6 +58,16 @@ pub struct ShipParams {
     pub align_authority: f64,
     /// Time constant for that steering, seconds. Larger feels heavier.
     pub align_tau_s: f64,
+    /// Retro-thrust available to the air brake, m/s². Independent of the main
+    /// engine: stopping is its own system, and a ship that can dart needs to
+    /// shed speed faster than it built it.
+    pub brake_mps2: f64,
+    /// Time constant for the brake, seconds.
+    pub brake_tau_s: f64,
+    /// Restitution on hitting the ground: 0 lands, 1 bounces perfectly.
+    pub ground_restitution: f64,
+    /// Fraction of tangential speed kept per second while in contact.
+    pub ground_friction: f64,
     /// Max angular acceleration per body axis at |control| = 1, rad/s².
     /// x: pitch, y: yaw, z: roll. Roll is the slowest on purpose: it is the axis
     /// that most easily disorients, and a ship that rolls lazily reads as
@@ -112,6 +122,8 @@ pub struct Controls {
     pub assist: bool,
     /// Engage the overdrive: same thrust axes, much more of it.
     pub boost: bool,
+    /// Air brake: dump velocity, whatever direction it points in.
+    pub brake: bool,
 }
 
 impl Controls {
@@ -125,6 +137,7 @@ impl Controls {
                 .clamp(DVec3::splat(-1.0), DVec3::splat(1.0)),
             assist: self.assist,
             boost: self.boost,
+            brake: self.brake,
         }
     }
 }
@@ -157,6 +170,12 @@ pub mod presets {
                 // to spend on steering; the main engine stays the pilot's.
                 align_authority: 0.8,
                 align_tau_s: 1.1,
+                brake_mps2: 210.0,
+                brake_tau_s: 0.35,
+                // Landing, not bouncing — and enough friction to come to rest
+                // rather than skating around the equator forever.
+                ground_restitution: 0.0,
+                ground_friction: 0.4,
                 max_torque_radps2: DVec3::new(1.7, 1.4, 0.8),
                 cd_area_m2: 8.0,
             },
@@ -243,14 +262,49 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
         DVec3::ZERO
     };
 
-    // Kick, then drift. The assist-off branch is kept textually identical, so a
-    // flight computer the pilot never switches on cannot perturb the contract.
-    let vel = if c.assist {
-        ship.vel_mps + (a_gravity + a_drag + a_thrust + a_align) * DT
+    // Air brake: rate-limited retro-thrust opposing the velocity, whichever way
+    // it points. Deliberately not tied to the main engine — being able to stop
+    // faster than you can start is what makes a ship dart rather than drift.
+    let a_brake = if c.brake {
+        let demand = -ship.vel_mps / params.ship.brake_tau_s;
+        demand.clamp_length_max(params.ship.brake_mps2)
+    } else {
+        DVec3::ZERO
+    };
+
+    // Kick, then drift. The branch with neither aid is kept textually
+    // identical, so a system the pilot never engages cannot perturb the
+    // physics contract (or the golden hash).
+    let vel = if c.assist || c.brake {
+        ship.vel_mps + (a_gravity + a_drag + a_thrust + a_align + a_brake) * DT
     } else {
         ship.vel_mps + (a_gravity + a_drag + a_thrust) * DT
     };
     let pos = ship.pos_m + vel * DT;
+
+    // Ground contact. The planet is a sphere, so this is exact rather than a
+    // mesh query: if the new position is inside it, put the ship back on the
+    // surface, remove the velocity that drove it in, and scrub the rest.
+    //
+    // No tunnelling is possible at any speed the ship can reach — a step moves
+    // metres against a radius of tens of kilometres, and a straight line into a
+    // sphere cannot cross the far side without crossing the near one.
+    let surface = params.planet.radius_m;
+    let r = pos.length();
+    let (pos, vel) = if r < surface && r > 0.0 {
+        let up = pos / r;
+        let into = vel.dot(up);
+        let tangential = vel - up * into;
+        let bounced = if into < 0.0 {
+            up * (-into * params.ship.ground_restitution)
+        } else {
+            up * into
+        };
+        let friction = libm::pow(params.ship.ground_friction, DT);
+        (up * surface, tangential * friction + bounced)
+    } else {
+        (pos, vel)
+    };
 
     // Rotation: identity inertia tensor for now (SPEC: revisit with ship variety).
     //

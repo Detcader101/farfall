@@ -61,6 +61,8 @@ const AXES: [(Action, bool, usize, f64); Action::COUNT] = [
 
 /// Boost is a modifier rather than an axis, so it sits outside [`AXES`].
 const BOOST_KEY: KeyCode = KeyCode::ShiftLeft;
+/// Air brake, likewise: it is a state, not a direction.
+const BRAKE_KEY: KeyCode = KeyCode::Space;
 
 /// Physical-key bindings. Physical (not logical) keys so the layout is the same
 /// shape on QWERTY, AZERTY, and Dvorak.
@@ -108,6 +110,7 @@ const RELEASE_S: f64 = 0.22;
 pub struct InputState {
     held: [bool; Action::COUNT],
     boost: bool,
+    brake: bool,
     /// Smoothed axis values: [thrust xyz, torque xyz].
     axes: [f64; 6],
 }
@@ -116,6 +119,9 @@ impl InputState {
     pub fn set(&mut self, key: KeyCode, pressed: bool) {
         if key == BOOST_KEY {
             self.boost = pressed;
+        }
+        if key == BRAKE_KEY {
+            self.brake = pressed;
         }
         if let Some(action) = action_for(key) {
             self.held[action as usize] = pressed;
@@ -139,6 +145,7 @@ impl InputState {
     pub fn release_all(&mut self) {
         self.held = [false; Action::COUNT];
         self.boost = false;
+        self.brake = false;
         self.axes = [0.0; 6];
     }
 
@@ -187,6 +194,7 @@ impl InputState {
             torque_body: DVec3::new(self.axes[3], self.axes[4], self.axes[5]),
             assist,
             boost: self.boost,
+            brake: self.brake,
         }
     }
 
@@ -202,6 +210,7 @@ impl InputState {
             torque_body: DVec3::new(a[3], a[4], a[5]),
             assist,
             boost: self.boost,
+            brake: self.brake,
         }
     }
 }
@@ -382,9 +391,20 @@ mod tests {
 
     #[test]
     fn focus_loss_releases_boost_too() {
-        let mut s = held(&[KeyCode::KeyW, KeyCode::ShiftLeft]);
+        let mut s = held(&[KeyCode::KeyW, KeyCode::ShiftLeft, KeyCode::Space]);
         s.release_all();
-        assert!(!s.controls(false).boost);
+        let c = s.controls(false);
+        assert!(!c.boost && !c.brake);
+    }
+
+    #[test]
+    fn brake_is_a_modifier_not_an_axis() {
+        let s = held(&[KeyCode::KeyW, KeyCode::Space]);
+        let c = s.controls(false);
+        assert!(c.brake, "space must engage the air brake");
+        // The brake decides how fast the ship stops, not which way it points.
+        assert_eq!(c.thrust_body, DVec3::NEG_Z);
+        assert_eq!(c.torque_body, DVec3::ZERO);
     }
 
     /// Assist is passed through untouched and never leaks into the axes.

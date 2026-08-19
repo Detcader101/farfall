@@ -158,7 +158,7 @@ struct Gpu {
 impl Gpu {
     /// Close out the frame: record its duration, refresh the live readout in
     /// the title bar, and periodically summarise the window to the log.
-    fn frame_timing(&mut self, cpu_seconds: f64) {
+    fn frame_timing(&mut self, cpu_seconds: f64, altitude_m: f64, speed_mps: f64) {
         self.perf.cpu.record(cpu_seconds);
         let now = Instant::now();
         let dt = now.duration_since(self.perf.last_frame).as_secs_f64();
@@ -196,8 +196,10 @@ impl Gpu {
                 ),
             );
             self.text.draw(0, 30, &format!("{sw}X{sh}"));
+            self.text.draw(0, 36, &format!("ALT {altitude_m:.0}M"));
+            self.text.draw(0, 42, &format!("VEL {speed_mps:.0}M/S"));
             if self.cfg.bench {
-                self.text.draw(0, 36, "BENCH SIM FROZEN");
+                self.text.draw(0, 48, "BENCH SIM FROZEN");
             }
         }
 
@@ -670,7 +672,11 @@ impl ApplicationHandler for App {
                 if gpu.cfg.gpu_sync {
                     let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
                 }
-                gpu.frame_timing(cpu_seconds);
+                gpu.frame_timing(
+                    cpu_seconds,
+                    game.state.ship.pos_m.length() - game.params.planet.radius_m,
+                    game.state.ship.vel_mps.length(),
+                );
                 gpu.window.request_redraw();
             }
             _ => {}
