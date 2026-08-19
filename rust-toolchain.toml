@@ -1,0 +1,6 @@
+# Pinned exactly: the cross-platform golden-hash test (SPEC §7.3/§8) treats a
+# toolchain bump as a deliberate, reviewed event, not ambient drift.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

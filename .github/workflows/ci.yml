@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Tests run on BOTH platforms: the sim golden-hash test must produce the
+  # identical constant on macOS-arm64 and linux-x86_64 (SPEC §7.3/§8). A
+  # divergence here is a determinism leak — fix the leak, never the constant.
+  test:
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup show  # installs the toolchain pinned in rust-toolchain.toml
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  # The web target must never rot (SPEC P4): sim + render stay wasm-clean.
+  # The app's wasm entry point is an M2 task (TASKS.md).
+  wasm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup show
+      - run: cargo check -p farfall-sim -p farfall-render --target wasm32-unknown-unknown
+
+  # License audit (SPEC §10): no copyleft in the tree, ever.
+  licenses:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses

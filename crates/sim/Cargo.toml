@@ -1,0 +1,10 @@
+[package]
+name = "farfall-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic, headless simulation core. No GPU, no window, no platform deps."
+
+[dependencies]
+glam = { workspace = true }
+libm = { workspace = true }

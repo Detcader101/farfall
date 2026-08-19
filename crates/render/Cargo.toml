@@ -1,0 +1,15 @@
+[package]
+name = "farfall-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "wgpu render passes, cameras, quality tiers. Knows nothing about winit or the sim."
+
+[dependencies]
+wgpu = { workspace = true }
+glam = { workspace = true }
+bytemuck = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+naga = { workspace = true }
