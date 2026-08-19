@@ -98,9 +98,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let angle = acos(clamp(dot(ray, to_centre), -1.0, 1.0));
     let limb = asin(clamp(radius / distance_to_centre, 0.0, 1.0));
 
-    // One pixel of angular width, straight from the screen-space derivative.
-    // This is the analytic antialiasing MSAA cannot provide here.
-    let pixel_angle = max(fwidth(angle), 1e-7);
+    // Half a pixel of angular width, from the true gradient magnitude.
+    //
+    // fwidth() is the L1 norm |dpdx| + |dpdy|, which is already about a whole
+    // pixel AND over-reads the real gradient by up to sqrt(2) on diagonals — so
+    // using it as the smoothstep half-width gives a two-pixel edge that is
+    // measurably softer at the disc's diagonals than at its sides. The L2 norm,
+    // halved, is a genuine one-pixel edge in every direction.
+    //
+    // (acos is safe here despite its derivative diverging at 1: `angle` is a
+    // geodesic distance on the direction sphere, so |grad| == 1 everywhere.)
+    let grad = vec2<f32>(dpdx(angle), dpdy(angle));
+    let pixel_angle = max(0.5 * length(grad), 1e-7);
     let coverage = 1.0 - smoothstep(limb - pixel_angle, limb + pixel_angle, angle);
 
     // Atmosphere rim: a thin shell of glow hugging the limb from BOTH sides,
@@ -113,11 +122,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // "rim" floods the whole planet with a flat blue wash — which is exactly
     // what the first version did.
     let rim_falloff = max(limb * 0.05, 1e-6);
-    let rim = exp(-abs(angle - limb) / rim_falloff);
+    // Windowed to reach exactly zero. A bare exponential never does, so the
+    // pixel-kill threshold below becomes a visible arc wherever the glow is
+    // still bright enough to see when it is cut off — which additive
+    // compositing made obvious.
+    let from_limb = abs(angle - limb);
+    let rim = exp(-from_limb / rim_falloff)
+        * smoothstep(8.0 * rim_falloff, 3.0 * rim_falloff, from_limb);
     let sun = normalize(planet.sun_dir.xyz);
-    // Only the lit side of the limb glows.
-    let rim_lit = clamp(dot(-to_centre, sun) * 0.5 + 0.75, 0.0, 1.0);
-    let rim_colour = vec3<f32>(0.28, 0.48, 0.95) * rim * rim_lit;
+
+    // Only the lit side of the limb glows — which requires the normal at *this
+    // pixel's* point on the limb, not the direction to the planet's centre. The
+    // latter is constant across the whole screen, so using it makes the ring
+    // glow with one uniform brightness the whole way round, night side included.
+    // For a grazing ray the limb normal satisfies dot(n, to_centre) = -R/d.
+    let sin_limb = radius / distance_to_centre;
+    let perp = ray - to_centre * dot(ray, to_centre);
+    // No normalize(): perp goes to zero at the disc's centre, where the rim has
+    // already faded out anyway, and normalize(0) is a NaN waiting to happen.
+    let tangent = perp / max(length(perp), 1e-6);
+    let limb_normal = -to_centre * sin_limb
+        + tangent * sqrt(max(1.0 - sin_limb * sin_limb, 0.0));
+    let rim_lit = smoothstep(-0.25, 0.25, dot(limb_normal, sun));
+    // Halved relative to the alpha-blended version: additive compositing
+    // delivers the full value instead of a coverage-weighted fraction of it.
+    let rim_colour = vec3<f32>(0.28, 0.48, 0.95) * rim * rim_lit * 0.5;
 
     // --- surface -------------------------------------------------------
     // Only shade pixels the disc actually covers; the noise here is the
@@ -157,35 +186,42 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let night = 1.0 - day;
         let coastal = 1.0 - smoothstep(0.0, 0.10, abs(elevation - (SEA_LEVEL + 0.035)));
         let habitable = 1.0 - smoothstep(0.55, 0.78, abs(normal.y));
-        let lights = step(0.62, fbm3(normal * 150.0)) * land_amount * coastal * habitable;
+        // ~1.4 sigma above the (now correctly centred) mean of fbm3.
+    let lights = step(0.67, fbm3(normal * 150.0)) * land_amount * coastal * habitable;
         surface += vec3<f32>(1.0, 0.72, 0.38) * lights * night * 2.2;
 
         // A little ambient so the dark side is a silhouette, not a hole.
         surface += albedo * 0.02;
 
-        // Limb darkening, plus haze thickening toward the edge where the line of
-        // sight passes through more air.
+        // Limb darkening: the line of sight leaves at a grazing angle near the
+        // edge. The atmospheric haze is NOT added here — it is one additive
+        // layer applied on both sides of the limb below, which is what keeps
+        // the two sides agreeing.
         surface *= mix(1.0, 0.80, smoothstep(0.5, 1.0, angle / max(limb, 1e-6)));
-        surface += rim_colour * rim * 0.45;
     }
 
     // --- compositing ----------------------------------------------------
-    // Premultiplied alpha, and it has to be: the glow lives on BOTH sides of the
-    // limb, so weighting it by the disc's coverage attenuates it to nothing just
-    // inside the edge while it composites at full strength just outside. That
-    // mismatch draws a dark ring around the planet — which the first version
-    // did. Compositing the two layers explicitly removes the seam.
-    let rim_alpha = clamp(rim * 0.9 * rim_lit, 0.0, 1.0);
-    let alpha = coverage + rim_alpha * (1.0 - coverage);
-    if (alpha < 0.003) {
+    // Premultiplied alpha. Only the *body* occludes: alpha is the disc's
+    // coverage alone, and the atmosphere is added on top of whatever is behind
+    // it. An outer glow has an optical depth far below one, so compositing it
+    // with `over` would dim the starfield in a wide ring around the planet —
+    // and giving the glow a coverage-weighted alpha inside the limb while it
+    // composited at full strength outside is what drew a dark ring around the
+    // first version.
+    //
+    // Because the same rim term is added on both sides of the limb, the two
+    // sides agree by construction rather than by tuning two coefficients to
+    // match.
+    let alpha = coverage;
+    if (alpha < 0.002 && rim <= 0.0) {
         discard;
     }
 
-    // Tonemap each layer before premultiplying: tonemapping an already-blended
-    // premultiplied colour is not the same operation and darkens the edge.
+    // Tonemap each layer before combining: tonemapping an already-blended
+    // premultiplied colour is a different operation and darkens the edge.
     let surface_ldr = tonemap(surface, exposure);
     let rim_ldr = tonemap(rim_colour, exposure);
-    var rgb = surface_ldr * coverage + rim_ldr * rim_alpha * (1.0 - coverage);
-    rgb += vec3<f32>(dither_px(in.pos.xy)) * alpha;
+    var rgb = surface_ldr * coverage + rim_ldr;
+    rgb += vec3<f32>(dither_px(in.pos.xy)) * max(alpha, rim);
     return vec4<f32>(rgb, alpha);
 }

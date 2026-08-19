@@ -287,7 +287,7 @@ const SPAWN_PITCH_DEG: f64 = 12.0;
 /// Also close enough to make an approach, and eventually a collision, short.
 const SPAWN_ALTITUDE_M: f64 = 12_000.0;
 
-/// Base vertical field of view, radians.
+/// Base vertical field of view, degrees.
 const BASE_FOV: f32 = 70.0;
 /// How much the view opens up under full boost, degrees. The camera reads the
 /// ship's own thrust demand, so acceleration is *seen*, not just measured — the

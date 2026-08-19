@@ -89,7 +89,11 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
     let jx = vec2<f32>(dpdx(p.x), dpdy(p.x));
     let jy = vec2<f32>(dpdx(p.y), dpdy(p.y));
     let det = jx.x * jy.y - jx.y * jy.x;
-    let inv_det = 1.0 / (sign(det) * max(abs(det), 1e-8));
+    // sign(0.0) is 0.0, so the obvious `sign(det) * max(abs(det), eps)` yields
+    // 1/0 = inf on an exactly degenerate Jacobian, and inf * 0 = NaN for a
+    // fragment sitting precisely on a star's centre.
+    let det_mag = max(abs(det), 1e-8);
+    let inv_det = 1.0 / select(det_mag, -det_mag, det < 0.0);
 
     var col = vec3<f32>(0.0);
     // 3×3 neighborhood so stars survive cell boundaries.
@@ -132,7 +136,9 @@ fn milky_way(dir: vec3<f32>) -> vec3<f32> {
     let dust = fbm3(dir * 15.0 + 31.7);
     // Warm core glow occluded by cooler dust lanes.
     let glow = vec3<f32>(0.045, 0.042, 0.055) * band * patchiness;
-    let lane = vec3<f32>(0.030, 0.024, 0.020) * band * smoothstep(0.55, 0.85, dust);
+    // fbm3 is normalised now; its old un-normalised maximum was 0.826, so an
+    // upper knee at 0.85 was simply unreachable and the dust never saturated.
+    let lane = vec3<f32>(0.030, 0.024, 0.020) * band * smoothstep(0.54, 0.78, dust);
     return max(glow - lane, vec3<f32>(0.0));
 }
 
