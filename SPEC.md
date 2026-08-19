@@ -173,6 +173,57 @@ fallback (Lane A), lighting as emissive-first (neon reads crisply without deferr
 G-buffers). Everything here must obey the two-lane rule and the no-smear policy —
 that's *why* those rules exist from M0.
 
+
+### 6.7 The universe is computed, not stored
+
+A skybox is a *picture of a sky*. What this game needs is a *universe with real
+positions in it*: stars you can fly toward, that grow, that turn out to be
+somewhere. The current starfield hashes ray **direction**, which places every
+star at infinity — correct for the distant sky, useless as a destination. The
+fix is not a bigger texture; it is to hash **position** instead, so a star has
+coordinates.
+
+Real stellar density (~0.004 stars/ly³) makes the split obvious:
+
+| Radius | Stars | Parallax over a journey | Representation |
+|---|---|---|---|
+| 100 ly | ~17,000 | large | **Near field**: real 3D positions, instanced points |
+| 1,000 ly | ~17,000,000 | small | crossover |
+| 5,000 ly | ~2,000,000,000 | none | **Far field**: direction-hashed shader |
+
+So three bands, chosen per frame by distance and angular size:
+
+- **Far field.** Direction-hashed fullscreen shader — today's `starfield.wgsl`.
+  Not a compromise: at these distances parallax is physically unobservable, so
+  a function of direction *is* the correct model. Zero storage, zero draw calls,
+  billions of stars.
+- **Near field (~0.1–1000 ly).** Stars as genuine 3D positions produced by
+  hashing integer cell coordinates. Drawn as instanced points in camera-relative
+  space, so parallax is free — it falls out of the vertex transform, no special
+  case. ~17k instances covers 100 ly, which is nothing for a GPU.
+- **Local (in-system).** The star resolves into a body: analytic sphere →
+  shaded globe → terrain, with planets and rocks from the same seed. The
+  distance-banded ladder of §6.4.
+
+**The determinism contract.** All content is a pure function of integer cell
+coordinates and the universe seed: `content_at(cell) -> Option<Body>`, identical
+on every machine, in every session, from any distance. This is what makes the
+rest work — you arrive at *the star you aimed at*, two players see the same sky
+without shipping a universe database, and storage stays at zero. It is the same
+discipline as the sim's determinism (§7.3), applied to space instead of time.
+
+**Promotion and demotion.** Crossing a band threshold changes a body's
+*representation*, never its identity or position. A star demoted to the far
+field is still the same star, still at the same coordinates, still there when
+you come back. This is the property FTL depends on: pick a point of light,
+travel, and find the thing you picked.
+
+**Consequence for FTL.** Faster-than-light travel is what makes the near field
+visible at all — at orbital speeds nothing outside the local system shows
+measurable parallax, so real 3D stars would look identical to a skybox. FTL is
+therefore not a feature bolted on later; it is the reason the near field must
+exist, and the two are designed together.
+
 ## 7. Simulation doctrine
 
 ### 7.1 State is plain data

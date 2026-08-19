@@ -84,6 +84,14 @@ Each task: (files) → tests to write FIRST → acceptance.
    Tests first: changing WorldScale preserves invariant tests at 3 sample scales.
    Accept: 1:50 / 1:100 / 1:200 switchable at runtime for playtesting.
 
+## Universe / FTL lane (SPEC §6.7 — design agreed, not yet scheduled)
+Near-field star instancing (position-hashed cells, real parallax) · band
+promotion/demotion by angular size · deterministic `content_at(cell)` seed
+function shared by sim and render · FTL travel model + the "arrive at the star
+you aimed at" test · star -> system -> body resolution ladder.
+Note: near-field parallax is invisible at orbital speed, so it demos only
+alongside FTL or a near body. Sequence accordingly.
+
 ## Backlog seeds (M2+, unordered — do not start)
 Atmosphere LUT bake (Lane B compute + Lane A fragment fallback) · cube-sphere terrain
 chunking · entry-fx pass · graphics.toml + tiers UI · wasm entry + canvas glue ·
