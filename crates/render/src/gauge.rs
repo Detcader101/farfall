@@ -69,12 +69,21 @@ pub struct GaugeUniforms {
 }
 
 impl GaugeUniforms {
-    pub fn new(speed_mps: f32, visibility: f32, time_s: f32, aspect: f32, height_px: f32) -> Self {
+    /// `anchor_ndc`: where on the canopy this instrument sits, in NDC. The
+    /// cluster grows by adding gauges at new anchors — same glass, same warp.
+    pub fn new(
+        speed_mps: f32,
+        visibility: f32,
+        time_s: f32,
+        aspect: f32,
+        height_px: f32,
+        anchor_ndc: [f32; 2],
+    ) -> Self {
         Self {
             a: [speed_mps, visibility, time_s, aspect],
             // Full scale 999 m/s: what three digits can say, and comfortably
             // above orbital speed on the compact planet.
-            b: [999.0, height_px, 0.0, 0.0],
+            b: [999.0, height_px, anchor_ndc[0], anchor_ndc[1]],
         }
     }
 }

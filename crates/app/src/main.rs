@@ -46,6 +46,9 @@ const STAR_DENSITY: f64 = 1.0;
 const SUN_DIR: glam::Vec3 = glam::Vec3::new(0.62, 0.42, -0.66);
 /// How often the frame-time window is summarised to the log.
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
+/// Where the velocity gauge sits on the canopy (NDC): first instrument of the
+/// lower-right cluster.
+const VELOCITY_GAUGE_ANCHOR: [f32; 2] = [0.52, -0.48];
 
 /// Runtime knobs, read from the environment so a perf A/B needs no rebuild:
 ///   FARFALL_MSAA=1|2|4|8   (default 4)
@@ -761,6 +764,7 @@ impl ApplicationHandler for App {
                                         cam.time_s,
                                         aspect,
                                         gpu.scene.size().1 as f32,
+                                        VELOCITY_GAUGE_ANCHOR,
                                     ),
                                 );
                                 let mut encoder = gpu.device.create_command_encoder(
@@ -849,6 +853,7 @@ impl ApplicationHandler for App {
                         cam.time_s,
                         aspect,
                         gpu.scene.size().1 as f32,
+                        VELOCITY_GAUGE_ANCHOR,
                     ),
                 );
 

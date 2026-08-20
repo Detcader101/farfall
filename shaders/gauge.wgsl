@@ -17,7 +17,7 @@
 struct Gauge {
     // x: speed (m/s), y: visibility 0..1, z: time (s), w: aspect (w/h)
     a: vec4<f32>,
-    // x: full-scale speed, y: target height in px, z,w: unused
+    // x: full-scale speed, y: target height in px, zw: cluster anchor in NDC
     b: vec4<f32>,
 }
 
@@ -38,6 +38,25 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 }
 
 const TAU_G: f32 = 6.28318531;
+// Canopy radius, in aspect-corrected screen units. Smaller bends harder.
+const CANOPY_R: f32 = 1.55;
+
+// The canopy projection: the HUD is not painted on the screen, it is painted
+// on the inside of a spherical shell in front of the pilot, and the screen
+// shows that shell in perspective. An equidistant fisheye mapping of screen
+// coordinates gives exactly that read: elements near the centre are almost
+// flat, elements toward the rim stretch and bow as the shell curves away.
+// Every instrument passes through this one function, so the whole future
+// cluster shares a single piece of glass.
+fn canopy(ndc: vec2<f32>, aspect: f32) -> vec2<f32> {
+    let v = vec2<f32>(ndc.x * aspect, ndc.y);
+    let r = length(v);
+    if (r < 1e-4) {
+        return v;
+    }
+    let x = clamp(r / CANOPY_R, 0.0, 0.999);
+    return v * (asin(x) / x);
+}
 // Sweep: 0 m/s at 7 o'clock, full scale at 5 o'clock — 240 degrees of arc
 // with the gap at the bottom, jet-gauge fashion. Angles measured from
 // 12 o'clock, clockwise positive.
@@ -88,12 +107,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     let aspect = gauge.a.w;
 
-    // Gauge-local frame: origin at the anchor (lower-centre of the view),
-    // y up, aspect-corrected so circles are circles, unit = fraction of
-    // screen height.
-    let anchor = vec2<f32>(0.0, -0.45);
-    var p = vec2<f32>(in.ndc.x * aspect, in.ndc.y) - vec2<f32>(anchor.x * aspect, anchor.y);
-    let radius = 0.17;
+    // Both the pixel and the cluster anchor live on the canopy: the gauge is
+    // wherever the shell puts it, and its shape inherits the shell's local
+    // curvature — slightly bowed at screen edges, flat near centre.
+    let anchor = gauge.b.zw;
+    let p = canopy(in.ndc, aspect) - canopy(anchor, aspect);
+    let radius = 0.155;
 
     // Early out: everything lives inside 1.5 radii.
     if (length(p) > radius * 1.5) {
@@ -179,7 +198,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // temporal noise (P1: no shimmer, no smear).
     let scan = 0.90 + 0.10 * sin(in.ndc.y * gauge.b.y * 1.7);
 
-    var colour = (tint * glow + vec3<f32>(1.0, 1.0, 1.0) * hot * 0.9) * scan * vis;
+    // The projection dims toward the rim of the glass: light hitting the
+    // canopy obliquely reads fainter, which sells the shell more than the
+    // distortion does.
+    let rim = length(vec2<f32>(in.ndc.x * aspect, in.ndc.y));
+    let glass = 1.0 - 0.38 * smoothstep(0.75, 1.45, rim);
+
+    var colour = (tint * glow + vec3<f32>(1.0, 1.0, 1.0) * hot * 0.9) * scan * glass * vis;
 
     // Additive blend: what is black costs nothing and shows nothing.
     return vec4<f32>(colour, 1.0);
