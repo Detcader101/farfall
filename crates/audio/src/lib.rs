@@ -26,6 +26,7 @@ struct Shared {
     brake: AtomicU32,
     rcs: AtomicU32,
     entry: AtomicU32,
+    supersonic: AtomicU32,
     master: AtomicU32,
 }
 
@@ -37,6 +38,8 @@ impl Shared {
         self.brake.store(l.brake.to_bits(), Ordering::Relaxed);
         self.rcs.store(l.rcs.to_bits(), Ordering::Relaxed);
         self.entry.store(l.entry.to_bits(), Ordering::Relaxed);
+        self.supersonic
+            .store(l.supersonic.to_bits(), Ordering::Relaxed);
         self.master.store(l.master.to_bits(), Ordering::Relaxed);
     }
     fn load(&self) -> Levels {
@@ -47,6 +50,7 @@ impl Shared {
             brake: f32::from_bits(self.brake.load(Ordering::Relaxed)),
             rcs: f32::from_bits(self.rcs.load(Ordering::Relaxed)),
             entry: f32::from_bits(self.entry.load(Ordering::Relaxed)),
+            supersonic: f32::from_bits(self.supersonic.load(Ordering::Relaxed)),
             master: f32::from_bits(self.master.load(Ordering::Relaxed)),
         }
     }

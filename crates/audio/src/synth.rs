@@ -44,6 +44,12 @@ pub struct Levels {
     /// space; it is the sound of arriving — the one voice the vacuum mute
     /// does not touch, because it gates itself.
     pub entry: f32,
+    /// 1 while the ship is supersonic INSIDE the atmosphere (dense air and
+    /// past mach 1), else 0. The synth booms on the rising edge — breaking
+    /// the barrier in level flight thunders just like arriving does — and
+    /// the app derives the same edge for the HUD's visual alert, so what
+    /// the pilot sees and what they hear cannot drift apart.
+    pub supersonic: f32,
     /// Master gain 0..1.
     pub master: f32,
 }
@@ -57,6 +63,7 @@ impl Default for Levels {
             brake: 0.0,
             rcs: 0.0,
             entry: 0.0,
+            supersonic: 0.0,
             master: 0.8,
         }
     }
@@ -178,6 +185,7 @@ pub struct Synth {
     sputter_gate: f32,
     sputter_lp: f32,
     roar_lp: f32,
+    was_supersonic: bool,
     // RCS thrusters.
     rcs: Smooth,
     rcs_phase: f32,
@@ -221,6 +229,7 @@ impl Synth {
             sputter_gate: 0.0,
             sputter_lp: 0.0,
             roar_lp: 0.0,
+            was_supersonic: false,
             rcs: Smooth::new(sample_rate, 0.06),
             rcs_phase: 0.0,
             rcs_lp: 0.0,
@@ -251,6 +260,8 @@ impl Synth {
             self.primed = true;
             self.vacuum.value = levels.vacuum.clamp(0.0, 1.0);
             self.eng_freq.value = Self::engine_pitch(levels.effort.clamp(0.0, 1.0));
+            // A ship that WAKES supersonic did not just break the barrier.
+            self.was_supersonic = levels.supersonic > 0.5;
         }
 
         // Vacuum is a MASTER MUTE. Space is silent — all of it, engine
@@ -329,7 +340,14 @@ impl Synth {
         // its face and a long rumbling tail.
         let entry = self.entry.next(levels.entry.clamp(0.0, 1.0));
         let mut entry_out = 0.0;
-        if self.boom_trigger.update(entry, vac) {
+        // Two roads to the same thunder: punching into dense air after the
+        // build-up, or breaking mach 1 while already inside it. Both edges
+        // light the same envelope, so a supersonic entry — where they land
+        // together — is one rolling boom, not a double-fire.
+        let ss = levels.supersonic > 0.5;
+        let broke_barrier = ss && !self.was_supersonic;
+        self.was_supersonic = ss;
+        if self.boom_trigger.update(entry, vac) || broke_barrier {
             self.boom_env = 1.0;
             self.boom_phase = 0.0;
             self.boom_sub_phase = 0.0;
@@ -360,13 +378,19 @@ impl Synth {
             self.boom_phase = (self.boom_phase + f / self.rate).fract();
             self.boom_sub_phase = (self.boom_sub_phase + (f * 0.52) / self.rate).fract();
             let body = (tau * self.boom_phase).sin() + 0.6 * (tau * self.boom_sub_phase).sin();
-            // The crack: a fast-decaying bright transient on the boom's face
-            // (env^8 dies in a third of a second while the rumble rings on).
             let env2 = self.boom_env * self.boom_env;
             let env8 = env2 * env2 * env2 * env2;
-            let crack = self.rng_l.white() * env8 * 1.1;
-            let slam = self.rng_l.white() * env2 * 0.5;
-            entry_out += (body * 1.1 + slam + crack) * self.boom_env * 1.3;
+            // The face of the boom is the sound of a jet filmed on a phone:
+            // the bass driven straight into a brickwall clipper, so the
+            // strike is a flat-topped guttural CRUNT rather than a clean
+            // thump. The drive rides env², so the strike is square-edged and
+            // the tail relaxes back into round rolling thunder.
+            let crunch = (body * (1.2 + 7.0 * env2)).clamp(-1.0, 1.0);
+            // The crack: a fast-decaying bright transient on the strike
+            // (env^8 dies in a third of a second while the rumble rings on).
+            let crack = self.rng_l.white() * env8 * 1.2;
+            let slam = self.rng_l.white() * env2 * 0.45;
+            entry_out += (crunch * 1.25 + slam + crack) * self.boom_env * 1.3;
             self.boom_env *= 1.0 - 1.0 / (self.rate * 1.8);
         }
 
@@ -395,12 +419,16 @@ impl Synth {
         let l = (((mono + wind.0) * silence + entry_out) * master).tanh();
         let r = (((mono + wind.1) * silence + entry_out) * master).tanh();
 
-        // DC block: the brown rumble and asymmetric pulse both bias the mean,
-        // and a DC offset is inaudible right up until it thumps on stop.
-        let out_l = l - self.dc_x.0 + 0.995 * self.dc_y.0;
+        // DC block: the asymmetric pulse and the clipped boom both bias the
+        // mean, and a DC offset is inaudible right up until it thumps on
+        // stop. The pole sits at ~4 Hz — low enough to pass the 24 Hz boom
+        // fundamental and the 38 Hz engine root untouched (an earlier 0.995
+        // pole was a 38 Hz cutoff quietly shaving the sub off everything
+        // guttural), high enough to still drain real DC within ~0.3 s.
+        let out_l = l - self.dc_x.0 + 0.9995 * self.dc_y.0;
         self.dc_x.0 = l;
         self.dc_y.0 = out_l;
-        let out_r = r - self.dc_x.1 + 0.995 * self.dc_y.1;
+        let out_r = r - self.dc_x.1 + 0.9995 * self.dc_y.1;
         self.dc_x.1 = r;
         self.dc_y.1 = out_r;
 
@@ -452,6 +480,7 @@ mod tests {
                 brake: 1.0,
                 rcs: 1.0,
                 entry: 1.0,
+                supersonic: 1.0,
                 master: 1.0,
             },
             Levels {
@@ -461,6 +490,7 @@ mod tests {
                 brake: 2.0,
                 rcs: 44.0,
                 entry: 7.0,
+                supersonic: 3.0,
                 master: 5.0,
             },
         ];
@@ -648,6 +678,112 @@ mod tests {
         assert_eq!(fires, 1, "discharge must not eat the next real entry");
     }
 
+    /// Breaking the sound barrier IN atmosphere booms — once, on the rising
+    /// edge — and going supersonic in vacuum (a meaningless mach) does not.
+    #[test]
+    fn breaking_the_barrier_booms_once_in_air_only() {
+        // In air: crossing up must produce a bang where subsonic cruise had
+        // none, and holding supersonic must not machine-gun.
+        let mut synth = Synth::new(48_000.0, 0xACE);
+        let sub_air = Levels {
+            vacuum: 0.0,
+            supersonic: 0.0,
+            ..Default::default()
+        };
+        let super_air = Levels {
+            vacuum: 0.0,
+            supersonic: 1.0,
+            ..Default::default()
+        };
+        let mut cruise = vec![0.0f32; 48_000];
+        synth.render(&sub_air, &mut cruise);
+        let peak = |b: &[f32]| b.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(
+            peak(&cruise) < 0.05,
+            "subsonic cruise should be near-silent"
+        );
+        // 4 s of held supersonic: the bang lands at the edge, then only
+        // decays — consecutive seconds of strictly falling energy prove one
+        // boom and no machine-gunning while the flag stays up.
+        let mut held = vec![0.0f32; 48_000 * 8];
+        synth.render(&super_air, &mut held);
+        assert!(peak(&held) > 0.5, "no bang at mach 1: {:.3}", peak(&held));
+        let sec: Vec<f32> = (0..4)
+            .map(|i| rms(&held[i * 96_000..(i + 1) * 96_000]))
+            .collect();
+        assert!(
+            sec[0] > sec[1] && sec[1] > sec[2] && sec[2] > sec[3],
+            "boom re-fired while holding supersonic: {sec:?}"
+        );
+    }
+
+    /// A ship that wakes up already supersonic did not just break the
+    /// barrier: no phantom boom on the first buffer.
+    #[test]
+    fn waking_supersonic_is_not_an_event() {
+        let mut synth = Synth::new(48_000.0, 0xF1);
+        let mut buf = vec![0.0f32; 48_000];
+        synth.render(
+            &Levels {
+                vacuum: 0.0,
+                supersonic: 1.0,
+                ..Default::default()
+            },
+            &mut buf,
+        );
+        let peak = buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak < 0.05, "phantom boom on wake: peak {peak:.3}");
+    }
+
+    /// The strike is CLIPPED, by design: the flat-topped phone-mic crunch.
+    /// A brickwalled low square has near-vertical flanks, and a clean
+    /// 24–66 Hz thump at 48 kHz moves at most ~0.009 per sample — so the
+    /// steepest sample-to-sample jump is the clip detector. Measured past
+    /// the noise crack, so only the clipped body can produce it; and the
+    /// late tail must relax back toward a rounder, quieter wave.
+    #[test]
+    fn boom_strike_is_brickwalled_then_relaxes() {
+        let mut synth = Synth::new(48_000.0, 0xC11B);
+        let mut warm = vec![0.0f32; 9_600];
+        synth.render(
+            &Levels {
+                vacuum: 0.0,
+                ..Default::default()
+            },
+            &mut warm,
+        );
+        // 3 s stereo, the boom fired on the first frame.
+        let mut buf = vec![0.0f32; 48_000 * 6];
+        synth.render(
+            &Levels {
+                vacuum: 0.0,
+                supersonic: 1.0,
+                ..Default::default()
+            },
+            &mut buf,
+        );
+        // Steepest left-channel edge in a window.
+        let steepest = |b: &[f32]| {
+            let mut m = 0.0f32;
+            let mut prev = b[0];
+            for pair in b.chunks_exact(2).skip(1) {
+                m = m.max((pair[0] - prev).abs());
+                prev = pair[0];
+            }
+            m
+        };
+        let strike = steepest(&buf[28_800..57_600]); // 0.3–0.6 s
+        let tail = steepest(&buf[240_000..288_000]); // 2.5–3.0 s
+        assert!(
+            strike > 0.5,
+            "strike not clipped: steepest edge {strike:.3}"
+        );
+        assert!(
+            tail < strike * 0.7,
+            "tail should relax from the clip: {strike:.3} -> {tail:.3}"
+        );
+    }
+
     /// The crackle BUILDS: entry intensity maps monotonically to loudness,
     /// and — the audibility fix — it is loud even in near-vacuum, where the
     /// old mix let the master mute eat it. This is the mach-style build-up:
@@ -696,24 +832,24 @@ mod tests {
             wind_q: 0.0,
             ..Default::default()
         };
-        let mut boom = vec![0.0f32; 48_000 * 4];
+        // 3 s stereo (96 000 samples per second of it).
+        let mut boom = vec![0.0f32; 48_000 * 6];
         synth.render(&after, &mut boom);
         // The vacuum smoother takes ~0.3 s to cross the trigger threshold, so
         // the hit lands inside the first half second.
         let head_peak = boom[..48_000].iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(head_peak > 0.5, "boom not thunderous: peak {head_peak:.3}");
-        // Over a second after the hit, the rumble is still audibly ringing...
-        let tail = &boom[144_000..];
+        // 1.2 s after the hit, the rumble is still audibly ringing...
+        let ring = rms(&boom[144_000..192_000]);
+        assert!(ring > 5e-3, "boom tail died too fast: {ring:.5}");
+        // ...and it is a decay, not a drone: by 2.5 s the energy has clearly
+        // fallen from the strike. (Peak is the wrong meter here — the clip
+        // hugs the rails — energy is what decays.)
+        let head = rms(&boom[28_800..76_800]);
+        let tail = rms(&boom[240_000..]);
         assert!(
-            rms(tail) > 5e-3,
-            "boom tail died too fast: {:.5}",
-            rms(tail)
-        );
-        // ...and it is a decay, not a drone.
-        let tail_peak = tail.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        assert!(
-            tail_peak < head_peak * 0.85,
-            "boom does not decay: {head_peak:.3} -> {tail_peak:.3}"
+            tail < head * 0.5,
+            "boom does not decay: {head:.3} -> {tail:.3}"
         );
     }
 
@@ -755,6 +891,7 @@ mod tests {
             brake: 0.5,
             rcs: 0.4,
             entry: 0.3,
+            supersonic: 0.0,
             master: 0.9,
         };
         let a = render_secs(levels, 0.25);

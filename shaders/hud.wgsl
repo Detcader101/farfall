@@ -29,6 +29,8 @@ struct Hud {
     color: vec4<f32>,
     // Background glass tint; alpha 0 disables the panel.
     backdrop: vec4<f32>,
+    // xy: hologram sway in canopy units (see HoloSway); zw: unused.
+    sway: vec4<f32>,
     // COLS bits per row, four u32 per row.
     rows: array<vec4<u32>, 64>,
 }
@@ -64,13 +66,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Same warp as every instrument: pixel and anchor both live on the shell.
     let p = canopy(in.ndc, aspect) - canopy(hud.a.xy, aspect);
+    // Two depth layers: the glyphs float in front of the smoked panel, so
+    // under rotation they parallax apart — same inertia vector as the
+    // instrument cluster, same one piece of glass.
+    let p_text = p - hud.sway.xy;
+    let p_panel = p - hud.sway.xy * 0.55;
     // Font-pixel coordinates: x right, y down from the anchor.
-    let local = vec2<f32>(p.x, -p.y) / px;
+    let local = vec2<f32>(p_text.x, -p_text.y) / px;
+    let panel = vec2<f32>(p_panel.x, -p_panel.y) / px;
 
-    // One font pixel of padding around the panel, which hugs the text.
-    let pad = 1.0;
-    if (local.x < -pad || local.y < -pad
-        || local.x >= hud.extent.x + pad || local.y >= hud.extent.y + pad) {
+    // Padding around the panel, wide enough that the swaying text never
+    // walks off its own glass.
+    let pad = 3.0;
+    if (panel.x < -pad || panel.y < -pad
+        || panel.x >= hud.extent.x + pad || panel.y >= hud.extent.y + pad) {
         discard;
     }
 

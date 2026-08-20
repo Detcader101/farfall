@@ -21,7 +21,7 @@ use farfall_audio::Audio;
 use farfall_render::{
     bake::BakedMaps,
     blit::BlitPass,
-    gauge::{AltitudeFade, GaugeFade, GaugePass, GaugeUniforms},
+    gauge::{AltitudeFade, GaugeFade, GaugePass, GaugeUniforms, HoloSway, MachAlert},
     hud::HudPass,
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
     starfield::StarfieldPass,
@@ -53,6 +53,10 @@ const VELOCITY_GAUGE_ANCHOR: [f32; 2] = [0.52, -0.48];
 const ALTITUDE_GAUGE_ANCHOR: [f32; 2] = [-0.52, -0.48];
 /// The text readout's top-left corner on the canopy.
 const HUD_TEXT_ANCHOR: [f32; 2] = [-0.72, 0.62];
+/// Speed of sound for the mach instrument and the sonic boom, m/s. The
+/// gauge shader hard-codes the same number for its barrier tick (shaders
+/// cannot import Rust consts) — change one, change both.
+const MACH1_MPS: f64 = 340.0;
 
 /// Runtime knobs, read from the environment so a perf A/B needs no rebuild:
 ///   FARFALL_MSAA=1|2|4|8   (default 4)
@@ -312,6 +316,10 @@ struct Game {
     gauge_fade: GaugeFade,
     /// Relevance fade for the altimeter: the ground's own instrument.
     alt_fade: AltitudeFade,
+    /// Hologram inertia: instruments lag rotation for parallax.
+    holo_sway: HoloSway,
+    /// The sound-barrier flash, fired by the same edge as the sonic boom.
+    mach_alert: MachAlert,
     /// Which world we are looking at. Cycled with the number keys until there
     /// is a real settings panel.
     appearance: PlanetAppearance,
@@ -340,6 +348,8 @@ impl Game {
             effort: 0.0,
             gauge_fade: GaugeFade::new(),
             alt_fade: AltitudeFade::new(),
+            holo_sway: HoloSway::new(),
+            mach_alert: MachAlert::new(),
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
         }
@@ -361,6 +371,13 @@ impl Game {
         let (altitude, vspeed) = self.altitude_vspeed();
         self.alt_fade
             .update(frame_dt.min(0.25) as f32, altitude as f32, vspeed as f32);
+        // Hologram inertia from body rotation rates, and the barrier flash
+        // from the same supersonic edge that fires the audio boom.
+        let w_body = self.state.ship.orient.conjugate() * self.state.ship.ang_vel_radps;
+        self.holo_sway
+            .update(frame_dt.min(0.25) as f32, w_body.x as f32, w_body.y as f32);
+        self.mach_alert
+            .update(frame_dt.min(0.25) as f32, self.is_supersonic());
 
         if self.frozen {
             return;
@@ -386,6 +403,32 @@ impl Game {
         let target = self.input.thrust_effort(self.params.ship.boost_multiplier) as f32;
         let alpha = 1.0 - (-(frame_dt as f32) / FOV_RESPONSE_S).exp();
         self.effort += (target - self.effort) * alpha;
+    }
+
+    /// How much atmosphere surrounds the hull, 0 (vacuum) to 1 (thick air).
+    /// The single definition shared by the audio levels, the mach gate and
+    /// the instruments — one border, agreed on by ear and eye.
+    fn air_ratio(&self) -> f64 {
+        let r = self.state.ship.pos_m.length();
+        let rho = sim::atmo_density(&self.params.planet, r);
+        (rho / self.params.planet.atmo_rho0 * 12.0).clamp(0.0, 1.0)
+    }
+
+    /// Supersonic IN the atmosphere — mach in vacuum is meaningless. The
+    /// rising edge of this one expression fires both the sonic boom and the
+    /// HUD's barrier flash, so they cannot drift apart.
+    fn is_supersonic(&self) -> bool {
+        self.air_ratio() > 0.65 && self.state.ship.vel_mps.length() > MACH1_MPS
+    }
+
+    /// Mach number for the instrument, or a negative number outside the
+    /// atmosphere: the gauge hides a meaningless reading entirely.
+    fn mach(&self) -> f32 {
+        if self.air_ratio() > 0.10 {
+            (self.state.ship.vel_mps.length() / MACH1_MPS) as f32
+        } else {
+            -1.0
+        }
     }
 
     /// Altitude above the sphere and radial (climb) velocity, m and m/s.
@@ -457,7 +500,7 @@ impl Game {
         // the boom fires on), and actually diving at speed: sitting in orbit
         // over the same altitude is silent, and mach matters — a gentle sink
         // whispers, a fast plunge crackles like torn air.
-        let air = (rho_ratio * 12.0).clamp(0.0, 1.0);
+        let air = self.air_ratio();
         let up = ship.pos_m / r.max(1.0);
         let dive = (-ship.vel_mps.dot(up) / 120.0).clamp(0.0, 1.0);
         let air_wide = (rho_ratio * 90.0).clamp(0.0, 1.0);
@@ -473,6 +516,7 @@ impl Game {
             // flying, and a silent manoeuvre reads as a broken game.
             rcs: controls.torque_body.abs().max_element() as f32,
             entry: entry as f32,
+            supersonic: if self.is_supersonic() { 1.0 } else { 0.0 },
             master: 0.8,
         }
     }
@@ -798,6 +842,9 @@ impl ApplicationHandler for App {
                                         aspect,
                                         gpu.scene.size().1 as f32,
                                         VELOCITY_GAUGE_ANCHOR,
+                                        game.holo_sway.sway(),
+                                        game.mach(),
+                                        game.mach_alert.level(),
                                     ),
                                 );
                                 gpu.alt_gauge.update(
@@ -809,6 +856,7 @@ impl ApplicationHandler for App {
                                         aspect,
                                         gpu.scene.size().1 as f32,
                                         ALTITUDE_GAUGE_ANCHOR,
+                                        game.holo_sway.sway(),
                                     ),
                                 );
                                 // The capture should show what the pilot
@@ -834,6 +882,7 @@ impl ApplicationHandler for App {
                                         hud_scale * 2.0 / sh as f32,
                                         aspect,
                                         sh as f32,
+                                        game.holo_sway.sway(),
                                     );
                                 }
                                 let mut encoder = gpu.device.create_command_encoder(
@@ -928,6 +977,9 @@ impl ApplicationHandler for App {
                         aspect,
                         gpu.scene.size().1 as f32,
                         VELOCITY_GAUGE_ANCHOR,
+                        game.holo_sway.sway(),
+                        game.mach(),
+                        game.mach_alert.level(),
                     ),
                 );
                 gpu.alt_gauge.update(
@@ -939,6 +991,7 @@ impl ApplicationHandler for App {
                         aspect,
                         gpu.scene.size().1 as f32,
                         ALTITUDE_GAUGE_ANCHOR,
+                        game.holo_sway.sway(),
                     ),
                 );
 
@@ -954,6 +1007,7 @@ impl ApplicationHandler for App {
                     px_canopy,
                     aspect,
                     gpu.config.height as f32,
+                    game.holo_sway.sway(),
                 );
 
                 let mut encoder = gpu

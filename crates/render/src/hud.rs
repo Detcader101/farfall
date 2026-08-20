@@ -18,6 +18,8 @@ struct HudUniforms {
     extent: [f32; 4],
     color: [f32; 4],
     backdrop: [f32; 4],
+    /// xy: hologram sway (canopy units), zw: unused.
+    sway: [f32; 4],
     rows: [[u32; ROW_WORDS]; ROWS],
 }
 
@@ -106,6 +108,7 @@ impl HudPass {
 
     /// `anchor_ndc`: where on the canopy the block's top-left sits.
     /// `px_canopy`: one font pixel in canopy units (drives apparent size).
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
         queue: &wgpu::Queue,
@@ -114,6 +117,7 @@ impl HudPass {
         px_canopy: f32,
         aspect: f32,
         height_px: f32,
+        sway: [f32; 2],
     ) {
         let (w, h) = bitmap.used_extent();
         let u = HudUniforms {
@@ -123,6 +127,7 @@ impl HudPass {
             color: [0.45, 0.92, 1.0, 0.96],
             // Smoked glass behind the text, not a debug box.
             backdrop: [0.01, 0.03, 0.05, 0.30],
+            sway: [sway[0], sway[1], 0.0, 0.0],
             rows: bitmap.rows,
         };
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));
