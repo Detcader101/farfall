@@ -61,3 +61,32 @@ fn passes_do_not_shadow_prelude_helpers() {
         }
     }
 }
+
+/// Every shader FILE on disk must be registered in PASSES (the prelude
+/// excepted; drafts live in shaders/drafts/, out of the sweep). This exists
+/// because the gauge pass once shipped unregistered and a broken uniform
+/// struct sailed through "all tests green" straight into a runtime wgpu
+/// panic — the registry is only a guarantee if nothing can stay off it.
+#[test]
+fn every_shader_file_on_disk_is_registered() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shaders");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("shaders dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("wgsl") {
+            continue;
+        }
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        if name == "common" {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).expect("readable shader");
+        assert!(
+            PASSES.iter().any(|(_, s, _)| **s == *src),
+            "shaders/{name}.wgsl is not registered in shaders::PASSES — \
+             unregistered shaders skip static validation entirely"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 5, "shader sweep found too few files: {checked}");
+}

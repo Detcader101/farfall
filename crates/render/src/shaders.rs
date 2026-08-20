@@ -23,6 +23,7 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
         BAKE,
         &["vs_main", "fs_surface", "fs_cloud", "fs_downsample"],
     ),
+    ("gauge", GAUGE, &["vs_main", "fs_main"]),
 ];
 
 /// Prepend the shared prelude to a pass source.
