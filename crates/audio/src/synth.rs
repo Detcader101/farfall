@@ -15,8 +15,11 @@
 //! - **wind** — filtered noise driven by real dynamic pressure (½ρv² from the
 //!   sim's own atmosphere), so it roars low-and-fast, thins with altitude, and
 //!   is exactly absent in vacuum with no crossfade logic at all.
-//! - **hull** — near-silence of space: a leaky-integrated brown-noise rumble
-//!   plus a ~31 Hz drone, scaled by structural load. Pressure on metal.
+//! - **entry** — the sound of arriving: a crackle-and-roar build-up that
+//!   grows with interface intensity the way the wind grows with q, and one
+//!   thunderous boom fired when the ship punches through into dense air.
+//!   This voice bypasses the vacuum mute — it is the border's own sound and
+//!   is zero in clean space by construction (the entry level needs air).
 //! - **brake** — band-passed retro-thruster hiss.
 
 /// Control inputs, all unitless and pre-normalised by the caller.
@@ -33,11 +36,13 @@ pub struct Levels {
     /// Attitude-thruster demand 0..1 (largest torque axis): the RCS voice.
     /// Rolling is flying too, and a silent manoeuvre reads as a broken game.
     pub rcs: f32,
-    /// Atmosphere-interface intensity 0..1: peaks while punching INTO air at
-    /// speed, zero in clean vacuum and in settled flight. Drives the entry
-    /// drama — plasma sputter through the transition and one thunderous boom
-    /// at the threshold. This is not sound in space; it is the sound of
-    /// arriving.
+    /// Atmosphere-interface intensity 0..1: the build-up of arrival. Rises
+    /// through the descent as thin air starts to bite, collapses once the
+    /// ship is properly inside (the wind takes over), zero in clean vacuum
+    /// and in settled flight. Drives the mach crackle-and-roar, and its
+    /// collapse into dense air is when the boom fires. This is not sound in
+    /// space; it is the sound of arriving — the one voice the vacuum mute
+    /// does not touch, because it gates itself.
     pub entry: f32,
     /// Master gain 0..1.
     pub master: f32,
@@ -78,27 +83,41 @@ impl Smooth {
     }
 }
 
-/// Edge detector for the entry boom: fires once when intensity crosses the
-/// threshold rising, and cannot fire again until it falls back below the
-/// re-arm level. Pure, so the one-shot-ness is provable in a test instead of
-/// hoped for — a boom that machine-guns on a noisy signal would be the worst
-/// sound in the game.
+/// The entry boom's state machine: the build-up CHARGES it (entry intensity
+/// through the descent), and punching into dense air FIRES it — so the boom
+/// lands exactly where the crackle collapses and the wind takes over, the way
+/// a shock wave arrives after the buffeting. An aborted entry (drifting back
+/// out to vacuum before reaching air) discharges silently. Pure, so the
+/// once-per-entry contract is provable in a test instead of hoped for — a
+/// boom that machine-guns on a noisy interface would be the worst sound in
+/// the game.
 #[derive(Clone, Copy)]
 pub struct BoomTrigger {
-    armed: bool,
+    charged: bool,
 }
 
 impl BoomTrigger {
     pub fn new() -> Self {
-        Self { armed: true }
+        Self { charged: false }
     }
-    pub fn update(&mut self, entry: f32) -> bool {
-        if self.armed && entry > 0.30 {
-            self.armed = false;
+    /// `entry` is interface intensity; `vacuum` is how much space surrounds
+    /// the hull (1 vacuum, 0 thick air). Returns true the moment the boom
+    /// should fire.
+    pub fn update(&mut self, entry: f32, vacuum: f32) -> bool {
+        if !self.charged {
+            if entry > 0.30 {
+                self.charged = true;
+            }
+            return false;
+        }
+        if vacuum < 0.35 {
+            // Punched through: the shock arrives.
+            self.charged = false;
             return true;
         }
-        if !self.armed && entry < 0.10 {
-            self.armed = true;
+        if entry < 0.03 && vacuum > 0.75 {
+            // Aborted entry: back out to space, no thunder owed.
+            self.charged = false;
         }
         false
     }
@@ -158,6 +177,7 @@ pub struct Synth {
     boom_sub_phase: f32,
     sputter_gate: f32,
     sputter_lp: f32,
+    roar_lp: f32,
     // RCS thrusters.
     rcs: Smooth,
     rcs_phase: f32,
@@ -200,6 +220,7 @@ impl Synth {
             boom_sub_phase: 0.0,
             sputter_gate: 0.0,
             sputter_lp: 0.0,
+            roar_lp: 0.0,
             rcs: Smooth::new(sample_rate, 0.06),
             rcs_phase: 0.0,
             rcs_lp: 0.0,
@@ -299,28 +320,39 @@ impl Synth {
         }
 
         // ---- atmosphere entry ------------------------------------------
-        // Plasma sputter: noise chopped by a decaying random gate, the crackle
-        // of air tearing at the hull through the interface — and one boom when
-        // the ship punches through, a pitch-dropping sub thud with a noise
-        // slam, long decay. The trigger is a hysteresis edge: once per entry.
+        // The mach build-up: sparse plasma crackle that gets denser and
+        // hotter as the interface bites (spark rate grows with entry², so it
+        // builds the way the wind builds with q — a few pops high up, a
+        // rolling buffet by the border), under a swelling low roar. Then the
+        // boom: charged by the build-up, fired the instant the ship punches
+        // into dense air — a pitch-dropping thunder with a bright crack on
+        // its face and a long rumbling tail.
         let entry = self.entry.next(levels.entry.clamp(0.0, 1.0));
         let mut entry_out = 0.0;
-        if self.boom_trigger.update(entry) {
+        if self.boom_trigger.update(entry, vac) {
             self.boom_env = 1.0;
             self.boom_phase = 0.0;
             self.boom_sub_phase = 0.0;
         }
         if entry > 0.01 {
-            // Fire-like gate: random impulses that decay, squared for bite.
+            // Fire-like gate: random impulses that decay. Density scales with
+            // entry² — the build-up is in the RATE as much as the level.
             let spark = self.rng_r.white();
-            if spark > 0.9993 - entry * 0.004 {
+            if spark > 0.9994 - entry * entry * 0.012 {
                 self.sputter_gate = 1.0;
             }
             self.sputter_gate *= 0.9990;
             let n = self.rng_l.white();
-            let lp = self.lp_coeff(900.0);
+            let lp = self.lp_coeff(500.0 + 1400.0 * entry);
             self.sputter_lp += (n - self.sputter_lp) * lp;
-            entry_out += self.sputter_lp * self.sputter_gate * self.sputter_gate * entry * 0.55;
+            entry_out += self.sputter_lp * self.sputter_gate * self.sputter_gate * entry * 0.85;
+            // The roar under the crackle: torn-air noise, opening up and
+            // swelling with the square of intensity — wind-like, but ahead
+            // of the wind, because out here there is barely any q yet.
+            let rn = self.rng_r.white();
+            let rlp = self.lp_coeff(180.0 + 700.0 * entry);
+            self.roar_lp += (rn - self.roar_lp) * rlp;
+            entry_out += self.roar_lp * entry * entry * 0.60;
         }
         if self.boom_env > 1e-3 {
             // Pitch drops with the envelope: thunder, not a beep.
@@ -328,9 +360,14 @@ impl Synth {
             self.boom_phase = (self.boom_phase + f / self.rate).fract();
             self.boom_sub_phase = (self.boom_sub_phase + (f * 0.52) / self.rate).fract();
             let body = (tau * self.boom_phase).sin() + 0.6 * (tau * self.boom_sub_phase).sin();
-            let slam = self.rng_l.white() * self.boom_env * self.boom_env * 0.5;
-            entry_out += (body * 0.8 + slam) * self.boom_env * 0.9;
-            self.boom_env *= 1.0 - 1.0 / (self.rate * 1.6);
+            // The crack: a fast-decaying bright transient on the boom's face
+            // (env^8 dies in a third of a second while the rumble rings on).
+            let env2 = self.boom_env * self.boom_env;
+            let env8 = env2 * env2 * env2 * env2;
+            let crack = self.rng_l.white() * env8 * 1.1;
+            let slam = self.rng_l.white() * env2 * 0.5;
+            entry_out += (body * 1.1 + slam + crack) * self.boom_env * 1.3;
+            self.boom_env *= 1.0 - 1.0 / (self.rate * 1.8);
         }
 
         // ---- brake ------------------------------------------------------
@@ -347,11 +384,16 @@ impl Synth {
 
         // ---- mix --------------------------------------------------------
         let master = self.master.next(levels.master.clamp(0.0, 1.0));
-        // Silence multiplies EVERYTHING: past the atmosphere border there is
-        // no sound at all, not a quieter version of it.
-        let mono = engine + hiss + rcs_out + entry_out;
-        let l = ((mono + wind.0) * master * silence).tanh();
-        let r = ((mono + wind.1) * master * silence).tanh();
+        // Silence multiplies everything the SHIP makes: past the atmosphere
+        // border there is no engine, no wind, no thrusters — not a quieter
+        // version of them. The one voice outside the mute is entry, because
+        // it IS the border: it gates itself on interface intensity, which is
+        // zero in clean space by construction, and muting it with the vacuum
+        // would silence the build-up at exactly the altitudes where it
+        // happens (which is why the old mix was barely audible on entry).
+        let mono = engine + hiss + rcs_out;
+        let l = (((mono + wind.0) * silence + entry_out) * master).tanh();
+        let r = (((mono + wind.1) * silence + entry_out) * master).tanh();
 
         // DC block: the brown rumble and asymmetric pulse both bias the mean,
         // and a DC offset is inaudible right up until it thumps on stop.
@@ -561,24 +603,118 @@ mod tests {
         );
     }
 
-    /// The boom fires exactly once per entry: rising edge triggers, and it
-    /// cannot re-fire until the intensity falls away and returns. A boom that
-    /// machine-guns on a noisy interface would be the worst sound in the game.
+    /// The boom fires exactly once per entry, at the moment the ship punches
+    /// through into dense air — after the build-up, not during it — and a
+    /// noisy interface cannot machine-gun it.
     #[test]
-    fn boom_fires_once_per_entry() {
+    fn boom_fires_once_at_punch_through() {
         let mut t = BoomTrigger::new();
         let mut fires = 0;
-        // Noisy climb through the threshold, hold, wobble, fall, re-enter.
-        let signal = [
-            0.0, 0.05, 0.2, 0.28, 0.33, 0.31, 0.5, 0.8, 0.6, 0.4, 0.35, 0.32, 0.2, 0.15, 0.05,
-            0.02, 0.3, 0.6,
+        // (entry, vacuum): build-up in near-vacuum, wobble, then air.
+        let descent = [
+            (0.00, 1.0),
+            (0.10, 0.98),
+            (0.34, 0.95), // charged here — must NOT fire yet
+            (0.55, 0.90),
+            (0.48, 0.85),
+            (0.70, 0.70),
+            (0.40, 0.50),
+            (0.15, 0.30), // dense air: fire
+            (0.05, 0.20),
+            (0.01, 0.05), // wobbling in air must not re-fire
+            (0.02, 0.10),
         ];
-        for v in signal {
-            if t.update(v) {
+        for (i, (e, v)) in descent.iter().enumerate() {
+            if t.update(*e, *v) {
                 fires += 1;
+                assert_eq!(i, 7, "boom must land at punch-through, not at {i}");
             }
         }
-        assert_eq!(fires, 2, "one boom per entry, two entries in the signal");
+        assert_eq!(fires, 1, "exactly one boom per entry");
+    }
+
+    /// An aborted entry — build-up, then drifting back out to vacuum — owes
+    /// no thunder: the charge dissipates, and only a REAL later entry booms.
+    #[test]
+    fn aborted_entry_discharges_silently() {
+        let mut t = BoomTrigger::new();
+        let abort = [(0.0, 1.0), (0.5, 0.9), (0.2, 0.9), (0.01, 0.95), (0.0, 1.0)];
+        for (e, v) in abort {
+            assert!(!t.update(e, v), "aborted entry must not boom");
+        }
+        // The next real entry still gets its boom.
+        let real = [(0.5, 0.9), (0.3, 0.6), (0.1, 0.2)];
+        let fires: u32 = real.iter().map(|(e, v)| t.update(*e, *v) as u32).sum();
+        assert_eq!(fires, 1, "discharge must not eat the next real entry");
+    }
+
+    /// The crackle BUILDS: entry intensity maps monotonically to loudness,
+    /// and — the audibility fix — it is loud even in near-vacuum, where the
+    /// old mix let the master mute eat it. This is the mach-style build-up:
+    /// quiet sparse pops early, a rolling crackle-roar by the border.
+    #[test]
+    fn entry_crackle_builds_like_wind_even_in_near_vacuum() {
+        let at = |e: f32| {
+            rms(&render_secs(
+                Levels {
+                    entry: e,
+                    vacuum: 0.92,
+                    ..Default::default()
+                },
+                0.8,
+            ))
+        };
+        let (a, b, c) = (at(0.15), at(0.5), at(0.95));
+        assert!(
+            a < b && b < c,
+            "build-up not monotone: {a:.4} {b:.4} {c:.4}"
+        );
+        assert!(c > 0.02, "full build-up inaudible in near-vacuum: {c:.4}");
+        assert!(c > 6.0 * a, "build-up too flat: {a:.4} -> {c:.4}");
+    }
+
+    /// The boom itself: after a charged build-up, hitting dense air produces
+    /// a genuinely loud transient with a tail that rings on for over a
+    /// second — thunder, not a tick.
+    #[test]
+    fn punch_through_boom_is_loud_and_rings() {
+        let mut synth = Synth::new(48_000.0, 0xB00);
+        // Build-up phase: charge the trigger in near-vacuum.
+        let mut buildup = vec![0.0f32; 48_000];
+        synth.render(
+            &Levels {
+                entry: 0.7,
+                vacuum: 0.9,
+                ..Default::default()
+            },
+            &mut buildup,
+        );
+        // Punch through: dense air, interface collapsing.
+        let after = Levels {
+            entry: 0.05,
+            vacuum: 0.0,
+            wind_q: 0.0,
+            ..Default::default()
+        };
+        let mut boom = vec![0.0f32; 48_000 * 4];
+        synth.render(&after, &mut boom);
+        // The vacuum smoother takes ~0.3 s to cross the trigger threshold, so
+        // the hit lands inside the first half second.
+        let head_peak = boom[..48_000].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(head_peak > 0.5, "boom not thunderous: peak {head_peak:.3}");
+        // Over a second after the hit, the rumble is still audibly ringing...
+        let tail = &boom[144_000..];
+        assert!(
+            rms(tail) > 5e-3,
+            "boom tail died too fast: {:.5}",
+            rms(tail)
+        );
+        // ...and it is a decay, not a drone.
+        let tail_peak = tail.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(
+            tail_peak < head_peak * 0.85,
+            "boom does not decay: {head_peak:.3} -> {tail_peak:.3}"
+        );
     }
 
     /// Entry drama is audible mid-interface (partial air, so the master mute

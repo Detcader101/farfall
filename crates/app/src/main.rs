@@ -449,11 +449,20 @@ impl Game {
 
         let controls = self.input.controls(self.assist);
 
-        // Entry intensity: peaks mid-transition (air·(1−air) is zero in both
-        // clean vacuum and full atmosphere) and scales with speed — a slow
-        // descent whispers in, an orbital-speed plunge arrives with thunder.
+        // Entry intensity: the BUILD-UP of arrival. It needs three things at
+        // once — thin air starting to bite (a wide, early-onset density ramp,
+        // so the crackle grows through the descent the way the wind does
+        // later), not yet full atmosphere (once the ship is properly inside,
+        // the wind takes over and this collapses — which is the falling edge
+        // the boom fires on), and actually diving at speed: sitting in orbit
+        // over the same altitude is silent, and mach matters — a gentle sink
+        // whispers, a fast plunge crackles like torn air.
         let air = (rho_ratio * 12.0).clamp(0.0, 1.0);
-        let entry = (air * (1.0 - air) * 4.0 * (speed / 500.0)).clamp(0.0, 1.0);
+        let up = ship.pos_m / r.max(1.0);
+        let dive = (-ship.vel_mps.dot(up) / 120.0).clamp(0.0, 1.0);
+        let air_wide = (rho_ratio * 90.0).clamp(0.0, 1.0);
+        let mach_bite = ((speed - 120.0) / 300.0).clamp(0.0, 1.0);
+        let entry = (air_wide * (1.0 - air) * dive * mach_bite).clamp(0.0, 1.0);
 
         farfall_audio::Levels {
             effort: self.input.thrust_effort(self.params.ship.boost_multiplier) as f32,
