@@ -42,20 +42,22 @@ const TAU_G: f32 = 6.28318531;
 const CANOPY_R: f32 = 1.55;
 
 // The canopy projection: the HUD is not painted on the screen, it is painted
-// on the inside of a spherical shell in front of the pilot, and the screen
-// shows that shell in perspective. An equidistant fisheye mapping of screen
-// coordinates gives exactly that read: elements near the centre are almost
-// flat, elements toward the rim stretch and bow as the shell curves away.
-// Every instrument passes through this one function, so the whole future
-// cluster shares a single piece of glass.
+// on the inside of a spherical shell centred on the pilot's eye, and the
+// screen shows that shell in perspective. Content at shell angle t lands on
+// screen at tan(t), so this inverse — screen pixel back to shell angle — is
+// atan: near the centre it is the identity, and toward the rim each shell
+// unit covers ever more screen, so instruments there stretch and bow the way
+// the inside of a dome does. (asin here is the opposite surface: the outside
+// of a ball, rim compressed.) Every instrument passes through this one
+// function, so the whole future cluster shares a single piece of glass.
 fn canopy(ndc: vec2<f32>, aspect: f32) -> vec2<f32> {
     let v = vec2<f32>(ndc.x * aspect, ndc.y);
     let r = length(v);
     if (r < 1e-4) {
         return v;
     }
-    let x = clamp(r / CANOPY_R, 0.0, 0.999);
-    return v * (asin(x) / x);
+    let x = r / CANOPY_R;
+    return v * (atan(x) / x);
 }
 // Sweep: 0 m/s at 7 o'clock, full scale at 5 o'clock — 240 degrees of arc
 // with the gap at the bottom, jet-gauge fashion. Angles measured from
