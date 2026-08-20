@@ -21,7 +21,7 @@ use farfall_audio::Audio;
 use farfall_render::{
     bake::BakedMaps,
     blit::BlitPass,
-    gauge::{GaugeFade, GaugePass, GaugeUniforms},
+    gauge::{AltitudeFade, GaugeFade, GaugePass, GaugeUniforms},
     hud::HudPass,
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
     starfield::StarfieldPass,
@@ -49,6 +49,10 @@ const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 /// Where the velocity gauge sits on the canopy (NDC): first instrument of the
 /// lower-right cluster.
 const VELOCITY_GAUGE_ANCHOR: [f32; 2] = [0.52, -0.48];
+/// The altimeter mirrors it bottom-left: the cluster grows symmetrically.
+const ALTITUDE_GAUGE_ANCHOR: [f32; 2] = [-0.52, -0.48];
+/// The text readout's top-left corner on the canopy.
+const HUD_TEXT_ANCHOR: [f32; 2] = [-0.72, 0.62];
 
 /// Runtime knobs, read from the environment so a perf A/B needs no rebuild:
 ///   FARFALL_MSAA=1|2|4|8   (default 4)
@@ -179,6 +183,7 @@ struct Gpu {
     starfield: StarfieldPass,
     planet: PlanetPass,
     gauge: GaugePass,
+    alt_gauge: GaugePass,
     /// Owns the baked textures the planet pass samples.
     _baked: BakedMaps,
     hud: HudPass,
@@ -305,6 +310,8 @@ struct Game {
     effort: f32,
     /// Relevance fade for the velocity hologram. Render-side only.
     gauge_fade: GaugeFade,
+    /// Relevance fade for the altimeter: the ground's own instrument.
+    alt_fade: AltitudeFade,
     /// Which world we are looking at. Cycled with the number keys until there
     /// is a real settings panel.
     appearance: PlanetAppearance,
@@ -332,6 +339,7 @@ impl Game {
             started: now,
             effort: 0.0,
             gauge_fade: GaugeFade::new(),
+            alt_fade: AltitudeFade::new(),
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
         }
@@ -350,6 +358,9 @@ impl Game {
             frame_dt.min(0.25) as f32,
             self.state.ship.vel_mps.length() as f32,
         );
+        let (altitude, vspeed) = self.altitude_vspeed();
+        self.alt_fade
+            .update(frame_dt.min(0.25) as f32, altitude as f32, vspeed as f32);
 
         if self.frozen {
             return;
@@ -375,6 +386,16 @@ impl Game {
         let target = self.input.thrust_effort(self.params.ship.boost_multiplier) as f32;
         let alpha = 1.0 - (-(frame_dt as f32) / FOV_RESPONSE_S).exp();
         self.effort += (target - self.effort) * alpha;
+    }
+
+    /// Altitude above the sphere and radial (climb) velocity, m and m/s.
+    fn altitude_vspeed(&self) -> (f64, f64) {
+        let r = self.state.ship.pos_m.length();
+        let up = self.state.ship.pos_m / r.max(1.0);
+        (
+            r - self.params.planet.radius_m,
+            self.state.ship.vel_mps.dot(up),
+        )
     }
 
     /// Planet as the camera sees it. The world-space subtraction happens here,
@@ -604,6 +625,7 @@ impl App {
         let baked = BakedMaps::bake(&device, &queue);
         let planet = PlanetPass::new(&device, config.format, cfg.msaa, &baked);
         let gauge = GaugePass::new(&device, config.format, cfg.msaa);
+        let alt_gauge = GaugePass::new(&device, config.format, cfg.msaa);
         // The HUD draws straight onto the swapchain, after the upscale, so it
         // is always native resolution and single-sampled however low the scene
         // scale goes (P1: the readout must never soften).
@@ -635,6 +657,7 @@ impl App {
             starfield,
             planet,
             gauge,
+            alt_gauge,
             _baked: baked,
             hud,
             text: TextBitmap::new(),
@@ -756,9 +779,10 @@ impl ApplicationHandler for App {
                                 gpu.starfield
                                     .update(&gpu.queue, &FrameUniforms::from_camera(&cam));
                                 gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
+                                let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.gauge.update(
                                     &gpu.queue,
-                                    &GaugeUniforms::new(
+                                    &GaugeUniforms::speed(
                                         game.state.ship.vel_mps.length() as f32,
                                         game.gauge_fade.level(),
                                         cam.time_s,
@@ -767,6 +791,42 @@ impl ApplicationHandler for App {
                                         VELOCITY_GAUGE_ANCHOR,
                                     ),
                                 );
+                                gpu.alt_gauge.update(
+                                    &gpu.queue,
+                                    &GaugeUniforms::altitude(
+                                        altitude_m as f32,
+                                        game.alt_fade.level(),
+                                        cam.time_s,
+                                        aspect,
+                                        gpu.scene.size().1 as f32,
+                                        ALTITUDE_GAUGE_ANCHOR,
+                                    ),
+                                );
+                                // The capture should show what the pilot
+                                // sees, text included. The HUD pipeline is
+                                // single-sample (it draws in the present
+                                // pass), so it can only join a 1x scene.
+                                let capture_text = gpu.cfg.msaa == 1;
+                                if capture_text {
+                                    gpu.text.clear();
+                                    gpu.text.draw(0, 0, "HEADLESS CAPTURE");
+                                    gpu.text.draw(0, 6, &format!("ALT {altitude_m:.0}M"));
+                                    gpu.text.draw(
+                                        0,
+                                        12,
+                                        &format!("VEL {:.0}M/S", game.state.ship.vel_mps.length()),
+                                    );
+                                    let (_, sh) = gpu.scene.size();
+                                    let hud_scale = (sh as f32 / 260.0).clamp(2.0, 8.0).floor();
+                                    gpu.hud.update(
+                                        &gpu.queue,
+                                        &gpu.text,
+                                        HUD_TEXT_ANCHOR,
+                                        hud_scale * 2.0 / sh as f32,
+                                        aspect,
+                                        sh as f32,
+                                    );
+                                }
                                 let mut encoder = gpu.device.create_command_encoder(
                                     &wgpu::CommandEncoderDescriptor {
                                         label: Some("headless"),
@@ -787,6 +847,10 @@ impl ApplicationHandler for App {
                                     gpu.starfield.draw(&mut pass);
                                     gpu.planet.draw(&mut pass);
                                     gpu.gauge.draw(&mut pass);
+                                    gpu.alt_gauge.draw(&mut pass);
+                                    if capture_text {
+                                        gpu.hud.draw(&mut pass);
+                                    }
                                 }
                                 let capture = gpu.scene.colour_texture().map(|tex| {
                                     let path = std::env::temp_dir()
@@ -845,9 +909,10 @@ impl ApplicationHandler for App {
                 gpu.starfield
                     .update(&gpu.queue, &FrameUniforms::from_camera(&cam));
                 gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
+                let (altitude_m, _) = game.altitude_vspeed();
                 gpu.gauge.update(
                     &gpu.queue,
-                    &GaugeUniforms::new(
+                    &GaugeUniforms::speed(
                         game.state.ship.vel_mps.length() as f32,
                         game.gauge_fade.level(),
                         cam.time_s,
@@ -856,13 +921,31 @@ impl ApplicationHandler for App {
                         VELOCITY_GAUGE_ANCHOR,
                     ),
                 );
+                gpu.alt_gauge.update(
+                    &gpu.queue,
+                    &GaugeUniforms::altitude(
+                        altitude_m as f32,
+                        game.alt_fade.level(),
+                        cam.time_s,
+                        aspect,
+                        gpu.scene.size().1 as f32,
+                        ALTITUDE_GAUGE_ANCHOR,
+                    ),
+                );
 
                 // Scale the readout with the surface so it keeps the same
-                // apparent size on a retina fullscreen and a small window.
+                // apparent size on a retina fullscreen and a small window;
+                // the size is chosen in pixels and expressed in canopy units.
                 let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
-                let hud_margin = hud_scale * 4.0;
-                gpu.hud
-                    .update(&gpu.queue, &gpu.text, [hud_margin, hud_margin], hud_scale);
+                let px_canopy = hud_scale * 2.0 / gpu.config.height as f32;
+                gpu.hud.update(
+                    &gpu.queue,
+                    &gpu.text,
+                    HUD_TEXT_ANCHOR,
+                    px_canopy,
+                    aspect,
+                    gpu.config.height as f32,
+                );
 
                 let mut encoder = gpu
                     .device
@@ -880,6 +963,7 @@ impl ApplicationHandler for App {
                     gpu.starfield.draw(&mut pass);
                     gpu.planet.draw(&mut pass);
                     gpu.gauge.draw(&mut pass);
+                    gpu.alt_gauge.draw(&mut pass);
                 }
                 {
                     // Pass 2: upscale, then the HUD at native resolution.

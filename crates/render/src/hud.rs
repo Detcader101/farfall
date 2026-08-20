@@ -1,13 +1,20 @@
-//! HUD text overlay pass (SPEC §6.5).
+//! HUD text pass (SPEC §6.5): the pilot's readout, projected on the canopy.
+//!
+//! The bitmap comes from [`crate::text`]; this pass puts it on the same
+//! spherical shell as the instrument cluster (the `canopy()` warp in the
+//! common prelude), so there is no flat debug overlay layered over the
+//! hologram cockpit — every readable thing sits on one piece of glass.
 
 use crate::text::{TextBitmap, ROWS, ROW_WORDS};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct HudUniforms {
-    /// xy: origin in physical pixels, z: pixels per font pixel, w: unused.
-    origin_scale: [f32; 4],
-    /// xy: occupied extent in font pixels (the backdrop's size), zw: unused.
+    /// xy: canopy anchor in NDC (top-left of the block), z: font-pixel size
+    /// in canopy units, w: aspect.
+    a: [f32; 4],
+    /// xy: occupied extent in font pixels (the panel's size), z: surface
+    /// height in px (scanline frequency), w: unused.
     extent: [f32; 4],
     color: [f32; 4],
     backdrop: [f32; 4],
@@ -97,19 +104,25 @@ impl HudPass {
         }
     }
 
+    /// `anchor_ndc`: where on the canopy the block's top-left sits.
+    /// `px_canopy`: one font pixel in canopy units (drives apparent size).
     pub fn update(
         &self,
         queue: &wgpu::Queue,
         bitmap: &TextBitmap,
-        origin_px: [f32; 2],
-        scale: f32,
+        anchor_ndc: [f32; 2],
+        px_canopy: f32,
+        aspect: f32,
+        height_px: f32,
     ) {
         let (w, h) = bitmap.used_extent();
         let u = HudUniforms {
-            origin_scale: [origin_px[0], origin_px[1], scale, 0.0],
-            extent: [w as f32, h as f32, 0.0, 0.0],
-            color: [0.85, 0.95, 1.0, 1.0],
-            backdrop: [0.0, 0.0, 0.0, 0.35],
+            a: [anchor_ndc[0], anchor_ndc[1], px_canopy, aspect],
+            extent: [w as f32, h as f32, height_px, 0.0],
+            // Hologram cyan, matching the instrument cluster.
+            color: [0.45, 0.92, 1.0, 0.96],
+            // Smoked glass behind the text, not a debug box.
+            backdrop: [0.01, 0.03, 0.05, 0.30],
             rows: bitmap.rows,
         };
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));

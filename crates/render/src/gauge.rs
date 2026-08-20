@@ -59,19 +59,67 @@ impl GaugeFade {
     }
 }
 
+/// Relevance fade for the altimeter: altitude matters when the ground is
+/// coming up — low, or approached fast. High settled cruise hides it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AltitudeFade {
+    level: f32,
+}
+
+impl AltitudeFade {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Advance by `dt` seconds. `vspeed` is radial velocity, m/s, positive up.
+    pub fn update(&mut self, dt: f32, altitude_m: f32, vspeed_mps: f32) -> f32 {
+        let dt = dt.clamp(1e-4, 0.25);
+        // Two reasons to exist: the ground is close, or closing fast.
+        let from_low = ((4_000.0 - altitude_m) / 3_000.0).clamp(0.0, 1.0);
+        let from_sink = ((-vspeed_mps - 15.0) / 60.0).clamp(0.0, 1.0);
+        let target = from_low.max(from_sink);
+        let tau = if target > self.level { 0.20 } else { 1.4 };
+        let alpha = 1.0 - (-dt / tau).exp();
+        self.level += (target - self.level) * alpha;
+        self.level.clamp(0.0, 1.0)
+    }
+
+    pub fn level(&self) -> f32 {
+        self.level
+    }
+}
+
+/// Auto-ranging altitude readout: three significant digits of kilometres with
+/// a floating decimal dot, so "0.05", "3.52", "12.4" and "127" are all the
+/// same three-digit instrument. Returns (digits 0..999, dot position — the
+/// dot sits after digit 1 or 2; 0 means none).
+pub fn km_readout(altitude_m: f32) -> (u32, u32) {
+    let km = (altitude_m / 1_000.0).max(0.0);
+    if km < 9.995 {
+        (((km * 100.0).round() as u32).min(999), 1)
+    } else if km < 99.95 {
+        (((km * 10.0).round() as u32).min(999), 2)
+    } else {
+        ((km.round() as u32).min(999), 0)
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GaugeUniforms {
-    /// x: speed m/s, y: visibility, z: time s, w: aspect
+    /// x: arc value, y: visibility, z: time s, w: aspect
     a: [f32; 4],
-    /// x: full-scale speed, y: target height px, z,w: unused
+    /// x: arc full scale, y: target height px, zw: canopy anchor NDC
     b: [f32; 4],
+    /// x: readout digits, y: decimal dot slot, z: warning sense (0 high/1 low)
+    c: [f32; 4],
 }
 
 impl GaugeUniforms {
-    /// `anchor_ndc`: where on the canopy this instrument sits, in NDC. The
-    /// cluster grows by adding gauges at new anchors — same glass, same warp.
-    pub fn new(
+    /// The velocity gauge. `anchor_ndc`: where on the canopy this instrument
+    /// sits — the cluster grows by adding gauges at new anchors: same glass,
+    /// same warp, different numbers.
+    pub fn speed(
         speed_mps: f32,
         visibility: f32,
         time_s: f32,
@@ -84,6 +132,27 @@ impl GaugeUniforms {
             // Full scale 999 m/s: what three digits can say, and comfortably
             // above orbital speed on the compact planet.
             b: [999.0, height_px, anchor_ndc[0], anchor_ndc[1]],
+            c: [speed_mps.clamp(0.0, 999.0).round(), 0.0, 0.0, 0.0],
+        }
+    }
+
+    /// The altimeter: same instrument, different numbers. The arc spans the
+    /// atmosphere-relevant band (0..15 km); the readout auto-ranges in km,
+    /// and the warning amber sits at the BOTTOM of the arc — low is what an
+    /// altimeter warns about.
+    pub fn altitude(
+        altitude_m: f32,
+        visibility: f32,
+        time_s: f32,
+        aspect: f32,
+        height_px: f32,
+        anchor_ndc: [f32; 2],
+    ) -> Self {
+        let (digits, dot) = km_readout(altitude_m);
+        Self {
+            a: [altitude_m.max(0.0), visibility, time_s, aspect],
+            b: [15_000.0, height_px, anchor_ndc[0], anchor_ndc[1]],
+            c: [digits as f32, dot as f32, 1.0, 0.0],
         }
     }
 }
@@ -235,6 +304,47 @@ mod tests {
             "gauge vanished too fast to read: {after_1s:.2}"
         );
         assert!(after_6s < 0.1, "gauge never left: {after_6s:.2}");
+    }
+
+    /// The altimeter surfaces when descending hard, even from high up.
+    #[test]
+    fn altimeter_appears_in_a_dive() {
+        let mut fade = AltitudeFade::new();
+        let mut level = 0.0;
+        for _ in 0..90 {
+            level = fade.update(1.0 / 120.0, 11_000.0, -180.0);
+        }
+        assert!(level > 0.5, "altimeter slept through a dive: {level:.2}");
+    }
+
+    /// Near the ground it stays up even in level flight — and melts away in
+    /// high, settled cruise.
+    #[test]
+    fn altimeter_watches_the_ground_and_leaves_at_altitude() {
+        let mut fade = AltitudeFade::new();
+        let mut low = 0.0;
+        for _ in 0..600 {
+            low = fade.update(1.0 / 120.0, 600.0, 0.0);
+        }
+        assert!(low > 0.9, "altimeter hid near the ground: {low:.2}");
+        let mut high = low;
+        for _ in 0..(120 * 8) {
+            high = fade.update(1.0 / 120.0, 12_000.0, 0.0);
+        }
+        assert!(high < 0.1, "altimeter never left at cruise: {high:.2}");
+    }
+
+    /// The km readout auto-ranges: three significant digits, floating dot.
+    #[test]
+    fn km_readout_auto_ranges() {
+        assert_eq!(km_readout(50.0), (5, 1)); // 0.05 km
+        assert_eq!(km_readout(3_520.0), (352, 1)); // 3.52
+        assert_eq!(km_readout(12_400.0), (124, 2)); // 12.4
+        assert_eq!(km_readout(127_000.0), (127, 0)); // 127
+                                                     // Range edges do not overflow three digits.
+        assert_eq!(km_readout(9_996.0), (100, 2)); // 9.996 -> 10.0
+        assert_eq!(km_readout(1.0e9), (999, 0));
+        assert_eq!(km_readout(-5.0), (0, 1));
     }
 
     /// The first frame must not read a garbage "acceleration" from the

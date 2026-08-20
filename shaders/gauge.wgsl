@@ -3,7 +3,9 @@
 // Lane: A. Cost class: trivial (SDF arithmetic over a small screen region;
 // pixels outside the gauge's disc exit after one distance check).
 //
-// The first cockpit instrument: a Tron-style arc gauge, drawn entirely as
+// A generic arc instrument: the same SDF drawing serves velocity and
+// altitude (and whatever joins the cluster next) — an instrument is data,
+// not code. Drawn entirely as
 // signed-distance fields — arc ring, tick ladder, sweep fill, needle, and a
 // three-digit seven-segment readout. Additively blended, so it reads as light
 // projected on air rather than a panel: there is no background, no frame, no
@@ -15,10 +17,14 @@
 // cockpit feel seamless instead of cluttered.
 
 struct Gauge {
-    // x: speed (m/s), y: visibility 0..1, z: time (s), w: aspect (w/h)
+    // x: arc value, y: visibility 0..1, z: time (s), w: aspect (w/h)
     a: vec4<f32>,
-    // x: full-scale speed, y: target height in px, zw: cluster anchor in NDC
+    // x: arc full-scale value, y: target height in px, zw: anchor in NDC
     b: vec4<f32>,
+    // x: readout digits (0..999), y: decimal dot after digit 1|2 (0: none),
+    // z: warning sense — 0 warns at the TOP of the arc (overspeed), 1 warns
+    // at the BOTTOM (low altitude). w: unused.
+    c: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> gauge: Gauge;
@@ -38,27 +44,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 }
 
 const TAU_G: f32 = 6.28318531;
-// Canopy radius, in aspect-corrected screen units. Smaller bends harder.
-const CANOPY_R: f32 = 1.55;
-
-// The canopy projection: the HUD is not painted on the screen, it is painted
-// on the inside of a spherical shell centred on the pilot's eye, and the
-// screen shows that shell in perspective. Content at shell angle t lands on
-// screen at tan(t), so this inverse — screen pixel back to shell angle — is
-// atan: near the centre it is the identity, and toward the rim each shell
-// unit covers ever more screen, so instruments there stretch and bow the way
-// the inside of a dome does. (asin here is the opposite surface: the outside
-// of a ball, rim compressed.) Every instrument passes through this one
-// function, so the whole future cluster shares a single piece of glass.
-fn canopy(ndc: vec2<f32>, aspect: f32) -> vec2<f32> {
-    let v = vec2<f32>(ndc.x * aspect, ndc.y);
-    let r = length(v);
-    if (r < 1e-4) {
-        return v;
-    }
-    let x = r / CANOPY_R;
-    return v * (atan(x) / x);
-}
+// The canopy warp itself lives in common.wgsl: one function, one piece of
+// glass, shared with every other HUD pass.
 // Sweep: 0 m/s at 7 o'clock, full scale at 5 o'clock — 240 degrees of arc
 // with the gap at the bottom, jet-gauge fashion. Angles measured from
 // 12 o'clock, clockwise positive.
@@ -124,9 +111,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Pixel footprint for AA, in gauge units.
     let aa = max(fwidth(p.x), 1e-5) * 0.9;
 
-    let speed = max(gauge.a.x, 0.0);
+    let value = max(gauge.a.x, 0.0);
     let full = max(gauge.b.x, 1.0);
-    let frac = clamp(speed / full, 0.0, 1.0);
+    let frac = clamp(value / full, 0.0, 1.0);
 
     // Angle from 12 o'clock, clockwise, in [-pi, pi].
     let theta = atan2(p.x, p.y);
@@ -179,7 +166,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let dw = 0.016;
         let pitch = 0.052;
         let base = vec2<f32>(0.0, -0.075);
-        let shown = u32(clamp(round(speed), 0.0, 999.0));
+        let shown = u32(clamp(round(gauge.c.x), 0.0, 999.0));
         let digits = array<u32, 3>(shown / 100u, (shown / 10u) % 10u, shown % 10u);
         // Leading zeros stay lit: instruments read as instruments.
         for (var i = 0u; i < 3u; i += 1u) {
@@ -188,23 +175,32 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             hot += 0.9 * (1.0 - smoothstep(0.0, aa * 1.8, dd - 0.0018));
             glow += 0.25 * (1.0 - smoothstep(0.0, 0.008, dd));
         }
+        // Decimal dot: auto-ranging readouts (altitude in km) park it after
+        // digit 1 or 2; a dot at the baseline between cells.
+        let dot_after = gauge.c.y;
+        if (dot_after > 0.5) {
+            let dot_pos = base + vec2<f32>((dot_after - 1.5) * pitch, -dh);
+            let dr = length(p - dot_pos);
+            hot += 0.9 * (1.0 - smoothstep(0.004, 0.004 + aa * 1.8, dr));
+            glow += 0.25 * (1.0 - smoothstep(0.004, 0.012, dr));
+        }
     }
 
-    // Palette: hologram cyan, shifting toward warning amber past 85% scale.
-    let overspeed = smoothstep(0.85, 1.0, frac);
+    // Palette: hologram cyan, shifting toward warning amber at the hot end
+    // of the arc — the top for a speed gauge (overspeed), the bottom for an
+    // altimeter (ground coming up).
+    let warn_high = smoothstep(0.85, 1.0, frac);
+    let warn_low = 1.0 - smoothstep(0.04, 0.14, frac);
+    let warning = mix(warn_high, warn_low, clamp(gauge.c.z, 0.0, 1.0));
     let cyan = vec3<f32>(0.22, 0.85, 1.0);
     let amber = vec3<f32>(1.0, 0.62, 0.18);
-    let tint = mix(cyan, amber, overspeed);
+    let tint = mix(cyan, amber, warning);
 
     // Scanlines: static spatial modulation — hologram texture without
     // temporal noise (P1: no shimmer, no smear).
     let scan = 0.90 + 0.10 * sin(in.ndc.y * gauge.b.y * 1.7);
 
-    // The projection dims toward the rim of the glass: light hitting the
-    // canopy obliquely reads fainter, which sells the shell more than the
-    // distortion does.
-    let rim = length(vec2<f32>(in.ndc.x * aspect, in.ndc.y));
-    let glass = 1.0 - 0.38 * smoothstep(0.75, 1.45, rim);
+    let glass = canopy_glass(in.ndc, aspect);
 
     var colour = (tint * glow + vec3<f32>(1.0, 1.0, 1.0) * hot * 0.9) * scan * glass * vis;
 

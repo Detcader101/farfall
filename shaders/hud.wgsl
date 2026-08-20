@@ -1,23 +1,33 @@
-// hud.wgsl — bitmap text overlay (SPEC §6.5, pass: hud)
+// hud.wgsl — bitmap text on the canopy (SPEC §6.5, pass: hud)
 //
 // Lane: A (vertex+fragment only). Cost class: trivial (one small screen region,
 // one bit test per pixel).
 //
 // The CPU rasterises text into a bit mask (see render/src/text.rs); this shader
-// only asks "is this bit set". Pixel-snapped and unfiltered on purpose: a HUD
-// must stay razor sharp at any resolution (SPEC P1), so no smoothing, no
-// mipmaps, no subpixel drift.
+// only asks "is this bit set" — but it asks in CANOPY space, not screen space:
+// the readout lives on the same spherical shell as the instrument cluster,
+// through the same canopy() warp from the common prelude, with the same
+// hologram tint, scanlines and glass falloff. There is no flat debug overlay
+// left in the game — everything the pilot reads is projected on one piece of
+// glass.
+//
+// The text is still unfiltered on purpose: a bit is lit or it is not, with a
+// half-pixel analytic edge, no mipmaps, no subpixel drift (SPEC P1). The warp
+// gently shears the grid near the rim, which is the point — that shear is the
+// shape of the glass.
 
 const COLS: u32 = 128u;
 const ROWS: u32 = 64u;
 
 struct Hud {
-    // xy: top-left origin in physical pixels, z: pixels per font pixel, w: unused
-    origin_scale: vec4<f32>,
-    // xy: occupied extent in font pixels; the backdrop hugs this, not the buffer
+    // xy: anchor on the canopy in NDC (top-left of the text block),
+    // z: font-pixel size in canopy units, w: aspect (w/h)
+    a: vec4<f32>,
+    // xy: occupied extent in font pixels; the panel hugs this, not the buffer.
+    // z: surface height in px (scanline frequency), w: unused
     extent: vec4<f32>,
     color: vec4<f32>,
-    // Background panel colour; alpha 0 disables the panel.
+    // Background glass tint; alpha 0 disables the panel.
     backdrop: vec4<f32>,
     // COLS bits per row, four u32 per row.
     rows: array<vec4<u32>, 64>,
@@ -27,28 +37,35 @@ struct Hud {
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
 };
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
-    let xy = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u)) * 2.0 - 1.0;
+    let xy = fullscreen_ndc(vi);
     var out: VsOut;
     out.pos = vec4<f32>(xy, 0.0, 1.0);
+    out.ndc = xy;
     return out;
 }
 
-fn bit_at(cell: vec2<u32>) -> bool {
-    if (cell.x >= COLS || cell.y >= ROWS) {
+fn bit_at(cell: vec2<i32>) -> bool {
+    if (cell.x < 0 || cell.y < 0 || cell.x >= i32(COLS) || cell.y >= i32(ROWS)) {
         return false;
     }
-    let word = hud.rows[cell.y][cell.x >> 5u];
-    return (word & (1u << (cell.x & 31u))) != 0u;
+    let word = hud.rows[u32(cell.y)][u32(cell.x) >> 5u];
+    return (word & (1u << (u32(cell.x) & 31u))) != 0u;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let scale = max(hud.origin_scale.z, 1.0);
-    let local = (in.pos.xy - hud.origin_scale.xy) / scale;
+    let aspect = hud.a.w;
+    let px = max(hud.a.z, 1e-6);
+
+    // Same warp as every instrument: pixel and anchor both live on the shell.
+    let p = canopy(in.ndc, aspect) - canopy(hud.a.xy, aspect);
+    // Font-pixel coordinates: x right, y down from the anchor.
+    let local = vec2<f32>(p.x, -p.y) / px;
 
     // One font pixel of padding around the panel, which hugs the text.
     let pad = 1.0;
@@ -57,15 +74,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
 
-    if (local.x >= 0.0 && local.y >= 0.0) {
-        let cell = vec2<u32>(u32(local.x), u32(local.y));
-        if (bit_at(cell)) {
-            return hud.color;
-        }
+    let glass = canopy_glass(in.ndc, aspect);
+    // Static scanlines, matched to the gauge pass: same glass, same texture.
+    let scan = 0.90 + 0.10 * sin(in.ndc.y * hud.extent.z * 1.7);
+
+    if (local.x >= 0.0 && local.y >= 0.0 && bit_at(vec2<i32>(floor(local)))) {
+        let lit = hud.color.rgb * scan * glass;
+        return vec4<f32>(lit, hud.color.a);
     }
 
     if (hud.backdrop.a <= 0.0) {
         discard;
     }
-    return hud.backdrop;
+    // The panel is smoked glass, not a debug box: it dims with the canopy too.
+    return vec4<f32>(hud.backdrop.rgb * glass, hud.backdrop.a);
 }
