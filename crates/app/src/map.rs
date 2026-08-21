@@ -27,6 +27,26 @@ pub fn radius(d_m: f64) -> f32 {
     (d_m / INNER_M).log10().max(0.0) as f32
 }
 
+/// Where the map pane sits on the glass: a square (in pixels) on the right
+/// of the screen, a little above centre — clear of the menu text on the
+/// left and of the instruments along the bottom rim — as `[cx, cy, half_w]`
+/// in NDC (its half height is `half_w * aspect`). The rest of the screen is
+/// dimmed around it.
+pub fn pane_rect(aspect: f32) -> [f32; 3] {
+    let aspect = if aspect.is_finite() && aspect > 0.0 {
+        aspect
+    } else {
+        1.0
+    };
+    const RIGHT: f32 = 0.90;
+    const CENTRE_Y: f32 = 0.12;
+    const HALF_H: f32 = 0.44;
+    // Square in pixels; never reaching past the screen's middle-left,
+    // where the menu's text lives.
+    let half_w = (HALF_H / aspect).min(0.4);
+    [RIGHT - half_w, CENTRE_Y, half_w]
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MapUniforms {
@@ -44,7 +64,6 @@ impl MapUniforms {
         sun: DVec3,
         dest_centre: DVec3,
         dest_arrival_m: f64,
-        dest_index: usize,
         visibility: f32,
         aspect: f32,
         time_s: f32,
@@ -57,16 +76,12 @@ impl MapUniforms {
         // log space a ring does not stay a ring, so this is indicative —
         // the log-radius of the arrival distance, shown around the body.
         let ring = radius(dest_arrival_m).max(0.05);
+        let pane = pane_rect(aspect);
         Self {
             a: [s[0], s[1], visibility.clamp(0.0, 1.0), aspect],
             b: [m[0], m[1], su[0], su[1]],
             c: [dc[0], dc[1], ring, time_s],
-            d: [
-                radius(moon.length()),
-                radius(sun.length()),
-                dest_index as f32,
-                0.0,
-            ],
+            d: [radius(moon.length()), pane[0], pane[1], pane[2]],
         }
     }
 }
@@ -84,6 +99,19 @@ mod tests {
         assert!(q[0].abs() < 1e-6 && (q[1] - 3.0).abs() < 1e-6);
         // Inside the first ring: at the origin, never negative.
         assert_eq!(project(DVec3::new(50.0, 0.0, 0.0)), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_pane_is_a_square_on_the_right_clear_of_the_text() {
+        for aspect in [1.0f32, 4.0 / 3.0, 16.0 / 10.0, 21.0 / 9.0] {
+            let [cx, cy, hw] = pane_rect(aspect);
+            let hh = hw * aspect;
+            assert!((cx + hw - 0.90).abs() < 1e-6, "not right-anchored");
+            assert!(cx - hw >= 0.0, "reaches into the text at {aspect}");
+            // Above the bottom-rim instruments, below the top edge.
+            assert!(cy - hh >= -0.36 && cy + hh <= 0.95, "{aspect}: {cy} {hh}");
+        }
+        assert_eq!(pane_rect(f32::NAN), pane_rect(1.0));
     }
 
     #[test]

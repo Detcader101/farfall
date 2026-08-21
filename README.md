@@ -48,7 +48,7 @@ and velocity are independent, and orbits are conserved exactly.
 | `FARFALL_VSYNC=off` | on | Uncap the frame rate to see real headroom |
 | `FARFALL_GPU_SYNC=1` | off | Profiling: block on GPU completion so timings measure the GPU, not submission |
 | `FARFALL_SKIP=starfield,plasma` | none | Profiling: leave named passes out (`starfield`, `bodies`, `planet`, `plasma`, `trajectory`, `gauge`, `hud`, `blit`) so each one's cost shows up as its absence |
-| `FARFALL_BENCH=1` | off | Freeze the sim at spawn (`FARFALL_BENCH_ALT`, `FARFALL_BENCH_SECONDS`) for comparable measurements; exits by itself. `FARFALL_BENCH_POS=x,y,z` parks the ship anywhere (with `FARFALL_BENCH_VEL` and `FARFALL_BENCH_LOOK`) to capture a scene |
+| `FARFALL_BENCH=1` | off | Freeze the sim at spawn (`FARFALL_BENCH_ALT`, `FARFALL_BENCH_SECONDS`) for comparable measurements; exits by itself. `FARFALL_BENCH_POS=x,y,z` parks the ship anywhere (with `FARFALL_BENCH_VEL` and `FARFALL_BENCH_LOOK`) to capture a scene; `FARFALL_BENCH_MAP=1` opens the map, `FARFALL_CAPTURE=final` captures the presented frame |
 
 Frame stats appear on-screen and are summarised to the log every 5 s at
 `RUST_LOG=info`. The number that matters is the **1% low**, not the average —

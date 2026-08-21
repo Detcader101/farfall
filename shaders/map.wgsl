@@ -8,7 +8,9 @@
 // distance from the planet, one per decade; the Moon on its orbit, the
 // Sun on its line, the ship where it is, and the destination ring where
 // the jump will land. Drawn on the glass after the world and before the
-// text, as a dark pane the pilot reads through.
+// text: a framed square pane on the right that is the map, and a dim over
+// everything else — the cockpit is still there, but this is WARP MODE, and
+// the map has the floor.
 
 struct Map {
     // xy: ship, map units. z: visibility. w: aspect
@@ -17,10 +19,15 @@ struct Map {
     b: vec4<f32>,
     // xy: destination. z: its ring radius (map units). w: time
     c: vec4<f32>,
-    // x: moon orbit radius (map units). y: sun distance (map units).
-    // z: destination index (0 planet, 1 moon, 2 sun). w: unused
+    // x: moon orbit radius (map units). yz: pane centre, NDC. w: pane half
+    // width, NDC (a square in pixels: half height is w * aspect).
     d: vec4<f32>,
 }
+
+// How far the dim reaches outside the pane, and how dark the pane's own
+// ground is.
+const DIM_ALPHA: f32 = 0.74;
+const PANE_ALPHA: f32 = 0.93;
 
 @group(0) @binding(0) var<uniform> map: Map;
 
@@ -56,12 +63,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     let aspect = map.a.w;
-    // Map space: the planet at the origin, 1 unit per decade of distance
-    // from it, the view centred a little low to leave the text room.
-    let p = (in.ndc * vec2<f32>(aspect, 1.0) - vec2<f32>(0.0, -0.15)) * 3.2;
-    let aa = max(fwidth(p.x), 1e-4) * 1.2;
     let cyan = vec3<f32>(0.22, 0.85, 1.0);
     let amber = vec3<f32>(1.0, 0.62, 0.18);
+
+    // The pane: inside it the map, outside it the dim. Both edges in
+    // aspect-corrected units so the frame is the same weight all round.
+    let local = (in.ndc - map.d.yz) * vec2<f32>(aspect, 1.0);
+    let half = vec2<f32>(map.d.w * aspect);
+    let box_d = max(abs(local.x) - half.x, abs(local.y) - half.y);
+    let aa_ndc = max(fwidth(local.x), 1e-4) * 1.2;
+    let inside = 1.0 - smoothstep(0.0, aa_ndc, box_d);
+    // Frame: a thin line on the edge, and brackets at the corners.
+    let frame_w = 0.004;
+    let edge = 1.0 - smoothstep(0.0, aa_ndc, abs(box_d) - frame_w);
+    let corner = step(0.82, min(abs(local.x) / half.x, abs(local.y) / half.y));
+    let frame = edge * (0.35 + 0.65 * corner);
+    if (inside < 0.001 && frame < 0.001) {
+        let dim = DIM_ALPHA * vis;
+        return vec4<f32>(vec3<f32>(0.0), dim);
+    }
+
+    // Map space: the planet at the origin, 1 unit per decade of distance
+    // from it; five decades reach the Sun, and the pane holds them with a
+    // little room.
+    let p = local / half.y * 5.4;
+    let aa = max(fwidth(p.x), 1e-4) * 1.2;
 
     var glow = 0.0;
     var warn = 0.0;
@@ -92,10 +118,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let dash = step(0.5, fract(t * 24.0 - map.c.w * 0.5));
     warn += 0.5 * (1.0 - smoothstep(0.0, aa, seg - 0.003)) * dash;
 
-    // The pane.
+    // Compose: the pane's ground inside, the dim outside, the frame over
+    // both, and the map's light on top (premultiplied).
     let colour = cyan * glow + amber * warn + vec3<f32>(1.0) * white;
-    let pane = vec3<f32>(0.01, 0.02, 0.04);
-    let alpha = 0.72 * vis;
-    let lit = colour * vis;
-    return vec4<f32>(pane * alpha + lit, alpha + min(dot(lit, vec3<f32>(1.0)), 1.0) * 0.0);
+    let ground = vec3<f32>(0.01, 0.02, 0.04);
+    let alpha = mix(DIM_ALPHA, PANE_ALPHA, inside) * vis;
+    let lit = (colour * inside + cyan * frame * 0.9) * vis;
+    return vec4<f32>(ground * alpha * inside + lit, alpha);
 }

@@ -188,6 +188,12 @@ impl Menu {
         self.open && self.page == Page::Map
     }
 
+    /// Open straight onto the MAP page (the bench's way in).
+    pub fn open_map(&mut self) {
+        self.open = true;
+        self.set_page(Page::Map);
+    }
+
     pub fn toggle(&mut self) {
         self.open = !self.open;
         self.rebinding = false;

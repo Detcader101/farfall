@@ -112,6 +112,10 @@ const MACH1_MPS: f64 = 340.0;
 ///                           FARFALL_BENCH_VEL=x,y,z for the velocity
 ///                           (else at rest) and FARFALL_BENCH_LOOK=x,y,z
 ///                           for where the nose points (else the planet)
+///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
+///   FARFALL_CAPTURE=final  (screenshots take the presented frame, with the
+///                           post pass, the map and the text, instead of the
+///                           scene target)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
 ///   FARFALL_MUTE=1         (no audio stream at all)
 ///   FARFALL_BENCH_WARP=s   (benchmark only: engage the wormhole drive s
@@ -683,10 +687,6 @@ impl Game {
             sun.centre,
             centre,
             arrival,
-            warp::Destination::ALL
-                .iter()
-                .position(|&d| d == dest)
-                .unwrap_or(0),
             if self.menu.map_open() { 1.0 } else { 0.0 },
             aspect,
             time_s,
@@ -1080,6 +1080,12 @@ const FOV_RESPONSE_S: f32 = 0.28;
 /// The preset leaves orientation at identity so the sim's golden hash stays a
 /// property of the *orbit*, not of where the camera happens to be pointing —
 /// choosing an attitude is the app's business, not the physics'.
+/// FARFALL_CAPTURE=final: screenshots take the presented frame — post pass,
+/// map, text and all — instead of the scene target.
+fn capture_final() -> bool {
+    std::env::var("FARFALL_CAPTURE").as_deref() == Ok("final")
+}
+
 /// "x,y,z" → vector, for the bench knobs.
 fn parse_vec3(s: &str) -> Option<DVec3> {
     let mut it = s.split(',').map(|p| p.trim().parse::<f64>().ok());
@@ -1180,6 +1186,9 @@ impl App {
             } else {
                 wgpu::PresentMode::AutoNoVsync
             };
+            if capture_final() {
+                config.usage |= wgpu::TextureUsages::COPY_SRC;
+            }
             surface.configure(&device, &config);
             // Which sample counts this GPU can actually render at, for this
             // format. Metal on an M1 offers 1 and 4; asking for 2 or 8 is a
@@ -1277,6 +1286,9 @@ impl App {
         settings.msaa = msaa_in_use;
         game.apply_settings(settings);
         game.menu.set_msaa_supported(&msaa_supported);
+        if game.frozen && std::env::var("FARFALL_BENCH_MAP").is_ok() {
+            game.menu.open_map();
+        }
         self.game = Some(game);
     }
 }
@@ -1478,7 +1490,13 @@ impl ApplicationHandler for App {
                                 // single-sample (it draws in the present
                                 // pass), so it can only join a 1x scene.
                                 let capture_text = gpu.cfg.msaa == 1;
-                                if capture_text {
+                                if capture_text && game.menu.map_open() {
+                                    gpu.map
+                                        .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
+                                }
+                                if capture_text && game.menu.open {
+                                    game.menu.render(&mut gpu.text, &game.settings);
+                                } else if capture_text {
                                     gpu.text.clear();
                                     gpu.text.draw(0, 0, "HEADLESS CAPTURE");
                                     gpu.text.draw(0, 6, &format!("ALT {altitude_m:.0}M"));
@@ -1552,6 +1570,9 @@ impl ApplicationHandler for App {
                                     gpu.passes.alt_gauge.draw(&mut pass);
                                     gpu.passes.g_gauge.draw(&mut pass);
                                     gpu.passes.gyro.draw(&mut pass);
+                                    if capture_text && game.menu.map_open() {
+                                        gpu.map.draw(&mut pass);
+                                    }
                                     if capture_text {
                                         gpu.hud.draw(&mut pass);
                                     }
@@ -1752,13 +1773,22 @@ impl ApplicationHandler for App {
                     if gpu.scene.colour_texture().is_none() {
                         log::warn!("capture skipped: scene target has no colour texture");
                     }
-                    gpu.scene.colour_texture().map(|tex| {
-                        let path = std::env::temp_dir().join(format!(
-                            "farfall-{:.0}.png",
-                            game.started.elapsed().as_secs_f64() * 1000.0
-                        ));
-                        Capture::record(&gpu.device, &mut encoder, tex, path)
-                    })
+                    let path = std::env::temp_dir().join(format!(
+                        "farfall-{:.0}.png",
+                        game.started.elapsed().as_secs_f64() * 1000.0
+                    ));
+                    if capture_final() {
+                        Some(Capture::record(
+                            &gpu.device,
+                            &mut encoder,
+                            &frame.texture,
+                            path,
+                        ))
+                    } else {
+                        gpu.scene
+                            .colour_texture()
+                            .map(|tex| Capture::record(&gpu.device, &mut encoder, tex, path))
+                    }
                 } else {
                     None
                 };
