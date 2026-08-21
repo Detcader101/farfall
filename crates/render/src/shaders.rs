@@ -11,6 +11,8 @@ pub const HUD: &str = include_str!("../../../shaders/hud.wgsl");
 pub const BLIT: &str = include_str!("../../../shaders/blit.wgsl");
 pub const BAKE: &str = include_str!("../../../shaders/bake.wgsl");
 pub const GAUGE: &str = include_str!("../../../shaders/gauge.wgsl");
+pub const THERMAL: &str = include_str!("../../../shaders/thermal.wgsl");
+pub const PLASMA: &str = include_str!("../../../shaders/plasma.wgsl");
 
 /// Every pass: display name, source, and required entry points.
 pub const PASSES: &[(&str, &str, &[&str])] = &[
@@ -24,6 +26,8 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
         &["vs_main", "fs_surface", "fs_cloud", "fs_downsample"],
     ),
     ("gauge", GAUGE, &["vs_main", "fs_main"]),
+    ("thermal", THERMAL, &["vs_main", "fs_main"]),
+    ("plasma", PLASMA, &["vs_main", "fs_main"]),
 ];
 
 /// Prepend the shared prelude to a pass source.

@@ -18,6 +18,7 @@ pub mod planet;
 pub mod shaders;
 pub mod starfield;
 pub mod text;
+pub mod thermal;
 
 /// Everything a pass needs to know about "where we're looking" this frame.
 /// No translation: the camera is the origin by construction (SPEC P3).

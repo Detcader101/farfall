@@ -26,6 +26,7 @@ use farfall_render::{
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
     starfield::StarfieldPass,
     text::TextBitmap,
+    thermal::{PlasmaPass, PlasmaUniforms, ThermalInputs, ThermalPass},
     CameraFrame, FrameUniforms, SceneTarget,
 };
 use farfall_sim as sim;
@@ -188,6 +189,9 @@ struct Gpu {
     planet: PlanetPass,
     gauge: GaugePass,
     alt_gauge: GaugePass,
+    /// The hull heat field, simulated on the GPU, and the sheath it lights.
+    thermal: ThermalPass,
+    plasma: PlasmaPass,
     /// Owns the baked textures the planet pass samples.
     _baked: BakedMaps,
     hud: HudPass,
@@ -320,6 +324,8 @@ struct Game {
     holo_sway: HoloSway,
     /// The sound-barrier flash, fired by the same edge as the sonic boom.
     mach_alert: MachAlert,
+    /// Last wall-clock frame time, clamped, for presentation-side integrators.
+    frame_dt: f32,
     /// Which world we are looking at. Cycled with the number keys until there
     /// is a real settings panel.
     appearance: PlanetAppearance,
@@ -350,6 +356,7 @@ impl Game {
             alt_fade: AltitudeFade::new(),
             holo_sway: HoloSway::new(),
             mach_alert: MachAlert::new(),
+            frame_dt: 0.0,
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
         }
@@ -360,6 +367,7 @@ impl Game {
         let now = Instant::now();
         let mut frame_dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
+        self.frame_dt = frame_dt.min(0.25) as f32;
 
         // Instruments are presentation, not physics: the velocity hologram
         // keeps living even when the sim is frozen for a benchmark —
@@ -456,6 +464,24 @@ impl Game {
             // world's clock rather than of how long the window has been open.
             self.state.time_s as f32 * 0.05,
         )
+    }
+
+    /// What the hull feels this frame: the wind in its own frame and the air
+    /// it is cutting through. The heating itself is computed on the GPU
+    /// (render::thermal); the CPU hands over physics and never a temperature.
+    fn thermal_inputs(&self, dt: f32) -> ThermalInputs {
+        let ship = &self.state.ship;
+        let r = ship.pos_m.length();
+        ThermalInputs {
+            vel_ship_mps: farfall_render::thermal::ship_frame_velocity(
+                ship.orient.as_quat(),
+                ship.vel_mps.as_vec3(),
+            ),
+            rho: sim::atmo_density(&self.params.planet, r) as f32,
+            rho0: self.params.planet.atmo_rho0 as f32,
+            dt,
+            reset: false,
+        }
     }
 
     /// Step through the atmosphere presets. A stand-in for the settings panel:
@@ -679,6 +705,8 @@ impl App {
         let planet = PlanetPass::new(&device, config.format, cfg.msaa, &baked);
         let gauge = GaugePass::new(&device, config.format, cfg.msaa);
         let alt_gauge = GaugePass::new(&device, config.format, cfg.msaa);
+        let thermal = ThermalPass::new(&device);
+        let plasma = PlasmaPass::new(&device, config.format, cfg.msaa, &thermal);
         // The HUD draws straight onto the swapchain, after the upscale, so it
         // is always native resolution and single-sampled however low the scene
         // scale goes (P1: the readout must never soften).
@@ -711,6 +739,8 @@ impl App {
             planet,
             gauge,
             alt_gauge,
+            thermal,
+            plasma,
             _baked: baked,
             hud,
             text: TextBitmap::new(),
@@ -890,6 +920,12 @@ impl ApplicationHandler for App {
                                         label: Some("headless"),
                                     },
                                 );
+                                let thermal_in = game.thermal_inputs(game.frame_dt);
+                                gpu.plasma.update(
+                                    &gpu.queue,
+                                    &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps),
+                                );
+                                gpu.thermal.step(&gpu.queue, &mut encoder, &thermal_in);
                                 {
                                     let mut pass =
                                         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -904,6 +940,7 @@ impl ApplicationHandler for App {
                                         });
                                     gpu.starfield.draw(&mut pass);
                                     gpu.planet.draw(&mut pass);
+                                    gpu.plasma.draw(&mut pass, &gpu.thermal);
                                     gpu.gauge.draw(&mut pass);
                                     gpu.alt_gauge.draw(&mut pass);
                                     if capture_text {
@@ -967,6 +1004,11 @@ impl ApplicationHandler for App {
                 gpu.starfield
                     .update(&gpu.queue, &FrameUniforms::from_camera(&cam));
                 gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
+                let thermal_in = game.thermal_inputs(game.frame_dt);
+                gpu.plasma.update(
+                    &gpu.queue,
+                    &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps),
+                );
                 let (altitude_m, _) = game.altitude_vspeed();
                 gpu.gauge.update(
                     &gpu.queue,
@@ -1013,6 +1055,8 @@ impl ApplicationHandler for App {
                 let mut encoder = gpu
                     .device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                // Pass 0: advance the hull heat field (64x64, on the GPU).
+                gpu.thermal.step(&gpu.queue, &mut encoder, &thermal_in);
                 {
                     // Pass 1: the expensive world, at whatever scale is set.
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1025,6 +1069,7 @@ impl ApplicationHandler for App {
                     });
                     gpu.starfield.draw(&mut pass);
                     gpu.planet.draw(&mut pass);
+                    gpu.plasma.draw(&mut pass, &gpu.thermal);
                     gpu.gauge.draw(&mut pass);
                     gpu.alt_gauge.draw(&mut pass);
                 }

@@ -174,3 +174,41 @@ fn canopy_glass(ndc: vec2<f32>, aspect: f32) -> f32 {
     let rim = length(vec2<f32>(ndc.x * aspect, ndc.y));
     return 1.0 - 0.38 * smoothstep(0.75, 1.45, rim);
 }
+
+// ------------------------------------------------------------- octahedral
+
+// Octahedral map of the unit sphere onto [-1,1]². The hemisphere with z > 0
+// is the inner diamond, where a clamped texture keeps all its resolution.
+// Used by the starfield for its sky cells, and by the thermal sim to store a
+// field over the hull (ship space: x right, y up, z forward — so the forward
+// hemisphere, where the pilot looks, gets the detail) with the plasma pass
+// reading it back. One copy: a private variant in either pass would let the
+// heat drift away from where it is drawn.
+fn oct_encode(d: vec3<f32>) -> vec2<f32> {
+    let n = d / (abs(d.x) + abs(d.y) + abs(d.z));
+    let sign_n = select(vec2<f32>(-1.0), vec2<f32>(1.0), n.xy >= vec2<f32>(0.0));
+    return select(n.xy, (1.0 - abs(n.yx)) * sign_n, n.z < 0.0);
+}
+
+fn oct_decode(f: vec2<f32>) -> vec3<f32> {
+    var n = vec3<f32>(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+    let t = clamp(-n.z, 0.0, 1.0);
+    n.x += select(t, -t, n.x >= 0.0);
+    n.y += select(t, -t, n.y >= 0.0);
+    return normalize(n);
+}
+
+// ------------------------------------------------------------- blackbody
+
+// Colour of a hot body at temperature `kk` kilokelvin, normalised so the
+// brightest channel is ~1. A compact fit of the Planckian locus: 1 kK is a
+// deep red barely there, 2 kK orange, 3.5 kK yellow-white, 6 kK white, and
+// beyond that it cools to blue-white. Brightness is the caller's business
+// (Stefan-Boltzmann: T^4), this is chromaticity only.
+fn blackbody(kk: f32) -> vec3<f32> {
+    let t = clamp(kk, 0.5, 12.0);
+    let r = clamp(1.0 - 0.10 * max(t - 6.5, 0.0), 0.55, 1.0);
+    let g = clamp(0.46 * log(t) + 0.12, 0.0, 1.0);
+    let b = clamp(0.55 * log(max(t - 1.6, 0.01)) + 0.02, 0.0, 1.0);
+    return vec3<f32>(r, g, b);
+}

@@ -43,21 +43,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     return out;
 }
 
-// ------------------------------------------------------------- octahedral map
-
-fn sign_not_zero(v: vec2<f32>) -> vec2<f32> {
-    return vec2<f32>(select(-1.0, 1.0, v.x >= 0.0), select(-1.0, 1.0, v.y >= 0.0));
-}
-
-// Unit direction → octahedral UV in [-1,1]².
-fn oct_encode(d: vec3<f32>) -> vec2<f32> {
-    let n = d / (abs(d.x) + abs(d.y) + abs(d.z));
-    var uv = n.xy;
-    if (n.z < 0.0) {
-        uv = (1.0 - abs(n.yx)) * sign_not_zero(n.xy);
-    }
-    return uv;
-}
+// Octahedral mapping: oct_encode() in the prelude (shared with the thermal
+// field, which stores its hull map in the same projection).
 
 // ---------------------------------------------------------------- stars
 
