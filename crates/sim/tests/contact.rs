@@ -73,7 +73,9 @@ fn brake_never_reverses_the_ship() {
         // Micron-per-second tolerance, not zero: the brake opposes the *total*
         // velocity, and gravity keeps feeding in a radial component, so its
         // thrust direction tilts off the tested axis and leaves a residue there
-        // far below anything physical.
+        // far below anything physical. (The Sun and Moon contribute only their
+        // tide here — the planet's frame falls with them — so they add nothing
+        // the brake has to fight.)
         assert!(
             state.ship.vel_mps.dot(heading) >= -1e-3,
             "brake reversed the ship: {:?}",

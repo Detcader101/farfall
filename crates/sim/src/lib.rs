@@ -28,6 +28,81 @@ pub const DT: f64 = 1.0 / 120.0;
 pub struct WorldParams {
     pub planet: PlanetParams,
     pub ship: ShipParams,
+    /// The other bodies. They pull and they can be hit, like the planet;
+    /// only the planet has air.
+    pub moon: MoonParams,
+    pub sun: SunParams,
+}
+
+/// A moon on a circular orbit about the planet, in the XZ plane.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoonParams {
+    pub radius_m: f64,
+    pub mu: f64,
+    pub orbit_m: f64,
+}
+
+impl MoonParams {
+    /// Kepler, from the planet's μ: the period follows from the world.
+    pub fn period_s(&self, planet_mu: f64) -> f64 {
+        core::f64::consts::TAU * libm::sqrt(self.orbit_m * self.orbit_m * self.orbit_m / planet_mu)
+    }
+
+    /// Centre at sim time `t`, planet frame. Starts on +X.
+    pub fn centre(&self, planet_mu: f64, t_s: f64) -> DVec3 {
+        let phase = core::f64::consts::TAU * t_s / self.period_s(planet_mu);
+        DVec3::new(
+            self.orbit_m * libm::cos(phase),
+            0.0,
+            self.orbit_m * libm::sin(phase),
+        )
+    }
+}
+
+/// The sun: fixed in the planet's frame, a direction and a distance.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SunParams {
+    pub radius_m: f64,
+    pub mu: f64,
+    pub distance_m: f64,
+    pub dir: DVec3,
+}
+
+impl SunParams {
+    pub fn centre(&self) -> DVec3 {
+        self.dir.normalize() * self.distance_m
+    }
+}
+
+/// A gravitating, solid sphere, as the integrator sees every body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Body {
+    pub centre: DVec3,
+    pub radius_m: f64,
+    pub mu: f64,
+}
+
+impl WorldParams {
+    /// Every body at sim time `t`: planet, moon, sun.
+    pub fn bodies(&self, t_s: f64) -> [Body; 3] {
+        [
+            Body {
+                centre: DVec3::ZERO,
+                radius_m: self.planet.radius_m,
+                mu: self.planet.mu,
+            },
+            Body {
+                centre: self.moon.centre(self.planet.mu, t_s),
+                radius_m: self.moon.radius_m,
+                mu: self.moon.mu,
+            },
+            Body {
+                centre: self.sun.centre(),
+                radius_m: self.sun.radius_m,
+                mu: self.sun.mu,
+            },
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -202,6 +277,21 @@ pub mod presets {
                 // 12.5 scale heights: ρ/ρ₀ ≈ 4·10⁻⁶ at the top, well below
                 // anything the hull, the ear or the eye can register.
                 atmo_top_m: 25_000.0,
+            },
+            // The real Moon and Sun at the same 1:100, each keeping its real
+            // surface gravity the way the planet keeps 9.81 (μ = g·R²):
+            // the Moon's 1.62 m/s², the Sun's 274. Distances at 1:100 too,
+            // so each subtends the half degree it really does.
+            moon: MoonParams {
+                radius_m: 17_374.0,
+                mu: 1.62 * 17_374.0 * 17_374.0,
+                orbit_m: 3_844_000.0,
+            },
+            sun: SunParams {
+                radius_m: 6_963_400.0,
+                mu: 274.0 * 6_963_400.0 * 6_963_400.0,
+                distance_m: 1_495_978_700.0,
+                dir: DVec3::new(0.62, 0.42, -0.66),
             },
             ship: ShipParams {
                 mass_kg: 12_000.0,
@@ -394,13 +484,45 @@ pub fn gravity(planet: &PlanetParams, pos_m: DVec3) -> DVec3 {
     pos_m * (-planet.mu / (r * r * r))
 }
 
+/// Gravity from every body at sim time `t`, in the planet's frame.
+///
+/// The planet sits at the origin and does not move, which is only honest
+/// because it is in free fall about the Sun (and towards the Moon): that
+/// frame is accelerating with the planet, so what a ship in it feels from
+/// any other body is the *difference* between that body's pull here and its
+/// pull on the planet — the tide. Near the planet that is tiny; close to the
+/// Moon or the Sun it is, to all intents, that body's own gravity.
+pub fn gravity_all(params: &WorldParams, t_s: f64, pos_m: DVec3) -> DVec3 {
+    let bodies = params.bodies(t_s);
+    let mut a = point_gravity(bodies[0].mu, pos_m - bodies[0].centre);
+    for b in &bodies[1..] {
+        a += point_gravity(b.mu, pos_m - b.centre) - point_gravity(b.mu, -b.centre);
+    }
+    a
+}
+
+fn point_gravity(mu: f64, rel: DVec3) -> DVec3 {
+    let r = rel.length();
+    if r > 0.0 {
+        rel * (-mu / (r * r * r))
+    } else {
+        DVec3::ZERO
+    }
+}
+
 /// What the pilot feels across one step from `before` to `after`: the
 /// change in velocity per unit time, less gravity at the start of the
 /// step (a body in free fall feels nothing). Engine, air, brake, ground
 /// — all of it, in world frame. Exact for the sim's own steps, because
-/// the integrator kicks with gravity at the start position.
-pub fn felt_acceleration(planet: &PlanetParams, before: &ShipState, after: &ShipState) -> DVec3 {
-    (after.vel_mps - before.vel_mps) / DT - gravity(planet, before.pos_m)
+/// the integrator kicks with gravity at the start position. `t_s` is the
+/// sim time at `before`.
+pub fn felt_acceleration(
+    params: &WorldParams,
+    t_s: f64,
+    before: &ShipState,
+    after: &ShipState,
+) -> DVec3 {
+    (after.vel_mps - before.vel_mps) / DT - gravity_all(params, t_s, before.pos_m)
 }
 
 /// Advance the world by exactly one fixed step [`DT`].
@@ -415,7 +537,7 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
 
     let r = ship.pos_m.length();
 
-    let a_gravity = gravity(planet, ship.pos_m);
+    let a_gravity = gravity_all(params, state.time_s, ship.pos_m);
 
     // The air: drag and lift from the hull's shape, and the torque they
     // exert about the centre of gravity. `a_drag` keeps its name — it is the
@@ -480,22 +602,26 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     // No tunnelling is possible at any speed the ship can reach — a step moves
     // metres against a radius of tens of kilometres, and a straight line into a
     // sphere cannot cross the far side without crossing the near one.
-    let surface = params.planet.radius_m;
-    let r = pos.length();
-    let (pos, vel) = if r < surface && r > 0.0 {
-        let up = pos / r;
-        let into = vel.dot(up);
-        let tangential = vel - up * into;
-        let bounced = if into < 0.0 {
-            up * (-into * params.ship.ground_restitution)
-        } else {
-            up * into
-        };
-        let friction = libm::pow(params.ship.ground_friction, DT);
-        (up * surface, tangential * friction + bounced)
-    } else {
-        (pos, vel)
-    };
+    // Every body is solid: the same contact, about each one's centre.
+    let mut pos = pos;
+    let mut vel = vel;
+    for b in params.bodies(state.time_s) {
+        let rel = pos - b.centre;
+        let r = rel.length();
+        if r < b.radius_m && r > 0.0 {
+            let up = rel / r;
+            let into = vel.dot(up);
+            let tangential = vel - up * into;
+            let bounced = if into < 0.0 {
+                up * (-into * params.ship.ground_restitution)
+            } else {
+                up * into
+            };
+            let friction = libm::pow(params.ship.ground_friction, DT);
+            pos = b.centre + up * b.radius_m;
+            vel = tangential * friction + bounced;
+        }
+    }
 
     // Rotation: identity inertia tensor for now (SPEC: revisit with ship variety).
     //

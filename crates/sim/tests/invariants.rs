@@ -114,6 +114,20 @@ fn scale_invariance() {
             atmo_scale_height_m: base.planet.atmo_scale_height_m * s,
             atmo_top_m: base.planet.atmo_top_m * s,
         },
+        // The other bodies scale as the planet does: lengths by s, μ by s³
+        // (acceleration by s, times invariant), and they stay where they are
+        // relative to everything else.
+        moon: farfall_sim::MoonParams {
+            radius_m: base.moon.radius_m * s,
+            mu: base.moon.mu * s * s * s,
+            orbit_m: base.moon.orbit_m * s,
+        },
+        sun: farfall_sim::SunParams {
+            radius_m: base.sun.radius_m * s,
+            mu: base.sun.mu * s * s * s,
+            distance_m: base.sun.distance_m * s,
+            dir: base.sun.dir,
+        },
         ship: farfall_sim::ShipParams {
             cd_area_m2: base.ship.cd_area_m2 / s,
             cd_area_side_m2: base.ship.cd_area_side_m2 / s,
@@ -209,7 +223,12 @@ fn golden_hash() {
 //   0x0e9b39595b8d22bf  the nose got sleek: CdA 8 -> 1.5 m² nose-on, 45 m²
 //                       broadside, lift 30 m². Ship parameters; gravity can
 //                       now take the ship through mach 1 on its own.
-const GOLDEN: u64 = 0x0e9b39595b8d22bf;
+//   0xe8f76101b8054115  the Moon and the Sun became bodies: they pull (as a
+//                       tide, in the planet's free-falling frame) and they are
+//                       solid. Near the planet the tide is ~1e-7 m/s², which
+//                       is enough to move the last bits of the hash and
+//                       nothing else.
+const GOLDEN: u64 = 0xe8f76101b8054115;
 
 /// Not an assertion — prints the current golden value for setup/updates:
 /// `cargo test -p farfall-sim print_golden -- --ignored --nocapture`

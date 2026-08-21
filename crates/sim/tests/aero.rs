@@ -215,7 +215,7 @@ fn free_fall_feels_nothing() {
     let p = presets::earth_compact();
     let s0 = presets::circular_orbit(&p, p.planet.atmo_top_m + 5_000.0);
     let s1 = step(&p, &s0, Controls::default());
-    let felt = farfall_sim::felt_acceleration(&p.planet, &s0.ship, &s1.ship);
+    let felt = farfall_sim::felt_acceleration(&p, s0.time_s, &s0.ship, &s1.ship);
     assert!(felt.length() < 1e-6, "{felt}");
 }
 
@@ -230,7 +230,7 @@ fn thrust_is_felt_as_thrust() {
         ..Default::default()
     };
     let s1 = step(&p, &s0, c);
-    let felt = farfall_sim::felt_acceleration(&p.planet, &s0.ship, &s1.ship);
+    let felt = farfall_sim::felt_acceleration(&p, s0.time_s, &s0.ship, &s1.ship);
     let nose = s0.ship.orient * DVec3::NEG_Z;
     assert!(
         (felt.length() - p.ship.max_thrust_mps2.z).abs() < 1e-6,
@@ -246,7 +246,7 @@ fn drag_is_felt_in_air() {
     let p = presets::earth_compact();
     let s0 = presets::circular_orbit(&p, 2_000.0);
     let s1 = step(&p, &s0, Controls::default());
-    let felt = farfall_sim::felt_acceleration(&p.planet, &s0.ship, &s1.ship);
+    let felt = farfall_sim::felt_acceleration(&p, s0.time_s, &s0.ship, &s1.ship);
     let rho = atmo_density(&p.planet, s0.ship.pos_m.length());
     let aero = aero_forces(&p.ship, rho, &s0.ship).accel_world;
     assert!((felt - aero).length() < 1e-6 * aero.length().max(1.0));

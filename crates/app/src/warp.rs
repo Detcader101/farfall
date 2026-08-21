@@ -9,8 +9,7 @@
 //! settling — and then it snaps to normal and the ship is where the map
 //! said, at the distance the pilot set, never inside anything.
 
-use farfall_render::bodies::{moon_position, MOON_RADIUS_M, SUN_DISTANCE_M, SUN_RADIUS_M};
-use farfall_sim::{PlanetParams, ShipState, WorldParams};
+use farfall_sim::{Body, ShipState, WorldParams};
 use glam::DVec3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,21 +42,23 @@ impl Destination {
         Self::ALL.iter().copied().find(|d| d.key() == k)
     }
 
-    pub fn radius_m(self, planet: &PlanetParams) -> f64 {
+    /// The body itself, from the sim, at sim time `t`.
+    pub fn body(self, params: &WorldParams, t_s: f64) -> Body {
+        let [planet, moon, sun] = params.bodies(t_s);
         match self {
-            Destination::Planet => planet.radius_m,
-            Destination::Moon => MOON_RADIUS_M,
-            Destination::Sun => SUN_RADIUS_M,
+            Destination::Planet => planet,
+            Destination::Moon => moon,
+            Destination::Sun => sun,
         }
     }
 
+    pub fn radius_m(self, params: &WorldParams) -> f64 {
+        self.body(params, 0.0).radius_m
+    }
+
     /// Centre of the body in the planet's frame at sim time `t`.
-    pub fn centre(self, planet: &PlanetParams, t_s: f64, sun_dir: DVec3) -> DVec3 {
-        match self {
-            Destination::Planet => DVec3::ZERO,
-            Destination::Moon => moon_position(planet.mu, t_s),
-            Destination::Sun => sun_dir.normalize() * SUN_DISTANCE_M,
-        }
+    pub fn centre(self, params: &WorldParams, t_s: f64) -> DVec3 {
+        self.body(params, t_s).centre
     }
 
     fn next(self, forward: bool) -> Self {
@@ -111,43 +112,30 @@ impl Plan {
     }
 
     /// Distance from the body's surface, metres.
-    pub fn safe_m(&self, planet: &PlanetParams) -> f64 {
-        self.safe_radii * self.dest.radius_m(planet)
+    pub fn safe_m(&self, params: &WorldParams) -> f64 {
+        self.safe_radii * self.dest.radius_m(params)
     }
 
     /// Where the jump lands: on the line from the body toward where the
     /// ship is now (so the old place is behind you), at surface + safe
-    /// distance. Around the planet the ship arrives in a circular orbit;
-    /// the Moon and the Sun pull on nothing in this sim yet, so there the
-    /// ship arrives at rest in the planet's frame.
-    pub fn arrival(
-        &self,
-        params: &WorldParams,
-        ship: &ShipState,
-        t_s: f64,
-        sun_dir: DVec3,
-    ) -> (DVec3, DVec3) {
-        let planet = &params.planet;
-        let centre = self.dest.centre(planet, t_s, sun_dir);
-        let mut away = ship.pos_m - centre;
+    /// distance — and in a circular orbit about it, prograde along the
+    /// ship's heading projected level. Every body pulls, so every body is
+    /// arrived at the same way: the drive never drops you into a fall.
+    pub fn arrival(&self, params: &WorldParams, ship: &ShipState, t_s: f64) -> (DVec3, DVec3) {
+        let body = self.dest.body(params, t_s);
+        let mut away = ship.pos_m - body.centre;
         if away.length() < 1.0 {
             away = DVec3::X;
         }
         let away = away.normalize();
-        let r = self.dest.radius_m(planet) + self.safe_m(planet);
-        let pos = centre + away * r;
-        let vel = match self.dest {
-            Destination::Planet => {
-                // Prograde along the ship's current heading, projected level.
-                let nose = ship.orient * DVec3::NEG_Z;
-                let mut tangent = nose - away * nose.dot(away);
-                if tangent.length() < 1e-6 {
-                    tangent = away.cross(DVec3::Y);
-                }
-                tangent.normalize() * (planet.mu / r).sqrt()
-            }
-            Destination::Moon | Destination::Sun => DVec3::ZERO,
-        };
+        let r = body.radius_m + self.safe_m(params);
+        let pos = body.centre + away * r;
+        let nose = ship.orient * DVec3::NEG_Z;
+        let mut tangent = nose - away * nose.dot(away);
+        if tangent.length() < 1e-6 {
+            tangent = away.cross(DVec3::Y);
+        }
+        let vel = tangent.normalize() * (body.mu / r).sqrt();
         (pos, vel)
     }
 }
@@ -307,10 +295,6 @@ mod tests {
     use super::*;
     use farfall_sim::presets;
 
-    fn sun() -> DVec3 {
-        DVec3::new(0.62, 0.42, -0.66)
-    }
-
     #[test]
     fn arrival_is_at_the_safe_distance_and_never_inside() {
         let p = presets::earth_compact();
@@ -321,10 +305,10 @@ mod tests {
                     dest,
                     safe_radii: radii,
                 };
-                let (pos, _) = plan.arrival(&p, &s.ship, 0.0, sun());
-                let centre = dest.centre(&p.planet, 0.0, sun());
+                let (pos, _) = plan.arrival(&p, &s.ship, 0.0);
+                let centre = dest.centre(&p, 0.0);
                 let d = (pos - centre).length();
-                let r = dest.radius_m(&p.planet);
+                let r = dest.radius_m(&p);
                 assert!(
                     (d - r * (1.0 + radii)).abs() < 1e-3 * d,
                     "{dest:?} {radii}: {d}"
@@ -335,17 +319,24 @@ mod tests {
     }
 
     #[test]
-    fn the_planet_is_arrived_at_in_a_circular_orbit() {
+    fn every_body_is_arrived_at_in_a_circular_orbit() {
         let p = presets::earth_compact();
         let s = presets::circular_orbit(&p, 12_000.0);
-        let plan = Plan {
-            dest: Destination::Planet,
-            safe_radii: 0.2,
-        };
-        let (pos, vel) = plan.arrival(&p, &s.ship, 0.0, sun());
-        let r = pos.length();
-        assert!((vel.length() - (p.planet.mu / r).sqrt()).abs() < 1e-6);
-        assert!(vel.dot(pos.normalize()).abs() < 1e-6, "not level");
+        for dest in Destination::ALL {
+            let plan = Plan {
+                dest,
+                safe_radii: 0.2,
+            };
+            let (pos, vel) = plan.arrival(&p, &s.ship, 0.0);
+            let body = dest.body(&p, 0.0);
+            let rel = pos - body.centre;
+            let r = rel.length();
+            assert!(
+                (vel.length() - (body.mu / r).sqrt()).abs() < 1e-6,
+                "{dest:?} not circular"
+            );
+            assert!(vel.dot(rel.normalize()).abs() < 1e-6, "{dest:?} not level");
+        }
     }
 
     #[test]
@@ -353,9 +344,9 @@ mod tests {
         let p = presets::earth_compact();
         let s = presets::circular_orbit(&p, 12_000.0);
         let plan = Plan::default();
-        let (pos, vel) = plan.arrival(&p, &s.ship, 0.0, sun());
+        let (pos, _) = plan.arrival(&p, &s.ship, 0.0);
         assert!(pos.length() > 1.0e9);
-        assert_eq!(vel, DVec3::ZERO);
+        assert!(Destination::Sun.radius_m(&p) > 100.0 * p.planet.radius_m);
     }
 
     #[test]

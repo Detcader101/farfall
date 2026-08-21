@@ -1,35 +1,8 @@
-//! The Sun and the Moon (`shaders/bodies.wgsl`), at the world's 1:100 scale.
+//! The Sun and the Moon (`shaders/bodies.wgsl`): two lit spheres wherever the
+//! sim puts them, at whatever size it gives them.
 
 use crate::CameraFrame;
 use glam::Vec3;
-
-/// Real Sun and Moon, divided by the world's linear scale. The planet is a
-/// 1:100 Earth (63.71 km), so these are 1:100 too — and each subtends the
-/// half degree it really does from anywhere near the planet.
-pub const WORLD_SCALE: f64 = 1.0 / 100.0;
-pub const MOON_RADIUS_M: f64 = 1_737_400.0 * WORLD_SCALE;
-pub const MOON_ORBIT_M: f64 = 384_400_000.0 * WORLD_SCALE;
-pub const SUN_RADIUS_M: f64 = 696_340_000.0 * WORLD_SCALE;
-pub const SUN_DISTANCE_M: f64 = 149_597_870_000.0 * WORLD_SCALE;
-
-/// Angular radius of the Sun's disc, radians: ~0.27°, as seen from Earth.
-pub fn sun_angular_radius() -> f32 {
-    (SUN_RADIUS_M / SUN_DISTANCE_M) as f32
-}
-
-/// Orbital period of the Moon around this planet, seconds: Kepler, from
-/// the planet's own μ, so the scaled world stays self-consistent (it is
-/// about 2.75 days here, against the real 27.3).
-pub fn moon_period_s(mu: f64) -> f64 {
-    std::f64::consts::TAU * (MOON_ORBIT_M.powi(3) / mu).sqrt()
-}
-
-/// The Moon's position in the planet's frame at sim time `t`, metres. A
-/// circular orbit in the XZ plane, starting on +X.
-pub fn moon_position(mu: f64, t_s: f64) -> glam::DVec3 {
-    let phase = std::f64::consts::TAU * t_s / moon_period_s(mu);
-    glam::DVec3::new(MOON_ORBIT_M * phase.cos(), 0.0, MOON_ORBIT_M * phase.sin())
-}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -44,18 +17,19 @@ pub struct BodiesUniforms {
 }
 
 impl BodiesUniforms {
-    /// `moon_rel`, `sun_rel`: the bodies' centres relative to the camera
-    /// (subtracted in f64 by the caller — SPEC P3).
+    /// `moon`, `sun`: each body's centre relative to the camera (subtracted
+    /// in f64 by the caller — SPEC P3) and its radius, metres.
     /// `tags`: 0..1, the finder rings. `height_px`: for their minimum size.
     pub fn new(
         cam: &CameraFrame,
-        moon_rel: Vec3,
-        sun_rel: Vec3,
+        moon: (Vec3, f32),
+        sun: (Vec3, f32),
         tags: f32,
         height_px: f32,
     ) -> Self {
         let (right, up, forward) = cam.basis();
-        let s = sun_rel;
+        let (moon_rel, moon_r) = moon;
+        let (s, sun_r) = sun;
         Self {
             right: [right.x, right.y, right.z, 0.0],
             up: [up.x, up.y, up.z, 0.0],
@@ -66,8 +40,8 @@ impl BodiesUniforms {
                 cam.time_s,
                 cam.exposure,
             ],
-            moon: [moon_rel.x, moon_rel.y, moon_rel.z, MOON_RADIUS_M as f32],
-            sun: [s.x, s.y, s.z, SUN_RADIUS_M as f32],
+            moon: [moon_rel.x, moon_rel.y, moon_rel.z, moon_r],
+            sun: [s.x, s.y, s.z, sun_r],
             look: [tags.clamp(0.0, 1.0), height_px.max(1.0), 0.0, 0.0],
         }
     }
@@ -166,41 +140,5 @@ impl BodiesPass {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..3, 0..1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Both bodies subtend their real half degree: 1:100 on radius and on
-    /// distance cancels in the angle.
-    #[test]
-    fn sun_and_moon_subtend_half_a_degree() {
-        let sun_deg = 2.0 * sun_angular_radius().to_degrees();
-        assert!((sun_deg - 0.533).abs() < 0.01, "{sun_deg}");
-        let moon_deg = 2.0 * (MOON_RADIUS_M / MOON_ORBIT_M).atan().to_degrees();
-        assert!((moon_deg - 0.518).abs() < 0.01, "{moon_deg}");
-    }
-
-    /// The Moon keeps its distance and goes round: Kepler from the compact
-    /// planet's μ gives about 2.75 days.
-    #[test]
-    fn moon_orbit_is_keplerian_at_this_scale() {
-        let radius_m = 63_710.0f64;
-        let mu = 9.81 * radius_m * radius_m;
-        let period = moon_period_s(mu);
-        assert!(
-            (period / 86_400.0 - 2.75).abs() < 0.1,
-            "{}",
-            period / 86_400.0
-        );
-        for t in [0.0, 1000.0, period * 0.37] {
-            let p = moon_position(mu, t);
-            assert!((p.length() - MOON_ORBIT_M).abs() < 1.0);
-            assert_eq!(p.y, 0.0);
-        }
-        let half = moon_position(mu, period * 0.5);
-        assert!(half.x < -MOON_ORBIT_M * 0.999);
     }
 }

@@ -34,7 +34,7 @@ use farfall_render::{
     attitude::{gyro_pass, horizon_pass, Attitude, GyroUniforms, HorizonFade, HorizonUniforms},
     bake::BakedMaps,
     blit::{BlitPass, PostUniforms},
-    bodies::{moon_position, BodiesPass, BodiesUniforms},
+    bodies::{BodiesPass, BodiesUniforms},
     gauge::{
         gauge_pass, AltitudeFade, GForceFade, GaugeFade, GaugePass, GaugeUniforms, HoloSway,
         MachAlert,
@@ -63,7 +63,6 @@ const STAR_DENSITY: f64 = 1.0;
 /// World-space direction to the sun. Fixed for now: a moving sun is a sim
 /// concern (planet rotation, orbit) and does not belong in the renderer.
 /// Chosen so the terminator crosses the visible face at spawn.
-const SUN_DIR: glam::Vec3 = glam::Vec3::new(0.62, 0.42, -0.66);
 /// How often the frame-time window is summarised to the log.
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 fn shifted(a: [f32; 2], shift: [f32; 2]) -> [f32; 2] {
@@ -627,11 +626,10 @@ impl Game {
         self.look.glass_shift((cam.fov_y * 0.5).tan(), cam.aspect)
     }
 
-    /// The Sun and the Moon as the camera sees them: the Moon's position
-    /// comes from its Kepler orbit at sim time, subtracted in f64 (P3).
+    /// The Sun and the Moon as the camera sees them: where the sim has them
+    /// at sim time, subtracted in f64 (P3).
     fn bodies_uniforms(&self, cam: &CameraFrame, height_px: f32) -> BodiesUniforms {
-        let moon = moon_position(self.params.planet.mu, self.state.time_s);
-        let sun = SUN_DIR.as_dvec3().normalize() * farfall_render::bodies::SUN_DISTANCE_M;
+        let [_, moon, sun] = self.params.bodies(self.state.time_s);
         let tags = if self.settings.layout.shown(Instrument::BodyTags) {
             1.0
         } else {
@@ -639,8 +637,14 @@ impl Game {
         };
         BodiesUniforms::new(
             cam,
-            (moon - self.state.ship.pos_m).as_vec3(),
-            (sun - self.state.ship.pos_m).as_vec3(),
+            (
+                (moon.centre - self.state.ship.pos_m).as_vec3(),
+                moon.radius_m as f32,
+            ),
+            (
+                (sun.centre - self.state.ship.pos_m).as_vec3(),
+                sun.radius_m as f32,
+            ),
             tags,
             height_px,
         )
@@ -648,15 +652,14 @@ impl Game {
 
     /// The system map, from the plan.
     fn map_uniforms(&self, aspect: f32, time_s: f32) -> map::MapUniforms {
-        let planet = &self.params.planet;
-        let sun_dir = SUN_DIR.as_dvec3();
+        let [_, moon, sun] = self.params.bodies(self.state.time_s);
         let dest = self.settings.plan.dest;
-        let centre = dest.centre(planet, self.state.time_s, sun_dir);
-        let arrival = dest.radius_m(planet) + self.settings.plan.safe_m(planet);
+        let centre = dest.centre(&self.params, self.state.time_s);
+        let arrival = dest.radius_m(&self.params) + self.settings.plan.safe_m(&self.params);
         map::MapUniforms::new(
             self.state.ship.pos_m,
-            moon_position(planet.mu, self.state.time_s),
-            sun_dir * farfall_render::bodies::SUN_DISTANCE_M,
+            moon.centre,
+            sun.centre,
             centre,
             arrival,
             warp::Destination::ALL
@@ -669,9 +672,14 @@ impl Game {
         )
     }
 
-    /// Gravity's up at the ship, world frame.
+    /// Gravity's up at the ship, world frame — whichever body is pulling.
     fn up_world(&self) -> DVec3 {
-        self.state.ship.pos_m / self.state.ship.pos_m.length().max(1.0)
+        let g = sim::gravity_all(&self.params, self.state.time_s, self.state.ship.pos_m);
+        if g.length() > 1e-9 {
+            -g.normalize()
+        } else {
+            self.state.ship.pos_m / self.state.ship.pos_m.length().max(1.0)
+        }
     }
 
     fn attitude(&self) -> Attitude {
@@ -697,19 +705,18 @@ impl Game {
     /// The jump itself, at the flip's peak: the ship is placed at the
     /// plan's arrival, attitude kept, and the world carries on from there.
     fn jump(&mut self) {
-        let sun_dir = SUN_DIR.as_dvec3();
         let (pos, vel) =
             self.settings
                 .plan
-                .arrival(&self.params, &self.state.ship, self.state.time_s, sun_dir);
+                .arrival(&self.params, &self.state.ship, self.state.time_s);
         self.state.ship.pos_m = pos;
         self.state.ship.vel_mps = vel;
         self.state.ship.ang_vel_radps = DVec3::ZERO;
-        let centre =
-            self.settings
-                .plan
-                .dest
-                .centre(&self.params.planet, self.state.time_s, sun_dir);
+        let centre = self
+            .settings
+            .plan
+            .dest
+            .centre(&self.params, self.state.time_s);
         log::info!(
             "warp: arrived at {} — {:.0} km out, {:.0} m/s",
             self.settings.plan.dest.name(),
@@ -796,10 +803,11 @@ impl Game {
                 self.hoops_passed = self.hoops_passed.wrapping_add(1);
             }
             let before = self.state.ship;
+            let before_t = self.state.time_s;
             self.state = sim::step(&self.params, &self.state, controls);
-            self.felt_g = (sim::felt_acceleration(&self.params.planet, &before, &self.state.ship)
-                .length()
-                / 9.81) as f32;
+            self.felt_g =
+                (sim::felt_acceleration(&self.params, before_t, &before, &self.state.ship).length()
+                    / 9.81) as f32;
             self.accumulator -= sim::DT;
         }
 
@@ -857,7 +865,7 @@ impl Game {
             cam,
             centre_rel,
             self.params.planet.radius_m as f32,
-            SUN_DIR,
+            self.params.sun.dir.as_vec3(),
             &self.appearance,
             // Weather advances on sim time, so the sky is a function of the
             // world's clock rather than of how long the window has been open.
