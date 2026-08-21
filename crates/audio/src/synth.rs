@@ -50,6 +50,12 @@ pub struct Levels {
     /// the app derives the same edge for the HUD's visual alert, so what
     /// the pilot sees and what they hear cannot drift apart.
     pub supersonic: f32,
+    /// How many of the path's hoops have passed the ship, as a count. The
+    /// synth plays a soft "womp" on every increment — a cockpit sound, so
+    /// it lives outside the vacuum mute: in space the instruments are the
+    /// only thing that can make a noise, and this is the one that says
+    /// "another kilometre".
+    pub hoops: f32,
     /// Master gain 0..1.
     pub master: f32,
 }
@@ -64,6 +70,7 @@ impl Default for Levels {
             rcs: 0.0,
             entry: 0.0,
             supersonic: 0.0,
+            hoops: 0.0,
             master: 0.8,
         }
     }
@@ -186,6 +193,11 @@ pub struct Synth {
     sputter_lp: f32,
     roar_lp: f32,
     was_supersonic: bool,
+    /// The hoop womp: a counter latched from Levels, an envelope, a phase.
+    last_hoops: u32,
+    womp_env: f32,
+    womp_t: f32,
+    womp_phase: f32,
     // RCS thrusters.
     rcs: Smooth,
     rcs_phase: f32,
@@ -230,6 +242,10 @@ impl Synth {
             sputter_lp: 0.0,
             roar_lp: 0.0,
             was_supersonic: false,
+            last_hoops: 0,
+            womp_env: 0.0,
+            womp_t: 0.0,
+            womp_phase: 0.0,
             rcs: Smooth::new(sample_rate, 0.06),
             rcs_phase: 0.0,
             rcs_lp: 0.0,
@@ -262,6 +278,8 @@ impl Synth {
             self.eng_freq.value = Self::engine_pitch(levels.effort.clamp(0.0, 1.0));
             // A ship that WAKES supersonic did not just break the barrier.
             self.was_supersonic = levels.supersonic > 0.5;
+            // Nor did it just pass a hoop.
+            self.last_hoops = levels.hoops.max(0.0) as u32;
         }
 
         // Vacuum is a MASTER MUTE. Space is silent — all of it, engine
@@ -406,6 +424,32 @@ impl Synth {
             hiss = (self.brake_bp - self.brake_hp) * 0.30 * brake;
         }
 
+        // ---- the hoop womp ------------------------------------------------
+        // A cockpit sound, not a hull sound: calm, low, round. A sine that
+        // sinks from 150 Hz to 55 Hz over a third of a second under a soft
+        // envelope, with a quiet octave above for shape. It fires on every
+        // increment of the hoop count and nowhere else; it is not gated by
+        // the vacuum because it is not the air that makes it.
+        let hoops = levels.hoops.max(0.0) as u32;
+        if hoops != self.last_hoops {
+            self.last_hoops = hoops;
+            self.womp_env = 1.0;
+            self.womp_t = 0.0;
+            self.womp_phase = 0.0;
+        }
+        let mut womp = 0.0;
+        if self.womp_env > 1e-3 {
+            let dt = 1.0 / self.rate;
+            self.womp_t += dt;
+            let f = 55.0 + 95.0 * (-self.womp_t * 7.0).exp();
+            self.womp_phase = (self.womp_phase + f / self.rate).fract();
+            // Attack over 12 ms so it blooms rather than clicks.
+            let attack = (self.womp_t / 0.012).min(1.0);
+            let body = (tau * self.womp_phase).sin() + 0.25 * (tau * 2.0 * self.womp_phase).sin();
+            womp = body * self.womp_env * attack * 0.16;
+            self.womp_env *= (-dt / 0.22).exp();
+        }
+
         // ---- mix --------------------------------------------------------
         let master = self.master.next(levels.master.clamp(0.0, 1.0));
         // Silence multiplies everything the SHIP makes: past the atmosphere
@@ -416,8 +460,8 @@ impl Synth {
         // would silence the build-up at exactly the altitudes where it
         // happens (which is why the old mix was barely audible on entry).
         let mono = engine + hiss + rcs_out;
-        let l = (((mono + wind.0) * silence + entry_out) * master).tanh();
-        let r = (((mono + wind.1) * silence + entry_out) * master).tanh();
+        let l = (((mono + wind.0) * silence + entry_out + womp) * master).tanh();
+        let r = (((mono + wind.1) * silence + entry_out + womp) * master).tanh();
 
         // DC block: the asymmetric pulse and the clipped boom both bias the
         // mean, and a DC offset is inaudible right up until it thumps on
@@ -481,6 +525,7 @@ mod tests {
                 rcs: 1.0,
                 entry: 1.0,
                 supersonic: 1.0,
+                hoops: 0.0,
                 master: 1.0,
             },
             Levels {
@@ -491,6 +536,7 @@ mod tests {
                 rcs: 44.0,
                 entry: 7.0,
                 supersonic: 3.0,
+                hoops: 0.0,
                 master: 5.0,
             },
         ];
@@ -882,6 +928,38 @@ mod tests {
 
     /// Same seed, same inputs, same samples — the synth's own determinism,
     /// so a future golden-audio test is possible at all.
+    /// A hoop passing in clean vacuum makes a sound — the one cockpit voice
+    /// the mute does not touch — and a calm one: audible, soft, gone in
+    /// well under a second. Waking with a count already high is not a hoop.
+    #[test]
+    fn hoop_womp_sounds_in_vacuum_and_stays_calm() {
+        let mut synth = Synth::new(48_000.0, 0xC0FFEE);
+        let quiet = Levels {
+            vacuum: 1.0,
+            hoops: 3.0,
+            ..Default::default()
+        };
+        let mut buf = vec![0.0f32; 48_000 / 2 * 2];
+        synth.render(&quiet, &mut buf);
+        assert!(
+            rms(&buf) < 1e-4,
+            "silent vacuum was not silent: {}",
+            rms(&buf)
+        );
+        let next = Levels {
+            hoops: 4.0,
+            ..quiet
+        };
+        synth.render(&next, &mut buf);
+        let womp = rms(&buf);
+        assert!(womp > 0.01, "hoop made no sound: {womp}");
+        assert!(womp < 0.15, "hoop too loud to be calm: {womp}");
+        // Gone within a second; the count itself stays quiet.
+        synth.render(&next, &mut buf);
+        synth.render(&next, &mut buf);
+        assert!(rms(&buf) < 1e-3, "womp rang on: {}", rms(&buf));
+    }
+
     #[test]
     fn rendering_is_deterministic() {
         let levels = Levels {
@@ -892,6 +970,7 @@ mod tests {
             rcs: 0.4,
             entry: 0.3,
             supersonic: 0.0,
+            hoops: 0.0,
             master: 0.9,
         };
         let a = render_secs(levels, 0.25);

@@ -36,7 +36,7 @@ use farfall_render::{
     starfield::StarfieldPass,
     text::TextBitmap,
     thermal::{PlasmaPass, PlasmaUniforms, ThermalInputs, ThermalPass},
-    trajectory::{TrajectoryPass, TrajectoryUniforms, TrajectoryWorld},
+    trajectory::{TrajectoryPass, TrajectoryUniforms, TrajectoryWorld, MARK_SPACING_M},
     CameraFrame, FrameUniforms, SceneTarget,
 };
 use farfall_sim as sim;
@@ -496,6 +496,9 @@ struct Game {
     /// Metres of path flown, so the path's marks can stay fixed to the
     /// world. Presentation only: a wrapped f32 is fine for a phase.
     odometer_m: f64,
+    /// Hoops that have passed the ship while the path was showing: the
+    /// audio womps on every increment.
+    hoops_passed: u32,
     /// Which world we are looking at. Cycled with the number keys until there
     /// is a real settings panel.
     appearance: PlanetAppearance,
@@ -532,6 +535,7 @@ impl Game {
             menu: Menu::new(),
             horizon_fade: HorizonFade::new(),
             odometer_m: 0.0,
+            hoops_passed: 0,
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
         }
@@ -610,7 +614,13 @@ impl Game {
         self.input.update(frame_dt);
         let controls = self.input.controls(self.assist);
         while self.accumulator >= sim::DT {
+            let before = (self.odometer_m / MARK_SPACING_M as f64).floor();
             self.odometer_m += self.state.ship.vel_mps.length() * sim::DT;
+            let after = (self.odometer_m / MARK_SPACING_M as f64).floor();
+            // A hoop is a thing on the glass: unseen, it makes no sound.
+            if after > before && self.trajectory_vis > 0.5 {
+                self.hoops_passed = self.hoops_passed.wrapping_add(1);
+            }
             self.state = sim::step(&self.params, &self.state, controls);
             self.accumulator -= sim::DT;
         }
@@ -772,6 +782,7 @@ impl Game {
             rcs: controls.torque_body.abs().max_element() as f32,
             entry: entry as f32,
             supersonic: if self.is_supersonic() { 1.0 } else { 0.0 },
+            hoops: self.hoops_passed as f32,
             master: 0.8,
         }
     }
