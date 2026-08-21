@@ -108,7 +108,10 @@ const MACH1_MPS: f64 = 340.0;
 ///                           ground, which is where this renderer hurts)
 ///   FARFALL_BENCH_POS=x,y,z (benchmark only: park the ship at this world
 ///                           position, nose on the planet — e.g. behind the
-///                           Moon, to check what hides what)
+///                           Moon, to check what hides what); with
+///                           FARFALL_BENCH_VEL=x,y,z for the velocity
+///                           (else at rest) and FARFALL_BENCH_LOOK=x,y,z
+///                           for where the nose points (else the planet)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
 ///   FARFALL_MUTE=1         (no audio stream at all)
 ///   FARFALL_BENCH_WARP=s   (benchmark only: engage the wormhole drive s
@@ -590,8 +593,15 @@ impl Game {
             .and_then(|v| parse_vec3(&v))
         {
             state.ship.pos_m = pos;
-            state.ship.vel_mps = DVec3::ZERO;
-            state.ship.orient = look_at(-pos, DVec3::Y);
+            state.ship.vel_mps = std::env::var("FARFALL_BENCH_VEL")
+                .ok()
+                .and_then(|v| parse_vec3(&v))
+                .unwrap_or(DVec3::ZERO);
+            let aim = std::env::var("FARFALL_BENCH_LOOK")
+                .ok()
+                .and_then(|v| parse_vec3(&v))
+                .unwrap_or(-pos);
+            state.ship.orient = look_at(aim, DVec3::Y);
         }
         let now = Instant::now();
         Self {
@@ -681,6 +691,15 @@ impl Game {
             aspect,
             time_s,
         )
+    }
+
+    /// The path's world-fixed marks, from the odometer and the settings.
+    fn marks(&self) -> farfall_render::trajectory::Marks {
+        farfall_render::trajectory::Marks {
+            odometer_m: (self.odometer_m % 1.0e6) as f32,
+            hoops: self.settings.layout.shown(Instrument::Hoops),
+            hoop_scale: self.settings.hoop_size,
+        }
     }
 
     /// Gravity's up at the ship, world frame — whichever body is pulling.
@@ -1508,8 +1527,7 @@ impl ApplicationHandler for App {
                                         TRAJECTORY_HORIZON_S,
                                         game.trajectory_vis,
                                         gpu.scene.size().1 as f32,
-                                        (game.odometer_m % 1.0e6) as f32,
-                                        game.settings.layout.shown(Instrument::Hoops),
+                                        game.marks(),
                                     ),
                                 );
                                 {
@@ -1619,8 +1637,7 @@ impl ApplicationHandler for App {
                         TRAJECTORY_HORIZON_S,
                         game.trajectory_vis,
                         gpu.scene.size().1 as f32,
-                        (game.odometer_m % 1.0e6) as f32,
-                        game.settings.layout.shown(Instrument::Hoops),
+                        game.marks(),
                     ),
                 );
                 let (altitude_m, _) = game.altitude_vspeed();

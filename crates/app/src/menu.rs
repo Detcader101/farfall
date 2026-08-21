@@ -13,7 +13,7 @@
 
 use crate::cockpit::{Instrument, SAFE_EDGE_MAX};
 use crate::input::{is_reserved, key_name, Action};
-use crate::settings::{Settings, MSAA_CHOICES};
+use crate::settings::{Settings, HOOP_SIZE_MAX, HOOP_SIZE_MIN, MSAA_CHOICES};
 use farfall_render::text::TextBitmap;
 use winit::keyboard::KeyCode;
 
@@ -68,6 +68,7 @@ enum Item {
     BindBrake,
     Slot(Instrument),
     SafeEdge,
+    HoopSize,
     LookSens,
     Destination,
     SafeDist,
@@ -86,6 +87,7 @@ impl Item {
             Item::BindBrake => "AIR BRAKE",
             Item::Slot(i) => i.name(),
             Item::SafeEdge => "SAFE EDGE",
+            Item::HoopSize => "HOOP SIZE",
             Item::LookSens => "LOOK SENS",
             Item::Destination => "DESTINATION",
             Item::SafeDist => "SAFE DISTANCE",
@@ -104,6 +106,7 @@ impl Item {
             Item::BindBrake => key_name(s.bindings.brake).to_string(),
             Item::Slot(i) => s.layout.get(i).name().to_string(),
             Item::SafeEdge => format!("{:.0}%", s.layout.safe_edge * 100.0),
+            Item::HoopSize => format!("{:.2}x", s.hoop_size),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
             Item::Destination => s.plan.dest.name().to_string(),
             Item::SafeDist => format!("{:.2} R", s.plan.safe_radii),
@@ -166,6 +169,7 @@ impl Menu {
             Page::Cockpit => {
                 let mut v: Vec<Item> = Instrument::ALL.iter().map(|&i| Item::Slot(i)).collect();
                 v.push(Item::SafeEdge);
+                v.push(Item::HoopSize);
                 v
             }
             Page::Map => vec![Item::Destination, Item::SafeDist, Item::Engage],
@@ -321,6 +325,15 @@ impl Menu {
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Engage => MenuEvent::Nothing,
+            Item::HoopSize => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.hoop_size + step).clamp(HOOP_SIZE_MIN, HOOP_SIZE_MAX);
+                if (next - s.hoop_size).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.hoop_size = next;
+                MenuEvent::Changed(Change::Layout)
+            }
             Item::SafeEdge => {
                 let step = if forward { 0.01 } else { -0.01 };
                 let next = (s.layout.safe_edge + step).clamp(0.0, SAFE_EDGE_MAX);

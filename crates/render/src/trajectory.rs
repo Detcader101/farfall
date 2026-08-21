@@ -9,10 +9,24 @@ use glam::Vec3;
 /// vertex integrates its own prefix), so it is a real knob: 160 is ~300k
 /// cheap steps a frame.
 pub const SEGMENTS: u32 = 160;
-/// Distance rings along the path; must match RING_COUNT in the shader.
-pub const RINGS: u32 = 8;
+/// Distance rings along the path (three of them astern); must match
+/// RING_COUNT in the shader.
+pub const RINGS: u32 = 11;
+/// Hoop radius at one kilometre out, metres, before the pilot's scaling.
+pub const HOOP_RADIUS_M: f32 = 90.0;
 /// The world-fixed grid the marks sit on, metres of path.
 pub const MARK_SPACING_M: f32 = 1000.0;
+
+/// The world-fixed marks along the path, and how to draw them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Marks {
+    /// Metres of path the ship has flown, so the grid streams past.
+    pub odometer_m: f32,
+    /// Draw the hoops (the ribbon's dashes stay either way).
+    pub hoops: bool,
+    /// Hoop diameter as a multiple of the stock size.
+    pub hoop_scale: f32,
+}
 
 /// The world's laws, as the prediction needs them. Plain numbers copied
 /// from the sim's parameters by the app: the render crate never imports
@@ -55,8 +69,7 @@ impl TrajectoryUniforms {
         horizon_s: f32,
         visibility: f32,
         height_px: f32,
-        odometer_m: f32,
-        hoops: bool,
+        marks: Marks,
     ) -> Self {
         let (right, up, forward) = cam.basis();
         let c = world.centre_rel;
@@ -86,10 +99,10 @@ impl TrajectoryUniforms {
                 height_px.max(1.0),
             ],
             mark: [
-                odometer_m.max(0.0),
+                marks.odometer_m.max(0.0),
                 MARK_SPACING_M,
-                if hoops { 1.0 } else { 0.0 },
-                0.0,
+                if marks.hoops { 1.0 } else { 0.0 },
+                HOOP_RADIUS_M * marks.hoop_scale.clamp(0.1, 10.0),
             ],
         }
     }
@@ -230,9 +243,23 @@ mod tests {
             vel_world: Vec3::X * 700.0,
             cda_over_m: -0.1,
         };
-        let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0, -3.0, false);
+        let marks = Marks {
+            odometer_m: -3.0,
+            hoops: false,
+            hoop_scale: 0.0,
+        };
+        let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0, marks);
         assert_eq!(u.mark[0], 0.0);
         assert_eq!(u.mark[2], 0.0);
+        assert_eq!(u.mark[3], HOOP_RADIUS_M * 0.1);
+        let marks = Marks {
+            hoops: true,
+            hoop_scale: 2.0,
+            ..marks
+        };
+        let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0, marks);
+        assert_eq!(u.mark[2], 1.0);
+        assert_eq!(u.mark[3], HOOP_RADIUS_M * 2.0);
         assert!(u.centre_radius[3] >= 1.0);
         assert_eq!(u.phys[0], 0.0);
         assert!(u.phys[2] >= 1.0);

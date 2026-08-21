@@ -40,6 +40,7 @@ struct Traj {
     // x: odometer — metres of path the ship has already flown, so the marks
     // can stay fixed to the world and stream past. y: mark spacing, m.
     // z: 1 to draw the hoops (the ribbon's dashes stay either way).
+    // w: hoop radius at one kilometre, metres (the pilot's size setting).
     mark: vec4<f32>,
 }
 
@@ -60,21 +61,34 @@ const BORESIGHT_PX: f32 = 14.0;
 //   hoops   — the nearest RING_COUNT marks, within HOOPS_TO_M: true rings
 //             in the world. Radius grows as sqrt(d) so the far ones shrink
 //             gently and still read as depth; thickness grows with d so
-//             line weight holds on screen.
+//             line weight holds on screen. The nearest RINGS_ASTERN of them
+//             are BEHIND the ship: a hoop is not consumed when it reaches
+//             the ship, it passes around it — reddening as it closes, and
+//             fading out astern — so a glance back (or a sideways look in
+//             orbit) shows the path just flown as well as the one ahead.
 //   dashes  — beyond that, to DOTS_FROM_M: the ribbon breaks into dashes
 //             on the same grid.
 //   dots    — beyond, to the horizon or the edge of the view: dots, dimmer.
-const RING_COUNT: u32 = 8u;
+const RING_COUNT: u32 = 11u;
+const RINGS_ASTERN: u32 = 3u;
 const HOOPS_TO_M: f32 = 9000.0;
-const RING_RADIUS_M: f32 = 90.0;
 const DOTS_FROM_M: f32 = 40000.0;
+// A hoop never shrinks below the radius it would have this far out, so the
+// one passing the ship goes around the canopy rather than through it.
+const RING_NEAREST_M: f32 = 300.0;
 
-// Distance from the ship of world-fixed mark i: the first mark is the
-// next grid line ahead, the rest follow at the spacing.
+// Signed distance from the ship of world-fixed mark i: the first marks are
+// the grid lines just flown (negative, astern), then the next one ahead
+// and the rest following at the spacing.
 fn ring_distance(i: u32) -> f32 {
     let spacing = max(tj.mark.y, 1.0);
     let ahead = spacing - fract(tj.mark.x / spacing) * spacing;
-    return ahead + f32(i) * spacing;
+    return ahead + (f32(i) - f32(RINGS_ASTERN)) * spacing;
+}
+
+// Hoop radius for a mark `d` metres out (either way), metres.
+fn ring_radius(d: f32) -> f32 {
+    return max(tj.mark.w, 1.0) * sqrt(max(abs(d), RING_NEAREST_M) / 1000.0);
 }
 
 struct VsOut {
@@ -84,8 +98,9 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     // x: 0 ribbon, 1 reticle, 2 boresight, 3 distance ring. y: 1 if the
     // path hits the ground before this point. z: fraction of the horizon
-    // (ribbon) or of the ring count (rings).
-    @location(1) kind: vec3<f32>,
+    // (ribbon) or of the hoop range (rings). w: the hoop's signed distance
+    // from the ship in mark spacings (negative astern).
+    @location(1) kind: vec4<f32>,
 }
 
 // Time at the start of segment k: quadratic spacing.
@@ -214,7 +229,7 @@ fn quad_vertex(ndc: vec2<f32>, px: f32, corner: u32, show: bool, kind: f32) -> V
     var out: VsOut;
     out.pos = vec4<f32>(ndc + local * size * vec2<f32>(1.0 / aspect, 1.0), 0.0, 1.0);
     out.uv = local;
-    out.kind = vec3<f32>(kind, 0.0, 0.0);
+    out.kind = vec4<f32>(kind, 0.0, 0.0, 0.0);
     return out;
 }
 
@@ -234,27 +249,43 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
         );
         let local = corners[corner];
         let ring_d = ring_distance(i);
-        let ring = integrate_to_distance(ring_d);
-        let in_range = ring_d < HOOPS_TO_M && tj.mark.z > 0.5;
+        let spacing = max(tj.mark.y, 1.0);
+        var ring: RingPoint;
+        if (ring_d >= 0.0) {
+            ring = integrate_to_distance(ring_d);
+        } else {
+            // Astern: the path just flown, straight back along the velocity
+            // — a few kilometres of it is a line to any eye.
+            let vdir = normalize(tj.vel.xyz);
+            ring = RingPoint(vdir * ring_d, vdir, true);
+        }
+        let in_range = ring_d < HOOPS_TO_M && tj.mark.z > 0.5 && length(tj.vel.xyz) > 1.0;
         var out: VsOut;
         out.uv = local;
-        out.kind = vec3<f32>(3.0, 0.0, ring_d / HOOPS_TO_M);
+        out.kind = vec4<f32>(3.0, 0.0, max(ring_d, 0.0) / HOOPS_TO_M, ring_d / spacing);
         // A basis across the path: up-ish first, then the cross product.
         let cref = tj.centre_radius.xyz;
-        var side = cross(ring.dir, normalize(-cref + ring.pos * 0.0));
+        var side = cross(ring.dir, normalize(-cref));
         if (dot(side, side) < 1e-6) {
             side = cross(ring.dir, vec3<f32>(1.0, 0.0, 0.0));
         }
         side = normalize(side);
         let upish = cross(side, ring.dir);
-        let ring_r = RING_RADIUS_M * sqrt(ring_d / 1000.0);
+        let ring_r = ring_radius(ring_d);
         let world = ring.pos + (side * local.x + upish * local.y) * ring_r;
-        let pr = project(world);
-        if (!ring.ok || !in_range || pr.z <= 1.0 || dot(ring.pos, tj.forward.xyz) <= 1.0) {
+        if (!ring.ok || !in_range) {
             out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
             return out;
         }
-        out.pos = vec4<f32>(pr.xy, 0.0, 1.0);
+        // Homogeneous, so the hardware clips the hoop against the near plane
+        // rather than the whole quad vanishing the moment one corner passes
+        // the camera — which is exactly when a hoop is going around us.
+        let x = dot(world, tj.right.xyz);
+        let y = dot(world, tj.up.xyz);
+        let z = dot(world, tj.forward.xyz);
+        let tan_half = tj.params.x;
+        let aspect = tj.params.y;
+        out.pos = vec4<f32>(x / (tan_half * aspect), y / tan_half, z * 0.5, z);
         return out;
     }
 
@@ -289,7 +320,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     if (pa.z <= 1.0 || pb.z <= 1.0) {
         out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
         out.uv = vec2<f32>(0.0);
-        out.kind = vec3<f32>(0.0, hit, 0.0);
+        out.kind = vec4<f32>(0.0, hit, 0.0, 0.0);
         return out;
     }
     // Perpendicular in aspect-corrected screen space, scaled to pixels.
@@ -302,7 +333,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let offset = perp * half_px * side * vec2<f32>(1.0 / aspect, 1.0);
     out.pos = vec4<f32>(here.xy + offset, 0.0, 1.0);
     out.uv = vec2<f32>(side, select(a.dist, b.dist, end == 1u));
-    out.kind = vec3<f32>(0.0, hit, f32(k + end) / f32(n));
+    out.kind = vec4<f32>(0.0, hit, f32(k + end) / f32(n), 0.0);
     return out;
 }
 
@@ -346,7 +377,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let aa = max(fwidth(r) * 1.2, 0.01);
         let thickness = 0.02 + 0.09 * clamp(in.kind.z, 0.0, 1.0);
         let hoop = 1.0 - smoothstep(0.0, aa, abs(r - (0.92 - thickness)) - thickness);
-        colour = cyan * hoop * 0.8;
+        // Cyan out ahead, red by the time it is on us, gone a few marks
+        // astern: the colour is the hoop's signed distance in spacings.
+        let red = vec3<f32>(1.0, 0.18, 0.12);
+        let d = in.kind.w;
+        let closing = 1.0 - smoothstep(0.0, 1.5, d);
+        let tint = mix(cyan, red, closing);
+        let astern = 1.0 - smoothstep(0.0, f32(RINGS_ASTERN), -d);
+        colour = tint * hoop * 0.8 * astern;
     } else {
         // Reticles: SDF rings and ticks in the quad's local space.
         let r = length(in.uv);

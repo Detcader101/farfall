@@ -37,7 +37,7 @@ so it handles like a VTOL: hold the horizon and the orbit holds, pitch down and
 you descend. Switch it **off** and the ship is a pure ballistic body: attitude
 and velocity are independent, and orbits are conserved exactly.
 
-**Cockpit**: every instrument — speedo, altimeter, gyro, G meter, head-up horizon and its pitch ladder, predicted path and its hoops (and their sound), readout — can be moved between slots on the glass or switched off from the menu's COCKPIT page, and a SAFE EDGE pulls everything in from the rim.
+**Cockpit**: every instrument — speedo, altimeter, gyro, G meter, head-up horizon and its pitch ladder, predicted path and its hoops (and their sound), readout — can be moved between slots on the glass or switched off from the menu's COCKPIT page, and a SAFE EDGE pulls everything in from the rim. HOOP SIZE scales the path's hoops; they pass around the ship and fade red astern, so a look back shows the path just flown.
 
 **Runtime knobs** (env vars, no rebuild needed; they override the settings file):
 
@@ -48,7 +48,7 @@ and velocity are independent, and orbits are conserved exactly.
 | `FARFALL_VSYNC=off` | on | Uncap the frame rate to see real headroom |
 | `FARFALL_GPU_SYNC=1` | off | Profiling: block on GPU completion so timings measure the GPU, not submission |
 | `FARFALL_SKIP=starfield,plasma` | none | Profiling: leave named passes out (`starfield`, `bodies`, `planet`, `plasma`, `trajectory`, `gauge`, `hud`, `blit`) so each one's cost shows up as its absence |
-| `FARFALL_BENCH=1` | off | Freeze the sim at spawn (`FARFALL_BENCH_ALT`, `FARFALL_BENCH_SECONDS`) for comparable measurements; exits by itself |
+| `FARFALL_BENCH=1` | off | Freeze the sim at spawn (`FARFALL_BENCH_ALT`, `FARFALL_BENCH_SECONDS`) for comparable measurements; exits by itself. `FARFALL_BENCH_POS=x,y,z` parks the ship anywhere (with `FARFALL_BENCH_VEL` and `FARFALL_BENCH_LOOK`) to capture a scene |
 
 Frame stats appear on-screen and are summarised to the log every 5 s at
 `RUST_LOG=info`. The number that matters is the **1% low**, not the average —

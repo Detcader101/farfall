@@ -11,6 +11,10 @@ use crate::input::{key_from_name, key_name, Action, Bindings};
 use crate::warp::{Destination, Plan};
 use std::path::PathBuf;
 
+/// Hoop size range, as a multiple of the stock diameter.
+pub const HOOP_SIZE_MIN: f32 = 0.25;
+pub const HOOP_SIZE_MAX: f32 = 4.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
     pub msaa: u32,
@@ -20,6 +24,8 @@ pub struct Settings {
     pub layout: Layout,
     /// Freelook: radians per mouse count, relative to the default.
     pub look_sensitivity: f32,
+    /// Hoop diameter, as a multiple of the stock size.
+    pub hoop_size: f32,
     /// The wormhole drive's destination and safe distance.
     pub plan: Plan,
 }
@@ -33,6 +39,7 @@ impl Default for Settings {
             bindings: Bindings::default(),
             layout: Layout::default(),
             look_sensitivity: 1.0,
+            hoop_size: 1.0,
             plan: Plan::default(),
         }
     }
@@ -123,6 +130,13 @@ impl Settings {
                         }
                     }
                 }
+                "ui.hoop-size" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.hoop_size = f.clamp(HOOP_SIZE_MIN, HOOP_SIZE_MAX);
+                        }
+                    }
+                }
                 "control.boost" => {
                     if let Some(key) = key_from_name(v) {
                         s.bindings.bind_boost(key);
@@ -191,6 +205,7 @@ impl Settings {
             "control.look-sens = {:.2}\n",
             self.look_sensitivity
         ));
+        out.push_str(&format!("ui.hoop-size = {:.2}\n", self.hoop_size));
         out.push_str(&format!("warp.destination = {}\n", self.plan.dest.key()));
         out.push_str(&format!("warp.safe-radii = {:.3}\n", self.plan.safe_radii));
         for i in Instrument::ALL {
@@ -229,6 +244,7 @@ mod tests {
         s.layout.set(Instrument::Horizon, Slot::Off);
         s.layout.set_safe_edge(0.07);
         s.look_sensitivity = 1.75;
+        s.hoop_size = 2.5;
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);
         assert_eq!(Settings::parse(&s.render()), s);
