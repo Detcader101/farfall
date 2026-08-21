@@ -344,6 +344,10 @@ struct Game {
     mach_alert: MachAlert,
     /// Last wall-clock frame time, clamped, for presentation-side integrators.
     frame_dt: f32,
+    /// The predicted path on the glass: T toggles it, and it fades rather
+    /// than pops, like every other instrument.
+    show_trajectory: bool,
+    trajectory_vis: f32,
     /// Which world we are looking at. Cycled with the number keys until there
     /// is a real settings panel.
     appearance: PlanetAppearance,
@@ -375,6 +379,8 @@ impl Game {
             holo_sway: HoloSway::new(),
             mach_alert: MachAlert::new(),
             frame_dt: 0.0,
+            show_trajectory: true,
+            trajectory_vis: 1.0,
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
         }
@@ -404,6 +410,9 @@ impl Game {
             .update(frame_dt.min(0.25) as f32, w_body.x as f32, w_body.y as f32);
         self.mach_alert
             .update(frame_dt.min(0.25) as f32, self.is_supersonic());
+        let target = if self.show_trajectory { 1.0 } else { 0.0 };
+        let k = 1.0 - (-(frame_dt.min(0.25) as f32) / 0.18).exp();
+        self.trajectory_vis += (target - self.trajectory_vis) * k;
 
         if self.frozen {
             return;
@@ -838,6 +847,13 @@ impl ApplicationHandler for App {
                         gpu.scene.set_scale(next);
                         log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
                     }
+                    KeyCode::KeyT if pressed && !event.repeat => {
+                        game.show_trajectory = !game.show_trajectory;
+                        log::info!(
+                            "trajectory {}",
+                            if game.show_trajectory { "ON" } else { "OFF" }
+                        );
+                    }
                     KeyCode::KeyX if pressed && !event.repeat => {
                         game.assist = !game.assist;
                         log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
@@ -975,7 +991,7 @@ impl ApplicationHandler for App {
                                         &cam,
                                         &game.trajectory_world(),
                                         TRAJECTORY_HORIZON_S,
-                                        1.0,
+                                        game.trajectory_vis,
                                         gpu.scene.size().1 as f32,
                                     ),
                                 );
@@ -1074,7 +1090,7 @@ impl ApplicationHandler for App {
                         &cam,
                         &game.trajectory_world(),
                         TRAJECTORY_HORIZON_S,
-                        1.0,
+                        game.trajectory_vis,
                         gpu.scene.size().1 as f32,
                     ),
                 );

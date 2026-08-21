@@ -47,21 +47,30 @@ const SUBSTEPS: u32 = 6u;
 const RIBBON_PX: f32 = 3.0;
 const RETICLE_PX: f32 = 22.0;
 const BORESIGHT_PX: f32 = 14.0;
-// Distance along the path is marked in three sectors, all on the same even
-// kilometre grid, so the eye can count without the screen filling up:
+// Distance along the path is marked for DEPTH first. Perspective shrinks
+// everything as 1/d, so an even grid bunches up into a smear a few degrees
+// from the prograde point; a geometric one — each mark RING_STEP times as
+// far as the last — lands the marks evenly on the glass. Three sectors on
+// that one rhythm:
 //
-//   hoops   — the first RING_COUNT kilometres: a true 160 m ring in the
-//             world every kilometre, each thicker than the last so the far
-//             ones stay readable as perspective shrinks them.
-//   dashes  — beyond hoop range, to DASH_UNTIL_M: the ribbon itself breaks
-//             into kilometre dashes.
-//   dots    — beyond that, to the horizon or the edge of the view: dots on
-//             the same grid, dimmer, so the line still carries its spacing
-//             all the way out.
+//   hoops   — RING_COUNT true rings in the world, from RING_FIRST_M out.
+//             Radius grows as sqrt(d): far hoops shrink, but gently, so
+//             they still read as depth without vanishing. Thickness grows
+//             with d, so line weight stays readable on screen.
+//   dashes  — beyond the last hoop: the ribbon breaks into dashes on the
+//             same geometric rhythm (even in log-distance).
+//   dots    — beyond DOTS_FROM_M, to the horizon or the edge of the view:
+//             dots on that rhythm, dimmer.
 const RING_COUNT: u32 = 8u;
-const RING_SPACING_M: f32 = 1000.0;
-const RING_RADIUS_M: f32 = 160.0;
-const DASH_UNTIL_M: f32 = 40000.0;
+const RING_FIRST_M: f32 = 600.0;
+const RING_STEP: f32 = 1.7;
+const RING_RADIUS_M: f32 = 90.0;
+const DOTS_FROM_M: f32 = 80000.0;
+
+// Distance of hoop i.
+fn ring_distance(i: u32) -> f32 {
+    return RING_FIRST_M * pow(RING_STEP, f32(i));
+}
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -219,7 +228,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
             vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
         );
         let local = corners[corner];
-        let ring = integrate_to_distance(f32(i + 1u) * RING_SPACING_M);
+        let ring_d = ring_distance(i);
+        let ring = integrate_to_distance(ring_d);
         var out: VsOut;
         out.uv = local;
         out.kind = vec3<f32>(3.0, 0.0, f32(i) / f32(RING_COUNT));
@@ -231,7 +241,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
         }
         side = normalize(side);
         let upish = cross(side, ring.dir);
-        let world = ring.pos + (side * local.x + upish * local.y) * RING_RADIUS_M;
+        let ring_r = RING_RADIUS_M * sqrt(ring_d / 1000.0);
+        let world = ring.pos + (side * local.x + upish * local.y) * ring_r;
         let pr = project(world);
         if (!ring.ok || pr.z <= 1.0 || dot(ring.pos, tj.forward.xyz) <= 1.0) {
             out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
@@ -305,16 +316,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // beyond them, kilometre dots beyond that. Amber once the ground is
         // in it.
         let edge = 1.0 - smoothstep(0.35, 1.0, abs(in.uv.x));
-        let dist = in.uv.y;
-        let grid = fract(dist / RING_SPACING_M);
-        let hoops_end = f32(RING_COUNT) * RING_SPACING_M;
-        // Duty cycle of the lit part of each kilometre: all of it under the
-        // hoops, half of it dashed, a fifth of it dotted.
-        let duty = select(select(0.2, 0.5, dist < DASH_UNTIL_M), 1.0, dist < hoops_end);
+        let dist = max(in.uv.y, 1.0);
+        // The geometric rhythm, four marks per hoop step, even in log-distance.
+        let grid = fract(log(dist / RING_FIRST_M) / log(RING_STEP) * 4.0);
+        let hoops_end = ring_distance(RING_COUNT - 1u);
+        // Duty cycle of the lit part of each mark: all of it under the
+        // hoops, half of it dashed, a quarter of it dotted.
+        let duty = select(select(0.25, 0.5, dist < DOTS_FROM_M), 1.0, dist < hoops_end);
         let soft = fwidth(grid) * 1.5;
         let lit = 1.0 - smoothstep(duty - soft, duty + soft, grid);
         let pattern = select(lit, 1.0, duty >= 1.0);
-        let level = select(select(0.55, 0.8, dist < DASH_UNTIL_M), 1.0, dist < hoops_end);
+        let level = select(select(0.55, 0.8, dist < DOTS_FROM_M), 1.0, dist < hoops_end);
         let fade = 1.0 - in.kind.z * 0.5;
         let tint = mix(cyan, amber, in.kind.y);
         colour = tint * edge * pattern * level * fade * 0.9;
@@ -325,7 +337,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // readable.
         let r = length(in.uv);
         let aa = max(fwidth(r) * 1.2, 0.01);
-        let thickness = 0.015 + 0.10 * in.kind.z;
+        let thickness = 0.02 + 0.09 * in.kind.z;
         let hoop = 1.0 - smoothstep(0.0, aa, abs(r - (0.92 - thickness)) - thickness);
         colour = cyan * hoop * 0.8;
     } else {
