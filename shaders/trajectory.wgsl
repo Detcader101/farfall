@@ -47,18 +47,26 @@ const SUBSTEPS: u32 = 6u;
 const RIBBON_PX: f32 = 3.0;
 const RETICLE_PX: f32 = 22.0;
 const BORESIGHT_PX: f32 = 14.0;
-// Distance rings: one every RING_SPACING_M of path, RING_COUNT of them,
-// RING_RADIUS_M across — true metres, so perspective sizes them. That
-// shrinking is the depth cue: a flat ribbon on the glass has no distance
-// in it, a row of hoops receding does.
-const RING_COUNT: u32 = 30u;
+// Distance along the path is marked in three sectors, all on the same even
+// kilometre grid, so the eye can count without the screen filling up:
+//
+//   hoops   — the first RING_COUNT kilometres: a true 160 m ring in the
+//             world every kilometre, each thicker than the last so the far
+//             ones stay readable as perspective shrinks them.
+//   dashes  — beyond hoop range, to DASH_UNTIL_M: the ribbon itself breaks
+//             into kilometre dashes.
+//   dots    — beyond that, to the horizon or the edge of the view: dots on
+//             the same grid, dimmer, so the line still carries its spacing
+//             all the way out.
+const RING_COUNT: u32 = 8u;
 const RING_SPACING_M: f32 = 1000.0;
 const RING_RADIUS_M: f32 = 160.0;
+const DASH_UNTIL_M: f32 = 40000.0;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     // x: across the ribbon -1..1 (or local uv for the reticles),
-    // y: along — seconds into the future.
+    // y: along — metres of path.
     @location(0) uv: vec2<f32>,
     // x: 0 ribbon, 1 reticle, 2 boresight, 3 distance ring. y: 1 if the
     // path hits the ground before this point. z: fraction of the horizon
@@ -76,6 +84,8 @@ fn seg_time(k: f32) -> f32 {
 struct Point {
     pos: vec3<f32>,
     hit: f32,
+    // Metres of path travelled to get here.
+    dist: f32,
 }
 
 // Integrate the ballistic path to the start of segment `k`. Semi-implicit
@@ -87,6 +97,7 @@ fn integrate(k: u32) -> Point {
     let radius = tj.centre_radius.w;
     let mu = tj.phys.x;
     var hit = 0.0;
+    var dist = 0.0;
     for (var seg = 0u; seg < k; seg += 1u) {
         let dt = (seg_time(f32(seg + 1u)) - seg_time(f32(seg))) / f32(SUBSTEPS);
         for (var s = 0u; s < SUBSTEPS; s += 1u) {
@@ -104,6 +115,7 @@ fn integrate(k: u32) -> Point {
             }
             v += a * dt;
             p += v * dt;
+            dist += length(v) * dt;
             if (length(p - c) < radius) {
                 // Land on the surface, and stay there.
                 p = c + normalize(p - c) * radius;
@@ -111,7 +123,7 @@ fn integrate(k: u32) -> Point {
             }
         }
     }
-    return Point(p, hit);
+    return Point(p, hit, dist);
 }
 
 struct RingPoint {
@@ -272,7 +284,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let half_px = RIBBON_PX * 0.5 * 2.0 / h;
     let offset = perp * half_px * side * vec2<f32>(1.0 / aspect, 1.0);
     out.pos = vec4<f32>(here.xy + offset, 0.0, 1.0);
-    out.uv = vec2<f32>(side, seg_time(f32(k + end)));
+    out.uv = vec2<f32>(side, select(a.dist, b.dist, end == 1u));
     out.kind = vec3<f32>(0.0, hit, f32(k + end) / f32(n));
     return out;
 }
@@ -289,24 +301,33 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var colour = vec3<f32>(0.0);
 
     if (in.kind.x < 0.5) {
-        // Ribbon: soft edges, dashes marching into the future so direction
-        // reads even on a straight line, fading toward the horizon. Amber
-        // once the ground is in it.
+        // Ribbon: soft edges; solid through the hoops, kilometre dashes
+        // beyond them, kilometre dots beyond that. Amber once the ground is
+        // in it.
         let edge = 1.0 - smoothstep(0.35, 1.0, abs(in.uv.x));
-        let dash = 0.55 + 0.45 * smoothstep(0.3, 0.7, fract(in.uv.y * 0.25 - time * 0.4));
-        let fade = 1.0 - in.kind.z * 0.7;
+        let dist = in.uv.y;
+        let grid = fract(dist / RING_SPACING_M);
+        let hoops_end = f32(RING_COUNT) * RING_SPACING_M;
+        // Duty cycle of the lit part of each kilometre: all of it under the
+        // hoops, half of it dashed, a fifth of it dotted.
+        let duty = select(select(0.2, 0.5, dist < DASH_UNTIL_M), 1.0, dist < hoops_end);
+        let soft = fwidth(grid) * 1.5;
+        let lit = 1.0 - smoothstep(duty - soft, duty + soft, grid);
+        let pattern = select(lit, 1.0, duty >= 1.0);
+        let level = select(select(0.55, 0.8, dist < DASH_UNTIL_M), 1.0, dist < hoops_end);
+        let fade = 1.0 - in.kind.z * 0.5;
         let tint = mix(cyan, amber, in.kind.y);
-        colour = tint * edge * dash * fade * 0.9;
+        colour = tint * edge * pattern * level * fade * 0.9;
     } else if (in.kind.x > 2.5) {
-        // Distance ring: a thin hoop, fading with distance; every fifth
-        // kilometre brighter so the count can be kept by eye.
+        // Distance ring: a hoop that gets thicker with every kilometre, so
+        // the far ones hold their weight on screen as perspective shrinks
+        // them — thickness in metres grows, thickness in pixels stays
+        // readable.
         let r = length(in.uv);
         let aa = max(fwidth(r) * 1.2, 0.01);
-        let hoop = 1.0 - smoothstep(0.0, aa, abs(r - 0.9) - 0.02);
-        let index = round(in.kind.z * f32(RING_COUNT));
-        let major = select(0.55, 1.0, fract((index + 1.0) / 5.0) < 0.01);
-        let fade = 1.0 - in.kind.z * 0.75;
-        colour = cyan * hoop * major * fade * 0.8;
+        let thickness = 0.015 + 0.10 * in.kind.z;
+        let hoop = 1.0 - smoothstep(0.0, aa, abs(r - (0.92 - thickness)) - thickness);
+        colour = cyan * hoop * 0.8;
     } else {
         // Reticles: SDF rings and ticks in the quad's local space.
         let r = length(in.uv);

@@ -10,7 +10,7 @@ use glam::Vec3;
 /// cheap steps a frame.
 pub const SEGMENTS: u32 = 160;
 /// Distance rings along the path; must match RING_COUNT in the shader.
-pub const RINGS: u32 = 30;
+pub const RINGS: u32 = 8;
 
 /// The world's laws, as the prediction needs them. Plain numbers copied
 /// from the sim's parameters by the app: the render crate never imports
