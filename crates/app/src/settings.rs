@@ -94,6 +94,11 @@ impl Settings {
                     }
                 }
                 "graphics.vsync" => s.vsync = matches!(v, "on" | "true" | "1"),
+                "ui.safe-edge" => {
+                    if let Ok(f) = v.trim_end_matches('%').parse::<f32>() {
+                        s.layout.set_safe_edge(f / 100.0);
+                    }
+                }
                 "control.boost" => {
                     if let Some(key) = key_from_name(v) {
                         s.bindings.bind_boost(key);
@@ -161,6 +166,10 @@ impl Settings {
         for i in Instrument::ALL {
             out.push_str(&format!("ui.{} = {}\n", i.key(), self.layout.get(i).key()));
         }
+        out.push_str(&format!(
+            "ui.safe-edge = {:.0}%\n",
+            self.layout.safe_edge * 100.0
+        ));
         out
     }
 }
@@ -188,6 +197,7 @@ mod tests {
         s.bindings.bind_boost(KeyCode::ControlLeft);
         s.layout.set(Instrument::Gyro, Slot::TopCentre);
         s.layout.set(Instrument::Horizon, Slot::Off);
+        s.layout.set_safe_edge(0.07);
         assert_eq!(Settings::parse(&s.render()), s);
     }
 

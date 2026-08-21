@@ -1191,7 +1191,7 @@ impl ApplicationHandler for App {
                                     gpu.hud.update(
                                         &gpu.queue,
                                         &gpu.text,
-                                        HUD_TEXT_ANCHOR,
+                                        game.settings.layout.inset(HUD_TEXT_ANCHOR),
                                         hud_scale * 2.0 / sh as f32,
                                         aspect,
                                         sh as f32,
@@ -1337,7 +1337,7 @@ impl ApplicationHandler for App {
                 gpu.hud.update(
                     &gpu.queue,
                     &gpu.text,
-                    HUD_TEXT_ANCHOR,
+                    game.settings.layout.inset(HUD_TEXT_ANCHOR),
                     px_canopy,
                     aspect,
                     gpu.config.height as f32,

@@ -11,7 +11,7 @@
 //! cancels). Every change is applied at once and written to the settings
 //! file; there is no "save" — the file is the state.
 
-use crate::cockpit::Instrument;
+use crate::cockpit::{Instrument, SAFE_EDGE_MAX};
 use crate::input::{is_reserved, key_name, Action};
 use crate::settings::{Settings, MSAA_CHOICES};
 use farfall_render::text::TextBitmap;
@@ -63,6 +63,7 @@ enum Item {
     BindBoost,
     BindBrake,
     Slot(Instrument),
+    SafeEdge,
 }
 
 impl Item {
@@ -76,6 +77,7 @@ impl Item {
             Item::BindBoost => "BOOST",
             Item::BindBrake => "AIR BRAKE",
             Item::Slot(i) => i.name(),
+            Item::SafeEdge => "SAFE EDGE",
         }
     }
 
@@ -89,6 +91,7 @@ impl Item {
             Item::BindBoost => key_name(s.bindings.boost).to_string(),
             Item::BindBrake => key_name(s.bindings.brake).to_string(),
             Item::Slot(i) => s.layout.get(i).name().to_string(),
+            Item::SafeEdge => format!("{:.0}%", s.layout.safe_edge * 100.0),
         }
     }
 
@@ -143,7 +146,11 @@ impl Menu {
                 v.push(Item::BindBrake);
                 v
             }
-            Page::Cockpit => Instrument::ALL.iter().map(|&i| Item::Slot(i)).collect(),
+            Page::Cockpit => {
+                let mut v: Vec<Item> = Instrument::ALL.iter().map(|&i| Item::Slot(i)).collect();
+                v.push(Item::SafeEdge);
+                v
+            }
         }
     }
 
@@ -263,6 +270,15 @@ impl Menu {
             }
             Item::Slot(i) => {
                 s.layout.cycle(i, forward);
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::SafeEdge => {
+                let step = if forward { 0.01 } else { -0.01 };
+                let next = (s.layout.safe_edge + step).clamp(0.0, SAFE_EDGE_MAX);
+                if (next - s.layout.safe_edge).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.layout.set_safe_edge(next);
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Quit | Item::Bind(_) | Item::BindBoost | Item::BindBrake => MenuEvent::Nothing,

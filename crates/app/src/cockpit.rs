@@ -123,15 +123,17 @@ impl Slot {
             .find(|s| s.key() == key)
     }
 
-    /// Canopy anchor, NDC. `None` for the overlay states.
+    /// Canopy anchor, NDC, before the safe-edge inset. Out near the rim of
+    /// the glass: the middle of the view is for the world. `None` for the
+    /// overlay states.
     pub fn anchor(self) -> Option<[f32; 2]> {
         match self {
-            Slot::BottomLeft => Some([-0.52, -0.48]),
-            Slot::BottomCentre => Some([0.0, -0.58]),
-            Slot::BottomRight => Some([0.52, -0.48]),
-            Slot::MidLeft => Some([-0.80, 0.0]),
-            Slot::MidRight => Some([0.80, 0.0]),
-            Slot::TopCentre => Some([0.0, 0.62]),
+            Slot::BottomLeft => Some([-0.78, -0.64]),
+            Slot::BottomCentre => Some([0.0, -0.74]),
+            Slot::BottomRight => Some([0.78, -0.64]),
+            Slot::MidLeft => Some([-0.88, 0.02]),
+            Slot::MidRight => Some([0.88, 0.02]),
+            Slot::TopCentre => Some([0.0, 0.74]),
             Slot::On | Slot::Off => None,
         }
     }
@@ -141,16 +143,22 @@ impl Slot {
     }
 }
 
-/// Instrument → slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Instrument → slot, and the safe edge: a fraction of the screen kept
+/// clear at the rim, for a display whose edges are hidden or bent. Every
+/// anchor is pulled toward the centre by it.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
     slots: [Slot; Instrument::ALL.len()],
+    pub safe_edge: f32,
 }
+
+pub const SAFE_EDGE_MAX: f32 = 0.30;
 
 impl Default for Layout {
     fn default() -> Self {
         let mut l = Self {
             slots: [Slot::Off; Instrument::ALL.len()],
+            safe_edge: 0.0,
         };
         l.set(Instrument::Speed, Slot::BottomRight);
         l.set(Instrument::Altitude, Slot::BottomLeft);
@@ -188,9 +196,23 @@ impl Layout {
         self.set(i, choices[next]);
     }
 
-    /// Anchor for a dial, if it is shown.
+    /// Anchor for a dial, if it is shown, inset by the safe edge.
     pub fn anchor(&self, i: Instrument) -> Option<[f32; 2]> {
-        self.get(i).anchor()
+        self.get(i).anchor().map(|a| self.inset(a))
+    }
+
+    /// Pull a canopy point toward the centre by the safe edge.
+    pub fn inset(&self, a: [f32; 2]) -> [f32; 2] {
+        let k = 1.0 - self.safe_edge.clamp(0.0, SAFE_EDGE_MAX);
+        [a[0] * k, a[1] * k]
+    }
+
+    pub fn set_safe_edge(&mut self, f: f32) {
+        self.safe_edge = if f.is_finite() {
+            f.clamp(0.0, SAFE_EDGE_MAX)
+        } else {
+            0.0
+        };
     }
 
     pub fn shown(&self, i: Instrument) -> bool {
@@ -230,6 +252,32 @@ mod tests {
         assert!(!l.shown(Instrument::Horizon));
         l.cycle(Instrument::Horizon, true);
         assert!(l.shown(Instrument::Horizon));
+    }
+
+    #[test]
+    fn safe_edge_pulls_anchors_inward_and_is_bounded() {
+        let mut l = Layout::default();
+        let a = l.anchor(Instrument::Speed).unwrap();
+        l.set_safe_edge(0.1);
+        let b = l.anchor(Instrument::Speed).unwrap();
+        assert!(b[0].abs() < a[0].abs() && b[1].abs() < a[1].abs());
+        assert!((b[0] - a[0] * 0.9).abs() < 1e-6);
+        l.set_safe_edge(9.0);
+        assert_eq!(l.safe_edge, SAFE_EDGE_MAX);
+        l.set_safe_edge(f32::NAN);
+        assert_eq!(l.safe_edge, 0.0);
+    }
+
+    #[test]
+    fn dials_sit_near_the_rim() {
+        for s in Slot::DIALS {
+            if let Some(a) = s.anchor() {
+                assert!(
+                    a[0].abs().max(a[1].abs()) >= 0.74,
+                    "{s:?} is too central: {a:?}"
+                );
+            }
+        }
     }
 
     #[test]
