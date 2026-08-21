@@ -29,6 +29,7 @@ use farfall_render::{
     attitude::{gyro_pass, horizon_pass, Attitude, GyroUniforms, HorizonFade, HorizonUniforms},
     bake::BakedMaps,
     blit::BlitPass,
+    bodies::{moon_position, BodiesPass, BodiesUniforms},
     gauge::{
         gauge_pass, AltitudeFade, GForceFade, GaugeFade, GaugePass, GaugeUniforms, HoloSway,
         MachAlert,
@@ -100,7 +101,7 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
 ///   FARFALL_MUTE=1         (no audio stream at all)
 ///   FARFALL_SKIP=a,b       (profiling only: leave out passes by name —
-///                           starfield, planet, plasma, trajectory, gauge,
+///                           starfield, bodies, planet, plasma, trajectory, gauge,
 ///                           hud, blit —
 ///                           so each one's cost can be measured by its absence)
 struct Config {
@@ -216,6 +217,7 @@ impl Perf {
 /// depend on the MSAA count, so the menu rebuilds them together.
 struct Passes {
     starfield: StarfieldPass,
+    bodies: BodiesPass,
     planet: PlanetPass,
     gauge: GaugePass,
     alt_gauge: GaugePass,
@@ -240,6 +242,7 @@ impl Passes {
         let plasma = PlasmaPass::new(device, format, msaa, &thermal, baked);
         Self {
             starfield: StarfieldPass::new(device, format, msaa, STAR_DENSITY, baked),
+            bodies: BodiesPass::new(device, format, msaa),
             planet: PlanetPass::new(device, format, msaa, baked),
             gauge: gauge_pass(device, format, msaa),
             alt_gauge: gauge_pass(device, format, msaa),
@@ -576,6 +579,13 @@ impl Game {
     fn apply_settings(&mut self, settings: Settings) {
         self.settings = settings;
         self.input.set_bindings(settings.bindings);
+    }
+
+    /// The Sun and the Moon as the camera sees them: the Moon's position
+    /// comes from its Kepler orbit at sim time, subtracted in f64 (P3).
+    fn bodies_uniforms(&self, cam: &CameraFrame) -> BodiesUniforms {
+        let moon = moon_position(self.params.planet.mu, self.state.time_s);
+        BodiesUniforms::new(cam, (moon - self.state.ship.pos_m).as_vec3(), SUN_DIR)
     }
 
     /// Gravity's up at the ship, world frame.
@@ -1205,6 +1215,9 @@ impl ApplicationHandler for App {
                                 gpu.passes
                                     .planet
                                     .update(&gpu.queue, &game.planet_uniforms(&cam));
+                                gpu.passes
+                                    .bodies
+                                    .update(&gpu.queue, &game.bodies_uniforms(&cam));
                                 let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
                                 // The capture should show what the pilot
@@ -1270,6 +1283,7 @@ impl ApplicationHandler for App {
                                             multiview_mask: None,
                                         });
                                     gpu.passes.starfield.draw(&mut pass);
+                                    gpu.passes.bodies.draw(&mut pass);
                                     gpu.passes.planet.draw(&mut pass);
                                     gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                                     gpu.passes.trajectory.draw(&mut pass);
@@ -1346,6 +1360,9 @@ impl ApplicationHandler for App {
                 gpu.passes
                     .planet
                     .update(&gpu.queue, &game.planet_uniforms(&cam));
+                gpu.passes
+                    .bodies
+                    .update(&gpu.queue, &game.bodies_uniforms(&cam));
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,
@@ -1399,6 +1416,9 @@ impl ApplicationHandler for App {
                     });
                     if gpu.cfg.draws("starfield") {
                         gpu.passes.starfield.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("bodies") {
+                        gpu.passes.bodies.draw(&mut pass);
                     }
                     if gpu.cfg.draws("planet") {
                         gpu.passes.planet.draw(&mut pass);

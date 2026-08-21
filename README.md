@@ -47,7 +47,7 @@ and velocity are independent, and orbits are conserved exactly.
 | `FARFALL_MSAA=1\|2\|4\|8` | 4 | MSAA sample count |
 | `FARFALL_VSYNC=off` | on | Uncap the frame rate to see real headroom |
 | `FARFALL_GPU_SYNC=1` | off | Profiling: block on GPU completion so timings measure the GPU, not submission |
-| `FARFALL_SKIP=starfield,plasma` | none | Profiling: leave named passes out (`starfield`, `planet`, `plasma`, `trajectory`, `gauge`, `hud`, `blit`) so each one's cost shows up as its absence |
+| `FARFALL_SKIP=starfield,plasma` | none | Profiling: leave named passes out (`starfield`, `bodies`, `planet`, `plasma`, `trajectory`, `gauge`, `hud`, `blit`) so each one's cost shows up as its absence |
 | `FARFALL_BENCH=1` | off | Freeze the sim at spawn (`FARFALL_BENCH_ALT`, `FARFALL_BENCH_SECONDS`) for comparable measurements; exits by itself |
 
 Frame stats appear on-screen and are summarised to the log every 5 s at
