@@ -37,9 +37,22 @@ struct VsOut {
     @location(0) ndc: vec2<f32>,
 }
 
+// Six vertices: a quad around the instrument, not a fullscreen triangle.
+// The instrument lives on the canopy at a known anchor and a known radius,
+// so its screen footprint is the inverse canopy projection of that box —
+// generous by a margin for the sway and the shock ring, and the fragment
+// stage still makes the exact cut. Same output, ~3% of the fragments.
+const QUAD_HALF: f32 = 0.34;
+
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
-    let xy = fullscreen_ndc(vi);
+    let corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
+        vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+    );
+    let aspect = gauge.a.w;
+    let centre = canopy(gauge.b.zw, aspect);
+    let xy = canopy_inverse(centre + corners[vi] * QUAD_HALF, aspect);
     var out: VsOut;
     out.pos = vec4<f32>(xy, 0.0, 1.0);
     out.ndc = xy;

@@ -1,7 +1,7 @@
 // starfield.wgsl — procedural full-sky starfield (SPEC §6.5, pass: starfield)
 //
 // Lane: A (vertex+fragment only). Cost class: cheap (one fullscreen pass,
-// 9 hash taps + a 3-octave fbm). No textures, no assets.
+// 9 hash taps + one fetch of the baked Milky Way). No assets.
 //
 // Technique: fullscreen triangle; per-pixel view ray from camera basis; ray
 // direction → octahedral map → 2D grid cells; one candidate star per cell from
@@ -24,9 +24,14 @@ struct Frame {
     forward: vec4<f32>,
     // x: tan(fov_y/2), y: aspect (w/h), z: time_s, w: exposure
     params: vec4<f32>,
+    // xyz: an opaque sphere in front of the sky, camera-relative metres;
+    // w: its radius, 0 for none. Stars behind it are never shaded.
+    occluder: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
+@group(0) @binding(1) var sky_tex: texture_2d<f32>;
+@group(0) @binding(2) var sky_samp: sampler;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -114,19 +119,17 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
 
 // ---------------------------------------------------------------- sky
 
-const GALACTIC_NORMAL: vec3<f32> = vec3<f32>(0.2588, 0.9330, 0.2500); // tilted band
-
+// The Milky Way is baked (bake.wgsl, fs_sky): one equirect fetch.
 fn milky_way(dir: vec3<f32>) -> vec3<f32> {
-    let lat = dot(dir, GALACTIC_NORMAL);
-    let band = exp(-lat * lat * 28.0);
-    let patchiness = fbm3(dir * 7.0) * 0.75 + 0.25;
-    let dust = fbm3(dir * 15.0 + 31.7);
-    // Warm core glow occluded by cooler dust lanes.
-    let glow = vec3<f32>(0.045, 0.042, 0.055) * band * patchiness;
-    // fbm3 is normalised now; its old un-normalised maximum was 0.826, so an
-    // upper knee at 0.85 was simply unreachable and the dust never saturated.
-    let lane = vec3<f32>(0.030, 0.024, 0.020) * band * smoothstep(0.54, 0.78, dust);
-    return max(glow - lane, vec3<f32>(0.0));
+    let uv = vec2<f32>(
+        atan2(dir.z, dir.x) / 6.28318531 + 0.5,
+        acos(clamp(dir.y, -1.0, 1.0)) / 3.14159265,
+    );
+    var du = dpdx(uv);
+    var dv = dpdy(uv);
+    du.x = fract(du.x + 0.5) - 0.5;
+    dv.x = fract(dv.x + 0.5) - 0.5;
+    return textureSampleGrad(sky_tex, sky_samp, uv, du, dv).rgb;
 }
 
 @fragment
@@ -138,6 +141,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let dir = view_ray(
         in.ndc, frame.right.xyz, frame.up.xyz, frame.forward.xyz, tan_half_fov, aspect,
     );
+
+    // The planet is opaque and drawn over this: stars under its disc are
+    // work that ends up behind a wall. Low and level — the normal view —
+    // that was most of the screen. A few pixels inside the limb are left
+    // to the planet pass's own analytic edge, so the seam is its, not ours.
+    let occ_r = frame.occluder.w;
+    if (occ_r > 0.0) {
+        let d = length(frame.occluder.xyz);
+        if (d > occ_r) {
+            let cos_limb = sqrt(1.0 - (occ_r * occ_r) / (d * d));
+            let cos_view = dot(dir, frame.occluder.xyz / d);
+            if (cos_view > cos_limb + 0.004) {
+                return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+            }
+        }
+    }
 
     var col = tonemap(stars(dir) + milky_way(dir), exposure);
     col += vec3<f32>(dither_px(in.pos.xy));

@@ -221,10 +221,17 @@ pub mod presets {
                 ground_restitution: 0.0,
                 ground_friction: 0.4,
                 max_torque_radps2: DVec3::new(1.7, 1.4, 0.8),
-                cd_area_m2: 8.0,
-                // Roughly a 10 m hull seen side-on against a 3 m nose.
-                cd_area_side_m2: 60.0,
-                lift_area_m2: 40.0,
+                // Sleek nose-on — a fighter's Cd over a few square metres
+                // of frontal area. Sized so gravity alone can do something:
+                // a nose-down dive from the 12 km spawn passes mach 1 below
+                // 3 km and reaches ~395 m/s; at 8 m² it topped out at 329
+                // and never broke the barrier. Terminal velocity nose-down
+                // at sea level is ~360 m/s.
+                cd_area_m2: 1.5,
+                // The same hull broadside: thirty times the nose. Shape is
+                // the brake — pitch across the airflow to shed speed.
+                cd_area_side_m2: 45.0,
+                lift_area_m2: 30.0,
                 // Tail and fins behind the middle; engines further back
                 // still but balanced by the cockpit and the forward tanks,
                 // so gravity sits a metre ahead of pressure: stable, with a

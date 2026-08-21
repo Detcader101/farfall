@@ -39,14 +39,16 @@ struct Thermal {
 @group(0) @binding(1) var prev_tex: texture_2d<f32>;
 @group(0) @binding(2) var prev_samp: sampler;
 
-// Speed at which full-density air delivers unit heat flux. Just under this
-// planet's orbital speed (~790 m/s), so a de-orbit is a real entry and a
-// mach-1 pass at sea level is a warm hull, not a fireball.
-const V_REF: f32 = 700.0;
-// Stagnation temperature at V_REF, kK above ambient. ~2.8 kK is a hot
-// yellow-white core — hotter than a real ship's gas cap reads from inside,
-// cooler than the 7 kK of a capsule from orbit, picked for readability (P1).
-const T_GAS_REF: f32 = 2.8;
+// Speed at which full-density air delivers unit heat flux. Set where gravity
+// alone can take the ship: a nose-down dive from the 12 km spawn reaches
+// ~400 m/s in thick air, and that should glow. A de-orbit arrives at 600+
+// m/s and burns accordingly; a subsonic cruise stays a warm hull.
+const V_REF: f32 = 450.0;
+// Stagnation temperature at V_REF, kK above ambient: a dull orange at the
+// dive's peak, yellow-white and ionising by the time an orbital entry is
+// in the thick air (∝ v², so 650 m/s reads ~4.2 kK). Picked for readability
+// (P1) rather than for the 7 kK a capsule really sees.
+const T_GAS_REF: f32 = 2.0;
 // Hull heating gain (kK/s at unit flux) and radiative loss, kK^-3 s^-1.
 // Their ratio sets the steady-state glow: (GAIN/RAD)^(1/4) ≈ 2.5 kK at q = 1.
 const HEAT_GAIN: f32 = 1.5;

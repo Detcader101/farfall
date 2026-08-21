@@ -167,6 +167,20 @@ fn canopy(ndc: vec2<f32>, aspect: f32) -> vec2<f32> {
     return v * (atan(x) / x);
 }
 
+// The inverse: a point on the shell back to the screen pixel that shows it.
+// Lets a pass that knows where on the glass it lives draw only that patch of
+// screen instead of a fullscreen triangle that discards 97% of itself —
+// the gauges were costing a millisecond a frame to decide not to draw.
+fn canopy_inverse(c: vec2<f32>, aspect: f32) -> vec2<f32> {
+    let r = length(c);
+    if (r < 1e-4) {
+        return vec2<f32>(c.x / aspect, c.y);
+    }
+    let x = tan(min(r / CANOPY_R, 1.5));
+    let v = c * (x * CANOPY_R / r);
+    return vec2<f32>(v.x / aspect, v.y);
+}
+
 // The projection dims toward the rim of the glass: light hitting the canopy
 // obliquely reads fainter, which sells the shell more than the distortion
 // does. Shared for the same reason canopy() is.

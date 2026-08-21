@@ -57,7 +57,7 @@ impl CameraFrame {
 }
 
 /// Per-frame GPU uniform layout shared by fullscreen sky passes.
-/// std140-compatible: four vec4s.
+/// std140-compatible: five vec4s.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FrameUniforms {
@@ -66,9 +66,20 @@ pub struct FrameUniforms {
     pub forward: [f32; 4],
     /// x: tan(fov_y/2), y: aspect, z: time_s, w: exposure
     pub params: [f32; 4],
+    /// xyz: an opaque sphere the sky passes may skip behind, camera-relative
+    /// metres; w: radius (0 disables). See [`FrameUniforms::with_occluder`].
+    pub occluder: [f32; 4],
 }
 
 impl FrameUniforms {
+    /// Tell the sky passes about an opaque body in front of them — the
+    /// planet — so pixels under its disc are not shaded only to be painted
+    /// over. Purely an optimisation: the image is identical without it.
+    pub fn with_occluder(mut self, centre_rel: Vec3, radius_m: f32) -> Self {
+        self.occluder = [centre_rel.x, centre_rel.y, centre_rel.z, radius_m.max(0.0)];
+        self
+    }
+
     pub fn from_camera(cam: &CameraFrame) -> Self {
         let (right, up, forward) = cam.basis();
         Self {
@@ -81,6 +92,7 @@ impl FrameUniforms {
                 cam.time_s,
                 cam.exposure,
             ],
+            occluder: [0.0; 4],
         }
     }
 }

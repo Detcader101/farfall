@@ -23,7 +23,14 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     (
         "bake",
         BAKE,
-        &["vs_main", "fs_surface", "fs_cloud", "fs_downsample"],
+        &[
+            "vs_main",
+            "fs_surface",
+            "fs_cloud",
+            "fs_sky",
+            "fs_noise",
+            "fs_downsample",
+        ],
     ),
     ("gauge", GAUGE, &["vs_main", "fs_main"]),
     ("thermal", THERMAL, &["vs_main", "fs_main"]),

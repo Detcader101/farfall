@@ -709,15 +709,15 @@ impl App {
         );
         let scene = SceneTarget::new(cfg.msaa, config.format, cfg.scale);
         let blit = BlitPass::new(&device, config.format);
-        let starfield = StarfieldPass::new(&device, config.format, cfg.msaa, STAR_DENSITY);
         // Bake the static world fields before the first frame. Everything the
         // planet pass reads per pixel is generated here, by shader, once.
         let baked = BakedMaps::bake(&device, &queue);
+        let starfield = StarfieldPass::new(&device, config.format, cfg.msaa, STAR_DENSITY, &baked);
         let planet = PlanetPass::new(&device, config.format, cfg.msaa, &baked);
         let gauge = GaugePass::new(&device, config.format, cfg.msaa);
         let alt_gauge = GaugePass::new(&device, config.format, cfg.msaa);
         let thermal = ThermalPass::new(&device);
-        let plasma = PlasmaPass::new(&device, config.format, cfg.msaa, &thermal);
+        let plasma = PlasmaPass::new(&device, config.format, cfg.msaa, &thermal, &baked);
         // The HUD draws straight onto the swapchain, after the upscale, so it
         // is always native resolution and single-sampled however low the scene
         // scale goes (P1: the readout must never soften).
@@ -870,8 +870,13 @@ impl ApplicationHandler for App {
                                 }
                                 let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                                 let cam = game.camera(aspect);
-                                gpu.starfield
-                                    .update(&gpu.queue, &FrameUniforms::from_camera(&cam));
+                                gpu.starfield.update(
+                                    &gpu.queue,
+                                    &FrameUniforms::from_camera(&cam).with_occluder(
+                                        (DVec3::ZERO - game.state.ship.pos_m).as_vec3(),
+                                        game.params.planet.radius_m as f32,
+                                    ),
+                                );
                                 gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
                                 let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.gauge.update(
@@ -1012,8 +1017,13 @@ impl ApplicationHandler for App {
 
                 let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                 let cam = game.camera(aspect);
-                gpu.starfield
-                    .update(&gpu.queue, &FrameUniforms::from_camera(&cam));
+                gpu.starfield.update(
+                    &gpu.queue,
+                    &FrameUniforms::from_camera(&cam).with_occluder(
+                        (DVec3::ZERO - game.state.ship.pos_m).as_vec3(),
+                        game.params.planet.radius_m as f32,
+                    ),
+                );
                 gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.plasma.update(

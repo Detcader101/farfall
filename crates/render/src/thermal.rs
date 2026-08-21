@@ -7,6 +7,7 @@
 //! each view ray and draws the glow additively into the scene. No temperature
 //! ever crosses back to the CPU.
 
+use crate::bake::BakedMaps;
 use glam::Vec3;
 
 /// Resolution of the hull field. 64² is 4096 patches of skin — plenty for a
@@ -322,6 +323,7 @@ impl PlasmaPass {
         target_format: wgpu::TextureFormat,
         sample_count: u32,
         thermal: &ThermalPass,
+        maps: &BakedMaps,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("plasma"),
@@ -335,25 +337,61 @@ impl PlasmaPass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bgl = device.create_bind_group_layout(&field_layout("plasma bgl"));
+        // The field layout, plus the baked noise tile the streaks scroll.
+        let field = field_layout("plasma bgl");
+        let mut entries = field.entries.to_vec();
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("plasma bgl"),
+            entries: &entries,
+        });
         let views = thermal.views();
+        let make_bg = |label: &str, view: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&thermal.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&maps.noise_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&maps.tile_sampler),
+                    },
+                ],
+            })
+        };
         let bind_groups = [
-            field_bind_group(
-                device,
-                "plasma bg A",
-                &bgl,
-                &uniforms,
-                &views[0],
-                &thermal.sampler,
-            ),
-            field_bind_group(
-                device,
-                "plasma bg B",
-                &bgl,
-                &uniforms,
-                &views[1],
-                &thermal.sampler,
-            ),
+            make_bg("plasma bg A", &views[0]),
+            make_bg("plasma bg B", &views[1]),
         ];
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("plasma layout"),

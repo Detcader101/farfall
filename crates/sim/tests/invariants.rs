@@ -206,7 +206,10 @@ fn golden_hash() {
 //                       of gravity. The atmosphere also gained a hard top at
 //                       25 km. The golden scenario sits at 20 km, inside the
 //                       air, so the trajectory moved; the integrator did not.
-const GOLDEN: u64 = 0xceba659b3106279d;
+//   0x0e9b39595b8d22bf  the nose got sleek: CdA 8 -> 1.5 m² nose-on, 45 m²
+//                       broadside, lift 30 m². Ship parameters; gravity can
+//                       now take the ship through mach 1 on its own.
+const GOLDEN: u64 = 0x0e9b39595b8d22bf;
 
 /// Not an assertion — prints the current golden value for setup/updates:
 /// `cargo test -p farfall-sim print_golden -- --ignored --nocapture`

@@ -9,14 +9,25 @@
 pub struct BakedMaps {
     pub surface_view: wgpu::TextureView,
     pub cloud_view: wgpu::TextureView,
+    /// The Milky Way, equirect (bake.wgsl fs_sky).
+    pub sky_view: wgpu::TextureView,
+    /// A seamless 2D fbm tile (bake.wgsl fs_noise); sample with `tile_sampler`.
+    pub noise_view: wgpu::TextureView,
+    /// Equirect: wraps in longitude, clamps at the poles.
     pub sampler: wgpu::Sampler,
+    /// Wraps both ways, for the noise tile.
+    pub tile_sampler: wgpu::Sampler,
     // Kept alive for the views' sake.
     _surface: wgpu::Texture,
     _cloud: wgpu::Texture,
+    _sky: wgpu::Texture,
+    _noise: wgpu::Texture,
 }
 
 const SURFACE_SIZE: (u32, u32) = (2048, 1024);
 const CLOUD_SIZE: (u32, u32) = (1024, 512);
+const SKY_SIZE: (u32, u32) = (1024, 512);
+const NOISE_SIZE: (u32, u32) = (256, 256);
 
 impl BakedMaps {
     /// Render every field and its mip chain. One submit; blocks nothing —
@@ -48,6 +59,8 @@ impl BakedMaps {
         };
         let surface = make_tex("baked surface fields", SURFACE_SIZE);
         let cloud = make_tex("baked cloud field", CLOUD_SIZE);
+        let sky = make_tex("baked sky", SKY_SIZE);
+        let noise = make_tex("baked noise tile", NOISE_SIZE);
 
         // Equirect: longitude wraps, latitude clamps at the poles.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -92,6 +105,8 @@ impl BakedMaps {
         };
         let surface_pipeline = gen_pipeline("fs_surface");
         let cloud_pipeline = gen_pipeline("fs_cloud");
+        let sky_pipeline = gen_pipeline("fs_sky");
+        let noise_pipeline = gen_pipeline("fs_noise");
 
         // Downsample pipeline for the mip chain.
         let mip_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -180,7 +195,12 @@ impl BakedMaps {
             pass.draw(0..3, 0..1);
         };
 
-        for (tex, pipeline) in [(&surface, &surface_pipeline), (&cloud, &cloud_pipeline)] {
+        for (tex, pipeline) in [
+            (&surface, &surface_pipeline),
+            (&cloud, &cloud_pipeline),
+            (&sky, &sky_pipeline),
+            (&noise, &noise_pipeline),
+        ] {
             render_to(&mut encoder, &mip_view(tex, 0), pipeline, None);
             for level in 1..tex.mip_level_count() {
                 let src = mip_view(tex, level - 1);
@@ -208,12 +228,27 @@ impl BakedMaps {
         }
         queue.submit([encoder.finish()]);
 
+        let tile_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("noise tile sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+
         Self {
             surface_view: surface.create_view(&wgpu::TextureViewDescriptor::default()),
             cloud_view: cloud.create_view(&wgpu::TextureViewDescriptor::default()),
+            sky_view: sky.create_view(&wgpu::TextureViewDescriptor::default()),
+            noise_view: noise.create_view(&wgpu::TextureViewDescriptor::default()),
             sampler,
+            tile_sampler,
             _surface: surface,
             _cloud: cloud,
+            _sky: sky,
+            _noise: noise,
         }
     }
 }

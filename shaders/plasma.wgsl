@@ -25,6 +25,10 @@ struct Plasma {
 @group(0) @binding(0) var<uniform> pl: Plasma;
 @group(0) @binding(1) var heat_tex: texture_2d<f32>;
 @group(0) @binding(2) var heat_samp: sampler;
+// Seamless fbm tile (bake.wgsl fs_noise): the streak texture, two fetches
+// where a live fbm3 cost twenty-four hashes per pixel.
+@group(0) @binding(3) var noise_tex: texture_2d<f32>;
+@group(0) @binding(4) var noise_samp: sampler;
 
 const TAU: f32 = 6.28318531;
 
@@ -43,10 +47,15 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 }
 
 // Radiance of a patch at `kk` kilokelvin: T⁴ under a threshold so that warm
-// is invisible and only incandescent reads, normalised so 2.5 kK is unity.
+// is invisible and only incandescent reads, normalised so 2.5 kK is unity —
+// then saturating. Real radiance keeps climbing as the fourth power, but
+// the pilot's eye and the tonemap do not: past ~4 kK the sheath gets whiter
+// and more violet (the ionisation mix), not brighter, or an orbital entry
+// in thick air erases the instruments (P1).
 fn glow(kk: f32) -> f32 {
     let t = kk / 2.5;
-    return smoothstep(0.34, 0.52, t) * t * t * t * t;
+    let t4 = t * t * t * t;
+    return smoothstep(0.34, 0.52, t) * t4 / (1.0 + t4 / 2.5);
 }
 
 @fragment
@@ -84,7 +93,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let phi = atan2(dot(ray, bitangent), dot(ray, tangent));
     // Faster air, faster streaks; the sheath flickers the way a flame does.
     let run = time * (2.5 + 6.0 * clamp(speed / 700.0, 0.0, 2.0));
-    let streaks = fbm3(vec3<f32>(phi * 2.2, theta * 5.0 - run, time * 0.7));
+    // Two octaves of the tile, scrolled back along theta and drifting slowly
+    // in phi so the pattern never repeats exactly. Explicit level: the
+    // coordinates wrap, and derivative-based mips would see the wrap as a
+    // seam.
+    // Phi wraps at ±π: a whole number of tiles per revolution, or the
+    // pattern fails to meet itself and draws a seam down one azimuth.
+    let turn = phi / TAU;
+    let uv_a = vec2<f32>(turn * 2.0 + time * 0.02, theta * 0.8 - run * 0.16);
+    let uv_b = vec2<f32>(turn * 4.0 - time * 0.03, theta * 1.9 - run * 0.31);
+    let streaks = 0.62 * textureSampleLevel(noise_tex, noise_samp, uv_a, 0.0).r
+        + 0.38 * textureSampleLevel(noise_tex, noise_samp, uv_b, 1.0).r;
     // Polar coordinates pinch at the pole: blend to a steady core there.
     let flicker = mix(0.75, 0.30 + 1.40 * streaks * streaks, smoothstep(0.0, 0.22, theta));
 
@@ -100,7 +119,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Ionisation: past ~4 kK the air is a plasma, and the line emission of
     // N2 and O pulls the colour toward violet-white.
     let ion = smoothstep(4.5, 8.0, gas_kk);
-    gas_rgb = mix(gas_rgb, vec3<f32>(0.80, 0.62, 1.0), ion * 0.55);
+    gas_rgb = mix(gas_rgb, vec3<f32>(1.0, 0.78, 0.92), ion * 0.45);
     var rgb = gas_rgb * g_gas * flicker * thickness * 0.14;
 
     // ---- the hull: the glass itself, incandescent at the rim -----------
@@ -108,7 +127,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // canopy reads hottest and the centre of the view stays clear.
     let rim = 1.0 - canopy_glass(in.ndc, aspect);
     let hull_rim = smoothstep(0.0, 0.38, rim);
-    rgb += blackbody(hull_kk) * g_hull * (0.02 + 0.45 * hull_rim);
+    rgb += blackbody(hull_kk) * g_hull * (0.02 + 0.30 * hull_rim);
 
     let out = tonemap(rgb, exposure);
     // Additive: alpha carries nothing, the blend is ONE + ONE.
