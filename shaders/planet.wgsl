@@ -37,6 +37,25 @@ struct Planet {
     cloud_shape: vec4<f32>,
     // rgb: cloud albedo. w: cloud shadow strength.
     cloud_look: vec4<f32>,
+    // Two solid bodies that may stand between the camera and the planet:
+    // xyz centre relative to the camera (m), w radius (m); w <= 0 is none.
+    occluder0: vec4<f32>,
+    occluder1: vec4<f32>,
+}
+
+// Distance along `ray` to the near surface of a sphere, or -1 if missed or
+// behind the camera.
+fn sphere_near(ray: vec3<f32>, centre: vec3<f32>, radius: f32) -> f32 {
+    if (radius <= 0.0) {
+        return -1.0;
+    }
+    let along = dot(ray, centre);
+    let disc = along * along - (dot(centre, centre) - radius * radius);
+    if (disc < 0.0) {
+        return -1.0;
+    }
+    let t = along - sqrt(disc);
+    return select(-1.0, t, t > 0.0);
 }
 
 @group(0) @binding(0) var<uniform> planet: Planet;
@@ -173,6 +192,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let along = dot(ray, centre);
     let disc_body = along * along - (d_centre * d_centre - radius * radius);
     let hit_t = along - sqrt(max(disc_body, 0.0));
+
+    // Occlusion: a body in front of the planet hides it, air and all. What
+    // the planet shows along this ray starts at the ground if hit, else at
+    // the sightline's closest approach (the air is thickest there); if a
+    // body's surface is nearer than that, this pixel is the body's.
+    let planet_t = select(max(along, 0.0), hit_t, coverage > 0.5);
+    let t0 = sphere_near(ray, planet.occluder0.xyz, planet.occluder0.w);
+    let t1 = sphere_near(ray, planet.occluder1.xyz, planet.occluder1.w);
+    if ((t0 > 0.0 && t0 < planet_t) || (t1 > 0.0 && t1 < planet_t)) {
+        discard;
+    }
 
     // Closest-approach altitude for rays that miss: how deep the sightline
     // dips into the air. Looking away from the planet, the closest point is

@@ -106,6 +106,9 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_ALT      (frozen altitude in metres; low values are the
 ///                           worst case, a screen filled edge to edge with
 ///                           ground, which is where this renderer hurts)
+///   FARFALL_BENCH_POS=x,y,z (benchmark only: park the ship at this world
+///                           position, nose on the planet — e.g. behind the
+///                           Moon, to check what hides what)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
 ///   FARFALL_MUTE=1         (no audio stream at all)
 ///   FARFALL_BENCH_WARP=s   (benchmark only: engage the wormhole drive s
@@ -582,6 +585,14 @@ impl Game {
             .unwrap_or(SPAWN_ALTITUDE_M);
         let mut state = sim::presets::circular_orbit(&params, altitude);
         state.ship.orient = spawn_attitude();
+        if let Some(pos) = std::env::var("FARFALL_BENCH_POS")
+            .ok()
+            .and_then(|v| parse_vec3(&v))
+        {
+            state.ship.pos_m = pos;
+            state.ship.vel_mps = DVec3::ZERO;
+            state.ship.orient = look_at(-pos, DVec3::Y);
+        }
         let now = Instant::now();
         Self {
             params,
@@ -861,6 +872,13 @@ impl Game {
     /// whole floating-origin discipline in one line (SPEC P3).
     fn planet_uniforms(&self, cam: &CameraFrame) -> PlanetUniforms {
         let centre_rel = (DVec3::ZERO - self.state.ship.pos_m).as_vec3();
+        let [_, moon, sun] = self.params.bodies(self.state.time_s);
+        let rel = |b: &sim::Body| {
+            (
+                (b.centre - self.state.ship.pos_m).as_vec3(),
+                b.radius_m as f32,
+            )
+        };
         PlanetUniforms::new(
             cam,
             centre_rel,
@@ -871,6 +889,7 @@ impl Game {
             // world's clock rather than of how long the window has been open.
             self.state.time_s as f32 * 0.05,
         )
+        .with_occluders([rel(&moon), rel(&sun)])
     }
 
     /// What the hull feels this frame: the wind in its own frame and the air
@@ -1042,6 +1061,29 @@ const FOV_RESPONSE_S: f32 = 0.28;
 /// The preset leaves orientation at identity so the sim's golden hash stays a
 /// property of the *orbit*, not of where the camera happens to be pointing —
 /// choosing an attitude is the app's business, not the physics'.
+/// "x,y,z" → vector, for the bench knobs.
+fn parse_vec3(s: &str) -> Option<DVec3> {
+    let mut it = s.split(',').map(|p| p.trim().parse::<f64>().ok());
+    let v = DVec3::new(it.next()??, it.next()??, it.next()??);
+    it.next().is_none().then_some(v)
+}
+
+/// Orientation with the ship's nose (-Z) along `dir`, rolled so `up` is as
+/// close to the ship's +Y as the geometry allows.
+fn look_at(dir: DVec3, up: DVec3) -> DQuat {
+    let f = dir.normalize_or_zero();
+    if f == DVec3::ZERO {
+        return DQuat::IDENTITY;
+    }
+    let mut r = up.cross(-f);
+    if r.length() < 1e-6 {
+        r = DVec3::X.cross(-f);
+    }
+    let r = r.normalize();
+    let u = (-f).cross(r);
+    DQuat::from_mat3(&glam::DMat3::from_cols(r, u, -f))
+}
+
 fn spawn_attitude() -> DQuat {
     // The orbit starts at +X with velocity along -Z, so rolling -90 degrees
     // about the body Z axis puts the body's up (+Y) along world +X: radially
@@ -1987,6 +2029,19 @@ mod tests {
     }
 
     /// The planet is underfoot, not overhead: the ship is the right way up.
+    #[test]
+    fn look_at_points_the_nose_where_asked() {
+        for dir in [DVec3::X, DVec3::NEG_Y, DVec3::new(1.0, 2.0, -3.0)] {
+            let q = look_at(dir, DVec3::Y);
+            let nose = q * DVec3::NEG_Z;
+            assert!((nose - dir.normalize()).length() < 1e-9, "{dir:?}");
+            assert!((q.length() - 1.0).abs() < 1e-9);
+        }
+        assert_eq!(parse_vec3("1, -2,3.5"), Some(DVec3::new(1.0, -2.0, 3.5)));
+        assert_eq!(parse_vec3("1,2"), None);
+        assert_eq!(parse_vec3("1,2,3,4"), None);
+    }
+
     #[test]
     fn spawn_attitude_puts_the_planet_below() {
         let game = Game::new();

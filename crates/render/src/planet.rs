@@ -112,6 +112,10 @@ pub struct PlanetUniforms {
     cloud_shape: [f32; 4],
     /// rgb: cloud albedo, w: shadow strength
     cloud_look: [f32; 4],
+    /// Solid bodies that may hide the planet: xyz camera-relative centre
+    /// (m), w radius (m); w <= 0 is none.
+    occluder0: [f32; 4],
+    occluder1: [f32; 4],
 }
 
 impl PlanetUniforms {
@@ -158,7 +162,18 @@ impl PlanetUniforms {
                 look.cloud_colour.z,
                 look.cloud_shadow.clamp(0.0, 1.0),
             ],
+            occluder0: [0.0; 4],
+            occluder1: [0.0; 4],
         }
+    }
+
+    /// Bodies that stand between the camera and the planet: each as its
+    /// camera-relative centre (f64 subtraction upstream — P3) and radius.
+    pub fn with_occluders(mut self, bodies: [(Vec3, f32); 2]) -> Self {
+        let pack = |(c, r): (Vec3, f32)| [c.x, c.y, c.z, r.max(0.0)];
+        self.occluder0 = pack(bodies[0]);
+        self.occluder1 = pack(bodies[1]);
+        self
     }
 
     /// Half-angle subtended by the planet, radians. Zero when the camera is at
@@ -333,6 +348,23 @@ mod tests {
             time_s: 0.0,
             exposure: 1.6,
         }
+    }
+
+    #[test]
+    fn occluders_are_carried_and_absent_by_default() {
+        let base = PlanetUniforms::new(
+            &cam(),
+            Vec3::NEG_Y * 1.0e5,
+            6.0e4,
+            Vec3::X,
+            &PlanetAppearance::default(),
+            0.0,
+        );
+        assert_eq!(base.occluder0[3], 0.0);
+        assert_eq!(base.occluder1[3], 0.0);
+        let u = base.with_occluders([(Vec3::X * 10.0, 2.0), (Vec3::Z * -5.0, 3.0)]);
+        assert_eq!(u.occluder0, [10.0, 0.0, 0.0, 2.0]);
+        assert_eq!(u.occluder1, [0.0, 0.0, -5.0, 3.0]);
     }
 
     #[test]
