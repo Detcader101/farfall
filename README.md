@@ -27,7 +27,7 @@ cargo run --release -p farfall-app    # fly it (Esc to quit)
 ```
 
 **Controls** — WASD translate, R/F up/down, arrows pitch/yaw, Q/E roll,
-**Left Shift** boosts, **Space** air-brakes, **X** toggles the flight computer, **T** toggles the predicted path, **right mouse button** (hold) or **L** (lock) looks around with the mouse or trackpad — the head, not the nose: the ship never sees it —
+**Left Shift** boosts, **Space** air-brakes, **X** toggles the flight computer, **T** toggles the predicted path, **right mouse button** (hold) or **L** (lock) looks around with the mouse or trackpad — the head, not the nose: the ship never sees it — and while looking, **left mouse button** on a dial picks it up: turn your head and it comes with you, release to drop it anywhere on the glass (the menu's COCKPIT page shows it as DRAGGED; cycling its slot lets go) —
 **C** cycles atmospheres, **[** / **]** set render scale, **J** fires the wormhole drive at the MAP page's plan (destination and safe distance, Enter there engages it too), **Esc** opens the menu — graphics, key bindings and the cockpit layout, all saved to `~/.farfall/settings.cfg` — and quitting lives there.
 
 Everything is ship-relative at any attitude: "forward" is always where the nose

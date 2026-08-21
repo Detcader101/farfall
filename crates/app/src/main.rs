@@ -65,22 +65,33 @@ const STAR_DENSITY: f64 = 1.0;
 /// Chosen so the terminator crosses the visible face at spawn.
 /// How often the frame-time window is summarised to the log.
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
-fn shifted(a: [f32; 2], shift: [f32; 2]) -> [f32; 2] {
-    [a[0] + shift[0], a[1] + shift[1]]
+/// A glass anchor as the turned head sees it: the glass is a sphere about
+/// the pilot, so every element is re-projected, not slid (look.rs).
+fn on_glass(look: &Look, cam: &CameraFrame, a: [f32; 2]) -> [f32; 2] {
+    look.reproject(a, (cam.fov_y * 0.5).tan(), cam.aspect)
 }
 
 /// Where a dial sits and whether it shows: a hidden instrument keeps any
 /// anchor and a visibility of zero. The anchors themselves are the slots
-/// in `cockpit.rs`; the pilot assigns them from the menu.
-fn slot_of(layout: &cockpit::Layout, i: Instrument, shift: [f32; 2]) -> ([f32; 2], f32) {
+/// in `cockpit.rs` (or wherever the pilot dragged it); the menu assigns
+/// them.
+fn slot_of(
+    layout: &cockpit::Layout,
+    look: &Look,
+    cam: &CameraFrame,
+    i: Instrument,
+) -> ([f32; 2], f32) {
     match layout.anchor(i) {
-        Some(a) => ([a[0] + shift[0], a[1] + shift[1]], 1.0),
+        Some(a) => (on_glass(look, cam, a), 1.0),
         None => ([0.0, 0.0], 0.0),
     }
 }
 /// How far ahead the path predictor looks, seconds. A little over one
 /// orbit at the spawn altitude (~8.5 min), so a closed orbit draws closed.
 const TRAJECTORY_HORIZON_S: f32 = 560.0;
+/// How close (aspect-corrected NDC) the gaze must be to a dial's anchor to
+/// pick it up with the left button.
+const DRAG_REACH: f32 = 0.30;
 /// The text readout's top-left corner on the canopy.
 const HUD_TEXT_ANCHOR: [f32; 2] = [-0.72, 0.62];
 /// Speed of sound for the mach instrument and the sonic boom, m/s. The
@@ -113,6 +124,7 @@ const MACH1_MPS: f64 = 340.0;
 ///                           (else at rest) and FARFALL_BENCH_LOOK=x,y,z
 ///                           for where the nose points (else the planet)
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
+///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
 ///   FARFALL_CAPTURE=final  (screenshots take the presented frame, with the
 ///                           post pass, the map and the text, instead of the
 ///                           scene target)
@@ -309,8 +321,8 @@ impl Gpu {
         let layout = &game.settings.layout;
         let h = self.scene.size().1 as f32;
         let sway = game.holo_sway.sway();
-        let shift = game.glass_shift(cam);
-        let (speed_anchor, speed_on) = slot_of(layout, Instrument::Speed, shift);
+        let look = &game.look;
+        let (speed_anchor, speed_on) = slot_of(layout, look, cam, Instrument::Speed);
         self.passes.gauge.update(
             &self.queue,
             &GaugeUniforms::speed(
@@ -325,7 +337,7 @@ impl Gpu {
                 game.mach_alert.level() * speed_on,
             ),
         );
-        let (alt_anchor, alt_on) = slot_of(layout, Instrument::Altitude, shift);
+        let (alt_anchor, alt_on) = slot_of(layout, look, cam, Instrument::Altitude);
         self.passes.alt_gauge.update(
             &self.queue,
             &GaugeUniforms::altitude(
@@ -338,7 +350,7 @@ impl Gpu {
                 sway,
             ),
         );
-        let (g_anchor, g_on) = slot_of(layout, Instrument::GForce, shift);
+        let (g_anchor, g_on) = slot_of(layout, look, cam, Instrument::GForce);
         self.passes.g_gauge.update(
             &self.queue,
             &GaugeUniforms::g_force(
@@ -351,7 +363,7 @@ impl Gpu {
                 sway,
             ),
         );
-        let (gyro_anchor, gyro_on) = slot_of(layout, Instrument::Gyro, shift);
+        let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, Instrument::Gyro);
         self.passes.gyro.update(
             &self.queue,
             &GyroUniforms::new(
@@ -566,6 +578,9 @@ struct Game {
     horizon_fade: HorizonFade,
     /// The pilot's head: freelook, separate from the nose.
     look: Look,
+    /// A dial being dragged by the gaze: which, and where it sits relative
+    /// to the point the pilot is looking at.
+    drag: Option<(Instrument, [f32; 2])>,
     /// The wormhole drive's sequence.
     warp: Warp,
     /// Felt acceleration over the last sim step, g, and the meter's fade.
@@ -628,6 +643,7 @@ impl Game {
             menu: Menu::new(),
             horizon_fade: HorizonFade::new(),
             look: Look::new(),
+            drag: None,
             warp: Warp::new(),
             felt_g: 0.0,
             g_fade: GForceFade::new(),
@@ -644,11 +660,6 @@ impl Game {
         self.settings = settings;
         self.input.set_bindings(settings.bindings);
         self.look.sensitivity = settings.look_sensitivity;
-    }
-
-    /// How far the glass has slid under the pilot's turned head, NDC.
-    fn glass_shift(&self, cam: &CameraFrame) -> [f32; 2] {
-        self.look.glass_shift((cam.fov_y * 0.5).tan(), cam.aspect)
     }
 
     /// The Sun and the Moon as the camera sees them: where the sim has them
@@ -1033,6 +1044,64 @@ impl Game {
     /// Camera pose for this frame: ride the hull, look down the nose. The view
     /// is the ship's orientation, so steering turns the world rather than
     /// sliding a detached camera around it.
+    /// Left button while looking: pick up the dial under the gaze, if one
+    /// is within reach. Returns whether something was picked up.
+    fn begin_drag(&mut self, cam: &CameraFrame) -> bool {
+        if !self.look.engaged() || self.menu.open {
+            return false;
+        }
+        let t = (cam.fov_y * 0.5).tan();
+        let gaze = self.look.gaze(t, cam.aspect);
+        let layout = &self.settings.layout;
+        let mut best: Option<(Instrument, f32, [f32; 2])> = None;
+        for i in Instrument::ALL.iter().copied().filter(|i| i.slotted()) {
+            if let Some(a) = layout.anchor(i) {
+                let dx = (a[0] - gaze[0]) * cam.aspect;
+                let dy = a[1] - gaze[1];
+                let d = (dx * dx + dy * dy).sqrt();
+                if d < DRAG_REACH && best.is_none_or(|b| d < b.1) {
+                    best = Some((i, d, [a[0] - gaze[0], a[1] - gaze[1]]));
+                }
+            }
+        }
+        self.drag = best.map(|(i, _, off)| (i, off));
+        if let Some((i, _)) = self.drag {
+            log::info!("drag: picked up {}", i.name());
+        }
+        self.drag.is_some()
+    }
+
+    /// Every frame while dragging: the dial follows the gaze, keeping the
+    /// offset it was picked up with.
+    fn update_drag(&mut self, cam: &CameraFrame) {
+        let Some((i, off)) = self.drag else {
+            return;
+        };
+        if !self.look.engaged() {
+            self.end_drag();
+            return;
+        }
+        let t = (cam.fov_y * 0.5).tan();
+        let gaze = self.look.gaze(t, cam.aspect);
+        let at = self
+            .settings
+            .layout
+            .uninset([gaze[0] + off[0], gaze[1] + off[1]]);
+        self.settings.layout.set_free(i, at);
+    }
+
+    /// Drop it where it is, and keep that.
+    fn end_drag(&mut self) {
+        if let Some((i, _)) = self.drag.take() {
+            self.settings.save();
+            log::info!(
+                "drag: dropped {} at {:?}",
+                i.name(),
+                self.settings.layout.free(i)
+            );
+        }
+    }
+
     fn camera(&self, aspect: f32) -> CameraFrame {
         // The camera is the ship's orientation — both use the same
         // right-handed frame with the nose at -Z, so no fix-up rotation is
@@ -1289,6 +1358,16 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_MAP").is_ok() {
             game.menu.open_map();
         }
+        if let Some(head) = std::env::var("FARFALL_BENCH_HEAD")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| {
+                let (a, b) = v.split_once(',')?;
+                Some((a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?))
+            })
+        {
+            game.look.aim(head.0.to_radians(), head.1.to_radians());
+        }
         self.game = Some(game);
     }
 }
@@ -1406,6 +1485,23 @@ impl ApplicationHandler for App {
             } => {
                 game.look.set_held(state == ElementState::Pressed);
                 gpu.set_look_cursor(game.look.engaged());
+                if !game.look.engaged() {
+                    game.end_drag();
+                }
+            }
+            // Left button while looking: drag the dial under the gaze.
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if state == ElementState::Pressed {
+                    let aspect = gpu.config.width as f32 / gpu.config.height as f32;
+                    let cam = game.camera(aspect);
+                    game.begin_drag(&cam);
+                } else {
+                    game.end_drag();
+                }
             }
             // A key held while the window loses focus never sees its release
             // event; without this the ship keeps thrusting unattended.
@@ -1413,6 +1509,7 @@ impl ApplicationHandler for App {
                 game.input.release_all();
                 game.look.set_held(false);
                 gpu.set_look_cursor(game.look.engaged());
+                game.end_drag();
             }
             WindowEvent::Resized(size) => {
                 gpu.config.width = size.width.max(1);
@@ -1510,9 +1607,10 @@ impl ApplicationHandler for App {
                                     gpu.hud.update(
                                         &gpu.queue,
                                         &gpu.text,
-                                        shifted(
+                                        on_glass(
+                                            &game.look,
+                                            &cam,
                                             game.settings.layout.inset(HUD_TEXT_ANCHOR),
-                                            game.glass_shift(&cam),
                                         ),
                                         hud_scale * 2.0 / sh as f32,
                                         aspect,
@@ -1631,6 +1729,7 @@ impl ApplicationHandler for App {
 
                 let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                 let cam = game.camera(aspect);
+                game.update_drag(&cam);
                 gpu.passes.starfield.update(
                     &gpu.queue,
                     &FrameUniforms::from_camera(&cam).with_occluder(
@@ -1688,9 +1787,10 @@ impl ApplicationHandler for App {
                 gpu.hud.update(
                     &gpu.queue,
                     &gpu.text,
-                    shifted(
+                    on_glass(
+                        &game.look,
+                        &cam,
                         game.settings.layout.inset(HUD_TEXT_ANCHOR),
-                        game.glass_shift(&cam),
                     ),
                     px_canopy,
                     aspect,

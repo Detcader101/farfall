@@ -11,6 +11,14 @@ use crate::input::{key_from_name, key_name, Action, Bindings};
 use crate::warp::{Destination, Plan};
 use std::path::PathBuf;
 
+/// "x,y" → a pair of finite numbers.
+fn parse_pair(v: &str) -> Option<[f32; 2]> {
+    let (a, b) = v.split_once(',')?;
+    let x = a.trim().parse::<f32>().ok()?;
+    let y = b.trim().parse::<f32>().ok()?;
+    (x.is_finite() && y.is_finite()).then_some([x, y])
+}
+
 /// Hoop size range, as a multiple of the stock diameter.
 pub const HOOP_SIZE_MIN: f32 = 0.25;
 pub const HOOP_SIZE_MAX: f32 = 4.0;
@@ -156,10 +164,13 @@ impl Settings {
                             s.bindings.bind(action, key);
                         }
                     } else if let Some(name) = k.strip_prefix("ui.") {
-                        if let (Some(inst), Some(slot)) = (
-                            Instrument::ALL.iter().copied().find(|i| i.key() == name),
-                            Slot::from_key(v),
-                        ) {
+                        let inst = Instrument::ALL.iter().copied().find(|i| i.key() == name);
+                        // "slot at x,y": the slot, then the dragged anchor.
+                        let (slot_key, free) = match v.split_once(" at ") {
+                            Some((sk, at)) => (sk.trim(), parse_pair(at)),
+                            None => (v, None),
+                        };
+                        if let (Some(inst), Some(slot)) = (inst, Slot::from_key(slot_key)) {
                             // A dial cannot be "on" and an overlay has no
                             // slot: keep each to its own choices.
                             let valid = if inst.slotted() {
@@ -169,6 +180,9 @@ impl Settings {
                             };
                             if valid {
                                 s.layout.set(inst, slot);
+                                if let Some(at) = free {
+                                    s.layout.set_free(inst, at);
+                                }
                             }
                         }
                     }
@@ -209,7 +223,16 @@ impl Settings {
         out.push_str(&format!("warp.destination = {}\n", self.plan.dest.key()));
         out.push_str(&format!("warp.safe-radii = {:.3}\n", self.plan.safe_radii));
         for i in Instrument::ALL {
-            out.push_str(&format!("ui.{} = {}\n", i.key(), self.layout.get(i).key()));
+            match self.layout.free(i) {
+                Some([x, y]) => out.push_str(&format!(
+                    "ui.{} = {} at {:.3},{:.3}\n",
+                    i.key(),
+                    self.layout.get(i).key(),
+                    x,
+                    y
+                )),
+                None => out.push_str(&format!("ui.{} = {}\n", i.key(), self.layout.get(i).key())),
+            }
         }
         out.push_str(&format!(
             "ui.safe-edge = {:.0}%\n",
@@ -243,6 +266,7 @@ mod tests {
         s.layout.set(Instrument::Gyro, Slot::TopCentre);
         s.layout.set(Instrument::Horizon, Slot::Off);
         s.layout.set_safe_edge(0.07);
+        s.layout.set_free(Instrument::Speed, [0.125, -0.5]);
         s.look_sensitivity = 1.75;
         s.hoop_size = 2.5;
         s.plan.dest = Destination::Moon;

@@ -104,7 +104,10 @@ impl Item {
             Item::Bind(a) => key_name(s.bindings.key_for(a)).to_string(),
             Item::BindBoost => key_name(s.bindings.boost).to_string(),
             Item::BindBrake => key_name(s.bindings.brake).to_string(),
-            Item::Slot(i) => s.layout.get(i).name().to_string(),
+            Item::Slot(i) => match s.layout.free(i) {
+                Some(_) => "DRAGGED".to_string(),
+                None => s.layout.get(i).name().to_string(),
+            },
             Item::SafeEdge => format!("{:.0}%", s.layout.safe_edge * 100.0),
             Item::HoopSize => format!("{:.2}x", s.hoop_size),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
