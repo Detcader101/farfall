@@ -212,6 +212,14 @@ fn oct_decode(f: vec2<f32>) -> vec3<f32> {
     return normalize(n);
 }
 
+// ------------------------------------------------------------ quaternion
+
+// Rotate a vector by a unit quaternion (x, y, z, w).
+fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    let t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
 // ------------------------------------------------------------- blackbody
 
 // Colour of a hot body at temperature `kk` kilokelvin, normalised so the

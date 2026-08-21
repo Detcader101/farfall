@@ -11,10 +11,12 @@
 mod capture;
 mod cockpit;
 mod input;
+mod look;
 mod menu;
 mod settings;
 
 use cockpit::Instrument;
+use look::Look;
 use menu::{Change, Menu, MenuEvent};
 use settings::Settings;
 mod telemetry;
@@ -48,7 +50,7 @@ use input::InputState;
 use telemetry::FrameStats;
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, WindowEvent},
+    event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::Window,
@@ -61,12 +63,16 @@ const STAR_DENSITY: f64 = 1.0;
 const SUN_DIR: glam::Vec3 = glam::Vec3::new(0.62, 0.42, -0.66);
 /// How often the frame-time window is summarised to the log.
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
+fn shifted(a: [f32; 2], shift: [f32; 2]) -> [f32; 2] {
+    [a[0] + shift[0], a[1] + shift[1]]
+}
+
 /// Where a dial sits and whether it shows: a hidden instrument keeps any
 /// anchor and a visibility of zero. The anchors themselves are the slots
 /// in `cockpit.rs`; the pilot assigns them from the menu.
-fn slot_of(layout: &cockpit::Layout, i: Instrument) -> ([f32; 2], f32) {
+fn slot_of(layout: &cockpit::Layout, i: Instrument, shift: [f32; 2]) -> ([f32; 2], f32) {
     match layout.anchor(i) {
-        Some(a) => (a, 1.0),
+        Some(a) => ([a[0] + shift[0], a[1] + shift[1]], 1.0),
         None => ([0.0, 0.0], 0.0),
     }
 }
@@ -283,7 +289,8 @@ impl Gpu {
         let layout = &game.settings.layout;
         let h = self.scene.size().1 as f32;
         let sway = game.holo_sway.sway();
-        let (speed_anchor, speed_on) = slot_of(layout, Instrument::Speed);
+        let shift = game.glass_shift(cam);
+        let (speed_anchor, speed_on) = slot_of(layout, Instrument::Speed, shift);
         self.passes.gauge.update(
             &self.queue,
             &GaugeUniforms::speed(
@@ -298,7 +305,7 @@ impl Gpu {
                 game.mach_alert.level() * speed_on,
             ),
         );
-        let (alt_anchor, alt_on) = slot_of(layout, Instrument::Altitude);
+        let (alt_anchor, alt_on) = slot_of(layout, Instrument::Altitude, shift);
         self.passes.alt_gauge.update(
             &self.queue,
             &GaugeUniforms::altitude(
@@ -311,7 +318,7 @@ impl Gpu {
                 sway,
             ),
         );
-        let (g_anchor, g_on) = slot_of(layout, Instrument::GForce);
+        let (g_anchor, g_on) = slot_of(layout, Instrument::GForce, shift);
         self.passes.g_gauge.update(
             &self.queue,
             &GaugeUniforms::g_force(
@@ -324,7 +331,7 @@ impl Gpu {
                 sway,
             ),
         );
-        let (gyro_anchor, gyro_on) = slot_of(layout, Instrument::Gyro);
+        let (gyro_anchor, gyro_on) = slot_of(layout, Instrument::Gyro, shift);
         self.passes.gyro.update(
             &self.queue,
             &GyroUniforms::new(
@@ -352,6 +359,21 @@ impl Gpu {
                 layout.shown(Instrument::Ladder),
             ),
         );
+    }
+
+    /// While looking, the cursor is hidden and locked in place so the mouse
+    /// measures head movement rather than walking off the window.
+    fn set_look_cursor(&self, looking: bool) {
+        use winit::window::CursorGrabMode;
+        self.window.set_cursor_visible(!looking);
+        let mode = if looking {
+            CursorGrabMode::Locked
+        } else {
+            CursorGrabMode::None
+        };
+        if self.window.set_cursor_grab(mode).is_err() && looking {
+            let _ = self.window.set_cursor_grab(CursorGrabMode::Confined);
+        }
     }
 
     /// Graphics settings, live. Scale and vsync are cheap; MSAA rebuilds
@@ -522,6 +544,8 @@ struct Game {
     settings: Settings,
     menu: Menu,
     horizon_fade: HorizonFade,
+    /// The pilot's head: freelook, separate from the nose.
+    look: Look,
     /// Felt acceleration over the last sim step, g, and the meter's fade.
     felt_g: f32,
     g_fade: GForceFade,
@@ -566,6 +590,7 @@ impl Game {
             settings: Settings::default(),
             menu: Menu::new(),
             horizon_fade: HorizonFade::new(),
+            look: Look::new(),
             felt_g: 0.0,
             g_fade: GForceFade::new(),
             odometer_m: 0.0,
@@ -580,6 +605,12 @@ impl Game {
     fn apply_settings(&mut self, settings: Settings) {
         self.settings = settings;
         self.input.set_bindings(settings.bindings);
+        self.look.sensitivity = settings.look_sensitivity;
+    }
+
+    /// How far the glass has slid under the pilot's turned head, NDC.
+    fn glass_shift(&self, cam: &CameraFrame) -> [f32; 2] {
+        self.look.glass_shift((cam.fov_y * 0.5).tan(), cam.aspect)
     }
 
     /// The Sun and the Moon as the camera sees them: the Moon's position
@@ -636,6 +667,7 @@ impl Game {
         self.horizon_fade
             .update(frame_dt.min(0.25) as f32, altitude as f32);
         self.g_fade.update(frame_dt.min(0.25) as f32, self.felt_g);
+        self.look.update(frame_dt.min(0.25) as f32);
 
         // A pilot reading a menu is not flying: the world waits.
         if self.menu.open {
@@ -859,10 +891,11 @@ impl Game {
     /// is the ship's orientation, so steering turns the world rather than
     /// sliding a detached camera around it.
     fn camera(&self, aspect: f32) -> CameraFrame {
-        // The camera *is* the ship's orientation: both use the same
+        // The camera is the ship's orientation — both use the same
         // right-handed frame with the nose at -Z, so no fix-up rotation is
-        // needed. Any conversion here would be a sign bug waiting to happen.
-        let orient = self.state.ship.orient.as_quat();
+        // needed — times the pilot's head. The head is a view, not a
+        // control: nothing downstream of the sim sees it.
+        let orient = self.state.ship.orient.as_quat() * self.look.rotation();
         CameraFrame {
             orient,
             fov_y: (BASE_FOV + FOV_THRUST_GAIN * self.effort).to_radians(),
@@ -1079,6 +1112,16 @@ impl ApplicationHandler for App {
         }
     }
 
+    fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        // Raw motion, not cursor position: the cursor is grabbed while
+        // looking, and raw counts keep coming at the screen edge.
+        if let DeviceEvent::MouseMotion { delta } = event {
+            if let Some(game) = self.game.as_mut() {
+                game.look.motion(delta.0 as f32, delta.1 as f32);
+            }
+        }
+    }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1105,7 +1148,8 @@ impl ApplicationHandler for App {
                                 game.settings.save();
                                 match change {
                                     Change::Bindings => {
-                                        game.input.set_bindings(game.settings.bindings)
+                                        game.input.set_bindings(game.settings.bindings);
+                                        game.look.sensitivity = game.settings.look_sensitivity;
                                     }
                                     Change::Graphics => gpu.apply_graphics(&game.settings),
                                     Change::Layout => {}
@@ -1143,6 +1187,10 @@ impl ApplicationHandler for App {
                         gpu.scene.set_scale(next);
                         log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
                     }
+                    KeyCode::KeyL if pressed && !event.repeat => {
+                        game.look.toggle_lock();
+                        gpu.set_look_cursor(game.look.engaged());
+                    }
                     KeyCode::KeyT if pressed && !event.repeat => {
                         game.settings.layout.cycle(Instrument::Trajectory, true);
                         game.settings.save();
@@ -1158,9 +1206,21 @@ impl ApplicationHandler for App {
                     _ => game.input.set(code, pressed),
                 }
             }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Right,
+                ..
+            } => {
+                game.look.set_held(state == ElementState::Pressed);
+                gpu.set_look_cursor(game.look.engaged());
+            }
             // A key held while the window loses focus never sees its release
             // event; without this the ship keeps thrusting unattended.
-            WindowEvent::Focused(false) => game.input.release_all(),
+            WindowEvent::Focused(false) => {
+                game.input.release_all();
+                game.look.set_held(false);
+                gpu.set_look_cursor(game.look.engaged());
+            }
             WindowEvent::Resized(size) => {
                 gpu.config.width = size.width.max(1);
                 gpu.config.height = size.height.max(1);
@@ -1244,7 +1304,10 @@ impl ApplicationHandler for App {
                                     gpu.hud.update(
                                         &gpu.queue,
                                         &gpu.text,
-                                        game.settings.layout.inset(HUD_TEXT_ANCHOR),
+                                        shifted(
+                                            game.settings.layout.inset(HUD_TEXT_ANCHOR),
+                                            game.glass_shift(&cam),
+                                        ),
                                         hud_scale * 2.0 / sh as f32,
                                         aspect,
                                         sh as f32,
@@ -1259,7 +1322,11 @@ impl ApplicationHandler for App {
                                 let thermal_in = game.thermal_inputs(game.frame_dt);
                                 gpu.passes.plasma.update(
                                     &gpu.queue,
-                                    &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps),
+                                    &PlasmaUniforms::new(
+                                        &cam,
+                                        thermal_in.vel_ship_mps,
+                                        game.look.rotation(),
+                                    ),
                                 );
                                 gpu.passes
                                     .thermal
@@ -1372,7 +1439,7 @@ impl ApplicationHandler for App {
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,
-                    &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps),
+                    &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps, game.look.rotation()),
                 );
                 gpu.passes.trajectory.update(
                     &gpu.queue,
@@ -1397,7 +1464,10 @@ impl ApplicationHandler for App {
                 gpu.hud.update(
                     &gpu.queue,
                     &gpu.text,
-                    game.settings.layout.inset(HUD_TEXT_ANCHOR),
+                    shifted(
+                        game.settings.layout.inset(HUD_TEXT_ANCHOR),
+                        game.glass_shift(&cam),
+                    ),
                     px_canopy,
                     aspect,
                     gpu.config.height as f32,

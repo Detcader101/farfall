@@ -58,11 +58,24 @@ pub struct PlasmaUniforms {
     /// x: tan(fov_y/2), y: aspect, z: time_s, w: exposure
     params: [f32; 4],
     vel: [f32; 4],
+    /// Camera space → ship space (the pilot's head), as a quaternion, in
+    /// the shader's ship frame (x right, y up, z forward).
+    look: [f32; 4],
 }
 
 impl PlasmaUniforms {
-    pub fn new(cam: &crate::CameraFrame, vel_ship_mps: Vec3) -> Self {
+    /// `look`: the head's rotation in the body frame (nose −Z). Identity
+    /// when the pilot looks straight ahead.
+    pub fn new(cam: &crate::CameraFrame, vel_ship_mps: Vec3, look: glam::Quat) -> Self {
         let v = vel_ship_mps;
+        // The shader's ship frame has z forward where the body has −Z: a
+        // REFLECTION (x, y, −z), not a rotation — it changes handedness.
+        // Under a reflection M a rotation R becomes M R M⁻¹: the axis is
+        // reflected and the angle reversed, which for the quaternion means
+        // (−x, −y, z, w). (The first cut flipped x and z as if M were a
+        // half-turn about Y; the test below caught it.)
+        let q = look.normalize();
+        let flipped = glam::Quat::from_xyzw(-q.x, -q.y, q.z, q.w);
         Self {
             params: [
                 (cam.fov_y * 0.5).tan(),
@@ -71,6 +84,7 @@ impl PlasmaUniforms {
                 cam.exposure,
             ],
             vel: [v.x, v.y, v.z, v.length()],
+            look: [flipped.x, flipped.y, flipped.z, flipped.w],
         }
     }
 }
@@ -466,6 +480,29 @@ mod tests {
         let nose_world = orient * Vec3::NEG_Z;
         let v = ship_frame_velocity(orient, nose_world * 500.0);
         assert!((v - Vec3::new(0.0, 0.0, 500.0)).length() < 1e-3, "{v}");
+    }
+
+    /// Looking right (a head yaw that swings the nose toward body +X)
+    /// must map the screen centre to a hull direction to the right of
+    /// forward in the shader's frame.
+    #[test]
+    fn head_yaw_turns_the_centre_ray_the_right_way() {
+        let cam = crate::CameraFrame {
+            orient: Quat::IDENTITY,
+            fov_y: 1.2,
+            aspect: 1.6,
+            time_s: 0.0,
+            exposure: 1.6,
+        };
+        // Looking right: nose −Z swings toward +X under a negative Y rotation.
+        let look = Quat::from_rotation_y(-0.5);
+        assert!((look * Vec3::NEG_Z).x > 0.0);
+        let u = PlasmaUniforms::new(&cam, Vec3::Z, look);
+        let q = Quat::from_xyzw(u.look[0], u.look[1], u.look[2], u.look[3]);
+        // Shader frame: forward is +Z. The centre ray (0,0,1) should land
+        // to the right (+x) of forward.
+        let r = q * Vec3::Z;
+        assert!(r.x > 0.0 && r.z > 0.0, "{r}");
     }
 
     #[test]

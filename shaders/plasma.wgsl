@@ -20,6 +20,9 @@ struct Plasma {
     params: vec4<f32>,
     // xyz: velocity in ship space (right, up, forward), m/s. w: speed.
     vel: vec4<f32>,
+    // The pilot's head: camera space → ship space, as a quaternion. With
+    // the head straight this is the identity and the camera IS the hull.
+    look: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> pl: Plasma;
@@ -65,8 +68,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let time = pl.params.z;
     let exposure = pl.params.w;
 
-    // The view ray in ship space — no world basis needed.
-    let ray = normalize(vec3<f32>(in.ndc.x * tan_half * aspect, in.ndc.y * tan_half, 1.0));
+    // The view ray in ship space: camera space turned back through the
+    // pilot's head — no world basis needed.
+    let cam_ray = normalize(vec3<f32>(in.ndc.x * tan_half * aspect, in.ndc.y * tan_half, 1.0));
+    let ray = quat_rotate(pl.look, cam_ray);
     let heat = textureSample(heat_tex, heat_samp, oct_encode(ray) * 0.5 + 0.5);
     let gas_kk = heat.g;
     let hull_kk = heat.r;

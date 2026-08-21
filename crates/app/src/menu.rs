@@ -64,6 +64,7 @@ enum Item {
     BindBrake,
     Slot(Instrument),
     SafeEdge,
+    LookSens,
 }
 
 impl Item {
@@ -78,6 +79,7 @@ impl Item {
             Item::BindBrake => "AIR BRAKE",
             Item::Slot(i) => i.name(),
             Item::SafeEdge => "SAFE EDGE",
+            Item::LookSens => "LOOK SENS",
         }
     }
 
@@ -92,6 +94,7 @@ impl Item {
             Item::BindBrake => key_name(s.bindings.brake).to_string(),
             Item::Slot(i) => s.layout.get(i).name().to_string(),
             Item::SafeEdge => format!("{:.0}%", s.layout.safe_edge * 100.0),
+            Item::LookSens => format!("{:.2}", s.look_sensitivity),
         }
     }
 
@@ -144,6 +147,7 @@ impl Menu {
                 let mut v: Vec<Item> = Action::ALL.iter().map(|&a| Item::Bind(a)).collect();
                 v.push(Item::BindBoost);
                 v.push(Item::BindBrake);
+                v.push(Item::LookSens);
                 v
             }
             Page::Cockpit => {
@@ -271,6 +275,15 @@ impl Menu {
             Item::Slot(i) => {
                 s.layout.cycle(i, forward);
                 MenuEvent::Changed(Change::Layout)
+            }
+            Item::LookSens => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.look_sensitivity + step).clamp(0.25, 5.0);
+                if (next - s.look_sensitivity).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.look_sensitivity = next;
+                MenuEvent::Changed(Change::Bindings)
             }
             Item::SafeEdge => {
                 let step = if forward { 0.01 } else { -0.01 };

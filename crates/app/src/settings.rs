@@ -17,6 +17,8 @@ pub struct Settings {
     pub vsync: bool,
     pub bindings: Bindings,
     pub layout: Layout,
+    /// Freelook: radians per mouse count, relative to the default.
+    pub look_sensitivity: f32,
 }
 
 impl Default for Settings {
@@ -27,6 +29,7 @@ impl Default for Settings {
             vsync: true,
             bindings: Bindings::default(),
             layout: Layout::default(),
+            look_sensitivity: 1.0,
         }
     }
 }
@@ -99,6 +102,13 @@ impl Settings {
                         s.layout.set_safe_edge(f / 100.0);
                     }
                 }
+                "control.look-sens" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.look_sensitivity = f.clamp(0.1, 5.0);
+                        }
+                    }
+                }
                 "control.boost" => {
                     if let Some(key) = key_from_name(v) {
                         s.bindings.bind_boost(key);
@@ -163,6 +173,10 @@ impl Settings {
             "control.brake = {}\n",
             key_name(self.bindings.brake)
         ));
+        out.push_str(&format!(
+            "control.look-sens = {:.2}\n",
+            self.look_sensitivity
+        ));
         for i in Instrument::ALL {
             out.push_str(&format!("ui.{} = {}\n", i.key(), self.layout.get(i).key()));
         }
@@ -198,6 +212,7 @@ mod tests {
         s.layout.set(Instrument::Gyro, Slot::TopCentre);
         s.layout.set(Instrument::Horizon, Slot::Off);
         s.layout.set_safe_edge(0.07);
+        s.look_sensitivity = 1.75;
         assert_eq!(Settings::parse(&s.render()), s);
     }
 
