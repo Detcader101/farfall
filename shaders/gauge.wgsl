@@ -148,8 +148,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let full = max(gauge.b.x, 1.0);
     // A wrapping arc laps: the needle resets at the end of the dial and a
     // multiplier counts the laps. A clamping arc pins at full scale.
+    // Laps are counted to 99; past that the arc pins at full and the
+    // readout, which never lies, carries the number alone.
     let wraps = gauge.c.w > 0.5;
-    let lap = select(0.0, floor(value / full), wraps);
+    let lap = select(0.0, min(floor(value / full), 99.0), wraps);
     let frac = select(clamp(value / full, 0.0, 1.0), clamp(value / full - lap, 0.0, 1.0), wraps);
     let mach = gauge.d.w;
 
@@ -207,10 +209,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // gone round at least once. Amber, like everything that says "more
     // than the dial".
     if (lap >= 1.0) {
-        let mult = u32(clamp(lap + 1.0, 2.0, 9.0));
+        let mult = u32(clamp(lap + 1.0, 2.0, 100.0));
         let base = vec2<f32>(radius + 0.030, radius * 0.55);
         let dh = 0.017;
         let dw = 0.009;
+        let pitch = 0.026;
         // The × : two crossed segments.
         let xc = base + vec2<f32>(-0.026, 0.0);
         let xd = min(
@@ -218,7 +221,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             seg_dist(p_near - xc, vec2<f32>(-0.008, 0.008), vec2<f32>(0.008, -0.008)),
         );
         warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, xd - 0.0012));
-        let dd = digit_dist(p_near - base, digit_mask(mult), dw, dh);
+        // One digit to ×9, two beyond.
+        let tens = mult / 10u;
+        let ones = mult % 10u;
+        let first = select(base, base + vec2<f32>(pitch, 0.0), tens > 0u);
+        if (tens > 0u) {
+            let dt = digit_dist(p_near - base, digit_mask(tens), dw, dh);
+            warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, dt - 0.0012));
+            glow += 0.15 * (1.0 - smoothstep(0.0, 0.006, dt));
+        }
+        let dd = digit_dist(p_near - first, digit_mask(ones), dw, dh);
         warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, dd - 0.0012));
         glow += 0.15 * (1.0 - smoothstep(0.0, 0.006, dd));
     }

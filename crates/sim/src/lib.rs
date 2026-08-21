@@ -353,6 +353,39 @@ pub fn aero_forces(ship_p: &ShipParams, rho: f64, ship: &ShipState) -> Aero {
     }
 }
 
+/// The speed of light, m/s. A universal constant, not a planet parameter.
+pub const LIGHT_SPEED_MPS: f64 = 299_792_458.0;
+
+/// Below this speed the relativistic correction is under a part in 10⁹
+/// and is skipped entirely, so that everything a ship does today — orbit,
+/// entry, a dive, a boost — is integrated bit for bit as before (the
+/// golden hash is the proof). Above it, special relativity: no engine, no
+/// amount of time, gets the ship to c. That is the wall a wormhole drive
+/// will one day have to go around rather than through.
+pub const RELATIVITY_FROM_MPS: f64 = 9_500.0;
+
+/// Relativistic velocity kick. `newton` is where a Newtonian step would
+/// have put the velocity; the change is scaled by γ⁻³ — the rate at which
+/// proper acceleration along the motion turns into coordinate velocity —
+/// which goes to zero as v → c. Exact identity below RELATIVITY_FROM_MPS.
+pub fn light_limit(before: DVec3, newton: DVec3) -> DVec3 {
+    let speed = before.length();
+    if speed < RELATIVITY_FROM_MPS {
+        return newton;
+    }
+    let beta2 = (speed * speed) / (LIGHT_SPEED_MPS * LIGHT_SPEED_MPS);
+    let factor = (1.0 - beta2).max(0.0);
+    let scale = factor * libm::sqrt(factor);
+    let vel = before + (newton - before) * scale;
+    // Never past c, whatever the arithmetic: the ceiling is the ceiling.
+    let v = vel.length();
+    if v >= LIGHT_SPEED_MPS {
+        vel * ((LIGHT_SPEED_MPS * (1.0 - 1e-12)) / v)
+    } else {
+        vel
+    }
+}
+
 /// Gravity at a point: a = −μ·r̂/|r|². The one expression the integrator
 /// uses, exposed so an instrument can subtract exactly what the sim added —
 /// felt acceleration is what is left of Δv/Δt once this is gone.
@@ -437,6 +470,7 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     } else {
         ship.vel_mps + (a_gravity + a_drag + a_thrust) * DT
     };
+    let vel = light_limit(ship.vel_mps, vel);
     let pos = ship.pos_m + vel * DT;
 
     // Ground contact. The planet is a sphere, so this is exact rather than a

@@ -430,7 +430,14 @@ impl Gpu {
             );
             self.text.draw(0, 30, &format!("{sw}X{sh}"));
             self.text.draw(0, 36, &format!("ALT {altitude_m:.0}M"));
-            self.text.draw(0, 42, &format!("VEL {speed_mps:.0}M/S"));
+            self.text.draw(
+                0,
+                42,
+                &format!(
+                    "VEL {}",
+                    farfall_render::gauge::speed_text(speed_mps as f32)
+                ),
+            );
             // The flight computer's state lives on the HUD because the log is
             // invisible in fullscreen — X seemed broken when it was merely
             // silent.

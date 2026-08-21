@@ -199,14 +199,64 @@ impl MachAlert {
 /// One lap of the speed arc, m/s: two machs.
 pub const SPEED_LAP_MPS: f32 = 680.0;
 
+/// The speed of light, for the readout's top range.
+pub const LIGHT_SPEED_MPS: f32 = 299_792_458.0;
+
+/// The unit a speed is shown in: the readout molds itself to the number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeedUnit {
+    /// Metres per second, to 999.
+    MetresPerSecond,
+    /// Kilometres per second, 1.00 to 999.
+    KilometresPerSecond,
+    /// Percent of the speed of light, from a third of a percent up.
+    PercentOfLight,
+}
+
+impl SpeedUnit {
+    pub fn for_speed(speed_mps: f32) -> Self {
+        let v = speed_mps.max(0.0);
+        if v < 999.5 {
+            SpeedUnit::MetresPerSecond
+        } else if v < 999_500.0 {
+            SpeedUnit::KilometresPerSecond
+        } else {
+            SpeedUnit::PercentOfLight
+        }
+    }
+
+    /// Suffix for the text readout.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            SpeedUnit::MetresPerSecond => "M/S",
+            SpeedUnit::KilometresPerSecond => "KM/S",
+            SpeedUnit::PercentOfLight => "%C",
+        }
+    }
+}
+
 /// Speed readout: metres per second to 999, then kilometres per second with
-/// a decimal dot ("1.36"), so the three digits never lie by clamping.
+/// a decimal dot ("1.36"), then percent of c ("0.33" … "99.9") — three
+/// digits that never lie by clamping, all the way to the wall.
 pub fn speed_readout(speed_mps: f32) -> (u32, u32) {
     let v = speed_mps.max(0.0);
-    if v < 999.5 {
-        (v.round() as u32, 0)
-    } else {
-        km_readout(v)
+    match SpeedUnit::for_speed(v) {
+        SpeedUnit::MetresPerSecond => (v.round() as u32, 0),
+        SpeedUnit::KilometresPerSecond => km_readout(v),
+        SpeedUnit::PercentOfLight => km_readout(v / LIGHT_SPEED_MPS * 100.0 * 1_000.0),
+    }
+}
+
+/// The text readout's line: number and unit together.
+pub fn speed_text(speed_mps: f32) -> String {
+    let unit = SpeedUnit::for_speed(speed_mps);
+    let v = speed_mps.max(0.0);
+    match unit {
+        SpeedUnit::MetresPerSecond => format!("{:.0}{}", v, unit.suffix()),
+        SpeedUnit::KilometresPerSecond => format!("{:.2}{}", v / 1_000.0, unit.suffix()),
+        SpeedUnit::PercentOfLight => {
+            format!("{:.2}{}", v / LIGHT_SPEED_MPS * 100.0, unit.suffix())
+        }
     }
 }
 
@@ -465,6 +515,12 @@ mod tests {
         assert_eq!(speed_readout(999.4), (999, 0));
         assert_eq!(speed_readout(1_360.0), (136, 1)); // 1.36 km/s
         assert_eq!(speed_readout(12_400.0), (124, 2)); // 12.4 km/s
+                                                       // A thousand km/s is a third of a percent of c.
+        assert_eq!(speed_readout(1_000_000.0), (33, 1)); // 0.33 %c
+        assert_eq!(speed_readout(0.5 * LIGHT_SPEED_MPS), (500, 2)); // 50.0 %c
+        assert_eq!(speed_text(773.4), "773M/S");
+        assert_eq!(speed_text(1_360.0), "1.36KM/S");
+        assert_eq!(speed_text(0.5 * LIGHT_SPEED_MPS), "50.00%C");
     }
 
     #[test]
