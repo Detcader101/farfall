@@ -93,11 +93,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var ground = 0.0;
 
     // ---- the ball: rolled by -roll, slid by pitch ---------------------
+    // Right wing down (roll > 0): the real horizon appears to rotate
+    // counter-clockwise — the left side rises. The horizon is the line
+    // q.y = y0 in the ball's own frame, so to turn that line CCW on the
+    // glass the frame itself rotates CW: q = R(+roll)·p. (The first cut
+    // used R(−roll), and the ball rolled against the world.)
     let cr = cos(roll);
     let sr = sin(roll);
-    // Rotating the ball by -roll: the horizon tips the other way from the
-    // wings, which is what a ball does.
-    let q = vec2<f32>(cr * p_mid.x - sr * p_mid.y, sr * p_mid.x + cr * p_mid.y);
+    let q = vec2<f32>(cr * p_mid.x + sr * p_mid.y, -sr * p_mid.x + cr * p_mid.y);
     let r_ball = length(p_mid);
     let in_ball = r_ball < RADIUS - 0.006;
     let ball_edge = 1.0 - smoothstep(RADIUS - 0.010, RADIUS - 0.004, r_ball);

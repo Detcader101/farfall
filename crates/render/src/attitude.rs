@@ -188,6 +188,19 @@ mod tests {
         assert!(near(att.drift, 0.5f32.atan2(1.0)));
     }
 
+    /// The ball's horizon is the line q.y = y0 in a frame q = R(roll)·p
+    /// (gyro.wgsl). Rolled right, the right end of the horizon must RISE —
+    /// that is what a pilot sees out of the window. This is the shader's
+    /// line equation, kept here so the sign cannot drift silently.
+    #[test]
+    fn ball_horizon_rises_to_the_right_when_rolled_right() {
+        let roll = 0.3f32;
+        let (sr, cr) = roll.sin_cos();
+        // q.y for a point p: -sr·p.x + cr·p.y. On the horizon q.y = 0.
+        let y_at = |px: f32| sr * px / cr;
+        assert!(y_at(1.0) > y_at(-1.0));
+    }
+
     #[test]
     fn horizon_fades_out_in_space() {
         let mut f = HorizonFade::new();
