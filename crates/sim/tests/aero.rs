@@ -205,3 +205,50 @@ fn aero_is_deterministic() {
     let b = run(&p, s0, 600, Controls::default());
     assert_eq!(a, b);
 }
+
+// ------------------------------------------------------------- felt g
+
+/// Coasting in vacuum is free fall: nothing felt, to the last bit of the
+/// integrator's own arithmetic.
+#[test]
+fn free_fall_feels_nothing() {
+    let p = presets::earth_compact();
+    let s0 = presets::circular_orbit(&p, p.planet.atmo_top_m + 5_000.0);
+    let s1 = step(&p, &s0, Controls::default());
+    let felt = farfall_sim::felt_acceleration(&p.planet, &s0.ship, &s1.ship);
+    assert!(felt.length() < 1e-6, "{felt}");
+}
+
+/// Full main engine in vacuum is felt as exactly the engine: the thrust
+/// acceleration, along the nose.
+#[test]
+fn thrust_is_felt_as_thrust() {
+    let p = presets::earth_compact();
+    let s0 = presets::circular_orbit(&p, p.planet.atmo_top_m + 5_000.0);
+    let c = Controls {
+        thrust_body: DVec3::new(0.0, 0.0, -1.0),
+        ..Default::default()
+    };
+    let s1 = step(&p, &s0, c);
+    let felt = farfall_sim::felt_acceleration(&p.planet, &s0.ship, &s1.ship);
+    let nose = s0.ship.orient * DVec3::NEG_Z;
+    assert!(
+        (felt.length() - p.ship.max_thrust_mps2.z).abs() < 1e-6,
+        "{}",
+        felt.length()
+    );
+    assert!(felt.normalize().dot(nose) > 0.9999);
+}
+
+/// Hands off in thick air, the pilot feels the drag — and only the drag.
+#[test]
+fn drag_is_felt_in_air() {
+    let p = presets::earth_compact();
+    let s0 = presets::circular_orbit(&p, 2_000.0);
+    let s1 = step(&p, &s0, Controls::default());
+    let felt = farfall_sim::felt_acceleration(&p.planet, &s0.ship, &s1.ship);
+    let rho = atmo_density(&p.planet, s0.ship.pos_m.length());
+    let aero = aero_forces(&p.ship, rho, &s0.ship).accel_world;
+    assert!((felt - aero).length() < 1e-6 * aero.length().max(1.0));
+    assert!(felt.length() > 0.5);
+}

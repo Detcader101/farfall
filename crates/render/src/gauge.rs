@@ -59,6 +59,33 @@ impl GaugeFade {
     }
 }
 
+/// Relevance fade for the G meter: load matters when there is some. A
+/// quarter g of anything shows it; it lingers after, so a pulled turn
+/// leaves its number on the glass for a beat.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GForceFade {
+    level: f32,
+}
+
+impl GForceFade {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn update(&mut self, dt: f32, g: f32) -> f32 {
+        let dt = dt.clamp(1e-4, 0.25);
+        let target = ((g - 0.25) / 0.5).clamp(0.0, 1.0);
+        let tau = if target > self.level { 0.15 } else { 1.6 };
+        let alpha = 1.0 - (-dt / tau).exp();
+        self.level += (target - self.level) * alpha;
+        self.level.clamp(0.0, 1.0)
+    }
+
+    pub fn level(&self) -> f32 {
+        self.level
+    }
+}
+
 /// Relevance fade for the altimeter: altitude matters when the ground is
 /// coming up — low, or approached fast. High settled cruise hides it.
 #[derive(Debug, Clone, Copy, Default)]
@@ -244,6 +271,28 @@ impl GaugeUniforms {
         }
     }
 
+    /// The G meter: felt acceleration in g, 0..10 on the arc, two decimals
+    /// on the readout, amber at the top — the hull and the pilot both have
+    /// a limit up there.
+    pub fn g_force(
+        g: f32,
+        visibility: f32,
+        time_s: f32,
+        aspect: f32,
+        height_px: f32,
+        anchor_ndc: [f32; 2],
+        sway: [f32; 2],
+    ) -> Self {
+        let g = g.max(0.0);
+        let digits = ((g * 100.0).round() as u32).min(999);
+        Self {
+            a: [g, visibility, time_s, aspect],
+            b: [10.0, height_px, anchor_ndc[0], anchor_ndc[1]],
+            c: [digits as f32, 1.0, 0.0, 0.0],
+            d: [sway[0], sway[1], 0.0, -1.0],
+        }
+    }
+
     /// The altimeter: same instrument, different numbers. The arc spans the
     /// atmosphere-relevant band (0..15 km); the readout auto-ranges in km,
     /// and the warning amber sits at the BOTTOM of the arc — low is what an
@@ -416,6 +465,33 @@ mod tests {
         assert_eq!(speed_readout(999.4), (999, 0));
         assert_eq!(speed_readout(1_360.0), (136, 1)); // 1.36 km/s
         assert_eq!(speed_readout(12_400.0), (124, 2)); // 12.4 km/s
+    }
+
+    #[test]
+    fn g_meter_shows_two_decimals_and_clamps() {
+        let u = GaugeUniforms::g_force(3.456, 1.0, 0.0, 1.6, 900.0, [0.0, 0.0], [0.0, 0.0]);
+        assert_eq!(u.c[0], 346.0);
+        assert_eq!(u.c[1], 1.0);
+        assert_eq!(u.b[0], 10.0);
+        let wild = GaugeUniforms::g_force(-2.0, 1.0, 0.0, 1.6, 900.0, [0.0, 0.0], [0.0, 0.0]);
+        assert_eq!(wild.a[0], 0.0);
+        let huge = GaugeUniforms::g_force(40.0, 1.0, 0.0, 1.6, 900.0, [0.0, 0.0], [0.0, 0.0]);
+        assert_eq!(huge.c[0], 999.0);
+    }
+
+    #[test]
+    fn g_fade_shows_under_load_and_lingers() {
+        let mut f = GForceFade::new();
+        for _ in 0..40 {
+            f.update(0.05, 0.0);
+        }
+        assert!(f.level() < 0.01);
+        for _ in 0..40 {
+            f.update(0.05, 2.0);
+        }
+        assert!(f.level() > 0.95);
+        f.update(0.1, 0.0);
+        assert!(f.level() > 0.8, "dropped too fast: {}", f.level());
     }
 
     #[test]

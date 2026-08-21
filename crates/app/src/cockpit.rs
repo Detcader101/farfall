@@ -15,13 +15,15 @@ pub enum Instrument {
     Horizon,
     Trajectory,
     Readout,
+    GForce,
 }
 
 impl Instrument {
-    pub const ALL: [Instrument; 6] = [
+    pub const ALL: [Instrument; 7] = [
         Instrument::Speed,
         Instrument::Altitude,
         Instrument::Gyro,
+        Instrument::GForce,
         Instrument::Horizon,
         Instrument::Trajectory,
         Instrument::Readout,
@@ -35,6 +37,7 @@ impl Instrument {
             Instrument::Horizon => "HORIZON",
             Instrument::Trajectory => "PATH",
             Instrument::Readout => "READOUT",
+            Instrument::GForce => "G METER",
         }
     }
 
@@ -47,6 +50,7 @@ impl Instrument {
             Instrument::Horizon => "horizon",
             Instrument::Trajectory => "path",
             Instrument::Readout => "readout",
+            Instrument::GForce => "g-meter",
         }
     }
 
@@ -55,7 +59,7 @@ impl Instrument {
     pub fn slotted(self) -> bool {
         matches!(
             self,
-            Instrument::Speed | Instrument::Altitude | Instrument::Gyro
+            Instrument::Speed | Instrument::Altitude | Instrument::Gyro | Instrument::GForce
         )
     }
 }
@@ -163,6 +167,7 @@ impl Default for Layout {
         l.set(Instrument::Speed, Slot::BottomRight);
         l.set(Instrument::Altitude, Slot::BottomLeft);
         l.set(Instrument::Gyro, Slot::BottomCentre);
+        l.set(Instrument::GForce, Slot::MidRight);
         l.set(Instrument::Horizon, Slot::On);
         l.set(Instrument::Trajectory, Slot::On);
         l.set(Instrument::Readout, Slot::On);

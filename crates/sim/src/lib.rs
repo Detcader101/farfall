@@ -353,6 +353,23 @@ pub fn aero_forces(ship_p: &ShipParams, rho: f64, ship: &ShipState) -> Aero {
     }
 }
 
+/// Gravity at a point: a = −μ·r̂/|r|². The one expression the integrator
+/// uses, exposed so an instrument can subtract exactly what the sim added —
+/// felt acceleration is what is left of Δv/Δt once this is gone.
+pub fn gravity(planet: &PlanetParams, pos_m: DVec3) -> DVec3 {
+    let r = pos_m.length();
+    pos_m * (-planet.mu / (r * r * r))
+}
+
+/// What the pilot feels across one step from `before` to `after`: the
+/// change in velocity per unit time, less gravity at the start of the
+/// step (a body in free fall feels nothing). Engine, air, brake, ground
+/// — all of it, in world frame. Exact for the sim's own steps, because
+/// the integrator kicks with gravity at the start position.
+pub fn felt_acceleration(planet: &PlanetParams, before: &ShipState, after: &ShipState) -> DVec3 {
+    (after.vel_mps - before.vel_mps) / DT - gravity(planet, before.pos_m)
+}
+
 /// Advance the world by exactly one fixed step [`DT`].
 ///
 /// Symplectic (semi-implicit) Euler: kick velocity with acceleration at the current
@@ -365,8 +382,7 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
 
     let r = ship.pos_m.length();
 
-    // Gravity: a = -μ·r̂/|r|²
-    let a_gravity = ship.pos_m * (-planet.mu / (r * r * r));
+    let a_gravity = gravity(planet, ship.pos_m);
 
     // The air: drag and lift from the hull's shape, and the torque they
     // exert about the centre of gravity. `a_drag` keeps its name — it is the

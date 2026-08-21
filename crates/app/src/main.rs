@@ -29,7 +29,10 @@ use farfall_render::{
     attitude::{gyro_pass, horizon_pass, Attitude, GyroUniforms, HorizonFade, HorizonUniforms},
     bake::BakedMaps,
     blit::BlitPass,
-    gauge::{gauge_pass, AltitudeFade, GaugeFade, GaugePass, GaugeUniforms, HoloSway, MachAlert},
+    gauge::{
+        gauge_pass, AltitudeFade, GForceFade, GaugeFade, GaugePass, GaugeUniforms, HoloSway,
+        MachAlert,
+    },
     hud::HudPass,
     instrument::InstrumentPass,
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
@@ -216,6 +219,7 @@ struct Passes {
     planet: PlanetPass,
     gauge: GaugePass,
     alt_gauge: GaugePass,
+    g_gauge: GaugePass,
     gyro: InstrumentPass,
     horizon: InstrumentPass,
     /// The hull heat field, simulated on the GPU, and the sheath it lights.
@@ -239,6 +243,7 @@ impl Passes {
             planet: PlanetPass::new(device, format, msaa, baked),
             gauge: gauge_pass(device, format, msaa),
             alt_gauge: gauge_pass(device, format, msaa),
+            g_gauge: gauge_pass(device, format, msaa),
             gyro: gyro_pass(device, format, msaa),
             horizon: horizon_pass(device, format, msaa),
             thermal,
@@ -300,6 +305,19 @@ impl Gpu {
                 aspect,
                 h,
                 alt_anchor,
+                sway,
+            ),
+        );
+        let (g_anchor, g_on) = slot_of(layout, Instrument::GForce);
+        self.passes.g_gauge.update(
+            &self.queue,
+            &GaugeUniforms::g_force(
+                game.felt_g,
+                game.g_fade.level() * g_on,
+                cam.time_s,
+                aspect,
+                h,
+                g_anchor,
                 sway,
             ),
         );
@@ -493,6 +511,9 @@ struct Game {
     settings: Settings,
     menu: Menu,
     horizon_fade: HorizonFade,
+    /// Felt acceleration over the last sim step, g, and the meter's fade.
+    felt_g: f32,
+    g_fade: GForceFade,
     /// Metres of path flown, so the path's marks can stay fixed to the
     /// world. Presentation only: a wrapped f32 is fine for a phase.
     odometer_m: f64,
@@ -534,6 +555,8 @@ impl Game {
             settings: Settings::default(),
             menu: Menu::new(),
             horizon_fade: HorizonFade::new(),
+            felt_g: 0.0,
+            g_fade: GForceFade::new(),
             odometer_m: 0.0,
             hoops_passed: 0,
             appearance: PlanetAppearance::EARTHLIKE,
@@ -594,6 +617,7 @@ impl Game {
         self.trajectory_vis += (target - self.trajectory_vis) * k;
         self.horizon_fade
             .update(frame_dt.min(0.25) as f32, altitude as f32);
+        self.g_fade.update(frame_dt.min(0.25) as f32, self.felt_g);
 
         // A pilot reading a menu is not flying: the world waits.
         if self.menu.open {
@@ -621,7 +645,11 @@ impl Game {
             if after > before && self.trajectory_vis > 0.5 {
                 self.hoops_passed = self.hoops_passed.wrapping_add(1);
             }
+            let before = self.state.ship;
             self.state = sim::step(&self.params, &self.state, controls);
+            self.felt_g = (sim::felt_acceleration(&self.params.planet, &before, &self.state.ship)
+                .length()
+                / 9.81) as f32;
             self.accumulator -= sim::DT;
         }
 
@@ -1241,6 +1269,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.horizon.draw(&mut pass);
                                     gpu.passes.gauge.draw(&mut pass);
                                     gpu.passes.alt_gauge.draw(&mut pass);
+                                    gpu.passes.g_gauge.draw(&mut pass);
                                     gpu.passes.gyro.draw(&mut pass);
                                     if capture_text {
                                         gpu.hud.draw(&mut pass);
@@ -1377,6 +1406,7 @@ impl ApplicationHandler for App {
                         gpu.passes.horizon.draw(&mut pass);
                         gpu.passes.gauge.draw(&mut pass);
                         gpu.passes.alt_gauge.draw(&mut pass);
+                        gpu.passes.g_gauge.draw(&mut pass);
                         gpu.passes.gyro.draw(&mut pass);
                     }
                 }
