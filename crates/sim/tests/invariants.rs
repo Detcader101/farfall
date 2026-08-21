@@ -112,11 +112,21 @@ fn scale_invariance() {
             // CdA/m by 1/s (keep ρ profile shape via H·s).
             atmo_rho0: base.planet.atmo_rho0,
             atmo_scale_height_m: base.planet.atmo_scale_height_m * s,
+            atmo_top_m: base.planet.atmo_top_m * s,
         },
         ship: farfall_sim::ShipParams {
             cd_area_m2: base.ship.cd_area_m2 / s,
+            cd_area_side_m2: base.ship.cd_area_side_m2 / s,
+            lift_area_m2: base.ship.lift_area_m2 / s,
             // Thrust acceleration must also scale by s to keep the similarity.
             max_thrust_mps2: base.ship.max_thrust_mps2 * s,
+            // Angles and times are invariant, so angular acceleration must be
+            // too: lever arms scale by s, forces by s (above), so torque by
+            // s² — and inertia with it. Damping torque ρ·v·k·ω needs k ∝ s.
+            centre_of_pressure_m: base.ship.centre_of_pressure_m * s,
+            centre_of_gravity_m: base.ship.centre_of_gravity_m * s,
+            inertia_kgm2: base.ship.inertia_kgm2 * s * s,
+            aero_damping_m4: base.ship.aero_damping_m4 * s,
             ..base.ship
         },
     };
@@ -190,7 +200,13 @@ fn golden_hash() {
 //   0xb6609f61c0695e89  thrust and torque became per-axis: a 165 m/s^2 main
 //                       engine against 45 m/s^2 thrusters, and roll slowed to
 //                       0.8 rad/s^2 against 1.7 pitch. Ship parameters again.
-const GOLDEN: u64 = 0xb6609f61c0695e89;
+//   0xceba659b3106279d  the air got a shape and a lever arm: drag depends on
+//                       angle of attack, the hull lifts, and the force at the
+//                       centre of pressure torques the ship about its centre
+//                       of gravity. The atmosphere also gained a hard top at
+//                       25 km. The golden scenario sits at 20 km, inside the
+//                       air, so the trajectory moved; the integrator did not.
+const GOLDEN: u64 = 0xceba659b3106279d;
 
 /// Not an assertion — prints the current golden value for setup/updates:
 /// `cargo test -p farfall-sim print_golden -- --ignored --nocapture`

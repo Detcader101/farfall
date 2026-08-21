@@ -40,6 +40,11 @@ pub struct PlanetParams {
     pub atmo_rho0: f64,
     /// Atmosphere scale height, m (ρ = ρ₀·e^(−h/H)).
     pub atmo_scale_height_m: f64,
+    /// Altitude above which there is exactly no air, m. An exponential never
+    /// reaches zero, and with the air able to torque the hull a ship in
+    /// "space" would otherwise be brushed by 10⁻⁹ kg/m³ forever — enough to
+    /// break the contract that vacuum conserves rotation bit for bit.
+    pub atmo_top_m: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,8 +78,44 @@ pub struct ShipParams {
     /// that most easily disorients, and a ship that rolls lazily reads as
     /// heavy while still turning quickly where it matters.
     pub max_torque_radps2: DVec3,
-    /// Drag coefficient × reference area, m² (F_drag = ½·ρ·|v|²·CdA, opposing v).
+    /// Drag coefficient × reference area, m² (F_drag = ½·ρ·|v|²·CdA, opposing v),
+    /// with the air coming straight down the nose. The SHAPE, part one.
     pub cd_area_m2: f64,
+    /// The shape, part two: the same product with the air hitting the hull
+    /// broadside. A long slender ship is many times draggier sideways than
+    /// nose-on; the drag at any attitude blends between the two by sin²α, α
+    /// being the angle between the nose and the airflow.
+    pub cd_area_side_m2: f64,
+    /// Lift slope × area, m²: how much the hull acts as a wing. Lift sits
+    /// perpendicular to the airflow, in the plane of nose and airflow, and
+    /// scales as sin α·cos α — rising with angle of attack, then stalling
+    /// back to nothing broadside, the way a flat plate does.
+    pub lift_area_m2: f64,
+    /// Where the air pushes: the centre of pressure, metres along the body
+    /// axis, aft positive (the nose is −Z, so aft is +Z). Fins and a tail
+    /// put it behind the middle.
+    pub centre_of_pressure_m: f64,
+    /// Where the mass sits: the centre of gravity, metres along the body
+    /// axis, aft positive. Engines at the back put it behind the middle.
+    ///
+    /// This is the variable that decides what the air DOES to the attitude.
+    /// The aerodynamic force acts at the centre of pressure and the ship
+    /// rotates about its centre of gravity, so the lever arm between them is
+    /// the whole story: pressure behind gravity and the ship weathervanes —
+    /// the nose follows the airflow, and as gravity bends the trajectory
+    /// down, the nose drops with it, like a jet. Gravity ahead of pressure
+    /// and the same air flips the ship end for end, like an arrow thrown
+    /// tail first.
+    pub centre_of_gravity_m: f64,
+    /// Moment of inertia per body axis (pitch, yaw, roll), kg·m². Turns the
+    /// aerodynamic torque into angular acceleration. The pilot's own
+    /// torque is already expressed as acceleration (`max_torque_radps2`),
+    /// so this only matters to the air.
+    pub inertia_kgm2: DVec3,
+    /// Rotational aerodynamic damping, m⁴: torque = −ρ·|v|·k·ω. Air resists
+    /// spin as well as motion; without it a weathervaning ship would hunt
+    /// about the wind forever.
+    pub aero_damping_m4: f64,
 }
 
 /// The entire mutable world (SPEC §7.1). Plain data by policy — no ECS until
@@ -158,6 +199,9 @@ pub mod presets {
                 mu: 9.81 * radius_m * radius_m,
                 atmo_rho0: 1.225,
                 atmo_scale_height_m: 2_000.0,
+                // 12.5 scale heights: ρ/ρ₀ ≈ 4·10⁻⁶ at the top, well below
+                // anything the hull, the ear or the eye can register.
+                atmo_top_m: 25_000.0,
             },
             ship: ShipParams {
                 mass_kg: 12_000.0,
@@ -178,6 +222,19 @@ pub mod presets {
                 ground_friction: 0.4,
                 max_torque_radps2: DVec3::new(1.7, 1.4, 0.8),
                 cd_area_m2: 8.0,
+                // Roughly a 10 m hull seen side-on against a 3 m nose.
+                cd_area_side_m2: 60.0,
+                lift_area_m2: 40.0,
+                // Tail and fins behind the middle; engines further back
+                // still but balanced by the cockpit and the forward tanks,
+                // so gravity sits a metre ahead of pressure: stable, with a
+                // lazy weathervane rather than a snap.
+                centre_of_pressure_m: 2.5,
+                centre_of_gravity_m: 1.5,
+                // A 12 t, ~10 m body: m·L²/12 about pitch and yaw; roll is
+                // a much tighter radius.
+                inertia_kgm2: DVec3::new(100_000.0, 100_000.0, 20_000.0),
+                aero_damping_m4: 400.0,
             },
         }
     }
@@ -205,7 +262,88 @@ pub mod presets {
 /// formula is total (no branches that could differ across platforms).
 pub fn atmo_density(planet: &PlanetParams, r_m: f64) -> f64 {
     let h = r_m - planet.radius_m;
+    if h >= planet.atmo_top_m {
+        return 0.0;
+    }
     planet.atmo_rho0 * libm::exp(-h / planet.atmo_scale_height_m)
+}
+
+/// What the air does to the ship this instant: a translational
+/// acceleration in the world frame and an angular acceleration in the body
+/// frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Aero {
+    pub accel_world: DVec3,
+    pub ang_accel_body: DVec3,
+    /// Angle of attack, radians: between the nose and the airflow. Zero
+    /// nose-first, π/2 broadside, π flying backwards. For instruments.
+    pub alpha_rad: f64,
+    /// Dynamic pressure ½·ρ·v², Pa. For instruments and sound.
+    pub q_pa: f64,
+}
+
+/// Aerodynamics of the hull, evaluated in the body frame (SPEC §7.2).
+///
+/// Two independent things decide it. The SHAPE sets the forces: drag blends
+/// from the nose-on value to the broadside one by sin²α, and the hull lifts
+/// like a plate, sin α·cos α, perpendicular to the airflow. The BALANCE sets
+/// the torque: those forces act at the centre of pressure, the ship turns
+/// about its centre of gravity, and the lever between them — a single signed
+/// distance along the hull — decides whether the nose is pulled into the
+/// wind or thrown out of it. Air also damps spin.
+///
+/// Exactly zero in vacuum: ρ = 0 zeroes every term, so orbits above the air
+/// keep their contract (and the golden hash's vacuum regime) bit for bit.
+pub fn aero_forces(ship_p: &ShipParams, rho: f64, ship: &ShipState) -> Aero {
+    let speed = ship.vel_mps.length();
+    if rho <= 0.0 || speed <= 0.0 {
+        return Aero {
+            accel_world: DVec3::ZERO,
+            ang_accel_body: DVec3::ZERO,
+            alpha_rad: 0.0,
+            q_pa: 0.0,
+        };
+    }
+    let q = 0.5 * rho * speed * speed;
+
+    // Airflow in the body frame, and the angle it makes with the nose.
+    let v_body = ship.orient.conjugate() * ship.vel_mps;
+    let v_hat = v_body / speed;
+    let nose = DVec3::NEG_Z;
+    let cos_a = v_hat.dot(nose).clamp(-1.0, 1.0);
+    let sin2_a = (1.0 - cos_a * cos_a).max(0.0);
+    let sin_a = libm::sqrt(sin2_a);
+    let alpha = libm::acos(cos_a);
+
+    // Drag: the shape seen by the airflow.
+    let cd_area = ship_p.cd_area_m2 + (ship_p.cd_area_side_m2 - ship_p.cd_area_m2) * sin2_a;
+    let f_drag = v_hat * (-q * cd_area);
+
+    // Lift: perpendicular to the airflow, toward the side the nose is on.
+    // Degenerates cleanly to zero nose-on and broadside.
+    let perp = nose - v_hat * cos_a;
+    let f_lift = if sin_a > 1e-9 {
+        (perp / sin_a) * (q * ship_p.lift_area_m2 * sin_a * cos_a)
+    } else {
+        DVec3::ZERO
+    };
+    let f_body = f_drag + f_lift;
+
+    // Torque about the centre of gravity, from the force at the centre of
+    // pressure. Aft is +Z.
+    let arm = DVec3::new(
+        0.0,
+        0.0,
+        ship_p.centre_of_pressure_m - ship_p.centre_of_gravity_m,
+    );
+    let torque = arm.cross(f_body) - ship.ang_vel_radps * (rho * speed * ship_p.aero_damping_m4);
+
+    Aero {
+        accel_world: ship.orient * (f_body / ship_p.mass_kg),
+        ang_accel_body: torque / ship_p.inertia_kgm2,
+        alpha_rad: alpha,
+        q_pa: q,
+    }
 }
 
 /// Advance the world by exactly one fixed step [`DT`].
@@ -223,15 +361,11 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     // Gravity: a = -μ·r̂/|r|²
     let a_gravity = ship.pos_m * (-planet.mu / (r * r * r));
 
-    // Drag: F = ½·ρ·|v|²·CdA opposing velocity ⇒ a = F/m.
-    let speed = ship.vel_mps.length();
-    let a_drag = if speed > 0.0 {
-        let rho = atmo_density(planet, r);
-        let f = 0.5 * rho * speed * speed * params.ship.cd_area_m2;
-        ship.vel_mps * (-f / (params.ship.mass_kg * speed))
-    } else {
-        DVec3::ZERO
-    };
+    // The air: drag and lift from the hull's shape, and the torque they
+    // exert about the centre of gravity. `a_drag` keeps its name — it is the
+    // translational half, drag and lift together.
+    let aero = aero_forces(&params.ship, atmo_density(planet, r), ship);
+    let a_drag = aero.accel_world;
 
     // Thrust: body-frame demand rotated into world frame. Rotating the demand
     // by the ship's own orientation is what makes the controls ship-relative —
@@ -313,6 +447,8 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     // `t * (m * DT)` and `(t * m) * DT` can differ in the last bit — enough to
     // move the golden hash. A feature that is off by default must not perturb
     // the physics contract, so the two paths stay textually separate.
+    // The air's torque applies in every branch: it is not an aid the pilot
+    // can switch off, it is the atmosphere.
     let ang_vel = if c.assist {
         // Torque-limited damping toward zero spin, blended per axis by how much
         // the pilot is *not* commanding that axis: full input means no fighting
@@ -323,9 +459,10 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
         let max = params.ship.max_torque_radps2;
         let cancel = (-ship.ang_vel_radps / DT).clamp(-max, max);
         let gain = DVec3::ONE - c.torque_body.abs();
-        ship.ang_vel_radps + (c.torque_body * max + gain * cancel) * DT
+        ship.ang_vel_radps + (c.torque_body * max + gain * cancel + aero.ang_accel_body) * DT
     } else {
-        ship.ang_vel_radps + c.torque_body * params.ship.max_torque_radps2 * DT
+        ship.ang_vel_radps
+            + (c.torque_body * params.ship.max_torque_radps2 + aero.ang_accel_body) * DT
     };
     // dq/dt = ½·ω_world·q, ω in world frame = orient · ω_body
     let w_world = ship.orient * ang_vel;

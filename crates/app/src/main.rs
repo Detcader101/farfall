@@ -79,6 +79,9 @@ const MACH1_MPS: f64 = 340.0;
 ///                           ground, which is where this renderer hurts)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
 ///   FARFALL_MUTE=1         (no audio stream at all)
+///   FARFALL_SKIP=a,b       (profiling only: leave out passes by name —
+///                           starfield, planet, plasma, gauge, hud, blit —
+///                           so each one's cost can be measured by its absence)
 struct Config {
     msaa: u32,
     vsync: bool,
@@ -87,9 +90,14 @@ struct Config {
     bench: bool,
     bench_seconds: f64,
     scale: f32,
+    skip: Vec<String>,
 }
 
 impl Config {
+    fn draws(&self, pass: &str) -> bool {
+        !self.skip.iter().any(|s| s == pass)
+    }
+
     fn from_env() -> Self {
         let msaa = std::env::var("FARFALL_MSAA")
             .ok()
@@ -141,6 +149,9 @@ impl Config {
             windowed,
             bench,
             bench_seconds,
+            skip: std::env::var("FARFALL_SKIP")
+                .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_default(),
             scale,
         }
     }
@@ -1067,11 +1078,19 @@ impl ApplicationHandler for App {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    gpu.starfield.draw(&mut pass);
-                    gpu.planet.draw(&mut pass);
-                    gpu.plasma.draw(&mut pass, &gpu.thermal);
-                    gpu.gauge.draw(&mut pass);
-                    gpu.alt_gauge.draw(&mut pass);
+                    if gpu.cfg.draws("starfield") {
+                        gpu.starfield.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("planet") {
+                        gpu.planet.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("plasma") {
+                        gpu.plasma.draw(&mut pass, &gpu.thermal);
+                    }
+                    if gpu.cfg.draws("gauge") {
+                        gpu.gauge.draw(&mut pass);
+                        gpu.alt_gauge.draw(&mut pass);
+                    }
                 }
                 {
                     // Pass 2: upscale, then the HUD at native resolution.
@@ -1091,8 +1110,12 @@ impl ApplicationHandler for App {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    gpu.blit.draw(&mut pass);
-                    gpu.hud.draw(&mut pass);
+                    if gpu.cfg.draws("blit") {
+                        gpu.blit.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("hud") {
+                        gpu.hud.draw(&mut pass);
+                    }
                 }
                 // Screenshot: recorded into the same command buffer, so it
                 // captures exactly the frame that was just drawn.
@@ -1218,6 +1241,11 @@ mod tests {
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(SPAWN_ALTITUDE_M);
+        // In vacuum: these tests are about the control mapping, and a hull
+        // falling through air picks up real aerodynamic torques of its own
+        // (a broadside wind on a tail-heavy-of-pressure ship yaws it). The
+        // air's behaviour has its own tests in the sim crate.
+        let altitude = altitude.max(params.planet.atmo_top_m + 1_000.0);
         let mut state = sim::presets::circular_orbit(&params, altitude);
         state.ship.orient = DQuat::IDENTITY;
         state.ship.vel_mps = DVec3::ZERO; // isolate control response from orbit
