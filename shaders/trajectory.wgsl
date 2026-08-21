@@ -37,6 +37,9 @@ struct Traj {
     // x: prediction horizon, s. y: segment count. z: visibility 0..1,
     // w: screen height, px.
     look: vec4<f32>,
+    // x: odometer — metres of path the ship has already flown, so the marks
+    // can stay fixed to the world and stream past. y: mark spacing, m.
+    mark: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> tj: Traj;
@@ -47,29 +50,30 @@ const SUBSTEPS: u32 = 6u;
 const RIBBON_PX: f32 = 3.0;
 const RETICLE_PX: f32 = 22.0;
 const BORESIGHT_PX: f32 = 14.0;
-// Distance along the path is marked for DEPTH first. Perspective shrinks
-// everything as 1/d, so an even grid bunches up into a smear a few degrees
-// from the prograde point; a geometric one — each mark RING_STEP times as
-// far as the last — lands the marks evenly on the glass. Three sectors on
-// that one rhythm:
+// The marks along the path are FIXED TO THE WORLD: an even grid of
+// mark.y metres laid along the trajectory, phased by the odometer so that
+// as the ship flies the marks stream toward it and past — the hoops show
+// the velocity, not just the route. What each mark looks like depends on
+// its distance from the ship:
 //
-//   hoops   — RING_COUNT true rings in the world, from RING_FIRST_M out.
-//             Radius grows as sqrt(d): far hoops shrink, but gently, so
-//             they still read as depth without vanishing. Thickness grows
-//             with d, so line weight stays readable on screen.
-//   dashes  — beyond the last hoop: the ribbon breaks into dashes on the
-//             same geometric rhythm (even in log-distance).
-//   dots    — beyond DOTS_FROM_M, to the horizon or the edge of the view:
-//             dots on that rhythm, dimmer.
+//   hoops   — the nearest RING_COUNT marks, within HOOPS_TO_M: true rings
+//             in the world. Radius grows as sqrt(d) so the far ones shrink
+//             gently and still read as depth; thickness grows with d so
+//             line weight holds on screen.
+//   dashes  — beyond that, to DOTS_FROM_M: the ribbon breaks into dashes
+//             on the same grid.
+//   dots    — beyond, to the horizon or the edge of the view: dots, dimmer.
 const RING_COUNT: u32 = 8u;
-const RING_FIRST_M: f32 = 600.0;
-const RING_STEP: f32 = 1.7;
+const HOOPS_TO_M: f32 = 9000.0;
 const RING_RADIUS_M: f32 = 90.0;
-const DOTS_FROM_M: f32 = 80000.0;
+const DOTS_FROM_M: f32 = 40000.0;
 
-// Distance of hoop i.
+// Distance from the ship of world-fixed mark i: the first mark is the
+// next grid line ahead, the rest follow at the spacing.
 fn ring_distance(i: u32) -> f32 {
-    return RING_FIRST_M * pow(RING_STEP, f32(i));
+    let spacing = max(tj.mark.y, 1.0);
+    let ahead = spacing - fract(tj.mark.x / spacing) * spacing;
+    return ahead + f32(i) * spacing;
 }
 
 struct VsOut {
@@ -230,9 +234,10 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
         let local = corners[corner];
         let ring_d = ring_distance(i);
         let ring = integrate_to_distance(ring_d);
+        let in_range = ring_d < HOOPS_TO_M;
         var out: VsOut;
         out.uv = local;
-        out.kind = vec3<f32>(3.0, 0.0, f32(i) / f32(RING_COUNT));
+        out.kind = vec3<f32>(3.0, 0.0, ring_d / HOOPS_TO_M);
         // A basis across the path: up-ish first, then the cross product.
         let cref = tj.centre_radius.xyz;
         var side = cross(ring.dir, normalize(-cref + ring.pos * 0.0));
@@ -244,7 +249,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
         let ring_r = RING_RADIUS_M * sqrt(ring_d / 1000.0);
         let world = ring.pos + (side * local.x + upish * local.y) * ring_r;
         let pr = project(world);
-        if (!ring.ok || pr.z <= 1.0 || dot(ring.pos, tj.forward.xyz) <= 1.0) {
+        if (!ring.ok || !in_range || pr.z <= 1.0 || dot(ring.pos, tj.forward.xyz) <= 1.0) {
             out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
             return out;
         }
@@ -317,9 +322,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // in it.
         let edge = 1.0 - smoothstep(0.35, 1.0, abs(in.uv.x));
         let dist = max(in.uv.y, 1.0);
-        // The geometric rhythm, four marks per hoop step, even in log-distance.
-        let grid = fract(log(dist / RING_FIRST_M) / log(RING_STEP) * 4.0);
-        let hoops_end = ring_distance(RING_COUNT - 1u);
+        // The same world-fixed grid the hoops sit on.
+        let spacing = max(tj.mark.y, 1.0);
+        let grid = fract((dist + tj.mark.x) / spacing);
+        let hoops_end = HOOPS_TO_M;
         // Duty cycle of the lit part of each mark: all of it under the
         // hoops, half of it dashed, a quarter of it dotted.
         let duty = select(select(0.25, 0.5, dist < DOTS_FROM_M), 1.0, dist < hoops_end);
@@ -337,7 +343,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // readable.
         let r = length(in.uv);
         let aa = max(fwidth(r) * 1.2, 0.01);
-        let thickness = 0.02 + 0.09 * in.kind.z;
+        let thickness = 0.02 + 0.09 * clamp(in.kind.z, 0.0, 1.0);
         let hoop = 1.0 - smoothstep(0.0, aa, abs(r - (0.92 - thickness)) - thickness);
         colour = cyan * hoop * 0.8;
     } else {

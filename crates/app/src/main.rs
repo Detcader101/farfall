@@ -348,6 +348,9 @@ struct Game {
     /// than pops, like every other instrument.
     show_trajectory: bool,
     trajectory_vis: f32,
+    /// Metres of path flown, so the path's marks can stay fixed to the
+    /// world. Presentation only: a wrapped f32 is fine for a phase.
+    odometer_m: f64,
     /// Which world we are looking at. Cycled with the number keys until there
     /// is a real settings panel.
     appearance: PlanetAppearance,
@@ -381,6 +384,7 @@ impl Game {
             frame_dt: 0.0,
             show_trajectory: true,
             trajectory_vis: 1.0,
+            odometer_m: 0.0,
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
         }
@@ -427,6 +431,7 @@ impl Game {
         self.input.update(frame_dt);
         let controls = self.input.controls(self.assist);
         while self.accumulator >= sim::DT {
+            self.odometer_m += self.state.ship.vel_mps.length() * sim::DT;
             self.state = sim::step(&self.params, &self.state, controls);
             self.accumulator -= sim::DT;
         }
@@ -993,6 +998,7 @@ impl ApplicationHandler for App {
                                         TRAJECTORY_HORIZON_S,
                                         game.trajectory_vis,
                                         gpu.scene.size().1 as f32,
+                                        (game.odometer_m % 1.0e6) as f32,
                                     ),
                                 );
                                 {
@@ -1092,6 +1098,7 @@ impl ApplicationHandler for App {
                         TRAJECTORY_HORIZON_S,
                         game.trajectory_vis,
                         gpu.scene.size().1 as f32,
+                        (game.odometer_m % 1.0e6) as f32,
                     ),
                 );
                 let (altitude_m, _) = game.altitude_vspeed();

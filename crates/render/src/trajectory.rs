@@ -11,6 +11,8 @@ use glam::Vec3;
 pub const SEGMENTS: u32 = 160;
 /// Distance rings along the path; must match RING_COUNT in the shader.
 pub const RINGS: u32 = 8;
+/// The world-fixed grid the marks sit on, metres of path.
+pub const MARK_SPACING_M: f32 = 1000.0;
 
 /// The world's laws, as the prediction needs them. Plain numbers copied
 /// from the sim's parameters by the app: the render crate never imports
@@ -43,6 +45,7 @@ pub struct TrajectoryUniforms {
     phys: [f32; 4],
     vel: [f32; 4],
     look: [f32; 4],
+    mark: [f32; 4],
 }
 
 impl TrajectoryUniforms {
@@ -52,6 +55,7 @@ impl TrajectoryUniforms {
         horizon_s: f32,
         visibility: f32,
         height_px: f32,
+        odometer_m: f32,
     ) -> Self {
         let (right, up, forward) = cam.basis();
         let c = world.centre_rel;
@@ -80,6 +84,7 @@ impl TrajectoryUniforms {
                 visibility.clamp(0.0, 1.0),
                 height_px.max(1.0),
             ],
+            mark: [odometer_m.max(0.0), MARK_SPACING_M, 0.0, 0.0],
         }
     }
 }
@@ -219,7 +224,8 @@ mod tests {
             vel_world: Vec3::X * 700.0,
             cda_over_m: -0.1,
         };
-        let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0);
+        let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0, -3.0);
+        assert_eq!(u.mark[0], 0.0);
         assert!(u.centre_radius[3] >= 1.0);
         assert_eq!(u.phys[0], 0.0);
         assert!(u.phys[2] >= 1.0);
