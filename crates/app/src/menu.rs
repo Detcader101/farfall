@@ -112,6 +112,8 @@ pub struct Menu {
     scroll: usize,
     /// Waiting for a key to bind to the item under the cursor.
     rebinding: bool,
+    /// Which of MSAA_CHOICES this GPU can render at (set at start).
+    msaa_ok: [bool; 4],
 }
 
 impl Default for Menu {
@@ -122,6 +124,7 @@ impl Default for Menu {
             cursor: 0,
             scroll: 0,
             rebinding: false,
+            msaa_ok: [true; 4],
         }
     }
 }
@@ -141,6 +144,13 @@ impl Menu {
                 v
             }
             Page::Cockpit => Instrument::ALL.iter().map(|&i| Item::Slot(i)).collect(),
+        }
+    }
+
+    /// Restrict the MSAA choices to what the GPU supports.
+    pub fn set_msaa_supported(&mut self, supported: &[u32]) {
+        for (i, n) in MSAA_CHOICES.iter().enumerate() {
+            self.msaa_ok[i] = supported.contains(n);
         }
     }
 
@@ -222,13 +232,23 @@ impl Menu {
     fn adjust(&mut self, item: Item, forward: bool, s: &mut Settings) -> MenuEvent {
         match item {
             Item::Msaa => {
-                let i = MSAA_CHOICES.iter().position(|&m| m == s.msaa).unwrap_or(2);
                 let n = MSAA_CHOICES.len();
-                s.msaa = MSAA_CHOICES[if forward {
-                    (i + 1) % n
-                } else {
-                    (i + n - 1) % n
-                }];
+                let mut i = MSAA_CHOICES.iter().position(|&m| m == s.msaa).unwrap_or(2);
+                // Step to the next count this GPU can do; none other: stay.
+                for _ in 0..n {
+                    i = if forward {
+                        (i + 1) % n
+                    } else {
+                        (i + n - 1) % n
+                    };
+                    if self.msaa_ok[i] {
+                        break;
+                    }
+                }
+                if !self.msaa_ok[i] || MSAA_CHOICES[i] == s.msaa {
+                    return MenuEvent::Nothing;
+                }
+                s.msaa = MSAA_CHOICES[i];
                 MenuEvent::Changed(Change::Graphics)
             }
             Item::Scale => {
@@ -324,6 +344,28 @@ mod tests {
         assert_eq!(m.page, Page::Controls);
         assert_eq!(m.key(KeyCode::Escape, &mut s), MenuEvent::Closed);
         assert!(!m.open);
+    }
+
+    #[test]
+    fn msaa_only_offers_what_the_gpu_supports() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.set_msaa_supported(&[1, 4]);
+        m.toggle();
+        // From 4, forward wraps past 8 (unsupported) to 1.
+        assert_eq!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::Changed(Change::Graphics)
+        );
+        assert_eq!(s.msaa, 1);
+        assert_eq!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::Changed(Change::Graphics)
+        );
+        assert_eq!(s.msaa, 4);
+        // Only one choice: nothing to change.
+        m.set_msaa_supported(&[4]);
+        assert_eq!(m.key(KeyCode::ArrowRight, &mut s), MenuEvent::Nothing);
     }
 
     #[test]

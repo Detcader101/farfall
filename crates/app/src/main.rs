@@ -886,7 +886,7 @@ impl App {
             .create_surface(window.clone())
             .expect("create surface");
 
-        let (device, queue, config) = pollster::block_on(async {
+        let (device, queue, config, msaa_supported) = pollster::block_on(async {
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
@@ -898,7 +898,10 @@ impl App {
             let (device, queue) = adapter
                 .request_device(&wgpu::DeviceDescriptor {
                     label: Some("farfall device"),
-                    required_features: wgpu::Features::empty(),
+                    // Lets the adapter's real sample-count support count,
+                    // rather than only the spec's guaranteed {1, 4}.
+                    required_features: adapter.features()
+                        & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
                     required_limits: wgpu::Limits::default(),
                     experimental_features: wgpu::ExperimentalFeatures::disabled(),
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
@@ -916,8 +919,38 @@ impl App {
                 wgpu::PresentMode::AutoNoVsync
             };
             surface.configure(&device, &config);
-            (device, queue, config)
+            // Which sample counts this GPU can actually render at, for this
+            // format. Metal on an M1 offers 1 and 4; asking for 2 or 8 is a
+            // validation panic at pipeline creation, so the menu may only
+            // offer what is here.
+            let specific = device
+                .features()
+                .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
+            let flags = adapter.get_texture_format_features(config.format).flags;
+            let msaa_supported: Vec<u32> = settings::MSAA_CHOICES
+                .iter()
+                .copied()
+                .filter(|&n| n == 1 || n == 4 || (specific && flags.sample_count_supported(n)))
+                .collect();
+            (device, queue, config, msaa_supported)
         });
+        let mut cfg = cfg;
+        if !msaa_supported.contains(&cfg.msaa) {
+            let fallback = msaa_supported
+                .iter()
+                .copied()
+                .filter(|&n| n <= cfg.msaa)
+                .max()
+                .unwrap_or(1);
+            log::warn!(
+                "MSAA {}x unsupported here (have {:?}); using {}x",
+                cfg.msaa,
+                msaa_supported,
+                fallback
+            );
+            cfg.msaa = fallback;
+        }
+        let msaa_in_use = cfg.msaa;
 
         log::info!(
             "renderer: {}x MSAA, vsync {}, gpu_sync {}, {:?}",
@@ -970,7 +1003,10 @@ impl App {
             bench_captured: false,
         });
         let mut game = Game::new();
+        let mut settings = settings;
+        settings.msaa = msaa_in_use;
         game.apply_settings(settings);
+        game.menu.set_msaa_supported(&msaa_supported);
         self.game = Some(game);
     }
 }
