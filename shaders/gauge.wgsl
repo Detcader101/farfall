@@ -42,7 +42,7 @@ struct VsOut {
 // so its screen footprint is the inverse canopy projection of that box —
 // generous by a margin for the sway and the shock ring, and the fragment
 // stage still makes the exact cut. Same output, ~3% of the fragments.
-const QUAD_HALF: f32 = 0.34;
+const QUAD_HALF: f32 = 0.36;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
@@ -146,7 +146,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     let value = max(gauge.a.x, 0.0);
     let full = max(gauge.b.x, 1.0);
-    let frac = clamp(value / full, 0.0, 1.0);
+    // A wrapping arc laps: the needle resets at the end of the dial and a
+    // multiplier counts the laps. A clamping arc pins at full scale.
+    let wraps = gauge.c.w > 0.5;
+    let lap = select(0.0, floor(value / full), wraps);
+    let frac = select(clamp(value / full, 0.0, 1.0), clamp(value / full - lap, 0.0, 1.0), wraps);
     let mach = gauge.d.w;
 
     // Dial-face polar frame.
@@ -183,16 +187,40 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         glow += 0.7 * (1.0 - smoothstep(0.0, 0.035 + ang_aa, major));
     }
 
-    // The sound barrier, marked on the dial: an amber gate tick across the
-    // ring where mach 1 lives on this scale. Speed gauge only (c.z = 0), and
-    // only when a mach number exists at all — 340 m/s here must match
-    // MACH1_MPS in the app, which owns the "in atmosphere" gate.
+    // The sound barrier, marked on the dial: amber bars across the ring at
+    // every mach on this lap — mach 1 halfway, mach 2 at the end. Speed
+    // gauge only (c.z = 0), and only when a mach number exists at all —
+    // 340 m/s here must match MACH1_MPS in the app, which owns the "in
+    // atmosphere" gate. On later laps the same bars mean mach 3 and 4, 5
+    // and 6: the multiplier says which.
     if (gauge.c.z < 0.5 && mach >= 0.0) {
-        let mfrac = 340.0 / full;
-        let mth = -SWEEP_HALF + 2.0 * SWEEP_HALF * mfrac;
-        let mdir = vec2<f32>(sin(mth), cos(mth));
-        let md = seg_dist(p_face, mdir * (radius - 0.026), mdir * (radius + 0.010));
-        warn_glow += 0.85 * (1.0 - smoothstep(0.0, aa * 1.8 + 0.0012, md - 0.0014));
+        for (var m = 1.0; m * 340.0 <= full + 0.5; m += 1.0) {
+            let mfrac = m * 340.0 / full;
+            let mth = -SWEEP_HALF + 2.0 * SWEEP_HALF * mfrac;
+            let mdir = vec2<f32>(sin(mth), cos(mth));
+            let md = seg_dist(p_face, mdir * (radius - 0.030), mdir * (radius + 0.012));
+            warn_glow += 0.85 * (1.0 - smoothstep(0.0, aa * 1.8 + 0.0012, md - 0.0018));
+        }
+    }
+
+    // Lap multiplier: "×N" beside the dial, top right, once the needle has
+    // gone round at least once. Amber, like everything that says "more
+    // than the dial".
+    if (lap >= 1.0) {
+        let mult = u32(clamp(lap + 1.0, 2.0, 9.0));
+        let base = vec2<f32>(radius + 0.030, radius * 0.55);
+        let dh = 0.017;
+        let dw = 0.009;
+        // The × : two crossed segments.
+        let xc = base + vec2<f32>(-0.026, 0.0);
+        let xd = min(
+            seg_dist(p_near - xc, vec2<f32>(-0.008, -0.008), vec2<f32>(0.008, 0.008)),
+            seg_dist(p_near - xc, vec2<f32>(-0.008, 0.008), vec2<f32>(0.008, -0.008)),
+        );
+        warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, xd - 0.0012));
+        let dd = digit_dist(p_near - base, digit_mask(mult), dw, dh);
+        warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, dd - 0.0012));
+        glow += 0.15 * (1.0 - smoothstep(0.0, 0.006, dd));
     }
 
     // Sweep fill: a translucent band from zero to the needle — the "tape".

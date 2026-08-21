@@ -13,6 +13,7 @@ pub const BAKE: &str = include_str!("../../../shaders/bake.wgsl");
 pub const GAUGE: &str = include_str!("../../../shaders/gauge.wgsl");
 pub const THERMAL: &str = include_str!("../../../shaders/thermal.wgsl");
 pub const PLASMA: &str = include_str!("../../../shaders/plasma.wgsl");
+pub const TRAJECTORY: &str = include_str!("../../../shaders/trajectory.wgsl");
 
 /// Every pass: display name, source, and required entry points.
 pub const PASSES: &[(&str, &str, &[&str])] = &[
@@ -35,6 +36,7 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("gauge", GAUGE, &["vs_main", "fs_main"]),
     ("thermal", THERMAL, &["vs_main", "fs_main"]),
     ("plasma", PLASMA, &["vs_main", "fs_main"]),
+    ("trajectory", TRAJECTORY, &["vs_main", "fs_main"]),
 ];
 
 /// Prepend the shared prelude to a pass source.

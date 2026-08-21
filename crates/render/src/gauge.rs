@@ -169,6 +169,20 @@ impl MachAlert {
 /// a floating decimal dot, so "0.05", "3.52", "12.4" and "127" are all the
 /// same three-digit instrument. Returns (digits 0..999, dot position — the
 /// dot sits after digit 1 or 2; 0 means none).
+/// One lap of the speed arc, m/s: two machs.
+pub const SPEED_LAP_MPS: f32 = 680.0;
+
+/// Speed readout: metres per second to 999, then kilometres per second with
+/// a decimal dot ("1.36"), so the three digits never lie by clamping.
+pub fn speed_readout(speed_mps: f32) -> (u32, u32) {
+    let v = speed_mps.max(0.0);
+    if v < 999.5 {
+        (v.round() as u32, 0)
+    } else {
+        km_readout(v)
+    }
+}
+
 pub fn km_readout(altitude_m: f32) -> (u32, u32) {
     let km = (altitude_m / 1_000.0).max(0.0);
     if km < 9.995 {
@@ -187,7 +201,8 @@ pub struct GaugeUniforms {
     a: [f32; 4],
     /// x: arc full scale, y: target height px, zw: canopy anchor NDC
     b: [f32; 4],
-    /// x: readout digits, y: decimal dot slot, z: warning sense (0 high/1 low)
+    /// x: readout digits, y: decimal dot slot, z: warning sense (0 high/1 low),
+    /// w: 1 if the arc wraps (the needle laps the dial and a multiplier shows)
     c: [f32; 4],
     /// xy: hologram sway (canopy units), z: mach-alert flash 0..1,
     /// w: mach number (negative: this instrument has no mach readout)
@@ -215,12 +230,16 @@ impl GaugeUniforms {
         mach: f32,
         alert: f32,
     ) -> Self {
+        let (digits, dot) = speed_readout(speed_mps);
         Self {
             a: [speed_mps, visibility, time_s, aspect],
-            // Full scale 999 m/s: what three digits can say, and comfortably
-            // above orbital speed on the compact planet.
-            b: [999.0, height_px, anchor_ndc[0], anchor_ndc[1]],
-            c: [speed_mps.clamp(0.0, 999.0).round(), 0.0, 0.0, 0.0],
+            // One lap of the arc is mach 2 (680 m/s at this planet's 340):
+            // the amber bars sit at mach 1 and mach 2, and past the end the
+            // needle laps the dial with a ×N multiplier beside it — orbital
+            // speed is lap 2, halfway round. 680 here must match the
+            // MACH1_MPS the app owns.
+            b: [SPEED_LAP_MPS, height_px, anchor_ndc[0], anchor_ndc[1]],
+            c: [digits as f32, dot as f32, 0.0, 1.0],
             d: [sway[0], sway[1], alert.clamp(0.0, 1.0), mach],
         }
     }
@@ -474,6 +493,15 @@ mod tests {
     }
 
     /// The km readout auto-ranges: three significant digits, floating dot.
+    #[test]
+    fn speed_readout_goes_to_km_past_three_digits() {
+        assert_eq!(speed_readout(0.0), (0, 0));
+        assert_eq!(speed_readout(773.4), (773, 0));
+        assert_eq!(speed_readout(999.4), (999, 0));
+        assert_eq!(speed_readout(1_360.0), (136, 1)); // 1.36 km/s
+        assert_eq!(speed_readout(12_400.0), (124, 2)); // 12.4 km/s
+    }
+
     #[test]
     fn km_readout_auto_ranges() {
         assert_eq!(km_readout(50.0), (5, 1)); // 0.05 km

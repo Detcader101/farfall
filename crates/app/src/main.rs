@@ -27,6 +27,7 @@ use farfall_render::{
     starfield::StarfieldPass,
     text::TextBitmap,
     thermal::{PlasmaPass, PlasmaUniforms, ThermalInputs, ThermalPass},
+    trajectory::{TrajectoryPass, TrajectoryUniforms, TrajectoryWorld},
     CameraFrame, FrameUniforms, SceneTarget,
 };
 use farfall_sim as sim;
@@ -52,6 +53,9 @@ const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 const VELOCITY_GAUGE_ANCHOR: [f32; 2] = [0.52, -0.48];
 /// The altimeter mirrors it bottom-left: the cluster grows symmetrically.
 const ALTITUDE_GAUGE_ANCHOR: [f32; 2] = [-0.52, -0.48];
+/// How far ahead the path predictor looks, seconds. A little over one
+/// orbit at the spawn altitude (~8.5 min), so a closed orbit draws closed.
+const TRAJECTORY_HORIZON_S: f32 = 560.0;
 /// The text readout's top-left corner on the canopy.
 const HUD_TEXT_ANCHOR: [f32; 2] = [-0.72, 0.62];
 /// Speed of sound for the mach instrument and the sonic boom, m/s. The
@@ -80,7 +84,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
 ///   FARFALL_MUTE=1         (no audio stream at all)
 ///   FARFALL_SKIP=a,b       (profiling only: leave out passes by name —
-///                           starfield, planet, plasma, gauge, hud, blit —
+///                           starfield, planet, plasma, trajectory, gauge,
+///                           hud, blit —
 ///                           so each one's cost can be measured by its absence)
 struct Config {
     msaa: u32,
@@ -203,6 +208,8 @@ struct Gpu {
     /// The hull heat field, simulated on the GPU, and the sheath it lights.
     thermal: ThermalPass,
     plasma: PlasmaPass,
+    /// The predicted path, integrated on the GPU.
+    trajectory: TrajectoryPass,
     /// Owns the baked textures the planet pass samples.
     _baked: BakedMaps,
     hud: HudPass,
@@ -495,6 +502,24 @@ impl Game {
         }
     }
 
+    /// The world as the path predictor needs it: the laws and the state,
+    /// camera-relative. Nose-on drag: the prediction assumes the pilot flies
+    /// prograde, which is what a prediction is for.
+    fn trajectory_world(&self) -> TrajectoryWorld {
+        let planet = &self.params.planet;
+        let ship = &self.state.ship;
+        TrajectoryWorld {
+            centre_rel: (DVec3::ZERO - ship.pos_m).as_vec3(),
+            radius_m: planet.radius_m as f32,
+            mu: planet.mu as f32,
+            rho0: planet.atmo_rho0 as f32,
+            scale_height_m: planet.atmo_scale_height_m as f32,
+            atmo_top_m: planet.atmo_top_m as f32,
+            vel_world: ship.vel_mps.as_vec3(),
+            cda_over_m: (self.params.ship.cd_area_m2 / self.params.ship.mass_kg) as f32,
+        }
+    }
+
     /// Step through the atmosphere presets. A stand-in for the settings panel:
     /// an alien world is not new code, it is different numbers.
     fn cycle_appearance(&mut self) {
@@ -718,6 +743,7 @@ impl App {
         let alt_gauge = GaugePass::new(&device, config.format, cfg.msaa);
         let thermal = ThermalPass::new(&device);
         let plasma = PlasmaPass::new(&device, config.format, cfg.msaa, &thermal, &baked);
+        let trajectory = TrajectoryPass::new(&device, config.format, cfg.msaa);
         // The HUD draws straight onto the swapchain, after the upscale, so it
         // is always native resolution and single-sampled however low the scene
         // scale goes (P1: the readout must never soften).
@@ -752,6 +778,7 @@ impl App {
             alt_gauge,
             thermal,
             plasma,
+            trajectory,
             _baked: baked,
             hud,
             text: TextBitmap::new(),
@@ -942,6 +969,16 @@ impl ApplicationHandler for App {
                                     &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps),
                                 );
                                 gpu.thermal.step(&gpu.queue, &mut encoder, &thermal_in);
+                                gpu.trajectory.update(
+                                    &gpu.queue,
+                                    &TrajectoryUniforms::new(
+                                        &cam,
+                                        &game.trajectory_world(),
+                                        TRAJECTORY_HORIZON_S,
+                                        1.0,
+                                        gpu.scene.size().1 as f32,
+                                    ),
+                                );
                                 {
                                     let mut pass =
                                         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -957,6 +994,7 @@ impl ApplicationHandler for App {
                                     gpu.starfield.draw(&mut pass);
                                     gpu.planet.draw(&mut pass);
                                     gpu.plasma.draw(&mut pass, &gpu.thermal);
+                                    gpu.trajectory.draw(&mut pass);
                                     gpu.gauge.draw(&mut pass);
                                     gpu.alt_gauge.draw(&mut pass);
                                     if capture_text {
@@ -1030,6 +1068,16 @@ impl ApplicationHandler for App {
                     &gpu.queue,
                     &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps),
                 );
+                gpu.trajectory.update(
+                    &gpu.queue,
+                    &TrajectoryUniforms::new(
+                        &cam,
+                        &game.trajectory_world(),
+                        TRAJECTORY_HORIZON_S,
+                        1.0,
+                        gpu.scene.size().1 as f32,
+                    ),
+                );
                 let (altitude_m, _) = game.altitude_vspeed();
                 gpu.gauge.update(
                     &gpu.queue,
@@ -1096,6 +1144,9 @@ impl ApplicationHandler for App {
                     }
                     if gpu.cfg.draws("plasma") {
                         gpu.plasma.draw(&mut pass, &gpu.thermal);
+                    }
+                    if gpu.cfg.draws("trajectory") {
+                        gpu.trajectory.draw(&mut pass);
                     }
                     if gpu.cfg.draws("gauge") {
                         gpu.gauge.draw(&mut pass);
