@@ -9,6 +9,8 @@ use glam::Vec3;
 /// vertex integrates its own prefix), so it is a real knob: 160 is ~300k
 /// cheap steps a frame.
 pub const SEGMENTS: u32 = 160;
+/// Distance rings along the path; must match RING_COUNT in the shader.
+pub const RINGS: u32 = 30;
 
 /// The world's laws, as the prediction needs them. Plain numbers copied
 /// from the sim's parameters by the app: the render crate never imports
@@ -188,8 +190,8 @@ impl TrajectoryPass {
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        // The ribbon, then two reticle quads.
-        pass.draw(0..(SEGMENTS * 6 + 12), 0..1);
+        // The ribbon, two reticle quads, then the distance rings.
+        pass.draw(0..(SEGMENTS * 6 + 12 + RINGS * 6), 0..1);
     }
 }
 

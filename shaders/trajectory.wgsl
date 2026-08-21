@@ -47,14 +47,22 @@ const SUBSTEPS: u32 = 6u;
 const RIBBON_PX: f32 = 3.0;
 const RETICLE_PX: f32 = 22.0;
 const BORESIGHT_PX: f32 = 14.0;
+// Distance rings: one every RING_SPACING_M of path, RING_COUNT of them,
+// RING_RADIUS_M across — true metres, so perspective sizes them. That
+// shrinking is the depth cue: a flat ribbon on the glass has no distance
+// in it, a row of hoops receding does.
+const RING_COUNT: u32 = 30u;
+const RING_SPACING_M: f32 = 1000.0;
+const RING_RADIUS_M: f32 = 160.0;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     // x: across the ribbon -1..1 (or local uv for the reticles),
     // y: along — seconds into the future.
     @location(0) uv: vec2<f32>,
-    // x: 0 ribbon, 1 reticle, 2 boresight. y: 1 if the path hits the ground
-    // before this point. z: fraction of the horizon.
+    // x: 0 ribbon, 1 reticle, 2 boresight, 3 distance ring. y: 1 if the
+    // path hits the ground before this point. z: fraction of the horizon
+    // (ribbon) or of the ring count (rings).
     @location(1) kind: vec3<f32>,
 }
 
@@ -106,6 +114,56 @@ fn integrate(k: u32) -> Point {
     return Point(p, hit);
 }
 
+struct RingPoint {
+    pos: vec3<f32>,
+    dir: vec3<f32>,
+    ok: bool,
+}
+
+// Integrate along the path until `dist` metres of it have gone by. Same
+// laws and steps as integrate(); `ok` is false if the ground or the horizon
+// comes first.
+fn integrate_to_distance(dist: f32) -> RingPoint {
+    var p = vec3<f32>(0.0);
+    var v = tj.vel.xyz;
+    let c = tj.centre_radius.xyz;
+    let radius = tj.centre_radius.w;
+    let mu = tj.phys.x;
+    let n = u32(max(tj.look.y, 1.0));
+    var travelled = 0.0;
+    for (var seg = 0u; seg < n; seg += 1u) {
+        let dt = (seg_time(f32(seg + 1u)) - seg_time(f32(seg))) / f32(SUBSTEPS);
+        for (var s = 0u; s < SUBSTEPS; s += 1u) {
+            let rel = p - c;
+            let r = length(rel);
+            var a = rel * (-mu / (r * r * r));
+            let h = r - radius;
+            if (h < tj.phys.w) {
+                let rho = tj.phys.y * exp(-h / tj.phys.z);
+                a -= v * (0.5 * rho * length(v) * tj.vel.w);
+            }
+            v += a * dt;
+            let step = v * dt;
+            let len = length(step);
+            if (travelled + len >= dist) {
+                // Land exactly on the distance, inside this step.
+                let f = (dist - travelled) / max(len, 1e-6);
+                let q = p + step * f;
+                if (length(q - c) < radius) {
+                    return RingPoint(q, v, false);
+                }
+                return RingPoint(q, normalize(v), true);
+            }
+            p += step;
+            travelled += len;
+            if (length(p - c) < radius) {
+                return RingPoint(p, v, false);
+            }
+        }
+    }
+    return RingPoint(p, v, false);
+}
+
 // World (camera-relative) to NDC; z is the view depth for clipping.
 fn project(p: vec3<f32>) -> vec3<f32> {
     let x = dot(p, tj.right.xyz);
@@ -138,6 +196,38 @@ fn quad_vertex(ndc: vec2<f32>, px: f32, corner: u32, show: bool, kind: f32) -> V
 fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let n = u32(max(tj.look.y, 1.0));
     let ribbon_verts = n * 6u;
+
+    if (vi >= ribbon_verts + 12u) {
+        // Distance rings: a hoop in the world, perpendicular to the path,
+        // every RING_SPACING_M along it.
+        let i = (vi - ribbon_verts - 12u) / 6u;
+        let corner = (vi - ribbon_verts - 12u) % 6u;
+        let corners = array<vec2<f32>, 6>(
+            vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
+            vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        );
+        let local = corners[corner];
+        let ring = integrate_to_distance(f32(i + 1u) * RING_SPACING_M);
+        var out: VsOut;
+        out.uv = local;
+        out.kind = vec3<f32>(3.0, 0.0, f32(i) / f32(RING_COUNT));
+        // A basis across the path: up-ish first, then the cross product.
+        let cref = tj.centre_radius.xyz;
+        var side = cross(ring.dir, normalize(-cref + ring.pos * 0.0));
+        if (dot(side, side) < 1e-6) {
+            side = cross(ring.dir, vec3<f32>(1.0, 0.0, 0.0));
+        }
+        side = normalize(side);
+        let upish = cross(side, ring.dir);
+        let world = ring.pos + (side * local.x + upish * local.y) * RING_RADIUS_M;
+        let pr = project(world);
+        if (!ring.ok || pr.z <= 1.0 || dot(ring.pos, tj.forward.xyz) <= 1.0) {
+            out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+            return out;
+        }
+        out.pos = vec4<f32>(pr.xy, 0.0, 1.0);
+        return out;
+    }
 
     if (vi >= ribbon_verts) {
         // The reticles: prograde at the first path point, boresight at the
@@ -207,6 +297,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let fade = 1.0 - in.kind.z * 0.7;
         let tint = mix(cyan, amber, in.kind.y);
         colour = tint * edge * dash * fade * 0.9;
+    } else if (in.kind.x > 2.5) {
+        // Distance ring: a thin hoop, fading with distance; every fifth
+        // kilometre brighter so the count can be kept by eye.
+        let r = length(in.uv);
+        let aa = max(fwidth(r) * 1.2, 0.01);
+        let hoop = 1.0 - smoothstep(0.0, aa, abs(r - 0.9) - 0.02);
+        let index = round(in.kind.z * f32(RING_COUNT));
+        let major = select(0.55, 1.0, fract((index + 1.0) / 5.0) < 0.01);
+        let fade = 1.0 - in.kind.z * 0.75;
+        colour = cyan * hoop * major * fade * 0.8;
     } else {
         // Reticles: SDF rings and ticks in the quad's local space.
         let r = length(in.uv);
