@@ -40,14 +40,22 @@ pub struct BodiesUniforms {
     params: [f32; 4],
     moon: [f32; 4],
     sun: [f32; 4],
+    look: [f32; 4],
 }
 
 impl BodiesUniforms {
-    /// `moon_rel`: the Moon's centre relative to the camera (subtracted in
-    /// f64 by the caller — SPEC P3).
-    pub fn new(cam: &CameraFrame, moon_rel: Vec3, sun_dir: Vec3) -> Self {
+    /// `moon_rel`, `sun_rel`: the bodies' centres relative to the camera
+    /// (subtracted in f64 by the caller — SPEC P3).
+    /// `tags`: 0..1, the finder rings. `height_px`: for their minimum size.
+    pub fn new(
+        cam: &CameraFrame,
+        moon_rel: Vec3,
+        sun_rel: Vec3,
+        tags: f32,
+        height_px: f32,
+    ) -> Self {
         let (right, up, forward) = cam.basis();
-        let s = sun_dir.normalize_or_zero();
+        let s = sun_rel;
         Self {
             right: [right.x, right.y, right.z, 0.0],
             up: [up.x, up.y, up.z, 0.0],
@@ -59,7 +67,8 @@ impl BodiesUniforms {
                 cam.exposure,
             ],
             moon: [moon_rel.x, moon_rel.y, moon_rel.z, MOON_RADIUS_M as f32],
-            sun: [s.x, s.y, s.z, sun_angular_radius()],
+            sun: [s.x, s.y, s.z, SUN_RADIUS_M as f32],
+            look: [tags.clamp(0.0, 1.0), height_px.max(1.0), 0.0, 0.0],
         }
     }
 }

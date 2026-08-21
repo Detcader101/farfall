@@ -22,10 +22,12 @@ pub enum Instrument {
     HoopSound,
     /// The horizon's pitch ladder (the level line stays).
     Ladder,
+    /// Finder rings around the Moon and the Sun.
+    BodyTags,
 }
 
 impl Instrument {
-    pub const ALL: [Instrument; 10] = [
+    pub const ALL: [Instrument; 11] = [
         Instrument::Speed,
         Instrument::Altitude,
         Instrument::Gyro,
@@ -35,6 +37,7 @@ impl Instrument {
         Instrument::Trajectory,
         Instrument::Hoops,
         Instrument::HoopSound,
+        Instrument::BodyTags,
         Instrument::Readout,
     ];
 
@@ -50,6 +53,7 @@ impl Instrument {
             Instrument::Hoops => "PATH HOOPS",
             Instrument::HoopSound => "HOOP SOUND",
             Instrument::Ladder => "PITCH LADDER",
+            Instrument::BodyTags => "BODY TAGS",
         }
     }
 
@@ -66,6 +70,7 @@ impl Instrument {
             Instrument::Hoops => "hoops",
             Instrument::HoopSound => "hoop-sound",
             Instrument::Ladder => "ladder",
+            Instrument::BodyTags => "body-tags",
         }
     }
 
@@ -189,6 +194,7 @@ impl Default for Layout {
         l.set(Instrument::Hoops, Slot::On);
         l.set(Instrument::HoopSound, Slot::On);
         l.set(Instrument::Ladder, Slot::On);
+        l.set(Instrument::BodyTags, Slot::On);
         l
     }
 }

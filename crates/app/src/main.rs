@@ -615,9 +615,21 @@ impl Game {
 
     /// The Sun and the Moon as the camera sees them: the Moon's position
     /// comes from its Kepler orbit at sim time, subtracted in f64 (P3).
-    fn bodies_uniforms(&self, cam: &CameraFrame) -> BodiesUniforms {
+    fn bodies_uniforms(&self, cam: &CameraFrame, height_px: f32) -> BodiesUniforms {
         let moon = moon_position(self.params.planet.mu, self.state.time_s);
-        BodiesUniforms::new(cam, (moon - self.state.ship.pos_m).as_vec3(), SUN_DIR)
+        let sun = SUN_DIR.as_dvec3().normalize() * farfall_render::bodies::SUN_DISTANCE_M;
+        let tags = if self.settings.layout.shown(Instrument::BodyTags) {
+            1.0
+        } else {
+            0.0
+        };
+        BodiesUniforms::new(
+            cam,
+            (moon - self.state.ship.pos_m).as_vec3(),
+            (sun - self.state.ship.pos_m).as_vec3(),
+            tags,
+            height_px,
+        )
     }
 
     /// Gravity's up at the ship, world frame.
@@ -1280,9 +1292,10 @@ impl ApplicationHandler for App {
                                 gpu.passes
                                     .planet
                                     .update(&gpu.queue, &game.planet_uniforms(&cam));
-                                gpu.passes
-                                    .bodies
-                                    .update(&gpu.queue, &game.bodies_uniforms(&cam));
+                                gpu.passes.bodies.update(
+                                    &gpu.queue,
+                                    &game.bodies_uniforms(&cam, gpu.scene.size().1 as f32),
+                                );
                                 let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
                                 // The capture should show what the pilot
@@ -1433,9 +1446,10 @@ impl ApplicationHandler for App {
                 gpu.passes
                     .planet
                     .update(&gpu.queue, &game.planet_uniforms(&cam));
-                gpu.passes
-                    .bodies
-                    .update(&gpu.queue, &game.bodies_uniforms(&cam));
+                gpu.passes.bodies.update(
+                    &gpu.queue,
+                    &game.bodies_uniforms(&cam, gpu.scene.size().1 as f32),
+                );
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,

@@ -21,8 +21,13 @@ struct Bodies {
     params: vec4<f32>,
     // xyz: moon centre relative to the camera, metres. w: radius, m.
     moon: vec4<f32>,
-    // xyz: unit vector toward the sun. w: its angular radius, rad.
+    // xyz: sun centre relative to the camera, metres. w: its radius, m.
+    // From near the planet that is a direction and a half-degree disc;
+    // after a jump it is a wall of fire.
     sun: vec4<f32>,
+    // x: tags 0..1 — a thin ring around each body so a half-degree disc
+    // can be found on a big sky. y: screen height, px. zw: unused.
+    look: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> bd: Bodies;
@@ -47,7 +52,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let ray = view_ray(
         in.ndc, bd.right.xyz, bd.up.xyz, bd.forward.xyz, bd.params.x, bd.params.y,
     );
-    let sun = normalize(bd.sun.xyz);
+    let sun_d = length(bd.sun.xyz);
+    let sun = bd.sun.xyz / max(sun_d, 1.0);
+    let sun_limb = asin(clamp(bd.sun.w / max(sun_d, bd.sun.w + 1.0), 0.0, 1.0));
 
     var rgb = vec3<f32>(0.0);
     var alpha = 0.0;
@@ -57,11 +64,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let ang = acos(clamp(cos_sun, -1.0, 1.0));
     let grad = vec2<f32>(dpdx(ang), dpdy(ang));
     let px = max(0.5 * length(grad), 1e-7);
-    let disc = 1.0 - smoothstep(bd.sun.w - px, bd.sun.w + px, ang);
+    let disc = 1.0 - smoothstep(sun_limb - px, sun_limb + px, ang);
     // The disc is the brightest thing in the sky: it saturates, as it
     // should. Around it, glare — the canopy's own scattering of it — fading
-    // over a few degrees.
-    let glare = exp(-ang / 0.02) * 0.9 + exp(-ang / 0.10) * 0.12;
+    // over a few degrees past the limb, however wide the limb is.
+    let past = max(ang - sun_limb, 0.0);
+    let glare = exp(-past / 0.02) * 0.9 + exp(-past / 0.10) * 0.12;
     let sun_rgb = vec3<f32>(1.0, 0.96, 0.90);
     rgb += sun_rgb * (disc * 60.0 + glare * 3.0);
     alpha = max(alpha, disc);
@@ -87,10 +95,36 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let grain = fbm3(n * 40.0) * 0.25 + 0.75;
             let albedo = mix(0.16, 0.07, maria) * grain;
             let light = max(dot(n, sun), 0.0);
-            // A sliver of earthshine on the night side.
-            let moon_rgb = vec3<f32>(albedo) * (light * 1.4 + 0.012);
+            // Earthshine on the night side: the planet is a big bright
+            // thing from there, and a new moon is a grey disc, not a hole.
+            let moon_rgb = vec3<f32>(albedo) * (light * 2.2 + 0.09);
             rgb = mix(rgb, moon_rgb, cover);
             alpha = max(alpha, cover);
+        }
+    }
+
+    // ---- tags ------------------------------------------------------------
+    // A ring a few pixels outside each body's limb, never thinner than the
+    // pixel, so the Moon is findable at its honest size. Additive, cyan,
+    // like the rest of the glass.
+    let tags = bd.look.x;
+    if (tags > 0.01) {
+        let px_rad = 2.0 * bd.params.x / max(bd.look.y, 1.0);
+        let cyan = vec3<f32>(0.22, 0.85, 1.0) * 0.9 * tags;
+        // Moon.
+        if (radius > 0.0 && d > radius) {
+            let to_c = centre / d;
+            let angle = acos(clamp(dot(ray, to_c), -1.0, 1.0));
+            let limb = asin(clamp(radius / d, 0.0, 1.0));
+            let ring_r = max(limb * 1.8, 10.0 * px_rad);
+            let ring = 1.0 - smoothstep(0.0, px_rad * 1.5, abs(angle - ring_r) - px_rad * 0.6);
+            rgb += cyan * ring;
+        }
+        // Sun: only while it is still a dot — at a wall of fire a tag is noise.
+        if (sun_limb < 0.2) {
+            let ring_r = max(sun_limb * 1.8, 10.0 * px_rad);
+            let ring = 1.0 - smoothstep(0.0, px_rad * 1.5, abs(ang - ring_r) - px_rad * 0.6);
+            rgb += cyan * ring * 0.7;
         }
     }
 
