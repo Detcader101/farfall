@@ -16,6 +16,7 @@ farfall-audio = { path = "../audio" }
 wgpu = { workspace = true }
 winit = { workspace = true }
 glam = { workspace = true }
+bytemuck = { workspace = true }
 pollster = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }

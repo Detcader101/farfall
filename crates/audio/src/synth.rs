@@ -56,6 +56,10 @@ pub struct Levels {
     /// only thing that can make a noise, and this is the one that says
     /// "another kilometre".
     pub hoops: f32,
+    /// The wormhole drive's charge 0..1: a swell that climbs as the drive
+    /// winds up, at its peak through the flip, and falls away on arrival.
+    /// A cockpit sound; not gated by the vacuum.
+    pub warp: f32,
     /// Master gain 0..1.
     pub master: f32,
 }
@@ -71,6 +75,7 @@ impl Default for Levels {
             entry: 0.0,
             supersonic: 0.0,
             hoops: 0.0,
+            warp: 0.0,
             master: 0.8,
         }
     }
@@ -195,6 +200,9 @@ pub struct Synth {
     was_supersonic: bool,
     /// The hoop womp: a counter latched from Levels, an envelope, a phase.
     last_hoops: u32,
+    warp_phase: f32,
+    warp_lp: f32,
+    warp_level: Smooth,
     womp_env: f32,
     womp_t: f32,
     womp_phase: f32,
@@ -243,6 +251,9 @@ impl Synth {
             roar_lp: 0.0,
             was_supersonic: false,
             last_hoops: 0,
+            warp_phase: 0.0,
+            warp_lp: 0.0,
+            warp_level: Smooth::new(sample_rate, 0.08),
             womp_env: 0.0,
             womp_t: 0.0,
             womp_phase: 0.0,
@@ -450,6 +461,22 @@ impl Synth {
             self.womp_env *= (-dt / 0.22).exp();
         }
 
+        // ---- the wormhole drive -------------------------------------------
+        // A tone that climbs three octaves with the charge over a bed of
+        // low-passed noise that opens with it: the drive winding up, then
+        // everything at once, then gone.
+        let wl = self.warp_level.next(levels.warp.clamp(0.0, 1.0));
+        let mut warp_out = 0.0;
+        if wl > 1e-3 {
+            let f = 55.0 * (2.0f32).powf(3.0 * wl);
+            self.warp_phase = (self.warp_phase + f / self.rate).fract();
+            let tone = (tau * self.warp_phase).sin() + 0.4 * (tau * 2.0 * self.warp_phase).sin();
+            let n = self.rng_r.white();
+            let lp = self.lp_coeff(200.0 + 3_000.0 * wl * wl);
+            self.warp_lp += (n - self.warp_lp) * lp;
+            warp_out = (tone * 0.18 + self.warp_lp * 0.35) * wl * wl;
+        }
+
         // ---- mix --------------------------------------------------------
         let master = self.master.next(levels.master.clamp(0.0, 1.0));
         // Silence multiplies everything the SHIP makes: past the atmosphere
@@ -460,8 +487,8 @@ impl Synth {
         // would silence the build-up at exactly the altitudes where it
         // happens (which is why the old mix was barely audible on entry).
         let mono = engine + hiss + rcs_out;
-        let l = (((mono + wind.0) * silence + entry_out + womp) * master).tanh();
-        let r = (((mono + wind.1) * silence + entry_out + womp) * master).tanh();
+        let l = (((mono + wind.0) * silence + entry_out + womp + warp_out) * master).tanh();
+        let r = (((mono + wind.1) * silence + entry_out + womp + warp_out) * master).tanh();
 
         // DC block: the asymmetric pulse and the clipped boom both bias the
         // mean, and a DC offset is inaudible right up until it thumps on
@@ -526,6 +553,7 @@ mod tests {
                 entry: 1.0,
                 supersonic: 1.0,
                 hoops: 0.0,
+                warp: 0.0,
                 master: 1.0,
             },
             Levels {
@@ -537,6 +565,7 @@ mod tests {
                 entry: 7.0,
                 supersonic: 3.0,
                 hoops: 0.0,
+                warp: 0.0,
                 master: 5.0,
             },
         ];
@@ -960,6 +989,24 @@ mod tests {
         assert!(rms(&buf) < 1e-3, "womp rang on: {}", rms(&buf));
     }
 
+    /// The drive is audible in vacuum and louder charged than idle.
+    #[test]
+    fn warp_swells_with_charge() {
+        let at = |w: f32| {
+            rms(&render_secs(
+                Levels {
+                    vacuum: 1.0,
+                    warp: w,
+                    ..Default::default()
+                },
+                0.5,
+            ))
+        };
+        let (quiet, half, full) = (at(0.0), at(0.5), at(1.0));
+        assert!(quiet < 1e-4);
+        assert!(half > 0.01 && full > half, "{half} {full}");
+    }
+
     #[test]
     fn rendering_is_deterministic() {
         let levels = Levels {
@@ -971,6 +1018,7 @@ mod tests {
             entry: 0.3,
             supersonic: 0.0,
             hoops: 0.0,
+            warp: 0.0,
             master: 0.9,
         };
         let a = render_secs(levels, 0.25);

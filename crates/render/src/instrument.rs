@@ -18,12 +18,58 @@ pub struct InstrumentPass {
 pub const UNIFORM_BYTES: u64 = 64;
 
 impl InstrumentPass {
+    /// An additive instrument: projected light, black costs nothing.
     pub fn new(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
         sample_count: u32,
         label: &'static str,
         shader_src: &str,
+    ) -> Self {
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::OVER,
+        };
+        Self::with_blend(
+            device,
+            target_format,
+            sample_count,
+            label,
+            shader_src,
+            additive,
+        )
+    }
+
+    /// A pane: premultiplied over, for something that darkens what it sits
+    /// on (the map).
+    pub fn new_pane(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        sample_count: u32,
+        label: &'static str,
+        shader_src: &str,
+    ) -> Self {
+        Self::with_blend(
+            device,
+            target_format,
+            sample_count,
+            label,
+            shader_src,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        )
+    }
+
+    fn with_blend(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        sample_count: u32,
+        label: &'static str,
+        shader_src: &str,
+        blend: wgpu::BlendState,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(label),
@@ -77,15 +123,7 @@ impl InstrumentPass {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
-                    // Additive: projected light. Black is absence, not a panel.
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent::OVER,
-                    }),
+                    blend: Some(blend),
                     write_mask: wgpu::ColorWrites::COLOR,
                 })],
             }),

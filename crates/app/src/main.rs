@@ -12,13 +12,16 @@ mod capture;
 mod cockpit;
 mod input;
 mod look;
+mod map;
 mod menu;
 mod settings;
+mod warp;
 
 use cockpit::Instrument;
 use look::Look;
 use menu::{Change, Menu, MenuEvent};
 use settings::Settings;
+use warp::Warp;
 mod telemetry;
 
 use glam::{DQuat, DVec3};
@@ -30,7 +33,7 @@ use farfall_audio::Audio;
 use farfall_render::{
     attitude::{gyro_pass, horizon_pass, Attitude, GyroUniforms, HorizonFade, HorizonUniforms},
     bake::BakedMaps,
-    blit::BlitPass,
+    blit::{BlitPass, PostUniforms},
     bodies::{moon_position, BodiesPass, BodiesUniforms},
     gauge::{
         gauge_pass, AltitudeFade, GForceFade, GaugeFade, GaugePass, GaugeUniforms, HoloSway,
@@ -106,6 +109,8 @@ const MACH1_MPS: f64 = 340.0;
 ///                           ground, which is where this renderer hurts)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
 ///   FARFALL_MUTE=1         (no audio stream at all)
+///   FARFALL_BENCH_WARP=s   (benchmark only: engage the wormhole drive s
+///                           seconds in, so the sequence can be captured)
 ///   FARFALL_SKIP=a,b       (profiling only: leave out passes by name —
 ///                           starfield, bodies, planet, plasma, trajectory, gauge,
 ///                           hud, blit —
@@ -119,6 +124,7 @@ struct Config {
     bench_seconds: f64,
     scale: f32,
     skip: Vec<String>,
+    bench_warp_at: Option<f64>,
 }
 
 impl Config {
@@ -180,6 +186,9 @@ impl Config {
             windowed,
             bench,
             bench_seconds,
+            bench_warp_at: std::env::var("FARFALL_BENCH_WARP")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok()),
             skip: std::env::var("FARFALL_SKIP")
                 .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default(),
@@ -274,6 +283,8 @@ struct Gpu {
     /// Owns the baked textures the passes sample.
     baked: BakedMaps,
     hud: HudPass,
+    /// The system map pane, native resolution like the text.
+    map: InstrumentPass,
     text: TextBitmap,
     cfg: Config,
     perf: Perf,
@@ -546,6 +557,8 @@ struct Game {
     horizon_fade: HorizonFade,
     /// The pilot's head: freelook, separate from the nose.
     look: Look,
+    /// The wormhole drive's sequence.
+    warp: Warp,
     /// Felt acceleration over the last sim step, g, and the meter's fade.
     felt_g: f32,
     g_fade: GForceFade,
@@ -591,6 +604,7 @@ impl Game {
             menu: Menu::new(),
             horizon_fade: HorizonFade::new(),
             look: Look::new(),
+            warp: Warp::new(),
             felt_g: 0.0,
             g_fade: GForceFade::new(),
             odometer_m: 0.0,
@@ -632,6 +646,29 @@ impl Game {
         )
     }
 
+    /// The system map, from the plan.
+    fn map_uniforms(&self, aspect: f32, time_s: f32) -> map::MapUniforms {
+        let planet = &self.params.planet;
+        let sun_dir = SUN_DIR.as_dvec3();
+        let dest = self.settings.plan.dest;
+        let centre = dest.centre(planet, self.state.time_s, sun_dir);
+        let arrival = dest.radius_m(planet) + self.settings.plan.safe_m(planet);
+        map::MapUniforms::new(
+            self.state.ship.pos_m,
+            moon_position(planet.mu, self.state.time_s),
+            sun_dir * farfall_render::bodies::SUN_DISTANCE_M,
+            centre,
+            arrival,
+            warp::Destination::ALL
+                .iter()
+                .position(|&d| d == dest)
+                .unwrap_or(0),
+            if self.menu.map_open() { 1.0 } else { 0.0 },
+            aspect,
+            time_s,
+        )
+    }
+
     /// Gravity's up at the ship, world frame.
     fn up_world(&self) -> DVec3 {
         self.state.ship.pos_m / self.state.ship.pos_m.length().max(1.0)
@@ -643,6 +680,42 @@ impl Game {
             self.up_world().as_vec3(),
             self.state.ship.vel_mps.as_vec3(),
         )
+    }
+
+    /// Fire the drive at the plan. Refused mid-sequence.
+    fn engage_warp(&mut self) {
+        if self.warp.engage() {
+            self.input.release_all();
+            log::info!(
+                "warp: engaged to {} at {:.2} radii",
+                self.settings.plan.dest.name(),
+                self.settings.plan.safe_radii
+            );
+        }
+    }
+
+    /// The jump itself, at the flip's peak: the ship is placed at the
+    /// plan's arrival, attitude kept, and the world carries on from there.
+    fn jump(&mut self) {
+        let sun_dir = SUN_DIR.as_dvec3();
+        let (pos, vel) =
+            self.settings
+                .plan
+                .arrival(&self.params, &self.state.ship, self.state.time_s, sun_dir);
+        self.state.ship.pos_m = pos;
+        self.state.ship.vel_mps = vel;
+        self.state.ship.ang_vel_radps = DVec3::ZERO;
+        let centre =
+            self.settings
+                .plan
+                .dest
+                .centre(&self.params.planet, self.state.time_s, sun_dir);
+        log::info!(
+            "warp: arrived at {} — {:.0} km out, {:.0} m/s",
+            self.settings.plan.dest.name(),
+            (pos - centre).length() / 1000.0,
+            vel.length()
+        );
     }
 
     /// Advance the sim by wall time, in whole fixed steps (SPEC §7.2).
@@ -680,6 +753,9 @@ impl Game {
             .update(frame_dt.min(0.25) as f32, altitude as f32);
         self.g_fade.update(frame_dt.min(0.25) as f32, self.felt_g);
         self.look.update(frame_dt.min(0.25) as f32);
+        if self.warp.update(frame_dt.min(0.25) as f32) {
+            self.jump();
+        }
 
         // A pilot reading a menu is not flying: the world waits.
         if self.menu.open {
@@ -698,7 +774,15 @@ impl Game {
         // send upstream (SPEC §5.2).
         // Advance the input ramp on wall time, before sampling it.
         self.input.update(frame_dt);
-        let controls = self.input.controls(self.assist);
+        // Through a jump the stick is dead: the drive has the ship.
+        let controls = if self.warp.active() {
+            sim::Controls {
+                assist: self.assist,
+                ..Default::default()
+            }
+        } else {
+            self.input.controls(self.assist)
+        };
         while self.accumulator >= sim::DT {
             let before = (self.odometer_m / MARK_SPACING_M as f64).floor();
             self.odometer_m += self.state.ship.vel_mps.length() * sim::DT;
@@ -877,6 +961,7 @@ impl Game {
             entry: entry as f32,
             supersonic: if self.is_supersonic() { 1.0 } else { 0.0 },
             hoops: self.hoops_passed as f32,
+            warp: self.warp.look().charge,
             master: 0.8,
         }
     }
@@ -910,7 +995,9 @@ impl Game {
         let orient = self.state.ship.orient.as_quat() * self.look.rotation();
         CameraFrame {
             orient,
-            fov_y: (BASE_FOV + FOV_THRUST_GAIN * self.effort).to_radians(),
+            fov_y: ((BASE_FOV + FOV_THRUST_GAIN * self.effort) * self.warp.look().fov_scale)
+                .to_radians()
+                .min(2.9),
             aspect,
             time_s: self.started.elapsed().as_secs_f32(),
             exposure: 1.6,
@@ -1075,6 +1162,13 @@ impl App {
         // is always native resolution and single-sampled however low the scene
         // scale goes (P1: the readout must never soften).
         let hud = HudPass::new(&device, config.format, 1);
+        let map = InstrumentPass::new_pane(
+            &device,
+            config.format,
+            1,
+            "map",
+            farfall_render::shaders::MAP,
+        );
 
         window.request_redraw();
         // Audio: live synthesis, muted for benchmarks (a frozen sim droning
@@ -1102,6 +1196,7 @@ impl App {
             passes,
             baked,
             hud,
+            map,
             text: TextBitmap::new(),
             cfg,
             perf: Perf::new(),
@@ -1171,6 +1266,10 @@ impl ApplicationHandler for App {
                                 game.log_exit("menu quit");
                                 event_loop.exit();
                             }
+                            MenuEvent::Engage => {
+                                game.settings.save();
+                                game.engage_warp();
+                            }
                             MenuEvent::Closed | MenuEvent::Nothing => {}
                         }
                     }
@@ -1199,6 +1298,7 @@ impl ApplicationHandler for App {
                         gpu.scene.set_scale(next);
                         log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
                     }
+                    KeyCode::KeyJ if pressed && !event.repeat => game.engage_warp(),
                     KeyCode::KeyL if pressed && !event.repeat => {
                         game.look.toggle_lock();
                         gpu.set_look_cursor(game.look.engaged());
@@ -1244,6 +1344,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 let tick_start = Instant::now();
+                if let Some(at) = gpu.cfg.bench_warp_at {
+                    if gpu.cfg.bench && game.started.elapsed().as_secs_f64() >= at {
+                        gpu.cfg.bench_warp_at = None;
+                        game.engage_warp();
+                    }
+                }
                 game.tick();
                 if let Some(audio) = &self.audio {
                     audio.set(&game.audio_levels());
@@ -1475,6 +1581,22 @@ impl ApplicationHandler for App {
                 // the size is chosen in pixels and expressed in canopy units.
                 let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
                 let px_canopy = hud_scale * 2.0 / gpu.config.height as f32;
+                {
+                    let l = game.warp.look();
+                    gpu.blit.update(
+                        &gpu.queue,
+                        &PostUniforms::new(
+                            l.fisheye,
+                            l.invert,
+                            l.particles,
+                            l.charge,
+                            aspect,
+                            cam.time_s,
+                        ),
+                    );
+                    gpu.map
+                        .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
+                }
                 gpu.hud.update(
                     &gpu.queue,
                     &gpu.text,
@@ -1548,6 +1670,9 @@ impl ApplicationHandler for App {
                     });
                     if gpu.cfg.draws("blit") {
                         gpu.blit.draw(&mut pass);
+                    }
+                    if game.menu.map_open() {
+                        gpu.map.draw(&mut pass);
                     }
                     if gpu.cfg.draws("hud") {
                         gpu.hud.draw(&mut pass);

@@ -22,16 +22,18 @@ pub enum Page {
     Graphics,
     Controls,
     Cockpit,
+    Map,
 }
 
 impl Page {
-    const ALL: [Page; 3] = [Page::Graphics, Page::Controls, Page::Cockpit];
+    const ALL: [Page; 4] = [Page::Graphics, Page::Controls, Page::Cockpit, Page::Map];
 
     fn name(self) -> &'static str {
         match self {
             Page::Graphics => "GRAPHICS",
             Page::Controls => "CONTROLS",
             Page::Cockpit => "COCKPIT",
+            Page::Map => "MAP",
         }
     }
 }
@@ -44,6 +46,8 @@ pub enum MenuEvent {
     Changed(Change),
     Closed,
     Quit,
+    /// Close the menu and fire the wormhole drive at the plan.
+    Engage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +69,9 @@ enum Item {
     Slot(Instrument),
     SafeEdge,
     LookSens,
+    Destination,
+    SafeDist,
+    Engage,
 }
 
 impl Item {
@@ -80,6 +87,9 @@ impl Item {
             Item::Slot(i) => i.name(),
             Item::SafeEdge => "SAFE EDGE",
             Item::LookSens => "LOOK SENS",
+            Item::Destination => "DESTINATION",
+            Item::SafeDist => "SAFE DISTANCE",
+            Item::Engage => "ENGAGE DRIVE",
         }
     }
 
@@ -95,6 +105,9 @@ impl Item {
             Item::Slot(i) => s.layout.get(i).name().to_string(),
             Item::SafeEdge => format!("{:.0}%", s.layout.safe_edge * 100.0),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
+            Item::Destination => s.plan.dest.name().to_string(),
+            Item::SafeDist => format!("{:.2} R", s.plan.safe_radii),
+            Item::Engage => String::new(),
         }
     }
 
@@ -155,6 +168,7 @@ impl Menu {
                 v.push(Item::SafeEdge);
                 v
             }
+            Page::Map => vec![Item::Destination, Item::SafeDist, Item::Engage],
         }
     }
 
@@ -163,6 +177,11 @@ impl Menu {
         for (i, n) in MSAA_CHOICES.iter().enumerate() {
             self.msaa_ok[i] = supported.contains(n);
         }
+    }
+
+    /// The MAP page is showing: draw the system map under the text.
+    pub fn map_open(&self) -> bool {
+        self.open && self.page == Page::Map
     }
 
     pub fn toggle(&mut self) {
@@ -230,6 +249,10 @@ impl Menu {
             }
             KeyCode::Enter | KeyCode::Space => match item {
                 Item::Quit => MenuEvent::Quit,
+                Item::Engage => {
+                    self.open = false;
+                    MenuEvent::Engage
+                }
                 i if i.rebindable() => {
                     self.rebinding = true;
                     MenuEvent::Nothing
@@ -285,6 +308,19 @@ impl Menu {
                 s.look_sensitivity = next;
                 MenuEvent::Changed(Change::Bindings)
             }
+            Item::Destination => {
+                s.plan.cycle_destination(forward);
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::SafeDist => {
+                let before = s.plan.safe_radii;
+                s.plan.adjust_safe(forward);
+                if (s.plan.safe_radii - before).abs() < 1e-9 {
+                    return MenuEvent::Nothing;
+                }
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::Engage => MenuEvent::Nothing,
             Item::SafeEdge => {
                 let step = if forward { 0.01 } else { -0.01 };
                 let next = (s.layout.safe_edge + step).clamp(0.0, SAFE_EDGE_MAX);
@@ -351,6 +387,7 @@ impl Menu {
         } else {
             match self.page {
                 Page::Controls => "TAB PAGE  ENTER BIND  ESC BACK",
+                Page::Map => "TAB PAGE  < > SET  ENTER ENGAGE",
                 _ => "TAB PAGE  < > ADJUST  ESC BACK",
             }
         };
@@ -442,11 +479,36 @@ mod tests {
             MenuEvent::Changed(Change::Layout)
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
+        m.key(KeyCode::Tab, &mut s); // map
         m.key(KeyCode::Tab, &mut s); // back to graphics
         for _ in 0..3 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Quit);
+    }
+
+    #[test]
+    fn map_page_sets_the_plan_and_engages() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.toggle();
+        for _ in 0..3 {
+            m.key(KeyCode::Tab, &mut s);
+        }
+        assert!(m.map_open());
+        let d0 = s.plan.dest;
+        assert_eq!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::Changed(Change::Layout)
+        );
+        assert_ne!(s.plan.dest, d0);
+        m.key(KeyCode::ArrowDown, &mut s);
+        let r0 = s.plan.safe_radii;
+        m.key(KeyCode::ArrowRight, &mut s);
+        assert!(s.plan.safe_radii > r0);
+        m.key(KeyCode::ArrowDown, &mut s);
+        assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Engage);
+        assert!(!m.open);
     }
 
     #[test]
