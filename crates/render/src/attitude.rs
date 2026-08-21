@@ -83,14 +83,20 @@ pub struct HorizonUniforms {
 impl HorizonUniforms {
     /// `up_world`: gravity's up at the ship. The shader works in camera
     /// space, so it is rotated here.
-    pub fn new(cam: &CameraFrame, up_world: Vec3, visibility: f32, height_px: f32) -> Self {
+    pub fn new(
+        cam: &CameraFrame,
+        up_world: Vec3,
+        visibility: f32,
+        height_px: f32,
+        ladder: bool,
+    ) -> Self {
         let (right, up, forward) = cam.basis();
         let u = up_world.normalize_or_zero();
         let up_cam = [u.dot(right), u.dot(up), u.dot(forward)];
         Self {
             a: [up_cam[0], up_cam[1], up_cam[2], visibility.clamp(0.0, 1.0)],
             b: [(cam.fov_y * 0.5).tan(), cam.aspect, height_px, cam.time_s],
-            c: [0.0; 4],
+            c: [if ladder { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
             d: [0.0; 4],
         }
     }

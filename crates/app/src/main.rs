@@ -349,6 +349,7 @@ impl Gpu {
                 game.up_world().as_vec3(),
                 game.horizon_fade.level() * horizon_on,
                 h,
+                layout.shown(Instrument::Ladder),
             ),
         );
     }
@@ -658,8 +659,12 @@ impl Game {
             let before = (self.odometer_m / MARK_SPACING_M as f64).floor();
             self.odometer_m += self.state.ship.vel_mps.length() * sim::DT;
             let after = (self.odometer_m / MARK_SPACING_M as f64).floor();
-            // A hoop is a thing on the glass: unseen, it makes no sound.
-            if after > before && self.trajectory_vis > 0.5 {
+            // A hoop is a thing on the glass: unseen, or unwanted, it makes
+            // no sound.
+            let audible = self.trajectory_vis > 0.5
+                && self.settings.layout.shown(Instrument::Hoops)
+                && self.settings.layout.shown(Instrument::HoopSound);
+            if after > before && audible {
                 self.hoops_passed = self.hoops_passed.wrapping_add(1);
             }
             let before = self.state.ship;
@@ -1268,6 +1273,7 @@ impl ApplicationHandler for App {
                                         game.trajectory_vis,
                                         gpu.scene.size().1 as f32,
                                         (game.odometer_m % 1.0e6) as f32,
+                                        game.settings.layout.shown(Instrument::Hoops),
                                     ),
                                 );
                                 {
@@ -1377,6 +1383,7 @@ impl ApplicationHandler for App {
                         game.trajectory_vis,
                         gpu.scene.size().1 as f32,
                         (game.odometer_m % 1.0e6) as f32,
+                        game.settings.layout.shown(Instrument::Hoops),
                     ),
                 );
                 let (altitude_m, _) = game.altitude_vspeed();

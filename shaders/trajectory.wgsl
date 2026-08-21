@@ -39,6 +39,7 @@ struct Traj {
     look: vec4<f32>,
     // x: odometer — metres of path the ship has already flown, so the marks
     // can stay fixed to the world and stream past. y: mark spacing, m.
+    // z: 1 to draw the hoops (the ribbon's dashes stay either way).
     mark: vec4<f32>,
 }
 
@@ -234,7 +235,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
         let local = corners[corner];
         let ring_d = ring_distance(i);
         let ring = integrate_to_distance(ring_d);
-        let in_range = ring_d < HOOPS_TO_M;
+        let in_range = ring_d < HOOPS_TO_M && tj.mark.z > 0.5;
         var out: VsOut;
         out.uv = local;
         out.kind = vec3<f32>(3.0, 0.0, ring_d / HOOPS_TO_M);

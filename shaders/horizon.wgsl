@@ -17,6 +17,7 @@ struct Horizon {
     a: vec4<f32>,
     // x: tan(fov_y/2), y: aspect, z: screen height px, w: time s
     b: vec4<f32>,
+    // x: 1 to draw the pitch ladder (the level line stays either way).
     c: vec4<f32>,
     d: vec4<f32>,
 }
@@ -80,7 +81,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // at the middle; the window shrinks with angle so the ladder tapers.
     let deg10 = 10.0 * DEG;
     let step_i = round(elev / deg10);
-    if (abs(step_i) >= 1.0 && abs(step_i) <= 8.0 && abs(az) < LADDER_HALF) {
+    if (hz.c.x > 0.5 && abs(step_i) >= 1.0 && abs(step_i) <= 8.0 && abs(az) < LADDER_HALF) {
         let off = abs(elev - step_i * deg10);
         let half_w = LADDER_HALF - abs(step_i) * 0.5 * DEG;
         let in_bar = abs(az) < half_w && abs(az) > LADDER_GAP;

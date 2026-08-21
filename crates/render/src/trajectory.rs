@@ -56,6 +56,7 @@ impl TrajectoryUniforms {
         visibility: f32,
         height_px: f32,
         odometer_m: f32,
+        hoops: bool,
     ) -> Self {
         let (right, up, forward) = cam.basis();
         let c = world.centre_rel;
@@ -84,7 +85,12 @@ impl TrajectoryUniforms {
                 visibility.clamp(0.0, 1.0),
                 height_px.max(1.0),
             ],
-            mark: [odometer_m.max(0.0), MARK_SPACING_M, 0.0, 0.0],
+            mark: [
+                odometer_m.max(0.0),
+                MARK_SPACING_M,
+                if hoops { 1.0 } else { 0.0 },
+                0.0,
+            ],
         }
     }
 }
@@ -224,8 +230,9 @@ mod tests {
             vel_world: Vec3::X * 700.0,
             cda_over_m: -0.1,
         };
-        let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0, -3.0);
+        let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0, -3.0, false);
         assert_eq!(u.mark[0], 0.0);
+        assert_eq!(u.mark[2], 0.0);
         assert!(u.centre_radius[3] >= 1.0);
         assert_eq!(u.phys[0], 0.0);
         assert!(u.phys[2] >= 1.0);

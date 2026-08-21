@@ -16,16 +16,25 @@ pub enum Instrument {
     Trajectory,
     Readout,
     GForce,
+    /// The hoops on the path (the ribbon stays).
+    Hoops,
+    /// The womp a passing hoop makes.
+    HoopSound,
+    /// The horizon's pitch ladder (the level line stays).
+    Ladder,
 }
 
 impl Instrument {
-    pub const ALL: [Instrument; 7] = [
+    pub const ALL: [Instrument; 10] = [
         Instrument::Speed,
         Instrument::Altitude,
         Instrument::Gyro,
         Instrument::GForce,
         Instrument::Horizon,
+        Instrument::Ladder,
         Instrument::Trajectory,
+        Instrument::Hoops,
+        Instrument::HoopSound,
         Instrument::Readout,
     ];
 
@@ -38,6 +47,9 @@ impl Instrument {
             Instrument::Trajectory => "PATH",
             Instrument::Readout => "READOUT",
             Instrument::GForce => "G METER",
+            Instrument::Hoops => "PATH HOOPS",
+            Instrument::HoopSound => "HOOP SOUND",
+            Instrument::Ladder => "PITCH LADDER",
         }
     }
 
@@ -51,6 +63,9 @@ impl Instrument {
             Instrument::Trajectory => "path",
             Instrument::Readout => "readout",
             Instrument::GForce => "g-meter",
+            Instrument::Hoops => "hoops",
+            Instrument::HoopSound => "hoop-sound",
+            Instrument::Ladder => "ladder",
         }
     }
 
@@ -171,6 +186,9 @@ impl Default for Layout {
         l.set(Instrument::Horizon, Slot::On);
         l.set(Instrument::Trajectory, Slot::On);
         l.set(Instrument::Readout, Slot::On);
+        l.set(Instrument::Hoops, Slot::On);
+        l.set(Instrument::HoopSound, Slot::On);
+        l.set(Instrument::Ladder, Slot::On);
         l
     }
 }

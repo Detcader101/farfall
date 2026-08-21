@@ -37,7 +37,7 @@ so it handles like a VTOL: hold the horizon and the orbit holds, pitch down and
 you descend. Switch it **off** and the ship is a pure ballistic body: attitude
 and velocity are independent, and orbits are conserved exactly.
 
-**Cockpit**: every instrument — speedo, altimeter, gyro, head-up horizon, predicted path, readout — can be moved between slots on the glass or switched off from the menu's COCKPIT page.
+**Cockpit**: every instrument — speedo, altimeter, gyro, G meter, head-up horizon and its pitch ladder, predicted path and its hoops (and their sound), readout — can be moved between slots on the glass or switched off from the menu's COCKPIT page, and a SAFE EDGE pulls everything in from the rim.
 
 **Runtime knobs** (env vars, no rebuild needed; they override the settings file):
 
