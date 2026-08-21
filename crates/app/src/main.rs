@@ -9,7 +9,14 @@
 //! flight assist is toggleable. Planet, HUD, and sun arrive in M1 tasks 4-6.
 
 mod capture;
+mod cockpit;
 mod input;
+mod menu;
+mod settings;
+
+use cockpit::Instrument;
+use menu::{Change, Menu, MenuEvent};
+use settings::Settings;
 mod telemetry;
 
 use glam::{DQuat, DVec3};
@@ -19,10 +26,12 @@ use std::time::{Duration, Instant};
 use capture::Capture;
 use farfall_audio::Audio;
 use farfall_render::{
+    attitude::{gyro_pass, horizon_pass, Attitude, GyroUniforms, HorizonFade, HorizonUniforms},
     bake::BakedMaps,
     blit::BlitPass,
-    gauge::{AltitudeFade, GaugeFade, GaugePass, GaugeUniforms, HoloSway, MachAlert},
+    gauge::{gauge_pass, AltitudeFade, GaugeFade, GaugePass, GaugeUniforms, HoloSway, MachAlert},
     hud::HudPass,
+    instrument::InstrumentPass,
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
     starfield::StarfieldPass,
     text::TextBitmap,
@@ -48,11 +57,15 @@ const STAR_DENSITY: f64 = 1.0;
 const SUN_DIR: glam::Vec3 = glam::Vec3::new(0.62, 0.42, -0.66);
 /// How often the frame-time window is summarised to the log.
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
-/// Where the velocity gauge sits on the canopy (NDC): first instrument of the
-/// lower-right cluster.
-const VELOCITY_GAUGE_ANCHOR: [f32; 2] = [0.52, -0.48];
-/// The altimeter mirrors it bottom-left: the cluster grows symmetrically.
-const ALTITUDE_GAUGE_ANCHOR: [f32; 2] = [-0.52, -0.48];
+/// Where a dial sits and whether it shows: a hidden instrument keeps any
+/// anchor and a visibility of zero. The anchors themselves are the slots
+/// in `cockpit.rs`; the pilot assigns them from the menu.
+fn slot_of(layout: &cockpit::Layout, i: Instrument) -> ([f32; 2], f32) {
+    match layout.anchor(i) {
+        Some(a) => (a, 1.0),
+        None => ([0.0, 0.0], 0.0),
+    }
+}
 /// How far ahead the path predictor looks, seconds. A little over one
 /// orbit at the spawn altitude (~8.5 min), so a closed orbit draws closed.
 const TRAJECTORY_HORIZON_S: f32 = 560.0;
@@ -103,16 +116,19 @@ impl Config {
         !self.skip.iter().any(|s| s == pass)
     }
 
-    fn from_env() -> Self {
+    /// Environment knobs over the settings file: the file is the pilot's
+    /// choice, the variables are the profiler's, and the profiler wins.
+    fn from_env(settings: &Settings) -> Self {
         let msaa = std::env::var("FARFALL_MSAA")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .filter(|n| matches!(n, 1 | 2 | 4 | 8))
-            .unwrap_or(4);
-        let vsync = !matches!(
-            std::env::var("FARFALL_VSYNC").as_deref(),
-            Ok("off" | "0" | "false")
-        );
+            .unwrap_or(settings.msaa);
+        let vsync = match std::env::var("FARFALL_VSYNC").as_deref() {
+            Ok("off" | "0" | "false") => false,
+            Ok("on" | "1" | "true") => true,
+            _ => settings.vsync,
+        };
         // Without this, CPU-side frame timing measures how fast we can *submit*
         // work, not how long the GPU takes: submission is asynchronous, so the
         // CPU runs ahead and reports sub-millisecond "frames" while the GPU is
@@ -145,7 +161,7 @@ impl Config {
         let scale = std::env::var("FARFALL_SCALE")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
-            .unwrap_or(1.0)
+            .unwrap_or(settings.scale)
             .clamp(0.25, 1.0);
         Self {
             msaa,
@@ -193,6 +209,45 @@ impl Perf {
     }
 }
 
+/// Every pass that renders into the scene target — all of whose pipelines
+/// depend on the MSAA count, so the menu rebuilds them together.
+struct Passes {
+    starfield: StarfieldPass,
+    planet: PlanetPass,
+    gauge: GaugePass,
+    alt_gauge: GaugePass,
+    gyro: InstrumentPass,
+    horizon: InstrumentPass,
+    /// The hull heat field, simulated on the GPU, and the sheath it lights.
+    thermal: ThermalPass,
+    plasma: PlasmaPass,
+    /// The predicted path, integrated on the GPU.
+    trajectory: TrajectoryPass,
+}
+
+impl Passes {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        msaa: u32,
+        baked: &BakedMaps,
+    ) -> Self {
+        let thermal = ThermalPass::new(device);
+        let plasma = PlasmaPass::new(device, format, msaa, &thermal, baked);
+        Self {
+            starfield: StarfieldPass::new(device, format, msaa, STAR_DENSITY, baked),
+            planet: PlanetPass::new(device, format, msaa, baked),
+            gauge: gauge_pass(device, format, msaa),
+            alt_gauge: gauge_pass(device, format, msaa),
+            gyro: gyro_pass(device, format, msaa),
+            horizon: horizon_pass(device, format, msaa),
+            thermal,
+            plasma,
+            trajectory: TrajectoryPass::new(device, format, msaa),
+        }
+    }
+}
+
 struct Gpu {
     window: Arc<Window>,
     device: wgpu::Device,
@@ -201,17 +256,9 @@ struct Gpu {
     config: wgpu::SurfaceConfiguration,
     scene: SceneTarget,
     blit: BlitPass,
-    starfield: StarfieldPass,
-    planet: PlanetPass,
-    gauge: GaugePass,
-    alt_gauge: GaugePass,
-    /// The hull heat field, simulated on the GPU, and the sheath it lights.
-    thermal: ThermalPass,
-    plasma: PlasmaPass,
-    /// The predicted path, integrated on the GPU.
-    trajectory: TrajectoryPass,
-    /// Owns the baked textures the planet pass samples.
-    _baked: BakedMaps,
+    passes: Passes,
+    /// Owns the baked textures the passes sample.
+    baked: BakedMaps,
     hud: HudPass,
     text: TextBitmap,
     cfg: Config,
@@ -222,6 +269,96 @@ struct Gpu {
 }
 
 impl Gpu {
+    /// Every dial and overlay, from the cockpit layout: an instrument whose
+    /// slot is Off gets visibility zero and draws nothing at all.
+    fn update_instruments(&self, game: &Game, cam: &CameraFrame, aspect: f32, altitude_m: f32) {
+        let layout = &game.settings.layout;
+        let h = self.scene.size().1 as f32;
+        let sway = game.holo_sway.sway();
+        let (speed_anchor, speed_on) = slot_of(layout, Instrument::Speed);
+        self.passes.gauge.update(
+            &self.queue,
+            &GaugeUniforms::speed(
+                game.state.ship.vel_mps.length() as f32,
+                game.gauge_fade.level() * speed_on,
+                cam.time_s,
+                aspect,
+                h,
+                speed_anchor,
+                sway,
+                game.mach(),
+                game.mach_alert.level() * speed_on,
+            ),
+        );
+        let (alt_anchor, alt_on) = slot_of(layout, Instrument::Altitude);
+        self.passes.alt_gauge.update(
+            &self.queue,
+            &GaugeUniforms::altitude(
+                altitude_m,
+                game.alt_fade.level() * alt_on,
+                cam.time_s,
+                aspect,
+                h,
+                alt_anchor,
+                sway,
+            ),
+        );
+        let (gyro_anchor, gyro_on) = slot_of(layout, Instrument::Gyro);
+        self.passes.gyro.update(
+            &self.queue,
+            &GyroUniforms::new(
+                game.attitude(),
+                gyro_on,
+                aspect,
+                h,
+                gyro_anchor,
+                sway,
+                cam.time_s,
+            ),
+        );
+        let horizon_on = if layout.shown(Instrument::Horizon) {
+            1.0
+        } else {
+            0.0
+        };
+        self.passes.horizon.update(
+            &self.queue,
+            &HorizonUniforms::new(
+                cam,
+                game.up_world().as_vec3(),
+                game.horizon_fade.level() * horizon_on,
+                h,
+            ),
+        );
+    }
+
+    /// Graphics settings, live. Scale and vsync are cheap; MSAA rebuilds
+    /// every scene pipeline (and the heat field with them — the hull cools
+    /// for a frame).
+    fn apply_graphics(&mut self, settings: &Settings) {
+        if (self.scene.scale() - settings.scale).abs() > 1e-4 {
+            self.scene.set_scale(settings.scale);
+            log::info!("render scale {:.0}%", self.scene.scale() * 100.0);
+        }
+        if self.cfg.vsync != settings.vsync {
+            self.cfg.vsync = settings.vsync;
+            self.config.present_mode = if settings.vsync {
+                wgpu::PresentMode::AutoVsync
+            } else {
+                wgpu::PresentMode::AutoNoVsync
+            };
+            self.surface.configure(&self.device, &self.config);
+            self.perf.stats.skip_next_frame();
+        }
+        if self.cfg.msaa != settings.msaa {
+            self.cfg.msaa = settings.msaa;
+            self.scene = SceneTarget::new(settings.msaa, self.config.format, self.scene.scale());
+            self.passes = Passes::new(&self.device, self.config.format, settings.msaa, &self.baked);
+            self.perf.stats.skip_next_frame();
+            log::info!("MSAA {}x", settings.msaa);
+        }
+    }
+
     /// Close out the frame: record its duration, refresh the live readout in
     /// the title bar, and periodically summarise the window to the log.
     fn frame_timing(
@@ -231,6 +368,7 @@ impl Gpu {
         altitude_m: f64,
         speed_mps: f64,
         assist: bool,
+        show_readout: bool,
     ) {
         self.perf.cpu.record(cpu_seconds);
         self.perf.wait.record(wait_seconds);
@@ -245,6 +383,9 @@ impl Gpu {
             let fps = self.perf.stats.smoothed_fps();
             let low = self.perf.stats.recent_low_1pct_fps();
             self.text.clear();
+            if !show_readout {
+                return;
+            }
             self.text.draw(0, 0, &format!("{fps:.0} FPS"));
             self.text.draw(0, 6, &format!("1% LOW {low:.0}"));
 
@@ -346,8 +487,12 @@ struct Game {
     frame_dt: f32,
     /// The predicted path on the glass: T toggles it, and it fades rather
     /// than pops, like every other instrument.
-    show_trajectory: bool,
     trajectory_vis: f32,
+    /// The pilot's choices: graphics, keys, cockpit layout. The file is the
+    /// state; the menu edits it in place.
+    settings: Settings,
+    menu: Menu,
+    horizon_fade: HorizonFade,
     /// Metres of path flown, so the path's marks can stay fixed to the
     /// world. Presentation only: a wrapped f32 is fine for a phase.
     odometer_m: f64,
@@ -372,7 +517,7 @@ impl Game {
             state,
             input: InputState::default(),
             assist: true,
-            frozen: Config::from_env().bench,
+            frozen: Config::from_env(&Settings::default()).bench,
             accumulator: 0.0,
             last_frame: now,
             started: now,
@@ -382,12 +527,34 @@ impl Game {
             holo_sway: HoloSway::new(),
             mach_alert: MachAlert::new(),
             frame_dt: 0.0,
-            show_trajectory: true,
             trajectory_vis: 1.0,
+            settings: Settings::default(),
+            menu: Menu::new(),
+            horizon_fade: HorizonFade::new(),
             odometer_m: 0.0,
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
         }
+    }
+
+    /// Take on a settings block: the key map goes to the input, the rest is
+    /// read where it is used.
+    fn apply_settings(&mut self, settings: Settings) {
+        self.settings = settings;
+        self.input.set_bindings(settings.bindings);
+    }
+
+    /// Gravity's up at the ship, world frame.
+    fn up_world(&self) -> DVec3 {
+        self.state.ship.pos_m / self.state.ship.pos_m.length().max(1.0)
+    }
+
+    fn attitude(&self) -> Attitude {
+        Attitude::from_world(
+            self.state.ship.orient.as_quat(),
+            self.up_world().as_vec3(),
+            self.state.ship.vel_mps.as_vec3(),
+        )
     }
 
     /// Advance the sim by wall time, in whole fixed steps (SPEC §7.2).
@@ -414,9 +581,21 @@ impl Game {
             .update(frame_dt.min(0.25) as f32, w_body.x as f32, w_body.y as f32);
         self.mach_alert
             .update(frame_dt.min(0.25) as f32, self.is_supersonic());
-        let target = if self.show_trajectory { 1.0 } else { 0.0 };
+        let target = if self.settings.layout.shown(Instrument::Trajectory) {
+            1.0
+        } else {
+            0.0
+        };
         let k = 1.0 - (-(frame_dt.min(0.25) as f32) / 0.18).exp();
         self.trajectory_vis += (target - self.trajectory_vis) * k;
+        self.horizon_fade
+            .update(frame_dt.min(0.25) as f32, altitude as f32);
+
+        // A pilot reading a menu is not flying: the world waits.
+        if self.menu.open {
+            self.accumulator = 0.0;
+            return;
+        }
 
         if self.frozen {
             return;
@@ -684,7 +863,8 @@ struct App {
 
 impl App {
     fn init_gpu(&mut self, event_loop: &ActiveEventLoop) {
-        let cfg = Config::from_env();
+        let settings = Settings::load();
+        let cfg = Config::from_env(&settings);
         let title = if cfg.bench {
             "FARFALL — BENCHMARK (simulation frozen, controls inert)"
         } else {
@@ -730,7 +910,7 @@ impl App {
             let mut config = surface
                 .get_default_config(&adapter, size.width.max(1), size.height.max(1))
                 .expect("surface unsupported by adapter");
-            config.present_mode = if Config::from_env().vsync {
+            config.present_mode = if cfg.vsync {
                 wgpu::PresentMode::AutoVsync
             } else {
                 wgpu::PresentMode::AutoNoVsync
@@ -751,13 +931,7 @@ impl App {
         // Bake the static world fields before the first frame. Everything the
         // planet pass reads per pixel is generated here, by shader, once.
         let baked = BakedMaps::bake(&device, &queue);
-        let starfield = StarfieldPass::new(&device, config.format, cfg.msaa, STAR_DENSITY, &baked);
-        let planet = PlanetPass::new(&device, config.format, cfg.msaa, &baked);
-        let gauge = GaugePass::new(&device, config.format, cfg.msaa);
-        let alt_gauge = GaugePass::new(&device, config.format, cfg.msaa);
-        let thermal = ThermalPass::new(&device);
-        let plasma = PlasmaPass::new(&device, config.format, cfg.msaa, &thermal, &baked);
-        let trajectory = TrajectoryPass::new(&device, config.format, cfg.msaa);
+        let passes = Passes::new(&device, config.format, cfg.msaa, &baked);
         // The HUD draws straight onto the swapchain, after the upscale, so it
         // is always native resolution and single-sampled however low the scene
         // scale goes (P1: the readout must never soften).
@@ -786,14 +960,8 @@ impl App {
             config,
             scene,
             blit,
-            starfield,
-            planet,
-            gauge,
-            alt_gauge,
-            thermal,
-            plasma,
-            trajectory,
-            _baked: baked,
+            passes,
+            baked,
             hud,
             text: TextBitmap::new(),
             cfg,
@@ -801,7 +969,9 @@ impl App {
             capture_requested: false,
             bench_captured: false,
         });
-        self.game = Some(Game::new());
+        let mut game = Game::new();
+        game.apply_settings(settings);
+        self.game = Some(game);
     }
 }
 
@@ -831,10 +1001,34 @@ impl ApplicationHandler for App {
                     return;
                 };
                 let pressed = event.state == ElementState::Pressed;
+                if game.menu.open {
+                    if pressed && !event.repeat {
+                        match game.menu.key(code, &mut game.settings) {
+                            MenuEvent::Changed(change) => {
+                                game.settings.save();
+                                match change {
+                                    Change::Bindings => {
+                                        game.input.set_bindings(game.settings.bindings)
+                                    }
+                                    Change::Graphics => gpu.apply_graphics(&game.settings),
+                                    Change::Layout => {}
+                                }
+                            }
+                            MenuEvent::Quit => {
+                                game.log_exit("menu quit");
+                                event_loop.exit();
+                            }
+                            MenuEvent::Closed | MenuEvent::Nothing => {}
+                        }
+                    }
+                    return;
+                }
                 match code {
-                    KeyCode::Escape if pressed => {
-                        game.log_exit("escape");
-                        event_loop.exit();
+                    KeyCode::Escape if pressed && !event.repeat => {
+                        game.menu.toggle();
+                        // Whatever was held is released: the world pauses,
+                        // the keys must not carry a thrust demand across.
+                        game.input.release_all();
                     }
                     // Edge-triggered, and `repeat` is filtered: holding the key
                     // must not strobe the toggle.
@@ -853,10 +1047,11 @@ impl ApplicationHandler for App {
                         log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
                     }
                     KeyCode::KeyT if pressed && !event.repeat => {
-                        game.show_trajectory = !game.show_trajectory;
+                        game.settings.layout.cycle(Instrument::Trajectory, true);
+                        game.settings.save();
                         log::info!(
                             "trajectory {}",
-                            if game.show_trajectory { "ON" } else { "OFF" }
+                            game.settings.layout.get(Instrument::Trajectory).name()
                         );
                     }
                     KeyCode::KeyX if pressed && !event.repeat => {
@@ -918,41 +1113,18 @@ impl ApplicationHandler for App {
                                 }
                                 let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                                 let cam = game.camera(aspect);
-                                gpu.starfield.update(
+                                gpu.passes.starfield.update(
                                     &gpu.queue,
                                     &FrameUniforms::from_camera(&cam).with_occluder(
                                         (DVec3::ZERO - game.state.ship.pos_m).as_vec3(),
                                         game.params.planet.radius_m as f32,
                                     ),
                                 );
-                                gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
+                                gpu.passes
+                                    .planet
+                                    .update(&gpu.queue, &game.planet_uniforms(&cam));
                                 let (altitude_m, _) = game.altitude_vspeed();
-                                gpu.gauge.update(
-                                    &gpu.queue,
-                                    &GaugeUniforms::speed(
-                                        game.state.ship.vel_mps.length() as f32,
-                                        game.gauge_fade.level(),
-                                        cam.time_s,
-                                        aspect,
-                                        gpu.scene.size().1 as f32,
-                                        VELOCITY_GAUGE_ANCHOR,
-                                        game.holo_sway.sway(),
-                                        game.mach(),
-                                        game.mach_alert.level(),
-                                    ),
-                                );
-                                gpu.alt_gauge.update(
-                                    &gpu.queue,
-                                    &GaugeUniforms::altitude(
-                                        altitude_m as f32,
-                                        game.alt_fade.level(),
-                                        cam.time_s,
-                                        aspect,
-                                        gpu.scene.size().1 as f32,
-                                        ALTITUDE_GAUGE_ANCHOR,
-                                        game.holo_sway.sway(),
-                                    ),
-                                );
+                                gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
                                 // The capture should show what the pilot
                                 // sees, text included. The HUD pipeline is
                                 // single-sample (it draws in the present
@@ -985,12 +1157,14 @@ impl ApplicationHandler for App {
                                     },
                                 );
                                 let thermal_in = game.thermal_inputs(game.frame_dt);
-                                gpu.plasma.update(
+                                gpu.passes.plasma.update(
                                     &gpu.queue,
                                     &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps),
                                 );
-                                gpu.thermal.step(&gpu.queue, &mut encoder, &thermal_in);
-                                gpu.trajectory.update(
+                                gpu.passes
+                                    .thermal
+                                    .step(&gpu.queue, &mut encoder, &thermal_in);
+                                gpu.passes.trajectory.update(
                                     &gpu.queue,
                                     &TrajectoryUniforms::new(
                                         &cam,
@@ -1013,12 +1187,14 @@ impl ApplicationHandler for App {
                                             occlusion_query_set: None,
                                             multiview_mask: None,
                                         });
-                                    gpu.starfield.draw(&mut pass);
-                                    gpu.planet.draw(&mut pass);
-                                    gpu.plasma.draw(&mut pass, &gpu.thermal);
-                                    gpu.trajectory.draw(&mut pass);
-                                    gpu.gauge.draw(&mut pass);
-                                    gpu.alt_gauge.draw(&mut pass);
+                                    gpu.passes.starfield.draw(&mut pass);
+                                    gpu.passes.planet.draw(&mut pass);
+                                    gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
+                                    gpu.passes.trajectory.draw(&mut pass);
+                                    gpu.passes.horizon.draw(&mut pass);
+                                    gpu.passes.gauge.draw(&mut pass);
+                                    gpu.passes.alt_gauge.draw(&mut pass);
+                                    gpu.passes.gyro.draw(&mut pass);
                                     if capture_text {
                                         gpu.hud.draw(&mut pass);
                                     }
@@ -1077,20 +1253,22 @@ impl ApplicationHandler for App {
 
                 let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                 let cam = game.camera(aspect);
-                gpu.starfield.update(
+                gpu.passes.starfield.update(
                     &gpu.queue,
                     &FrameUniforms::from_camera(&cam).with_occluder(
                         (DVec3::ZERO - game.state.ship.pos_m).as_vec3(),
                         game.params.planet.radius_m as f32,
                     ),
                 );
-                gpu.planet.update(&gpu.queue, &game.planet_uniforms(&cam));
+                gpu.passes
+                    .planet
+                    .update(&gpu.queue, &game.planet_uniforms(&cam));
                 let thermal_in = game.thermal_inputs(game.frame_dt);
-                gpu.plasma.update(
+                gpu.passes.plasma.update(
                     &gpu.queue,
                     &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps),
                 );
-                gpu.trajectory.update(
+                gpu.passes.trajectory.update(
                     &gpu.queue,
                     &TrajectoryUniforms::new(
                         &cam,
@@ -1102,32 +1280,7 @@ impl ApplicationHandler for App {
                     ),
                 );
                 let (altitude_m, _) = game.altitude_vspeed();
-                gpu.gauge.update(
-                    &gpu.queue,
-                    &GaugeUniforms::speed(
-                        game.state.ship.vel_mps.length() as f32,
-                        game.gauge_fade.level(),
-                        cam.time_s,
-                        aspect,
-                        gpu.scene.size().1 as f32,
-                        VELOCITY_GAUGE_ANCHOR,
-                        game.holo_sway.sway(),
-                        game.mach(),
-                        game.mach_alert.level(),
-                    ),
-                );
-                gpu.alt_gauge.update(
-                    &gpu.queue,
-                    &GaugeUniforms::altitude(
-                        altitude_m as f32,
-                        game.alt_fade.level(),
-                        cam.time_s,
-                        aspect,
-                        gpu.scene.size().1 as f32,
-                        ALTITUDE_GAUGE_ANCHOR,
-                        game.holo_sway.sway(),
-                    ),
-                );
+                gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
 
                 // Scale the readout with the surface so it keeps the same
                 // apparent size on a retina fullscreen and a small window;
@@ -1148,7 +1301,9 @@ impl ApplicationHandler for App {
                     .device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                 // Pass 0: advance the hull heat field (64x64, on the GPU).
-                gpu.thermal.step(&gpu.queue, &mut encoder, &thermal_in);
+                gpu.passes
+                    .thermal
+                    .step(&gpu.queue, &mut encoder, &thermal_in);
                 {
                     // Pass 1: the expensive world, at whatever scale is set.
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1160,20 +1315,22 @@ impl ApplicationHandler for App {
                         multiview_mask: None,
                     });
                     if gpu.cfg.draws("starfield") {
-                        gpu.starfield.draw(&mut pass);
+                        gpu.passes.starfield.draw(&mut pass);
                     }
                     if gpu.cfg.draws("planet") {
-                        gpu.planet.draw(&mut pass);
+                        gpu.passes.planet.draw(&mut pass);
                     }
                     if gpu.cfg.draws("plasma") {
-                        gpu.plasma.draw(&mut pass, &gpu.thermal);
+                        gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                     }
                     if gpu.cfg.draws("trajectory") {
-                        gpu.trajectory.draw(&mut pass);
+                        gpu.passes.trajectory.draw(&mut pass);
                     }
                     if gpu.cfg.draws("gauge") {
-                        gpu.gauge.draw(&mut pass);
-                        gpu.alt_gauge.draw(&mut pass);
+                        gpu.passes.horizon.draw(&mut pass);
+                        gpu.passes.gauge.draw(&mut pass);
+                        gpu.passes.alt_gauge.draw(&mut pass);
+                        gpu.passes.gyro.draw(&mut pass);
                     }
                 }
                 {
@@ -1263,7 +1420,12 @@ impl ApplicationHandler for App {
                     game.state.ship.pos_m.length() - game.params.planet.radius_m,
                     game.state.ship.vel_mps.length(),
                     game.assist,
+                    game.settings.layout.shown(Instrument::Readout),
                 );
+                if game.menu.open {
+                    gpu.text.clear();
+                    game.menu.render(&mut gpu.text, &game.settings);
+                }
                 gpu.window.request_redraw();
             }
             _ => {}

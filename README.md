@@ -28,7 +28,7 @@ cargo run --release -p farfall-app    # fly it (Esc to quit)
 
 **Controls** — WASD translate, R/F up/down, arrows pitch/yaw, Q/E roll,
 **Left Shift** boosts, **Space** air-brakes, **X** toggles the flight computer, **T** toggles the predicted path,
-**C** cycles atmospheres, **[** / **]** set render scale, Esc quits.
+**C** cycles atmospheres, **[** / **]** set render scale, **Esc** opens the menu — graphics, key bindings and the cockpit layout, all saved to `~/.farfall/settings.cfg` — and quitting lives there.
 
 Everything is ship-relative at any attitude: "forward" is always where the nose
 points. With the flight computer **on** (default) the ship also *goes* where it
@@ -37,7 +37,9 @@ so it handles like a VTOL: hold the horizon and the orbit holds, pitch down and
 you descend. Switch it **off** and the ship is a pure ballistic body: attitude
 and velocity are independent, and orbits are conserved exactly.
 
-**Runtime knobs** (env vars, no rebuild needed):
+**Cockpit**: every instrument — speedo, altimeter, gyro, head-up horizon, predicted path, readout — can be moved between slots on the glass or switched off from the menu's COCKPIT page.
+
+**Runtime knobs** (env vars, no rebuild needed; they override the settings file):
 
 | Variable | Default | Purpose |
 |---|---|---|

@@ -10,10 +10,12 @@
 
 use glam::{Mat4, Quat, Vec3};
 
+pub mod attitude;
 pub mod bake;
 pub mod blit;
 pub mod gauge;
 pub mod hud;
+pub mod instrument;
 pub mod planet;
 pub mod shaders;
 pub mod starfield;

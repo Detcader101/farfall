@@ -34,6 +34,57 @@ pub enum Action {
 
 impl Action {
     pub const COUNT: usize = 12;
+
+    pub const ALL: [Action; Action::COUNT] = [
+        Action::ThrustForward,
+        Action::ThrustBack,
+        Action::StrafeLeft,
+        Action::StrafeRight,
+        Action::ThrustUp,
+        Action::ThrustDown,
+        Action::PitchUp,
+        Action::PitchDown,
+        Action::YawLeft,
+        Action::YawRight,
+        Action::RollLeft,
+        Action::RollRight,
+    ];
+
+    /// Menu label.
+    pub fn name(self) -> &'static str {
+        match self {
+            Action::ThrustForward => "THRUST FWD",
+            Action::ThrustBack => "THRUST BACK",
+            Action::StrafeLeft => "STRAFE LEFT",
+            Action::StrafeRight => "STRAFE RIGHT",
+            Action::ThrustUp => "THRUST UP",
+            Action::ThrustDown => "THRUST DOWN",
+            Action::PitchUp => "PITCH UP",
+            Action::PitchDown => "PITCH DOWN",
+            Action::YawLeft => "YAW LEFT",
+            Action::YawRight => "YAW RIGHT",
+            Action::RollLeft => "ROLL LEFT",
+            Action::RollRight => "ROLL RIGHT",
+        }
+    }
+
+    /// Settings-file key.
+    pub fn key(self) -> &'static str {
+        match self {
+            Action::ThrustForward => "thrust-forward",
+            Action::ThrustBack => "thrust-back",
+            Action::StrafeLeft => "strafe-left",
+            Action::StrafeRight => "strafe-right",
+            Action::ThrustUp => "thrust-up",
+            Action::ThrustDown => "thrust-down",
+            Action::PitchUp => "pitch-up",
+            Action::PitchDown => "pitch-down",
+            Action::YawLeft => "yaw-left",
+            Action::YawRight => "yaw-right",
+            Action::RollLeft => "roll-left",
+            Action::RollRight => "roll-right",
+        }
+    }
 }
 
 /// Which axis each action drives: (action, is_torque, component, sign).
@@ -81,15 +132,192 @@ const BINDINGS: [(KeyCode, Action); Action::COUNT] = [
     (KeyCode::KeyE, Action::RollRight),
 ];
 
-pub fn action_for(key: KeyCode) -> Option<Action> {
-    let mut i = 0;
-    while i < BINDINGS.len() {
-        if matches!(BINDINGS[i].0, k if k == key) {
-            return Some(BINDINGS[i].1);
+/// The pilot's key map: one physical key per action, plus the two
+/// modifiers. Rebindable from the menu, kept in the settings file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bindings {
+    keys: [KeyCode; Action::COUNT],
+    pub boost: KeyCode,
+    pub brake: KeyCode,
+}
+
+impl Default for Bindings {
+    fn default() -> Self {
+        let mut keys = [KeyCode::KeyW; Action::COUNT];
+        for (key, action) in BINDINGS {
+            keys[action as usize] = key;
         }
-        i += 1;
+        Self {
+            keys,
+            boost: BOOST_KEY,
+            brake: BRAKE_KEY,
+        }
     }
-    None
+}
+
+impl Bindings {
+    pub fn key_for(&self, action: Action) -> KeyCode {
+        self.keys[action as usize]
+    }
+
+    pub fn action_for(&self, key: KeyCode) -> Option<Action> {
+        Action::ALL
+            .iter()
+            .copied()
+            .find(|&a| self.keys[a as usize] == key)
+    }
+
+    /// Bind `key` to `action`. A key can mean one thing: whatever it meant
+    /// before is unbound (the old action keeps no key until rebound).
+    /// Returns false if the key is reserved by the game itself.
+    pub fn bind(&mut self, action: Action, key: KeyCode) -> bool {
+        if is_reserved(key) {
+            return false;
+        }
+        if let Some(old) = self.action_for(key) {
+            if old != action {
+                // Swap: the displaced action takes this action's old key.
+                self.keys[old as usize] = self.keys[action as usize];
+            }
+        }
+        if self.boost == key {
+            self.boost = self.keys[action as usize];
+        }
+        if self.brake == key {
+            self.brake = self.keys[action as usize];
+        }
+        self.keys[action as usize] = key;
+        true
+    }
+
+    pub fn bind_boost(&mut self, key: KeyCode) -> bool {
+        if is_reserved(key) {
+            return false;
+        }
+        if let Some(old) = self.action_for(key) {
+            self.keys[old as usize] = self.boost;
+        }
+        if self.brake == key {
+            self.brake = self.boost;
+        }
+        self.boost = key;
+        true
+    }
+
+    pub fn bind_brake(&mut self, key: KeyCode) -> bool {
+        if is_reserved(key) {
+            return false;
+        }
+        if let Some(old) = self.action_for(key) {
+            self.keys[old as usize] = self.brake;
+        }
+        if self.boost == key {
+            self.boost = self.brake;
+        }
+        self.brake = key;
+        true
+    }
+}
+
+/// Keys the game keeps for itself: the menu and its navigation.
+pub fn is_reserved(key: KeyCode) -> bool {
+    matches!(
+        key,
+        KeyCode::Escape | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace
+    )
+}
+
+/// Key names for the settings file and the menu. Physical keys, so the
+/// names are positions, not letters on the cap.
+pub const KEY_NAMES: &[(&str, KeyCode)] = &[
+    ("A", KeyCode::KeyA),
+    ("B", KeyCode::KeyB),
+    ("C", KeyCode::KeyC),
+    ("D", KeyCode::KeyD),
+    ("E", KeyCode::KeyE),
+    ("F", KeyCode::KeyF),
+    ("G", KeyCode::KeyG),
+    ("H", KeyCode::KeyH),
+    ("I", KeyCode::KeyI),
+    ("J", KeyCode::KeyJ),
+    ("K", KeyCode::KeyK),
+    ("L", KeyCode::KeyL),
+    ("M", KeyCode::KeyM),
+    ("N", KeyCode::KeyN),
+    ("O", KeyCode::KeyO),
+    ("P", KeyCode::KeyP),
+    ("Q", KeyCode::KeyQ),
+    ("R", KeyCode::KeyR),
+    ("S", KeyCode::KeyS),
+    ("T", KeyCode::KeyT),
+    ("U", KeyCode::KeyU),
+    ("V", KeyCode::KeyV),
+    ("W", KeyCode::KeyW),
+    ("X", KeyCode::KeyX),
+    ("Y", KeyCode::KeyY),
+    ("Z", KeyCode::KeyZ),
+    ("0", KeyCode::Digit0),
+    ("1", KeyCode::Digit1),
+    ("2", KeyCode::Digit2),
+    ("3", KeyCode::Digit3),
+    ("4", KeyCode::Digit4),
+    ("5", KeyCode::Digit5),
+    ("6", KeyCode::Digit6),
+    ("7", KeyCode::Digit7),
+    ("8", KeyCode::Digit8),
+    ("9", KeyCode::Digit9),
+    ("UP", KeyCode::ArrowUp),
+    ("DOWN", KeyCode::ArrowDown),
+    ("LEFT", KeyCode::ArrowLeft),
+    ("RIGHT", KeyCode::ArrowRight),
+    ("SPACE", KeyCode::Space),
+    ("LSHIFT", KeyCode::ShiftLeft),
+    ("RSHIFT", KeyCode::ShiftRight),
+    ("LCTRL", KeyCode::ControlLeft),
+    ("RCTRL", KeyCode::ControlRight),
+    ("LALT", KeyCode::AltLeft),
+    ("RALT", KeyCode::AltRight),
+    ("COMMA", KeyCode::Comma),
+    ("PERIOD", KeyCode::Period),
+    ("SLASH", KeyCode::Slash),
+    ("SEMI", KeyCode::Semicolon),
+    ("QUOTE", KeyCode::Quote),
+    ("LBRACKET", KeyCode::BracketLeft),
+    ("RBRACKET", KeyCode::BracketRight),
+    ("MINUS", KeyCode::Minus),
+    ("EQUAL", KeyCode::Equal),
+    ("BACKQUOTE", KeyCode::Backquote),
+    ("HOME", KeyCode::Home),
+    ("END", KeyCode::End),
+    ("PGUP", KeyCode::PageUp),
+    ("PGDN", KeyCode::PageDown),
+    ("INSERT", KeyCode::Insert),
+    ("DELETE", KeyCode::Delete),
+    ("NUM0", KeyCode::Numpad0),
+    ("NUM1", KeyCode::Numpad1),
+    ("NUM2", KeyCode::Numpad2),
+    ("NUM3", KeyCode::Numpad3),
+    ("NUM4", KeyCode::Numpad4),
+    ("NUM5", KeyCode::Numpad5),
+    ("NUM6", KeyCode::Numpad6),
+    ("NUM7", KeyCode::Numpad7),
+    ("NUM8", KeyCode::Numpad8),
+    ("NUM9", KeyCode::Numpad9),
+];
+
+pub fn key_name(key: KeyCode) -> &'static str {
+    KEY_NAMES
+        .iter()
+        .find(|(_, k)| *k == key)
+        .map(|(n, _)| *n)
+        .unwrap_or("?")
+}
+
+pub fn key_from_name(name: &str) -> Option<KeyCode> {
+    KEY_NAMES
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, k)| *k)
 }
 
 /// Seconds for a control axis to reach ~63% of a newly pressed key's demand.
@@ -113,17 +341,30 @@ pub struct InputState {
     brake: bool,
     /// Smoothed axis values: [thrust xyz, torque xyz].
     axes: [f64; 6],
+    bindings: Option<Bindings>,
 }
 
 impl InputState {
+    pub fn bindings(&self) -> Bindings {
+        self.bindings.unwrap_or_default()
+    }
+
+    /// Swap the key map. Everything held is released: a key that meant one
+    /// thing a moment ago must not keep doing it under a new name.
+    pub fn set_bindings(&mut self, bindings: Bindings) {
+        self.bindings = Some(bindings);
+        self.release_all();
+    }
+
     pub fn set(&mut self, key: KeyCode, pressed: bool) {
-        if key == BOOST_KEY {
+        let b = self.bindings();
+        if key == b.boost {
             self.boost = pressed;
         }
-        if key == BRAKE_KEY {
+        if key == b.brake {
             self.brake = pressed;
         }
-        if let Some(action) = action_for(key) {
+        if let Some(action) = b.action_for(key) {
             self.held[action as usize] = pressed;
         }
     }

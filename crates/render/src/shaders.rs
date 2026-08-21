@@ -14,6 +14,8 @@ pub const GAUGE: &str = include_str!("../../../shaders/gauge.wgsl");
 pub const THERMAL: &str = include_str!("../../../shaders/thermal.wgsl");
 pub const PLASMA: &str = include_str!("../../../shaders/plasma.wgsl");
 pub const TRAJECTORY: &str = include_str!("../../../shaders/trajectory.wgsl");
+pub const GYRO: &str = include_str!("../../../shaders/gyro.wgsl");
+pub const HORIZON: &str = include_str!("../../../shaders/horizon.wgsl");
 
 /// Every pass: display name, source, and required entry points.
 pub const PASSES: &[(&str, &str, &[&str])] = &[
@@ -37,6 +39,8 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("thermal", THERMAL, &["vs_main", "fs_main"]),
     ("plasma", PLASMA, &["vs_main", "fs_main"]),
     ("trajectory", TRAJECTORY, &["vs_main", "fs_main"]),
+    ("gyro", GYRO, &["vs_main", "fs_main"]),
+    ("horizon", HORIZON, &["vs_main", "fs_main"]),
 ];
 
 /// Prepend the shared prelude to a pass source.

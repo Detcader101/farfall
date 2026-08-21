@@ -267,107 +267,23 @@ impl GaugeUniforms {
     }
 }
 
-pub struct GaugePass {
-    pipeline: wgpu::RenderPipeline,
-    uniforms: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-}
+/// The speedo and the altimeter are [`InstrumentPass`]es running
+/// `gauge.wgsl`; see [`crate::instrument`].
+pub type GaugePass = crate::instrument::InstrumentPass;
 
-impl GaugePass {
-    pub fn new(
-        device: &wgpu::Device,
-        target_format: wgpu::TextureFormat,
-        sample_count: u32,
-    ) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("gauge"),
-            source: wgpu::ShaderSource::Wgsl(crate::shaders::compose(crate::shaders::GAUGE).into()),
-        });
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gauge uniforms"),
-            size: std::mem::size_of::<GaugeUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("gauge bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                // The vertex stage reads the anchor to place the quad (see vs_main).
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("gauge bg"),
-            layout: &bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniforms.as_entire_binding(),
-            }],
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("gauge layout"),
-            bind_group_layouts: &[Some(&bgl)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("gauge"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    // Additive: projected light. Black is absence, not a panel.
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent::OVER,
-                    }),
-                    write_mask: wgpu::ColorWrites::COLOR,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: sample_count,
-                ..Default::default()
-            },
-            multiview_mask: None,
-            cache: None,
-        });
-        Self {
-            pipeline,
-            uniforms,
-            bind_group,
-        }
-    }
-
-    pub fn update(&self, queue: &wgpu::Queue, uniforms: &GaugeUniforms) {
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(uniforms));
-    }
-
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.draw(0..6, 0..1);
-    }
+/// Build a gauge instrument.
+pub fn gauge_pass(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> GaugePass {
+    GaugePass::new(
+        device,
+        target_format,
+        sample_count,
+        "gauge",
+        crate::shaders::GAUGE,
+    )
 }
 
 #[cfg(test)]
