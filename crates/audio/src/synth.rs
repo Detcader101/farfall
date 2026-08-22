@@ -60,6 +60,11 @@ pub struct Levels {
     /// winds up, at its peak through the flip, and falls away on arrival.
     /// A cockpit sound; not gated by the vacuum.
     pub warp: f32,
+    /// How many jumps the drive has made, as a count. The synth fires the
+    /// WARP CRACK on every increment: the sound of the warp barrier going,
+    /// a sonic boom's heavier, deeper sibling. Not gated by the vacuum —
+    /// it is space itself that is breaking.
+    pub jumps: f32,
     /// Master gain 0..1.
     pub master: f32,
 }
@@ -76,6 +81,7 @@ impl Default for Levels {
             supersonic: 0.0,
             hoops: 0.0,
             warp: 0.0,
+            jumps: 0.0,
             master: 0.8,
         }
     }
@@ -206,6 +212,14 @@ pub struct Synth {
     womp_env: f32,
     womp_t: f32,
     womp_phase: f32,
+    /// The warp crack: a jump counter latched from Levels, its envelope and
+    /// phases.
+    last_jumps: u32,
+    crack_env: f32,
+    crack_t: f32,
+    crack_phase: f32,
+    crack_sub_phase: f32,
+    crack_lp: f32,
     // RCS thrusters.
     rcs: Smooth,
     rcs_phase: f32,
@@ -257,6 +271,12 @@ impl Synth {
             womp_env: 0.0,
             womp_t: 0.0,
             womp_phase: 0.0,
+            last_jumps: 0,
+            crack_env: 0.0,
+            crack_t: 0.0,
+            crack_phase: 0.0,
+            crack_sub_phase: 0.0,
+            crack_lp: 0.0,
             rcs: Smooth::new(sample_rate, 0.06),
             rcs_phase: 0.0,
             rcs_lp: 0.0,
@@ -289,8 +309,9 @@ impl Synth {
             self.eng_freq.value = Self::engine_pitch(levels.effort.clamp(0.0, 1.0));
             // A ship that WAKES supersonic did not just break the barrier.
             self.was_supersonic = levels.supersonic > 0.5;
-            // Nor did it just pass a hoop.
+            // Nor did it just pass a hoop, or jump.
             self.last_hoops = levels.hoops.max(0.0) as u32;
+            self.last_jumps = levels.jumps.max(0.0) as u32;
         }
 
         // Vacuum is a MASTER MUTE. Space is silent — all of it, engine
@@ -477,6 +498,48 @@ impl Synth {
             warp_out = (tone * 0.18 + self.warp_lp * 0.35) * wl * wl;
         }
 
+        // ---- the warp crack -----------------------------------------------
+        // The barrier going: where the sonic boom is thunder with a bright
+        // crack on its face, this is the same shape an octave and a half
+        // down and twice as long — a sub-bass fundamental that sinks from
+        // 30 Hz toward 9 Hz under a brickwall clipper, a snapped whip of
+        // white noise on the strike that is gone in a tenth of a second,
+        // and a body of dark low-passed noise rolling out behind it for a
+        // few seconds. Fires once per jump, in vacuum or not.
+        let jumps = levels.jumps.max(0.0) as u32;
+        if jumps != self.last_jumps {
+            self.last_jumps = jumps;
+            self.crack_env = 1.0;
+            self.crack_t = 0.0;
+            self.crack_phase = 0.0;
+            self.crack_sub_phase = 0.0;
+        }
+        let mut crack_out = 0.0;
+        if self.crack_env > 1e-3 {
+            let dt = 1.0 / self.rate;
+            self.crack_t += dt;
+            let env = self.crack_env;
+            let env2 = env * env;
+            let f = 9.0 + 21.0 * env;
+            self.crack_phase = (self.crack_phase + f / self.rate).fract();
+            self.crack_sub_phase = (self.crack_sub_phase + (f * 0.5) / self.rate).fract();
+            let body = (tau * self.crack_phase).sin() + 0.7 * (tau * self.crack_sub_phase).sin();
+            // Driven hard into the clipper: square-edged on the strike,
+            // relaxing to a round roll as the drive on env² falls away.
+            let crunt = (body * (1.5 + 9.0 * env2)).clamp(-1.0, 1.0);
+            // The whip: the snap of the barrier, bright and over at once.
+            let whip = self.rng_l.white() * (-self.crack_t * 28.0).exp() * 1.6;
+            // The dark body behind it.
+            let n = self.rng_r.white();
+            let lp = self.lp_coeff(60.0 + 260.0 * env2);
+            self.crack_lp += (n - self.crack_lp) * lp;
+            let roll = self.crack_lp * env * 1.4;
+            // Attack over 4 ms so the sub does not click on the way in.
+            let attack = (self.crack_t / 0.004).min(1.0);
+            crack_out = (crunt * 1.35 * env + whip + roll) * env * attack * 1.25;
+            self.crack_env *= (-dt / 1.5).exp();
+        }
+
         // ---- mix --------------------------------------------------------
         let master = self.master.next(levels.master.clamp(0.0, 1.0));
         // Silence multiplies everything the SHIP makes: past the atmosphere
@@ -487,8 +550,10 @@ impl Synth {
         // would silence the build-up at exactly the altitudes where it
         // happens (which is why the old mix was barely audible on entry).
         let mono = engine + hiss + rcs_out;
-        let l = (((mono + wind.0) * silence + entry_out + womp + warp_out) * master).tanh();
-        let r = (((mono + wind.1) * silence + entry_out + womp + warp_out) * master).tanh();
+        let l =
+            (((mono + wind.0) * silence + entry_out + womp + warp_out + crack_out) * master).tanh();
+        let r =
+            (((mono + wind.1) * silence + entry_out + womp + warp_out + crack_out) * master).tanh();
 
         // DC block: the asymmetric pulse and the clipped boom both bias the
         // mean, and a DC offset is inaudible right up until it thumps on
@@ -554,6 +619,7 @@ mod tests {
                 supersonic: 1.0,
                 hoops: 0.0,
                 warp: 0.0,
+                jumps: 0.0,
                 master: 1.0,
             },
             Levels {
@@ -566,6 +632,7 @@ mod tests {
                 supersonic: 3.0,
                 hoops: 0.0,
                 warp: 0.0,
+                jumps: 0.0,
                 master: 5.0,
             },
         ];
@@ -989,6 +1056,78 @@ mod tests {
         assert!(rms(&buf) < 1e-3, "womp rang on: {}", rms(&buf));
     }
 
+    /// The warp crack fires once per jump, in vacuum, and is heavier and
+    /// deeper than the hoop womp — and than the sonic boom.
+    #[test]
+    fn the_warp_crack_is_a_heavier_deeper_boom() {
+        let mut synth = Synth::new(48_000.0, 0xC0FFEE);
+        let quiet = Levels {
+            vacuum: 1.0,
+            jumps: 1.0,
+            ..Default::default()
+        };
+        let mut buf = vec![0.0f32; 48_000 / 4 * 2];
+        synth.render(&quiet, &mut buf);
+        assert!(rms(&buf) < 1e-4, "a count is not a sound: {}", rms(&buf));
+        let jumped = Levels {
+            jumps: 2.0,
+            ..quiet
+        };
+        synth.render(&jumped, &mut buf);
+        let strike = rms(&buf);
+        let strike_lf = low_band_rms(&buf, 48_000.0, 40.0);
+        assert!(strike > 0.15, "the crack was not heavy: {strike}");
+        assert!(
+            strike_lf > strike * 0.5,
+            "the crack was not bassy: {strike_lf} of {strike} below 40 Hz"
+        );
+        // A long tail: still rolling two seconds on, gone after six.
+        let mut tail = vec![0.0f32; 48_000 * 2 * 2];
+        synth.render(&jumped, &mut tail);
+        let mut later = vec![0.0f32; 48_000 / 4 * 2];
+        synth.render(&jumped, &mut later);
+        assert!(rms(&later) > 1e-3, "no tail: {}", rms(&later));
+        let mut gone = vec![0.0f32; 48_000 * 4 * 2];
+        synth.render(&jumped, &mut gone);
+        synth.render(&jumped, &mut later);
+        assert!(rms(&later) < 1e-3, "rang on: {}", rms(&later));
+
+        // Deeper than the sonic boom: more of its energy below 40 Hz.
+        let mut air = Synth::new(48_000.0, 0xC0FFEE);
+        let calm = Levels {
+            vacuum: 0.0,
+            supersonic: 0.0,
+            master: 1.0,
+            ..Default::default()
+        };
+        let mut warm = vec![0.0f32; 48_000 / 4 * 2];
+        air.render(&calm, &mut warm);
+        let boom = Levels {
+            supersonic: 1.0,
+            ..calm
+        };
+        let mut bbuf = vec![0.0f32; 48_000 / 4 * 2];
+        air.render(&boom, &mut bbuf);
+        let boom_share = low_band_rms(&bbuf, 48_000.0, 40.0) / rms(&bbuf).max(1e-6);
+        let crack_share = strike_lf / strike;
+        assert!(
+            crack_share > boom_share,
+            "crack {crack_share:.2} vs boom {boom_share:.2} below 40 Hz"
+        );
+    }
+
+    /// RMS of what a one-pole low-pass at `cutoff_hz` lets through.
+    fn low_band_rms(buf: &[f32], rate: f32, cutoff_hz: f32) -> f32 {
+        let k = 1.0 - (-core::f32::consts::TAU * cutoff_hz / rate).exp();
+        let mut lp = 0.0f32;
+        let mut acc = 0.0f32;
+        for s in buf.iter().step_by(2) {
+            lp += (s - lp) * k;
+            acc += lp * lp;
+        }
+        (acc / (buf.len() / 2).max(1) as f32).sqrt()
+    }
+
     /// The drive is audible in vacuum and louder charged than idle.
     #[test]
     fn warp_swells_with_charge() {
@@ -1019,6 +1158,7 @@ mod tests {
             supersonic: 0.0,
             hoops: 0.0,
             warp: 0.0,
+            jumps: 0.0,
             master: 0.9,
         };
         let a = render_secs(levels, 0.25);

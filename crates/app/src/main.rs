@@ -599,6 +599,8 @@ struct Game {
     drag: Option<(Instrument, [f32; 2])>,
     /// The map's orbiting camera.
     map_view: map::MapView,
+    /// Jumps made, for the drive's crack.
+    jumps: u32,
     /// LANDING mode (G): the hoops close up and judge the touchdown.
     landing: bool,
     /// The predicted touchdown, refreshed each frame in landing mode.
@@ -671,6 +673,7 @@ impl Game {
             look: Look::new(),
             drag: None,
             map_view: map::MapView::default(),
+            jumps: 0,
             landing: false,
             touchdown: None,
             cursor: None,
@@ -839,6 +842,7 @@ impl Game {
         self.state.ship.pos_m = pos;
         self.state.ship.vel_mps = vel;
         self.state.ship.ang_vel_radps = DVec3::ZERO;
+        self.jumps = self.jumps.wrapping_add(1);
         let centre = self
             .settings
             .plan
@@ -1110,6 +1114,7 @@ impl Game {
             supersonic: if self.is_supersonic() { 1.0 } else { 0.0 },
             hoops: self.hoops_passed as f32,
             warp: self.warp.look().charge,
+            jumps: self.jumps as f32,
             master: 0.8,
         }
     }
