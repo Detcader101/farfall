@@ -28,6 +28,9 @@ fn clamp_anchor(a: [f32; 2]) -> [f32; 2] {
     [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)]
 }
 
+/// The cabin's render sizes on offer, as fractions of the scene.
+pub const COCKPIT_RES_CHOICES: [f32; 3] = [0.5, 0.75, 1.0];
+
 /// The landing hoops' spacings on offer, metres.
 pub const LANDING_SPACINGS: [f32; 4] = [100.0, 250.0, 500.0, 1000.0];
 
@@ -56,6 +59,8 @@ pub struct Settings {
     pub cockpit_frame: bool,
     pub cockpit_glow: f32,
     pub cockpit_hull: f32,
+    /// The cabin is drawn at this fraction of the scene's size.
+    pub cockpit_res: f32,
     /// Spacing of the landing hoops, metres.
     pub landing_spacing_m: f32,
     /// Rings drawn around each body on the map, 0..=6.
@@ -81,6 +86,7 @@ impl Default for Settings {
             cockpit_frame: true,
             cockpit_glow: 1.0,
             cockpit_hull: 0.92,
+            cockpit_res: 0.5,
             landing_spacing_m: 250.0,
             map_rings: 4,
             map_grid: true,
@@ -193,6 +199,13 @@ impl Settings {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.cockpit_glow = f.clamp(0.25, 2.0);
+                        }
+                    }
+                }
+                "cockpit.res" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if COCKPIT_RES_CHOICES.contains(&f) {
+                            s.cockpit_res = f;
                         }
                     }
                 }
@@ -316,6 +329,7 @@ impl Settings {
         ));
         out.push_str(&format!("cockpit.glow = {:.2}\n", self.cockpit_glow));
         out.push_str(&format!("cockpit.hull = {:.2}\n", self.cockpit_hull));
+        out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
         out.push_str(&format!(
             "ui.landing-hoops = {:.0}\n",
             self.landing_spacing_m
@@ -379,6 +393,7 @@ mod tests {
         s.cockpit_frame = false;
         s.cockpit_glow = 1.5;
         s.cockpit_hull = 0.25;
+        s.cockpit_res = 1.0;
         s.menu_anchor = [-0.25, 0.5];
         s.map_anchor = [0.125, -0.125];
         s.map_grid = false;

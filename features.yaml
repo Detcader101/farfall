@@ -148,12 +148,18 @@ features:
     settings: [ui.panel-menu, ui.panel-map]
     e2e: needs a flight — pick up the panel with the gaze and drop it
 
-  - id: cockpit-wireframe
-    name: Tron-style wireframe cabin around the head (dome ribs/hoops, sill, gridded dash, bulkhead)
+  - id: cockpit-solid
+    name: Solid ray-marched fighter cockpit — fuselage with carved cabin (real wall thickness), nose and swept wings through the glass, arches and rails, metal dash and consoles, sockets with beams under each dial; rendered at a fraction of the scene and composited
     state: complete
     tests: [crates/render/src/cabin.rs]
-    settings: [cockpit.frame, cockpit.glow, cockpit.hull]
-    e2e: captures forward and FARFALL_BENCH_HEAD=120,-10 looking back at the bulkhead
+    settings: [cockpit.frame, cockpit.glow, cockpit.hull (CABIN METAL), cockpit.res (CABIN DETAIL)]
+    e2e: FARFALL_BENCH_SPIN=8 — forward (dash, arch, nose), 90° (wing leading edge), 200° (spine, fin); ~2 ms at half res
+    notes: map dart replaced by the same fighter SDF (common.wgsl sd_fighter_exterior)
+
+  - id: bench-spin
+    name: FARFALL_BENCH_SPIN=n — the head turns a full circle over the bench, n captures on the way
+    state: complete
+    e2e: 8 frames inspected
 
   - id: crash
     name: Ship loss on hard impact / Sun contact

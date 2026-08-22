@@ -234,3 +234,78 @@ fn blackbody(kk: f32) -> vec3<f32> {
     let b = clamp(0.55 * log(max(t - 1.6, 0.01)) + 0.02, 0.0, 1.0);
     return vec3<f32>(r, g, b);
 }
+
+// ----------------------------------------------------------------- the ship
+//
+// The ship's own shape, as signed distance in its frame: x right, y up, -z
+// the nose, metres, the pilot's head at the origin. One definition, used by
+// the cockpit (the nose and wings seen through the glass, the hull the
+// pilot sits inside) and by the map (the same ship, small). A fighter: a
+// long fuselage, swept delta wings, twin engines, a single canted-free fin.
+
+fn sd_round_box(p: vec3<f32>, b: vec3<f32>, r: f32) -> f32 {
+    let q = abs(p) - b;
+    return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
+}
+
+fn sd_ellipsoid_c(p: vec3<f32>, c: vec3<f32>, r: vec3<f32>) -> f32 {
+    let q = p - c;
+    let k0 = length(q / r);
+    let k1 = length(q / (r * r));
+    return k0 * (k0 - 1.0) / max(k1, 1e-6);
+}
+
+fn sd_capsule_ab(p: vec3<f32>, a: vec3<f32>, b: vec3<f32>, r: f32) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+
+// The exterior only: fuselage, wings, engines, fin. Solid.
+fn sd_fighter_exterior(q: vec3<f32>) -> f32 {
+    // Fuselage: a long ellipsoid, fattest under the pilot, drawn out to a
+    // needle at the nose and a flat tail.
+    // Fuselage: the body from the cockpit back, and a slimmer nose cone
+    // ahead of it that drops away below the sill — the pilot sits high,
+    // as in a fighter, and looks over the nose.
+    let fus = sd_ellipsoid_c(q, vec3<f32>(0.0, -1.05, 2.2), vec3<f32>(1.0, 0.85, 5.6));
+    let nose = sd_ellipsoid_c(q, vec3<f32>(0.0, -1.3, -3.4), vec3<f32>(0.72, 0.5, 3.3));
+    var d = min(fus, nose);
+    // The wings, engines and fin all live aft and outboard: one box bounds
+    // them, and a point well clear of it needs only the box's distance (a
+    // safe lower bound for the march) — which is most of the cabin.
+    let aft = sd_round_box(q - vec3<f32>(0.0, -0.5, 4.4), vec3<f32>(6.0, 1.4, 3.6), 0.0);
+    if (aft > 0.3) {
+        return min(d, aft);
+    }
+    // Wings: swept delta, thin, the chord shrinking toward the tips.
+    let wx = abs(q.x);
+    let wq = vec3<f32>(wx - 3.2, q.y + 0.92, q.z - 2.3 - 0.62 * wx);
+    let wing = sd_round_box(wq, vec3<f32>(2.6, 0.035, 1.15 - 0.12 * wx), 0.03);
+    d = min(d, wing);
+    // Engines: two nacelles under the tail, and the fin between them.
+    let eq = vec3<f32>(abs(q.x) - 0.62, q.y + 0.85, q.z);
+    let eng = sd_capsule_ab(eq, vec3<f32>(0.0, 0.0, 4.2), vec3<f32>(0.0, 0.0, 7.6), 0.44);
+    d = min(d, eng);
+    let fq = vec3<f32>(q.x, q.y - 0.35, q.z - 6.0 - 0.55 * max(q.y - 0.35, 0.0));
+    let fin = sd_round_box(fq, vec3<f32>(0.035, 1.0, 0.75), 0.02);
+    return min(d, fin);
+}
+
+// The ship with the cockpit carved out: the cavity the pilot sits in, and
+// the glass cut above it. What is left has thickness — the wall between
+// the cavity and space.
+fn sd_fighter_hull(q: vec3<f32>) -> f32 {
+    let outer = sd_fighter_exterior(q);
+    let cavity = sd_ellipsoid_c(q, vec3<f32>(0.0, -0.25, -0.1), vec3<f32>(0.92, 1.05, 1.75));
+    // The glass cut opens the top; it stays clear of the dash below the
+    // sill, so nothing of it haunts the march down there.
+    let glass = sd_round_box(q - vec3<f32>(0.0, 0.7, -0.45), vec3<f32>(0.80, 0.9, 1.25), 0.15);
+    // max(a, -b) is the usual carve. It is not a true distance for a point
+    // outside the hull but inside the cut (where the pilot sits): it hands
+    // back the distance to the cut's wall, which can overshoot whatever
+    // stands inside the cut. The cockpit's march bisects on overshoot for
+    // exactly that reason.
+    return max(outer, -min(cavity, glass));
+}

@@ -13,7 +13,9 @@
 
 use crate::cockpit::{Instrument, SAFE_EDGE_MAX};
 use crate::input::{is_reserved, key_name, Action};
-use crate::settings::{Settings, HOOP_SIZE_MAX, HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES};
+use crate::settings::{
+    Settings, COCKPIT_RES_CHOICES, HOOP_SIZE_MAX, HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
+};
 use farfall_render::text::TextBitmap;
 use winit::keyboard::KeyCode;
 
@@ -74,6 +76,7 @@ enum Item {
     CockpitFrame,
     CockpitGlow,
     CockpitHull,
+    CockpitRes,
     MapRings,
     MapGrid,
     LookSens,
@@ -98,7 +101,8 @@ impl Item {
             Item::LandingHoops => "LANDING HOOPS",
             Item::CockpitFrame => "CABIN FRAME",
             Item::CockpitGlow => "CABIN GLOW",
-            Item::CockpitHull => "CABIN HULL",
+            Item::CockpitHull => "CABIN METAL",
+            Item::CockpitRes => "CABIN DETAIL",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
@@ -127,6 +131,7 @@ impl Item {
             Item::CockpitFrame => if s.cockpit_frame { "ON" } else { "OFF" }.to_string(),
             Item::CockpitGlow => format!("{:.2}x", s.cockpit_glow),
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
+            Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
@@ -184,7 +189,13 @@ impl Menu {
 
     fn items(&self) -> Vec<Item> {
         match self.page {
-            Page::Graphics => vec![Item::Msaa, Item::Scale, Item::Vsync, Item::Quit],
+            Page::Graphics => vec![
+                Item::Msaa,
+                Item::Scale,
+                Item::Vsync,
+                Item::CockpitRes,
+                Item::Quit,
+            ],
             Page::Controls => {
                 let mut v: Vec<Item> = Action::ALL.iter().map(|&a| Item::Bind(a)).collect();
                 v.push(Item::BindBoost);
@@ -407,6 +418,20 @@ impl Menu {
                 s.cockpit_hull = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::CockpitRes => {
+                let n = COCKPIT_RES_CHOICES.len();
+                let i = COCKPIT_RES_CHOICES
+                    .iter()
+                    .position(|&x| (x - s.cockpit_res).abs() < 1e-6)
+                    .unwrap_or(0);
+                let j = if forward {
+                    (i + 1) % n
+                } else {
+                    (i + n - 1) % n
+                };
+                s.cockpit_res = COCKPIT_RES_CHOICES[j];
+                MenuEvent::Changed(Change::Graphics)
+            }
             Item::MapRings => {
                 let n = crate::map::RINGS_MAX + 1;
                 s.map_rings = if forward {
@@ -593,7 +618,7 @@ mod tests {
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
         m.key(KeyCode::Tab, &mut s); // back to graphics
-        for _ in 0..3 {
+        for _ in 0..4 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Quit);

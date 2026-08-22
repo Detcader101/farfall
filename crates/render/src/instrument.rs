@@ -14,6 +14,14 @@ pub struct InstrumentPass {
     uniform_bytes: u64,
 }
 
+/// How a pass writes its target: the blend, the uniform block's size, and
+/// which channels it may write.
+struct PaneTarget {
+    blend: wgpu::BlendState,
+    uniform_bytes: u64,
+    write_mask: wgpu::ColorWrites,
+}
+
 /// Every instrument's uniform block is four vec4s. The shaders agree on the
 /// size, not the meaning.
 pub const UNIFORM_BYTES: u64 = 64;
@@ -41,8 +49,11 @@ impl InstrumentPass {
             sample_count,
             label,
             shader_src,
-            additive,
-            UNIFORM_BYTES,
+            PaneTarget {
+                blend: additive,
+                uniform_bytes: UNIFORM_BYTES,
+                write_mask: wgpu::ColorWrites::COLOR,
+            },
         )
     }
 
@@ -61,8 +72,11 @@ impl InstrumentPass {
             sample_count,
             label,
             shader_src,
-            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-            UNIFORM_BYTES,
+            PaneTarget {
+                blend: wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+                uniform_bytes: UNIFORM_BYTES,
+                write_mask: wgpu::ColorWrites::COLOR,
+            },
         )
     }
 
@@ -82,8 +96,13 @@ impl InstrumentPass {
             sample_count,
             label,
             shader_src,
-            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-            uniform_bytes,
+            PaneTarget {
+                blend: wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+                uniform_bytes,
+                // Alpha too: a sized pane may render to a texture of its
+                // own that is composited later; its coverage must survive.
+                write_mask: wgpu::ColorWrites::ALL,
+            },
         )
     }
 
@@ -93,9 +112,13 @@ impl InstrumentPass {
         sample_count: u32,
         label: &'static str,
         shader_src: &str,
-        blend: wgpu::BlendState,
-        uniform_bytes: u64,
+        target: PaneTarget,
     ) -> Self {
+        let PaneTarget {
+            blend,
+            uniform_bytes,
+            write_mask,
+        } = target;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(label),
             source: wgpu::ShaderSource::Wgsl(crate::shaders::compose(shader_src).into()),
@@ -149,7 +172,7 @@ impl InstrumentPass {
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
                     blend: Some(blend),
-                    write_mask: wgpu::ColorWrites::COLOR,
+                    write_mask,
                 })],
             }),
             primitive: wgpu::PrimitiveState::default(),

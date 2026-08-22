@@ -72,6 +72,17 @@ impl Look {
         self.pitch = self.target_pitch;
     }
 
+    /// Lock the look and put the head at any yaw at all (the full circle,
+    /// past the shoulder limits) — for the bench's spin, which looks round
+    /// the whole cabin.
+    pub fn aim_free(&mut self, yaw: f32, pitch: f32) {
+        self.locked = true;
+        self.target_yaw = yaw;
+        self.target_pitch = pitch.clamp(-PITCH_MAX, PITCH_MAX);
+        self.yaw = self.target_yaw;
+        self.pitch = self.target_pitch;
+    }
+
     /// Mouse motion in counts. Ignored unless engaged, so a stray trackpad
     /// brush in flight moves nothing. Mouse right = look right; mouse up =
     /// look up.

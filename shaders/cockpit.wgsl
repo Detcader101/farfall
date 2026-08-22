@@ -1,27 +1,38 @@
-// cockpit.wgsl — the cabin around the pilot's head (pass: cockpit)
+// cockpit.wgsl — the cabin the pilot sits in (pass: cockpit)
 //
-// Lane: A. Cost class: cheap — one analytic shell per pixel, no march.
+// Lane: A. Cost class: moderate — a short SDF march per pixel over the
+// cabin and the ship's own nose and wings, bounded to a few metres.
 //
-// A wireframe cabin in the TRON manner: a canopy dome over the pilot with
-// glowing ribs and hoops, a sill where the glass meets the hull, a dash
-// below it gridded in light, a rear bulkhead behind. It is drawn in the
-// SHIP'S frame — the ray for each pixel is turned by the pilot's head, so
-// looking round shows the cabin going round the pilot while the nose stays
-// where it is. The dials are drawn after this and sit on the same glass.
+// This is a physical cockpit: a fighter's fuselage with the cabin carved
+// out of it (common.wgsl, sd_fighter_hull), so the hull has a wall, the
+// nose runs out ahead below the glass and the wings sweep back either
+// side; solid canopy arches and rails; a sloping dash and side consoles in
+// dark metal, lit by the Sun through the glass. On the dash sit SOCKETS —
+// recessed pads with a lit rim — one under each instrument the pilot has
+// placed, and from each a beam of light stands up to where the hologram
+// floats. The holograms (drawn after this, on the glass) are the tech; the
+// metal is the ship. TRON in the light, a flight sim in the metal.
 //
-// Everything is a function of the ray's direction: azimuth from the nose
-// and elevation from the eye-line. The hull is where the dome ends; the
-// lines are where the ribs are. Nothing here is geometry the CPU knows.
+// Drawn in the SHIP'S frame: every pixel's ray is turned by the pilot's
+// head, so looking round is looking round the cabin.
 
 struct Cockpit {
     // xyz: the head's right axis in ship frame. w: line glow 0..2
     right: vec4<f32>,
-    // xyz: the head's up axis in ship frame. w: hull opacity 0..1
+    // xyz: the head's up axis in ship frame. w: metal brightness 0..1
     up: vec4<f32>,
     // xyz: the head's forward axis in ship frame (-Z is the nose). w: tan(fov/2)
     fwd: vec4<f32>,
-    // x: aspect, y: time, z: on 0..1, w: unused
+    // x: aspect, y: time, z: on 0..1, w: number of sockets
     misc: vec4<f32>,
+    // xyz: the Sun's direction in ship frame. w: exposure
+    sun: vec4<f32>,
+    // Sockets: xyz the hologram's direction from the head (ship frame), w
+    // 1 if in use.
+    pad0: vec4<f32>,
+    pad1: vec4<f32>,
+    pad2: vec4<f32>,
+    pad3: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> ck: Cockpit;
@@ -43,20 +54,168 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     return out;
 }
 
-const DEG: f32 = 0.017453292;
-// The sill: where the glass meets the hull, elevation below the eye-line,
-// ahead and to the sides. The dash sits below it.
-const SILL_FRONT: f32 = -22.0 * DEG;
-const SILL_SIDE: f32 = -8.0 * DEG;
-// Behind the shoulders the cabin closes in: the bulkhead.
-const BULKHEAD_AZ: f32 = 118.0 * DEG;
-// The dome's top: a spine runs fore and aft up there.
-const CROWN: f32 = 62.0 * DEG;
+const MARCH_STEPS: u32 = 48u;
+const MAX_T: f32 = 9.5;
+// Where the holograms float: this far from the head along their direction.
+const HOLO_M: f32 = 1.05;
+// The dash top: a plane, sloped toward the pilot. Sockets are set into it.
+const DASH_C: vec3<f32> = vec3<f32>(0.0, -0.50, -1.05);
+const DASH_N: vec3<f32> = vec3<f32>(0.0, 0.9563, 0.2924); // 17 degrees back
 
-// A line of angular half-width `w` (radians) at distance `d`, anti-aliased
-// by the pixel's own angular size `aa`.
-fn line(d: f32, w: f32, aa: f32) -> f32 {
-    return 1.0 - smoothstep(w, w + aa, abs(d));
+// ---------------------------------------------------------------- cabin
+
+struct Hit {
+    d: f32,
+    // 0 hull metal, 1 dash/console metal, 2 arch/rail, 3 socket rim
+    kind: f32,
+}
+
+fn pad_dir(i: i32) -> vec4<f32> {
+    if (i == 0) { return ck.pad0; }
+    if (i == 1) { return ck.pad1; }
+    if (i == 2) { return ck.pad2; }
+    return ck.pad3;
+}
+
+// A socket's centre: where the hologram's direction meets the dash plane
+// (or, if it does not, a floating emitter a little below the hologram).
+fn socket_centre(dir: vec3<f32>) -> vec3<f32> {
+    let denom = dot(dir, DASH_N);
+    if (denom < -1e-4) {
+        let t = dot(DASH_C, DASH_N) / denom;
+        let p = dir * t;
+        if (t > 0.3 && t < 2.2 && abs(p.x) < 1.0) {
+            return p;
+        }
+    }
+    return dir * HOLO_M - vec3<f32>(0.0, 0.16, 0.0);
+}
+
+fn sd_cabin(p: vec3<f32>) -> Hit {
+    // The ship's hull, with the cabin carved out of it.
+    var h = Hit(sd_fighter_hull(p), 0.0);
+    // Everything inside the cabin sits in one box: outside it, its
+    // distance is bound enough.
+    let inside = sd_round_box(p - vec3<f32>(0.0, -0.2, -0.3), vec3<f32>(1.1, 1.0, 1.7), 0.0);
+    if (inside > 0.25) {
+        if (inside < h.d) { h = Hit(inside, 1.0); }
+        return h;
+    }
+    // The dash: a slab set into the nose, its top sloping toward the
+    // pilot; and the side consoles at the elbows.
+    let ca = 0.9563;
+    let sa = 0.2924;
+    let dq0 = p - DASH_C;
+    let dq = vec3<f32>(dq0.x, dq0.y * ca + dq0.z * sa, -dq0.y * sa + dq0.z * ca);
+    let dash = sd_round_box(dq - vec3<f32>(0.0, -0.2, 0.0), vec3<f32>(0.95, 0.2, 0.42), 0.04);
+    let con_l = sd_round_box(p - vec3<f32>(-0.74, -0.7, -0.1), vec3<f32>(0.2, 0.1, 0.8), 0.03);
+    let con_r = sd_round_box(p - vec3<f32>(0.74, -0.7, -0.1), vec3<f32>(0.2, 0.1, 0.8), 0.03);
+    var furniture = min(dash, min(con_l, con_r));
+    // Sockets: shallow recesses in the furniture under each hologram, with
+    // a raised rim.
+    let n = i32(ck.misc.w);
+    var rim = 1e9;
+    // Only near the dash and consoles are there sockets to cut.
+    let near_dash = furniture < 0.2;
+    for (var i = 0; i < 4; i += 1) {
+        if (i >= n || !near_dash) { break; }
+        let pd = pad_dir(i);
+        if (pd.w < 0.5) { continue; }
+        let c = socket_centre(pd.xyz);
+        // Recess: a short cylinder along the dash normal, cut out.
+        let lq = p - c;
+        let along = dot(lq, DASH_N);
+        let radial = length(lq - DASH_N * along);
+        let recess = max(radial - 0.085, abs(along - 0.0) - 0.025);
+        furniture = max(furniture, -recess);
+        // The rim: a thin torus at the mouth.
+        let ring = length(vec2<f32>(radial - 0.095, along - 0.012)) - 0.012;
+        rim = min(rim, ring);
+    }
+    if (furniture < h.d) { h = Hit(furniture, 1.0); }
+    if (rim < h.d) { h = Hit(rim, 3.0); }
+    // The frame is all above y = -0.35: below -0.4 the gap to that height
+    // is a safe lower bound — and one that never reaches zero, so the
+    // march cannot mistake the bound's plane for a surface.
+    let frame = select(-0.35 - p.y, sd_frame(p), p.y > -0.4);
+    if (frame < h.d) { h = Hit(frame, 2.0); }
+    return h;
+}
+
+// Canopy structure: a front arch and a rear arch (tori, tilted), and two
+// rails running between them over the pilot's shoulders.
+fn sd_frame(p: vec3<f32>) -> f32 {
+    let fa = p - vec3<f32>(0.0, -0.25, -1.55);
+    let faq = vec3<f32>(fa.x, fa.y * 0.92 - fa.z * 0.39, fa.y * 0.39 + fa.z * 0.92);
+    let front_arch = max(length(vec2<f32>(length(faq.xy) - 0.98, faq.z)) - 0.035, -faq.y - 0.1);
+    let ra = p - vec3<f32>(0.0, -0.25, 1.25);
+    let raq = vec3<f32>(ra.x, ra.y * 0.96 + ra.z * 0.28, -ra.y * 0.28 + ra.z * 0.96);
+    let rear_arch = max(length(vec2<f32>(length(raq.xy) - 0.92, raq.z)) - 0.035, -raq.y - 0.1);
+    let rq = vec3<f32>(abs(p.x), p.y, p.z);
+    let rail = sd_capsule_ab(rq, vec3<f32>(0.55, 0.72, -1.2), vec3<f32>(0.5, 0.64, 1.0), 0.028);
+    return min(min(front_arch, rear_arch), rail);
+}
+
+// Tetrahedral gradient: four samples, not six.
+// One call site in a loop, so the (large) scene function is inlined
+// once here rather than four times — code size is occupancy.
+fn cabin_normal(p: vec3<f32>) -> vec3<f32> {
+    let e = 0.004;
+    var n = vec3<f32>(0.0);
+    for (var i = 0; i < 4; i += 1) {
+        let k = vec3<f32>(
+            select(-1.0, 1.0, (i & 1) == 0),
+            select(-1.0, 1.0, i >= 2),
+            select(-1.0, 1.0, i == 1 || i == 3),
+        );
+        n += k * sd_cabin(p + k * e).d;
+    }
+    return normalize(n);
+}
+
+// The light lines of the cabin: along the dash's front edge, the console
+// edges, the rails, the wing leading edges. Distance to the nearest, for
+// an emissive glow on whatever surface is near one.
+fn sd_lines(p: vec3<f32>) -> f32 {
+    var d = sd_capsule_ab(p, vec3<f32>(-0.95, -0.62, -0.65), vec3<f32>(0.95, -0.62, -0.65), 0.004);
+    let cq = vec3<f32>(abs(p.x), p.y, p.z);
+    d = min(d, sd_capsule_ab(cq, vec3<f32>(0.94, -0.6, 0.7), vec3<f32>(0.94, -0.6, -0.9), 0.004));
+    d = min(d, sd_capsule_ab(cq, vec3<f32>(0.55, 0.72, -1.2), vec3<f32>(0.5, 0.64, 1.0), 0.004));
+    // Wing leading edges, seen from inside: a line of light along each.
+    d = min(d, sd_capsule_ab(cq, vec3<f32>(1.0, -0.92, 1.2), vec3<f32>(5.8, -0.92, 4.6), 0.01));
+    // The spine of the nose.
+    d = min(d, sd_capsule_ab(p, vec3<f32>(0.0, 0.0, -1.9), vec3<f32>(0.0, -0.55, -6.2), 0.008));
+    return d;
+}
+
+// Light from the socket beams on a ray that runs `reach` metres from the
+// head: each beam is a thin line from the socket up to the hologram, and
+// the ray's light is set by how close it passes — sampled along the beam,
+// closest approach to the ray taken. Seen from the head the beams are
+// nearly end-on, so each is a bright point under its hologram with a soft
+// skirt, not a wash.
+fn beam_light(ray: vec3<f32>, reach: f32) -> f32 {
+    let n = i32(ck.misc.w);
+    var g = 0.0;
+    for (var i = 0; i < 4; i += 1) {
+        if (i >= n) { break; }
+        let pd = pad_dir(i);
+        if (pd.w < 0.5) { continue; }
+        let c = socket_centre(pd.xyz);
+        let top = pd.xyz * HOLO_M;
+        // Closest approach of the beam segment to the ray's line: the
+        // offset from the line is affine in the beam parameter, so the
+        // nearest point is a clamped quadratic minimum.
+        let e = top - c;
+        let a = c - ray * dot(c, ray);
+        let b = e - ray * dot(e, ray);
+        let u = clamp(-dot(a, b) / max(dot(b, b), 1e-8), 0.0, 1.0);
+        let q = c + e * u;
+        let t = clamp(dot(q, ray), 0.0, reach);
+        let best = length(q - ray * t);
+        g += exp(-best / 0.03) * (1.0 - 0.5 * u);
+    }
+    return g;
 }
 
 @fragment
@@ -68,99 +227,126 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let aspect = ck.misc.x;
     let tan_half = ck.fwd.w;
     let glow_k = ck.right.w;
-    let hull_k = ck.up.w;
+    let metal_k = ck.up.w;
     let time = ck.misc.y;
+    let sun = normalize(ck.sun.xyz);
+    let exposure = ck.sun.w;
 
     // The ray in the ship's frame: x right, y up, -z the nose.
     let ray = normalize(
         ck.fwd.xyz + ck.right.xyz * (in.ndc.x * tan_half * aspect) + ck.up.xyz * (in.ndc.y * tan_half)
     );
-    // Azimuth from the nose (signed, right positive), elevation from the
-    // eye-line.
-    let az = atan2(ray.x, -ray.z);
-    let el = asin(clamp(ray.y, -1.0, 1.0));
-    let aaz = abs(az);
-    // Angular size of this pixel, for the anti-aliasing.
-    let aa = max(fwidth(el) + fwidth(az) * 0.5, 1e-4) * 1.2;
+
+    // Sky early-out: a ray that leaves the glass box through its top, or
+    // through its front or sides above the hull's brow, meets nothing but
+    // (maybe) the frame — test the frame's bars analytically and skip the
+    // march for the open sky. Most of the screen, most of the time.
+    {
+        let bmin = vec3<f32>(-0.95, -0.55, -1.85);
+        let bmax = vec3<f32>(0.95, 1.45, 0.95);
+        let inv = 1.0 / ray;
+        let t1 = (bmin - vec3<f32>(0.0)) * inv;
+        let t2 = (bmax - vec3<f32>(0.0)) * inv;
+        let tfar = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
+        let exit = ray * tfar;
+        let through_top = exit.y > 1.4;
+        let over_brow = exit.y > -0.05 && (exit.z < -1.8 || abs(exit.x) > 0.9 || exit.z > 0.9);
+        if (through_top || over_brow) {
+            // Near a bar of the frame? Distance from the ray (a line from
+            // the origin) to each bar's axis, roughly: sample the bars'
+            // SDF at the exit point and a point halfway — enough to catch
+            // anything within a bar's width of the line.
+            var near = 1e9;
+            for (var i = 0; i < 3; i += 1) {
+                near = min(near, sd_frame(exit * (0.5 + 0.25 * f32(i))));
+            }
+            if (near > 0.12) {
+                discard;
+            }
+        }
+    }
+
+    // March.
+    var t = 0.02;
+    var hit = Hit(1e9, -1.0);
+    var beams = 0.0;
+    for (var i = 0u; i < MARCH_STEPS; i += 1u) {
+        let p = ray * t;
+        let h = sd_cabin(p);
+        // Gather the beams' light on the way (only close to the head,
+        // where the beams are).
+        if (h.d < 0.0018 * max(t, 0.5)) {
+            hit = Hit(t, h.kind);
+            break;
+        }
+        t += max(h.d, 0.003);
+        if (t > MAX_T) {
+            break;
+        }
+        // Out of steps while still skimming a surface (a grazing ray on the
+        // nose, say): call it a hit rather than let the sky show through
+        // in a stipple.
+        if (i == MARCH_STEPS - 1u && h.d < 0.01) {
+            hit = Hit(t, h.kind);
+        }
+    }
 
     let cyan = vec3<f32>(0.22, 0.85, 1.0);
     let amber = vec3<f32>(1.0, 0.62, 0.18);
-    var glow = 0.0;
-    var warm = 0.0;
-    var hull = 0.0;
+    var colour = vec3<f32>(0.0);
+    var alpha = 0.0;
 
-    // ---- the sill and the hull below it -----------------------------------
-    // The sill dips at the nose so the view down the boresight is clear,
-    // and rises toward the shoulders where the side panels are.
-    let sill = mix(SILL_FRONT, SILL_SIDE, smoothstep(25.0 * DEG, 95.0 * DEG, aaz));
-    let below = el < sill;
-    // Behind the bulkhead line everything is hull; the line itself leans
-    // in at the top so the dome closes over the pilot's shoulders.
-    let bulk = BULKHEAD_AZ - max(el, 0.0) * 0.45;
-    let behind = aaz > bulk;
-    if (below || behind) {
-        hull = 1.0;
-        // The dash: a fine grid in (az, el), lit, fading with depth below
-        // the sill so the floor goes dark.
-        let depth = select(aaz - bulk, sill - el, below);
-        let fade = exp(-depth / (18.0 * DEG));
-        let g_az = abs(fract(az / (6.0 * DEG) + 0.5) - 0.5) * 6.0 * DEG;
-        let g_el = abs(fract(el / (6.0 * DEG) + 0.5) - 0.5) * 6.0 * DEG;
-        let grid = max(line(g_az, 0.0, aa), line(g_el, 0.0, aa));
-        glow += 0.18 * grid * fade;
-        // Panel frames on the dash ahead: two instrument bays either side
-        // of the nose, outlined.
-        if (below) {
-            let bay_az = abs(aaz - 34.0 * DEG);
-            let bay_el = abs(el - (sill - 14.0 * DEG));
-            let bay = max(line(bay_az - 22.0 * DEG, 0.0, aa) * step(bay_el, 10.0 * DEG),
-                          line(bay_el - 10.0 * DEG, 0.0, aa) * step(bay_az, 22.0 * DEG));
-            glow += 0.7 * bay;
-            // A heartbeat along the bay's top edge.
-            let pulse = 0.5 + 0.5 * sin(time * 1.5 + az * 3.0);
-            glow += 0.25 * line(bay_el - 10.0 * DEG, 0.0, aa) * step(bay_az, 22.0 * DEG) * pulse;
+    if (hit.kind >= 0.0) {
+        // Settle onto the surface: the march stops within its epsilon of
+        // it, and that last millimetre or two, varying with how many steps
+        // the ray took, shows as contours in the shading unless removed.
+        var tt = hit.d;
+        for (var k = 0; k < 2; k += 1) {
+            tt += sd_cabin(ray * tt).d;
         }
-    }
-
-    // ---- the sill line itself ---------------------------------------------
-    // The glowing edge of the glass all the way round, and its twin on the
-    // bulkhead.
-    if (!behind) {
-        glow += 1.0 * line(el - sill, aa * 0.4, aa);
-        glow += 0.20 * (1.0 - smoothstep(0.0, 2.5 * DEG, abs(el - sill)));
-    }
-    if (!below) {
-        glow += 0.9 * line(aaz - bulk, aa * 0.4, aa);
-    }
-
-    // ---- the dome: ribs and hoops ---------------------------------------
-    if (!below && !behind) {
-        // Ribs: great circles through the nose-to-tail axis... which in
-        // angular space are lines of constant azimuth. Five of them, the
-        // outer ones heavier.
-        let ribs = array<f32, 3>(38.0 * DEG, 72.0 * DEG, 100.0 * DEG);
-        for (var i = 0; i < 3; i += 1) {
-            let w = select(aa * 0.35, aa * 0.6, i == 2);
-            glow += 0.75 * line(aaz - ribs[i], w, aa);
+        let p = ray * tt;
+        let n = cabin_normal(p);
+        // Dark metal: graphite with a cool sheen, lit by the Sun through
+        // the glass, a fill from the cabin's own light, a fresnel rim.
+        let ndl = max(dot(n, sun), 0.0);
+        let half_v = normalize(sun - ray);
+        let spec = pow(max(dot(n, half_v), 0.0), 48.0);
+        let fresnel = pow(1.0 - max(dot(n, -ray), 0.0), 4.0);
+        // Linear albedos: dark graphite reads as mid-grey once tonemapped
+        // and gamma'd, so these are low.
+        var base = vec3<f32>(0.030, 0.032, 0.038);
+        if (hit.kind > 0.5 && hit.kind < 1.5) {
+            base = vec3<f32>(0.018, 0.02, 0.024);
+        } else if (hit.kind > 1.5 && hit.kind < 2.5) {
+            base = vec3<f32>(0.05, 0.052, 0.06);
         }
-        // The spine over the crown, and a hoop where the dome begins to
-        // curve over: lines of constant elevation.
-        glow += 0.55 * line(el - CROWN, aa * 0.35, aa);
-        glow += 0.35 * line(el - 28.0 * DEG, aa * 0.3, aa) * step(aaz, 72.0 * DEG);
-        // A faint tint of the glass near its edges: the canopy is a thing,
-        // not an absence.
-        let to_edge = min(min(el - sill, bulk - aaz), 1.0);
-        glow += 0.05 * (1.0 - smoothstep(0.0, 12.0 * DEG, to_edge));
-        // Warning strip along the inner ribs' feet, amber, subtle.
-        warm += 0.25 * line(aaz - 38.0 * DEG, aa * 0.4, aa) * step(el - sill, 4.0 * DEG);
+        var lit = base * (0.22 + 0.9 * ndl) + vec3<f32>(0.9, 0.95, 1.0) * spec * 0.35
+            + cyan * fresnel * 0.08;
+        // The socket rims are lit from within.
+        if (hit.kind > 2.5) {
+            lit = cyan * (0.9 + 0.3 * sin(time * 2.0)) * glow_k;
+        }
+        // Emissive lines where the surface runs near one of the light
+        // lines; a hint of the cabin light everywhere.
+        let line = exp(-sd_lines(p) / 0.008);
+        lit += cyan * line * 0.9 * glow_k;
+        // Engine light on the nacelles seen from behind: not from here.
+        colour = tonemap(lit * metal_k * 1.5, exposure);
+        alpha = 1.0;
     }
 
-    let alpha = hull * hull_k;
-    let lit = (cyan * glow + amber * warm) * glow_k * on;
-    // Premultiplied: the hull darkens what it covers, the lines add.
-    let ground = vec3<f32>(0.01, 0.02, 0.035) * alpha;
-    if (alpha < 0.002 && dot(lit, lit) < 1e-6) {
+    // The beams, up to where the ray stopped. Saturating: a beam seen
+    // end-on is a bright point, not a white-out.
+    if (ck.misc.w > 0.5) {
+        let reach = min(select(MAX_T, hit.d, hit.kind >= 0.0), 1.6);
+        beams = beam_light(ray, reach);
+    }
+    colour += cyan * (1.0 - exp(-beams)) * 0.55 * glow_k;
+
+    if (alpha < 0.002 && dot(colour, colour) < 1e-6) {
         discard;
     }
-    return vec4<f32>(ground + lit * on, alpha * on);
+    // Dither: dark metal in smooth gradients bands in eight bits.
+    colour += vec3<f32>(dither_px(in.pos.xy)) * alpha;
+    return vec4<f32>(colour * on, alpha * on);
 }

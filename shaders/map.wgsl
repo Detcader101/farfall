@@ -99,18 +99,11 @@ fn sd_torus_y(p: vec3<f32>, c: vec3<f32>, big: f32, small: f32) -> f32 {
     return length(d) - small;
 }
 
-// The ship: a dart. Body an ellipsoid, a swept delta wing, a fin. In its
-// own frame: x right, y up, -z forward (the ship's convention), unit size.
+// The ship: the same fighter the pilot sits in (common.wgsl), scaled from
+// metres to the map's unit size — about fourteen metres long, so a unit
+// here is seven metres there.
 fn sd_ship_local(q: vec3<f32>) -> f32 {
-    let body = sd_ellipsoid(q, vec3<f32>(0.22, 0.11, 0.62));
-    // Delta wing: a thin box whose chord shrinks toward the tips.
-    let span = 0.8;
-    let chord = 0.34 * (1.0 - clamp(abs(q.x) / span, 0.0, 1.0)) + 0.02;
-    let wing = sd_box(vec3<f32>(q.x, q.y, q.z - 0.22), vec3<f32>(span, 0.018, chord));
-    let fin = sd_box(vec3<f32>(q.x, q.y - 0.16, q.z - 0.32), vec3<f32>(0.015, 0.16, 0.16));
-    // Engine glow nub at the tail.
-    let tail = sd_sphere(q, vec3<f32>(0.0, 0.0, 0.58), 0.09);
-    return min(min(body, wing), min(fin, tail));
+    return sd_fighter_exterior(q * 7.0) / 7.0;
 }
 
 fn to_ship(p: vec3<f32>) -> vec3<f32> {

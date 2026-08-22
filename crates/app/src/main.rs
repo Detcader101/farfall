@@ -164,6 +164,9 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
+///   FARFALL_BENCH_SPIN=n   (benchmark only: the head turns a full circle over
+///                           the bench and n frames are captured on the way —
+///                           a look round the whole cabin)
 ///   FARFALL_CAPTURE=final  (screenshots take the presented frame, with the
 ///                           post pass, the map and the text, instead of the
 ///                           scene target)
@@ -185,6 +188,9 @@ struct Config {
     scale: f32,
     skip: Vec<String>,
     bench_warp_at: Option<f64>,
+    /// FARFALL_BENCH_SPIN=n: the head turns a full circle over the bench
+    /// and n frames are captured on the way round.
+    bench_spin: u32,
 }
 
 impl Config {
@@ -249,6 +255,11 @@ impl Config {
             bench_warp_at: std::env::var("FARFALL_BENCH_WARP")
                 .ok()
                 .and_then(|v| v.parse::<f64>().ok()),
+            bench_spin: std::env::var("FARFALL_BENCH_SPIN")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(0)
+                .min(64),
             skip: std::env::var("FARFALL_SKIP")
                 .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default(),
@@ -300,7 +311,7 @@ struct Passes {
     gyro: InstrumentPass,
     horizon: InstrumentPass,
     /// The wireframe cabin around the head.
-    cabin: InstrumentPass,
+    cabin: farfall_render::cabin::CabinPass,
     /// The hull heat field, simulated on the GPU, and the sheath it lights.
     thermal: ThermalPass,
     plasma: PlasmaPass,
@@ -314,6 +325,7 @@ impl Passes {
         format: wgpu::TextureFormat,
         msaa: u32,
         baked: &BakedMaps,
+        cabin_res: f32,
     ) -> Self {
         let thermal = ThermalPass::new(device);
         let plasma = PlasmaPass::new(device, format, msaa, &thermal, baked);
@@ -326,7 +338,7 @@ impl Passes {
             g_gauge: gauge_pass(device, format, msaa),
             gyro: gyro_pass(device, format, msaa),
             horizon: horizon_pass(device, format, msaa),
-            cabin: farfall_render::cabin::cabin_pass(device, format, msaa),
+            cabin: farfall_render::cabin::CabinPass::new(device, format, msaa, cabin_res),
             thermal,
             plasma,
             trajectory: TrajectoryPass::new(device, format, msaa),
@@ -354,6 +366,8 @@ struct Gpu {
     /// Set by a key press; consumed by the next frame.
     capture_requested: bool,
     bench_captured: bool,
+    /// Spin frames taken so far.
+    bench_spin_taken: u32,
 }
 
 impl Gpu {
@@ -423,20 +437,9 @@ impl Gpu {
         } else {
             0.0
         };
-        self.passes.cabin.update(
-            &self.queue,
-            &farfall_render::cabin::CabinUniforms::new(
-                cam,
-                game.look.rotation(),
-                game.settings.cockpit_glow,
-                game.settings.cockpit_hull,
-                if game.settings.cockpit_frame {
-                    1.0
-                } else {
-                    0.0
-                },
-            ),
-        );
+        self.passes
+            .cabin
+            .update(&self.queue, &game.cabin_uniforms(cam));
         self.passes.horizon.update(
             &self.queue,
             &HorizonUniforms::new(
@@ -448,6 +451,28 @@ impl Gpu {
                 layout.shown(Instrument::Ladder),
             ),
         );
+    }
+
+    /// Whether the benchmark wants a capture now: one at the halfway mark,
+    /// or — spinning — one every 1/n of the way round.
+    fn bench_capture_due(&mut self, t: f64) -> bool {
+        if self.cfg.bench_spin > 0 {
+            let n = self.cfg.bench_spin;
+            if self.bench_spin_taken >= n {
+                return false;
+            }
+            let slot = (self.bench_spin_taken as f64 + 0.5) / n as f64;
+            if t >= slot * self.cfg.bench_seconds {
+                self.bench_spin_taken += 1;
+                return true;
+            }
+            return false;
+        }
+        if t > self.cfg.bench_seconds * 0.5 && !self.bench_captured {
+            self.bench_captured = true;
+            return true;
+        }
+        false
     }
 
     /// While looking, the cursor is hidden and locked in place so the mouse
@@ -469,6 +494,10 @@ impl Gpu {
     /// every scene pipeline (and the heat field with them — the hull cools
     /// for a frame).
     fn apply_graphics(&mut self, settings: &Settings) {
+        if (self.passes.cabin.fraction() - settings.cockpit_res).abs() > 1e-4 {
+            self.passes.cabin.set_fraction(settings.cockpit_res);
+            log::info!("cabin at {:.0}% of the scene", settings.cockpit_res * 100.0);
+        }
         if (self.scene.scale() - settings.scale).abs() > 1e-4 {
             self.scene.set_scale(settings.scale);
             log::info!("render scale {:.0}%", self.scene.scale() * 100.0);
@@ -486,7 +515,13 @@ impl Gpu {
         if self.cfg.msaa != settings.msaa {
             self.cfg.msaa = settings.msaa;
             self.scene = SceneTarget::new(settings.msaa, self.config.format, self.scene.scale());
-            self.passes = Passes::new(&self.device, self.config.format, settings.msaa, &self.baked);
+            self.passes = Passes::new(
+                &self.device,
+                self.config.format,
+                settings.msaa,
+                &self.baked,
+                settings.cockpit_res,
+            );
             self.perf.stats.skip_next_frame();
             log::info!("MSAA {}x", settings.msaa);
         }
@@ -874,6 +909,38 @@ impl Game {
         } else {
             self.settings.layout.inset(HUD_TEXT_ANCHOR)
         }
+    }
+
+    /// The cabin: the head's turn, the Sun in the ship's frame, and a
+    /// socket under every dial the pilot has on the glass.
+    fn cabin_uniforms(&self, cam: &CameraFrame) -> farfall_render::cabin::CabinUniforms {
+        use farfall_render::cabin::{anchor_direction, CabinLook, CabinUniforms};
+        let ship_inv = self.state.ship.orient.as_quat().inverse();
+        let sun_ship = ship_inv * self.params.sun.dir.as_vec3();
+        let t = (cam.fov_y * 0.5).tan();
+        let sockets: Vec<glam::Vec3> = Instrument::ALL
+            .iter()
+            .copied()
+            .filter(|i| i.slotted())
+            .filter_map(|i| self.settings.layout.anchor(i))
+            .map(|a| anchor_direction(a, t, cam.aspect))
+            .take(if std::env::var("FARFALL_NO_SOCKETS").is_ok() {
+                0
+            } else {
+                4
+            })
+            .collect();
+        CabinUniforms::new(
+            cam,
+            self.look.rotation(),
+            sun_ship,
+            CabinLook {
+                glow: self.settings.cockpit_glow,
+                metal: self.settings.cockpit_hull,
+                on: self.settings.cockpit_frame,
+            },
+            &sockets,
+        )
     }
 
     /// G: landing mode on or off.
@@ -1548,7 +1615,13 @@ impl App {
         // Bake the static world fields before the first frame. Everything the
         // planet pass reads per pixel is generated here, by shader, once.
         let baked = BakedMaps::bake(&device, &queue);
-        let passes = Passes::new(&device, config.format, cfg.msaa, &baked);
+        let passes = Passes::new(
+            &device,
+            config.format,
+            cfg.msaa,
+            &baked,
+            settings.cockpit_res,
+        );
         // The HUD draws straight onto the swapchain, after the upscale, so it
         // is always native resolution and single-sampled however low the scene
         // scale goes (P1: the readout must never soften).
@@ -1594,6 +1667,7 @@ impl App {
             perf: Perf::new(),
             capture_requested: false,
             bench_captured: false,
+            bench_spin_taken: 0,
         });
         let mut game = Game::new();
         let mut settings = settings;
@@ -1815,6 +1889,13 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 let tick_start = Instant::now();
+                if gpu.cfg.bench && gpu.cfg.bench_spin > 0 {
+                    // The spin: a full turn of the head over the bench, so
+                    // the captures look every way round the cabin.
+                    let t = game.started.elapsed().as_secs_f64();
+                    let yaw = std::f64::consts::TAU * t / gpu.cfg.bench_seconds.max(0.1);
+                    game.look.aim_free(yaw as f32, 0.0);
+                }
                 if let Some(at) = gpu.cfg.bench_warp_at {
                     if gpu.cfg.bench && game.started.elapsed().as_secs_f64() >= at {
                         gpu.cfg.bench_warp_at = None;
@@ -1846,8 +1927,7 @@ impl ApplicationHandler for App {
                         // frame produced with no visible window at all.)
                         if gpu.cfg.bench {
                             let t = game.started.elapsed().as_secs_f64();
-                            if t > gpu.cfg.bench_seconds * 0.5 && !gpu.bench_captured {
-                                gpu.bench_captured = true;
+                            if gpu.bench_capture_due(t) {
                                 if gpu.scene.ensure(
                                     &gpu.device,
                                     gpu.config.width,
@@ -1931,6 +2011,11 @@ impl ApplicationHandler for App {
                                 gpu.passes
                                     .thermal
                                     .step(&gpu.queue, &mut encoder, &thermal_in);
+                                {
+                                    let (sw, sh) = gpu.scene.size();
+                                    gpu.passes.cabin.ensure(&gpu.device, sw, sh);
+                                    gpu.passes.cabin.render(&mut encoder);
+                                }
                                 gpu.passes.trajectory.update(
                                     &gpu.queue,
                                     &TrajectoryUniforms::new(
@@ -2102,6 +2187,12 @@ impl ApplicationHandler for App {
                 gpu.passes
                     .thermal
                     .step(&gpu.queue, &mut encoder, &thermal_in);
+                // Pass 0b: the cabin, at its own size.
+                if gpu.cfg.draws("cockpit") && game.settings.cockpit_frame {
+                    let (sw, sh) = gpu.scene.size();
+                    gpu.passes.cabin.ensure(&gpu.device, sw, sh);
+                    gpu.passes.cabin.render(&mut encoder);
+                }
                 {
                     // Pass 1: the expensive world, at whatever scale is set.
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2221,8 +2312,7 @@ impl ApplicationHandler for App {
                     let t = game.started.elapsed().as_secs_f64();
                     // One automatic capture partway through, so a headless
                     // benchmark leaves a picture of what it measured.
-                    if t > gpu.cfg.bench_seconds * 0.5 && !gpu.bench_captured {
-                        gpu.bench_captured = true;
+                    if gpu.bench_capture_due(t) {
                         gpu.capture_requested = true;
                         log::info!("benchmark capture requested at t={t:.1}s");
                     }
