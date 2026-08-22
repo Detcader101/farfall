@@ -25,18 +25,20 @@ pub enum Page {
     Graphics,
     Controls,
     Cockpit,
+    Gauges,
     Map,
 }
 
 impl Page {
     /// The settings menu's pages. The MAP is its own panel (M), not a page.
-    const ALL: [Page; 3] = [Page::Graphics, Page::Controls, Page::Cockpit];
+    const ALL: [Page; 4] = [Page::Graphics, Page::Controls, Page::Cockpit, Page::Gauges];
 
     fn name(self) -> &'static str {
         match self {
             Page::Graphics => "GRAPHICS",
             Page::Controls => "CONTROLS",
             Page::Cockpit => "COCKPIT",
+            Page::Gauges => "GAUGES",
             Page::Map => "MAP",
         }
     }
@@ -82,6 +84,11 @@ enum Item {
     GaugeStyle,
     GaugesStay,
     Guide,
+    /// The GAUGES page's per-dial block: which dial, and its own numbers.
+    DialSelect,
+    DialSize,
+    DialStyle,
+    DialFade,
     MapRings,
     MapGrid,
     LookSens,
@@ -112,6 +119,10 @@ impl Item {
             Item::GaugeStyle => "GAUGE STYLE",
             Item::GaugesStay => "GAUGES",
             Item::Guide => "GUIDE",
+            Item::DialSelect => "DIAL",
+            Item::DialSize => "  SIZE",
+            Item::DialStyle => "  STYLE",
+            Item::DialFade => "  FADE",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
@@ -145,6 +156,10 @@ impl Item {
             Item::GaugeStyle => s.gauge_style.name().to_string(),
             Item::GaugesStay => if s.gauges_stay { "STAY" } else { "FADE" }.to_string(),
             Item::Guide => if s.guide { "ON" } else { "OFF" }.to_string(),
+            Item::DialSelect => String::new(),
+            Item::DialSize => String::new(),
+            Item::DialStyle => String::new(),
+            Item::DialFade => String::new(),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
@@ -179,6 +194,8 @@ pub struct Menu {
     rebinding: bool,
     /// Which of MSAA_CHOICES this GPU can render at (set at start).
     msaa_ok: [bool; 4],
+    /// The dial the GAUGES page's per-dial block edits.
+    dial: Instrument,
 }
 
 impl Default for Menu {
@@ -191,6 +208,7 @@ impl Default for Menu {
             scroll: 0,
             rebinding: false,
             msaa_ok: [true; 4],
+            dial: Instrument::Speed,
         }
     }
 }
@@ -217,15 +235,22 @@ impl Menu {
                 v.push(Item::LookSens);
                 v
             }
-            Page::Cockpit => {
-                let mut v: Vec<Item> = vec![Item::GaugeStyle, Item::GaugesStay, Item::Guide];
+            Page::Cockpit => vec![
+                Item::CockpitFrame,
+                Item::CockpitGlow,
+                Item::CockpitHull,
+                Item::SafeEdge,
+                Item::HoopSize,
+                Item::LandingHoops,
+                Item::Guide,
+            ],
+            Page::Gauges => {
+                let mut v: Vec<Item> = vec![Item::GaugeStyle, Item::GaugesStay];
                 v.extend(Instrument::ALL.iter().map(|&i| Item::Slot(i)));
-                v.push(Item::SafeEdge);
-                v.push(Item::HoopSize);
-                v.push(Item::LandingHoops);
-                v.push(Item::CockpitFrame);
-                v.push(Item::CockpitGlow);
-                v.push(Item::CockpitHull);
+                v.push(Item::DialSelect);
+                v.push(Item::DialSize);
+                v.push(Item::DialStyle);
+                v.push(Item::DialFade);
                 v
             }
             Page::Map => vec![
@@ -454,6 +479,65 @@ impl Menu {
                 s.guide = !s.guide;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::DialSelect => {
+                let dials: Vec<Instrument> = Instrument::ALL
+                    .iter()
+                    .copied()
+                    .filter(|i| i.slotted())
+                    .collect();
+                let i = dials.iter().position(|&d| d == self.dial).unwrap_or(0);
+                let n = dials.len();
+                self.dial = dials[if forward {
+                    (i + 1) % n
+                } else {
+                    (i + n - 1) % n
+                }];
+                MenuEvent::Nothing
+            }
+            Item::DialSize => {
+                let d = &mut s.dials[self.dial as usize];
+                let step = if forward { 0.125 } else { -0.125 };
+                let next = (d.size + step).clamp(
+                    crate::settings::DIAL_SIZE_MIN,
+                    crate::settings::DIAL_SIZE_MAX,
+                );
+                if (next - d.size).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                d.size = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::DialStyle => {
+                let d = &mut s.dials[self.dial as usize];
+                d.style = match (d.style, forward) {
+                    (None, true) => Some(crate::settings::GaugeStyle::Tron),
+                    (Some(crate::settings::GaugeStyle::Tron), true) => {
+                        Some(crate::settings::GaugeStyle::Jet)
+                    }
+                    (Some(crate::settings::GaugeStyle::Jet), true) => {
+                        Some(crate::settings::GaugeStyle::Dial)
+                    }
+                    (Some(crate::settings::GaugeStyle::Dial), true) => None,
+                    (None, false) => Some(crate::settings::GaugeStyle::Dial),
+                    (Some(crate::settings::GaugeStyle::Dial), false) => {
+                        Some(crate::settings::GaugeStyle::Jet)
+                    }
+                    (Some(crate::settings::GaugeStyle::Jet), false) => {
+                        Some(crate::settings::GaugeStyle::Tron)
+                    }
+                    (Some(crate::settings::GaugeStyle::Tron), false) => None,
+                };
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::DialFade => {
+                let d = &mut s.dials[self.dial as usize];
+                d.stay = match (d.stay, forward) {
+                    (None, true) | (Some(false), false) => Some(true),
+                    (Some(true), true) | (None, false) => Some(false),
+                    (Some(false), true) | (Some(true), false) => None,
+                };
+                MenuEvent::Changed(Change::Layout)
+            }
             Item::CockpitRes => {
                 let n = COCKPIT_RES_CHOICES.len();
                 let i = COCKPIT_RES_CHOICES
@@ -511,6 +595,25 @@ impl Menu {
         }
     }
 
+    /// An item's shown value; the per-dial block reads the selected dial.
+    fn value_of(&self, item: Item, s: &Settings) -> String {
+        let d = s.dials[self.dial as usize];
+        match item {
+            Item::DialSelect => self.dial.name().to_string(),
+            Item::DialSize => format!("{:.2}X", d.size),
+            Item::DialStyle => d
+                .style
+                .map_or("AUTO".to_string(), |st| st.name().to_string()),
+            Item::DialFade => match d.stay {
+                None => "AUTO",
+                Some(true) => "STAY",
+                Some(false) => "FADE",
+            }
+            .to_string(),
+            other => other.value(s),
+        }
+    }
+
     /// Draw the menu into the text bitmap.
     pub fn render(&self, text: &mut TextBitmap, s: &Settings) {
         text.clear();
@@ -539,7 +642,7 @@ impl Menu {
             let value = if selected && self.rebinding {
                 "PRESS KEY".to_string()
             } else {
-                item.value(s)
+                self.value_of(item, s)
             };
             let mark = if selected { ">" } else { " " };
             let label = item.label();
@@ -647,8 +750,9 @@ mod tests {
         let mut s = Settings::default();
         m.toggle();
         m.key(KeyCode::Tab, &mut s);
-        m.key(KeyCode::Tab, &mut s); // cockpit: style, stay, guide, then the slots
-        for _ in 0..3 {
+        m.key(KeyCode::Tab, &mut s);
+        m.key(KeyCode::Tab, &mut s); // gauges: style, stay, then the slots
+        for _ in 0..2 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         assert_eq!(
@@ -656,6 +760,16 @@ mod tests {
             MenuEvent::Changed(Change::Layout)
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
+        // The per-dial block at the page's end: select the gyro, size it.
+        let items = m.items().len();
+        for _ in 0..(items - 2 - 4) {
+            m.key(KeyCode::ArrowDown, &mut s);
+        }
+        m.key(KeyCode::ArrowRight, &mut s); // DIAL: speed -> altitude
+        assert_eq!(m.dial, Instrument::Altitude);
+        m.key(KeyCode::ArrowDown, &mut s);
+        m.key(KeyCode::ArrowRight, &mut s); // SIZE
+        assert_eq!(s.dials[Instrument::Altitude as usize].size, 1.125);
         m.key(KeyCode::Tab, &mut s); // back to graphics
         for _ in 0..5 {
             m.key(KeyCode::ArrowDown, &mut s);

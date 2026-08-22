@@ -181,13 +181,13 @@ features:
     e2e: FARFALL_BENCH_HEAD=10,-22 capture with jet + guide on — bowls, bezels, dials inside, ruled glass, reach rings, gaze reticle; FARFALL_BENCH_HEAD=8,-24 with dial — flush wells, bezels, faces foreshortened in the dash
 
   - id: ship-fixed-glass
-    name: Glass anchors laid out in a reference projection (the FOV setting) and shown through the live FOV — dials stay fixed to the ship through throttle flare and warp, and scale like objects
+    name: Glass anchors laid out in a FIXED 70° reference projection and shown through the live FOV — dials stay fixed to the ship through the FOV setting, throttle flare and warp, and scale like objects
     state: tests-pass
-    tests: [crates/app/src/look.rs::a_wider_fov_pulls_a_ship_fixed_point_toward_the_centre]
-    e2e: needs a flight under throttle (bench cannot flare the FOV)
+    tests: [crates/app/src/look.rs::a_wider_fov_pulls_a_ship_fixed_point_toward_the_centre, crates/app/src/look.rs::a_screen_point_maps_back_to_the_glass_it_came_from]
+    e2e: needs a flight under throttle / an FOV change (bench cannot flare the FOV)
 
   - id: design-mode
-    name: DESIGN mode (K) — guide on, look locked, the dial under the gaze selected with a card of its own settings; per-dial SIZE / STYLE / FADE saved individually (ui.<dial>.size/style/fade)
+    name: DESIGN mode (K) — guide on, the mouse cursor as pointer (hover, click-drag), a card of the hovered dial's own settings; per-dial SIZE / STYLE / FADE saved individually (ui.<dial>.size/style/fade); the same block on the menu's GAUGES page
     state: complete
     tests: [crates/app/src/settings.rs::edits_round_trip, crates/render/src/cabin.rs]
     settings: [ui.<dial>.size, ui.<dial>.style, ui.<dial>.fade]

@@ -155,6 +155,26 @@ impl Look {
         [v.x / (depth * t * aspect), v.y / (depth * t)]
     }
 
+    /// A screen point (live NDC, this camera's tan(fov/2)) back to the
+    /// laid-out glass (reference NDC): the inverse of [`Look::reproject_from`].
+    pub fn glass_point(
+        &self,
+        ndc: [f32; 2],
+        tan_half_fov: f32,
+        tan_half_ref: f32,
+        aspect: f32,
+    ) -> [f32; 2] {
+        let t = tan_half_fov.max(1e-4);
+        let tr = tan_half_ref.max(1e-4);
+        let d = Vec3::new(ndc[0] * aspect * t, ndc[1] * t, -1.0).normalize();
+        let v = self.rotation() * d;
+        let depth = (-v.z).max(0.02);
+        [
+            (v.x / (depth * tr * aspect)).clamp(-4.0, 4.0),
+            (v.y / (depth * tr)).clamp(-4.0, 4.0),
+        ]
+    }
+
     /// The point on the glass now under the centre of the screen — where
     /// the pilot is looking — as glass NDC. The inverse of [`Look::reproject`]
     /// at the origin.
@@ -268,6 +288,19 @@ mod tests {
             "{wide:?}"
         );
         assert!((wide[0] - 0.6 * 0.5 / 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_screen_point_maps_back_to_the_glass_it_came_from() {
+        let l = turned(90.0, -40.0);
+        for p in [[0.3, -0.5], [-0.7, 0.2]] {
+            let screen = l.reproject_from(p, 0.7, 0.5, 1.6);
+            let back = l.glass_point(screen, 0.5, 0.7, 1.6);
+            assert!(
+                (back[0] - p[0]).abs() < 1e-4 && (back[1] - p[1]).abs() < 1e-4,
+                "{back:?}"
+            );
+        }
     }
 
     #[test]

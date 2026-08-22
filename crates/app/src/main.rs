@@ -103,6 +103,10 @@ fn text_width_ndc(px_canopy: f32) -> f32 {
     128.0 * px_canopy
 }
 
+/// The field of view the glass is laid out in, as tan(fov/2): fixed, so
+/// the FOV setting changes the view and never the cockpit.
+const LAYOUT_TAN: f32 = 0.700_207_5; // 70 degrees
+
 /// A dial's settings once its own are laid over the cockpit's.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DialEffective {
@@ -492,7 +496,12 @@ impl Gpu {
         // The design guide: the glass ruled, every shown dial's anchor and
         // reach, the gaze.
         {
-            let gaze = look.gaze(ref_tan, cam.aspect);
+            let gaze = if game.design {
+                game.cursor_on_glass(cam)
+                    .unwrap_or_else(|| look.gaze(ref_tan, cam.aspect))
+            } else {
+                look.gaze(ref_tan, cam.aspect)
+            };
             let anchors: Vec<[f32; 2]> = Instrument::ALL
                 .iter()
                 .copied()
@@ -509,7 +518,7 @@ impl Gpu {
                     layout.safe_edge,
                     on_glass(look, cam, ref_tan, gaze),
                     DRAG_REACH,
-                    look.engaged(),
+                    look.engaged() || game.design,
                     &anchors,
                 ),
             );
@@ -780,8 +789,9 @@ struct Game {
     /// The predicted touchdown, refreshed each frame in landing mode.
     touchdown: Option<landing::Touchdown>,
     /// Mouse: last cursor position and whether the left button is down,
-    /// for dragging the map round.
+    /// for dragging the map round; the window's size, to read it.
     cursor: Option<(f32, f32)>,
+    window_size: (f32, f32),
     left_down: bool,
     /// The wormhole drive's sequence.
     warp: Warp,
@@ -857,6 +867,7 @@ impl Game {
             landing: false,
             touchdown: None,
             cursor: None,
+            window_size: (1.0, 1.0),
             left_down: false,
             warp: Warp::new(),
             felt_g: 0.0,
@@ -1068,7 +1079,33 @@ impl Game {
 
     /// tan(fov/2) of the reference projection the glass is laid out in.
     fn ref_tan(&self) -> f32 {
-        (self.settings.fov.to_radians() * 0.5).tan()
+        LAYOUT_TAN
+    }
+
+    /// The mouse cursor as a point on the glass (reference NDC): the
+    /// screen pixel's direction through the live view and the head, back
+    /// to where on the laid-out glass that is.
+    fn cursor_on_glass(&self, cam: &CameraFrame) -> Option<[f32; 2]> {
+        let (cx, cy) = self.cursor?;
+        let (w, h) = self.window_size;
+        if w < 1.0 || h < 1.0 {
+            return None;
+        }
+        let ndc = [cx / w * 2.0 - 1.0, 1.0 - cy / h * 2.0];
+        let t = (cam.fov_y * 0.5).tan();
+        Some(self.look.glass_point(ndc, t, self.ref_tan(), cam.aspect))
+    }
+
+    /// The pointer for picking and dragging: the cursor in design mode,
+    /// the gaze while looking.
+    fn pointer(&self, cam: &CameraFrame) -> Option<[f32; 2]> {
+        if self.design {
+            self.cursor_on_glass(cam)
+        } else if self.look.engaged() {
+            Some(self.look.gaze(self.ref_tan(), cam.aspect))
+        } else {
+            None
+        }
     }
 
     /// A dial's effective settings: its own over the cockpit's.
@@ -1086,9 +1123,6 @@ impl Game {
     fn toggle_design(&mut self) {
         self.design = !self.design;
         if self.design {
-            if !self.look.engaged() {
-                self.look.toggle_lock();
-            }
             self.menu.open = false;
             self.map_panel.open = false;
         } else {
@@ -1098,9 +1132,9 @@ impl Game {
         log::info!("design mode {}", if self.design { "on" } else { "off" });
     }
 
-    /// The dial under the gaze (within reach), in design mode.
+    /// The dial under the pointer (within reach), in design mode.
     fn design_target(&self, aspect: f32) -> Option<Instrument> {
-        let gaze = self.look.gaze(self.ref_tan(), aspect);
+        let gaze = self.design_pointer(aspect)?;
         let mut best: Option<(Instrument, f32)> = None;
         for i in Instrument::ALL.iter().copied().filter(|i| i.slotted()) {
             if let Some(a) = self.settings.layout.anchor(i) {
@@ -1113,6 +1147,13 @@ impl Game {
             }
         }
         best.map(|b| b.0)
+    }
+
+    /// The design pointer: the mouse cursor on the glass (design mode needs
+    /// no locked look — point and click).
+    fn design_pointer(&self, aspect: f32) -> Option<[f32; 2]> {
+        let cam = self.camera(aspect);
+        self.cursor_on_glass(&cam)
     }
 
     /// A key in design mode: the selected dial's own settings.
@@ -1563,11 +1604,11 @@ impl Game {
     /// Left button while looking: pick up the dial under the gaze, if one
     /// is within reach. Returns whether something was picked up.
     fn begin_drag(&mut self, cam: &CameraFrame, text_w: f32) -> bool {
-        if !self.look.engaged() {
+        // The glass is laid out in the reference projection; the pointer
+        // is the cursor in design mode, the gaze while looking.
+        let Some(gaze) = self.pointer(cam) else {
             return false;
-        }
-        // The glass is laid out in the reference projection.
-        let gaze = self.look.gaze(self.ref_tan(), cam.aspect);
+        };
         // A panel that is up is what the gaze can take: the map by its
         // pane, the settings by its text block.
         if self.map_open() {
@@ -1625,11 +1666,10 @@ impl Game {
         let Some((i, off)) = self.drag else {
             return;
         };
-        if !self.look.engaged() {
+        let Some(gaze) = self.pointer(cam) else {
             self.end_drag();
             return;
-        }
-        let gaze = self.look.gaze(self.ref_tan(), cam.aspect);
+        };
         let at = [gaze[0] + off[0], gaze[1] + off[1]];
         let clamp = |a: [f32; 2]| [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)];
         match i {
@@ -1975,7 +2015,10 @@ impl ApplicationHandler for App {
                     if pressed && !event.repeat {
                         let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                         match code {
-                            KeyCode::KeyK | KeyCode::Escape => game.toggle_design(),
+                            KeyCode::KeyK | KeyCode::Escape => {
+                                game.toggle_design();
+                                gpu.set_look_cursor(game.look.engaged());
+                            }
                             other => game.design_key(other, aspect),
                         }
                     }
@@ -2052,7 +2095,7 @@ impl ApplicationHandler for App {
                     KeyCode::KeyG if pressed && !event.repeat => game.toggle_landing(),
                     KeyCode::KeyK if pressed && !event.repeat => {
                         game.toggle_design();
-                        gpu.set_look_cursor(game.look.engaged());
+                        gpu.set_look_cursor(game.look.engaged() && !game.design);
                     }
                     KeyCode::KeyL if pressed && !event.repeat => {
                         game.look.toggle_lock();
@@ -2106,6 +2149,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let now = (position.x as f32, position.y as f32);
+                game.window_size = (gpu.config.width as f32, gpu.config.height as f32);
                 if let Some(last) = game.cursor {
                     // Turning the map with the mouse, unless the gaze has
                     // hold of the pane itself.
