@@ -18,6 +18,7 @@ struct Horizon {
     // x: tan(fov_y/2), y: aspect, z: screen height px, w: time s
     b: vec4<f32>,
     // x: 1 to draw the pitch ladder (the level line stays either way).
+    // yzw: the ship's nose in camera space — the ladder's centre.
     c: vec4<f32>,
     d: vec4<f32>,
 }
@@ -57,9 +58,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let aspect = hz.b.y;
     let ray = normalize(vec3<f32>(in.ndc.x * tan_half * aspect, in.ndc.y * tan_half, 1.0));
 
-    // Elevation above the level plane, and azimuth from the nose's heading.
+    // Elevation above the level plane, and azimuth from the nose's heading
+    // — the NOSE, handed over in camera space: with the head turned the
+    // ladder stays on the boresight, where the ship is pointed.
     let elev = asin(clamp(dot(ray, up), -1.0, 1.0));
-    let fwd = vec3<f32>(0.0, 0.0, 1.0);
+    var fwd = hz.c.yzw;
+    if (dot(fwd, fwd) < 1e-6) {
+        fwd = vec3<f32>(0.0, 0.0, 1.0);
+    }
+    fwd = normalize(fwd);
     var h_fwd = fwd - up * dot(fwd, up);
     if (dot(h_fwd, h_fwd) < 1e-6) {
         // Looking straight up or down: no heading; hang the ladder on the

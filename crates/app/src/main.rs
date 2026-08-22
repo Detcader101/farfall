@@ -398,6 +398,7 @@ impl Gpu {
             &HorizonUniforms::new(
                 cam,
                 game.up_world().as_vec3(),
+                (game.state.ship.orient * DVec3::NEG_Z).as_vec3(),
                 game.horizon_fade.level() * horizon_on,
                 h,
                 layout.shown(Instrument::Ladder),

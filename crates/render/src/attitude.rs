@@ -81,22 +81,33 @@ pub struct HorizonUniforms {
 }
 
 impl HorizonUniforms {
-    /// `up_world`: gravity's up at the ship. The shader works in camera
-    /// space, so it is rotated here.
+    /// `up_world`: gravity's up at the ship; `nose_world`: where the ship
+    /// points — the ladder hangs on the nose, not on the pilot's turned
+    /// head. The shader works in camera space, so both are rotated here.
     pub fn new(
         cam: &CameraFrame,
         up_world: Vec3,
+        nose_world: Vec3,
         visibility: f32,
         height_px: f32,
         ladder: bool,
     ) -> Self {
         let (right, up, forward) = cam.basis();
-        let u = up_world.normalize_or_zero();
-        let up_cam = [u.dot(right), u.dot(up), u.dot(forward)];
+        let to_cam = |v: Vec3| {
+            let v = v.normalize_or_zero();
+            [v.dot(right), v.dot(up), v.dot(forward)]
+        };
+        let up_cam = to_cam(up_world);
+        let nose_cam = to_cam(nose_world);
         Self {
             a: [up_cam[0], up_cam[1], up_cam[2], visibility.clamp(0.0, 1.0)],
             b: [(cam.fov_y * 0.5).tan(), cam.aspect, height_px, cam.time_s],
-            c: [if ladder { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            c: [
+                if ladder { 1.0 } else { 0.0 },
+                nose_cam[0],
+                nose_cam[1],
+                nose_cam[2],
+            ],
             d: [0.0; 4],
         }
     }
@@ -158,6 +169,23 @@ pub fn horizon_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ladder_hangs_on_the_nose_in_camera_space() {
+        let cam = CameraFrame {
+            orient: glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            fov_y: 1.0,
+            aspect: 1.5,
+            time_s: 0.0,
+            exposure: 1.0,
+        };
+        // The head turned 90° (a +Y rotation swings the view to -X); the
+        // nose (world -Z) is then square off to the camera's right, not
+        // ahead of it.
+        let u = HorizonUniforms::new(&cam, Vec3::Y, Vec3::NEG_Z, 1.0, 100.0, true);
+        assert!(u.c[1].abs() > 0.99, "{:?}", u.c);
+        assert!(u.c[3].abs() < 1e-5);
+    }
 
     fn near(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4
