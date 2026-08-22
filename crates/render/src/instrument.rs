@@ -80,6 +80,30 @@ impl InstrumentPass {
         )
     }
 
+    /// A layer rendered to a texture of its own, later composited: no
+    /// blending (it writes coverage straight, transparent where there is
+    /// nothing), so parts of it can be redrawn in place.
+    pub fn new_layer_sized(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        label: &'static str,
+        shader_src: &str,
+        uniform_bytes: u64,
+    ) -> Self {
+        Self::with_blend(
+            device,
+            target_format,
+            1,
+            label,
+            shader_src,
+            PaneTarget {
+                blend: wgpu::BlendState::REPLACE,
+                uniform_bytes,
+                write_mask: wgpu::ColorWrites::ALL,
+            },
+        )
+    }
+
     /// A pane with a bigger block of numbers than a dial needs (the 3D map
     /// carries a camera, four bodies and a ship).
     pub fn new_pane_sized(

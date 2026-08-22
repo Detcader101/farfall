@@ -139,8 +139,10 @@ pub struct CabinPass {
     moving: Target,
     still: Target,
     showing_still: bool,
-    /// Strips of the sharp render done so far, 0..=STRIPS.
-    still_progress: u32,
+    /// Which strip of the sharp render is next (cycles), and how many are
+    /// still owed before it is current.
+    strip_cursor: u32,
+    strips_owed: u32,
     last: Option<CabinUniforms>,
     fraction: f32,
     format: wgpu::TextureFormat,
@@ -165,10 +167,9 @@ impl CabinPass {
         sample_count: u32,
         fraction: f32,
     ) -> Self {
-        let inner = InstrumentPass::new_pane_sized(
+        let inner = InstrumentPass::new_layer_sized(
             device,
             target_format,
-            1,
             "cockpit",
             crate::shaders::COCKPIT,
             UNIFORM_BYTES,
@@ -269,7 +270,8 @@ impl CabinPass {
             moving: empty(),
             still: empty(),
             showing_still: false,
-            still_progress: 0,
+            strip_cursor: 0,
+            strips_owed: 0,
             last: None,
             fraction: fraction.clamp(0.25, 1.0),
             format: target_format,
@@ -305,7 +307,8 @@ impl CabinPass {
         // Everything is stale: the next frame re-marches.
         self.last = None;
         self.showing_still = false;
-        self.still_progress = 0;
+        self.strip_cursor = 0;
+        self.strips_owed = 0;
     }
 
     fn make_target(&self, device: &wgpu::Device, size: (u32, u32)) -> Target {
@@ -366,21 +369,26 @@ impl CabinPass {
             let moved = self.last.as_ref().is_none_or(|l| l.view_moved(uniforms));
             self.last = Some(*uniforms);
             self.inner.update(queue, uniforms);
-            self.still_progress = 0;
+            // Every strip is owed again; the cursor keeps cycling, so a
+            // change every frame (the light, in a roll) still refreshes
+            // the whole texture round-robin rather than one strip forever.
+            self.strips_owed = STRIPS;
             if moved || !self.showing_still {
                 // Re-march small now; sharpen over the coming frames.
                 self.render_into(encoder, true, None);
                 self.showing_still = false;
+                self.strip_cursor = 0;
                 return CabinWork::Moving;
             }
             // The view is the same (a socket, the light, a setting): keep
-            // showing the sharp one while it is redone in strips.
+            // showing the sharp one while it is redone in place.
         }
-        if self.still_progress < STRIPS {
-            let strip = self.still_progress;
+        if self.strips_owed > 0 {
+            let strip = self.strip_cursor % STRIPS;
             self.render_into(encoder, false, Some(strip));
-            self.still_progress += 1;
-            if self.still_progress == STRIPS {
+            self.strip_cursor = (self.strip_cursor + 1) % STRIPS;
+            self.strips_owed -= 1;
+            if self.strips_owed == 0 {
                 self.showing_still = true;
             }
             return CabinWork::Strip(strip);
@@ -400,8 +408,11 @@ impl CabinPass {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // A strip keeps the rest of the texture as it was.
-                    load: if strip.is_some_and(|s| s > 0) {
+                    // The layer writes every pixel it covers, transparent
+                    // included, so a strip overwrites its rows in place and
+                    // the rest of the texture stays as it was — which is
+                    // what lets the sharp cabin be redrawn while shown.
+                    load: if strip.is_some() {
                         wgpu::LoadOp::Load
                     } else {
                         wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)

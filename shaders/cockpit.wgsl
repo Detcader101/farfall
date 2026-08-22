@@ -245,7 +245,7 @@ fn beam_light(ray: vec3<f32>, reach: f32) -> f32 {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let on = ck.misc.z;
     if (on < 0.01) {
-        discard;
+        return vec4<f32>(0.0);
     }
     let aspect = ck.misc.x;
     let tan_half = ck.fwd.w;
@@ -283,7 +283,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 near = min(near, sd_frame(exit * (0.5 + 0.25 * f32(i))));
             }
             if (near > 0.12) {
-                discard;
+                // Open sky: written transparent, not discarded, so a
+                // redraw in place leaves no stale pixel behind.
+                return vec4<f32>(0.0);
             }
         }
     }
@@ -376,7 +378,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     colour += cyan * (1.0 - exp(-beams)) * 0.55 * glow_k;
 
     if (alpha < 0.002 && dot(colour, colour) < 1e-6) {
-        discard;
+        return vec4<f32>(0.0);
     }
     // Dither: dark metal in smooth gradients bands in eight bits.
     colour += vec3<f32>(dither_px(in.pos.xy)) * alpha;
