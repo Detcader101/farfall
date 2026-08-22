@@ -13,7 +13,7 @@
 
 use crate::cockpit::{Instrument, SAFE_EDGE_MAX};
 use crate::input::{is_reserved, key_name, Action};
-use crate::settings::{Settings, HOOP_SIZE_MAX, HOOP_SIZE_MIN, MSAA_CHOICES};
+use crate::settings::{Settings, HOOP_SIZE_MAX, HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES};
 use farfall_render::text::TextBitmap;
 use winit::keyboard::KeyCode;
 
@@ -69,6 +69,7 @@ enum Item {
     Slot(Instrument),
     SafeEdge,
     HoopSize,
+    LandingHoops,
     MapRings,
     MapGrid,
     LookSens,
@@ -90,6 +91,7 @@ impl Item {
             Item::Slot(i) => i.name(),
             Item::SafeEdge => "SAFE EDGE",
             Item::HoopSize => "HOOP SIZE",
+            Item::LandingHoops => "LANDING HOOPS",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
@@ -114,6 +116,7 @@ impl Item {
             },
             Item::SafeEdge => format!("{:.0}%", s.layout.safe_edge * 100.0),
             Item::HoopSize => format!("{:.2}x", s.hoop_size),
+            Item::LandingHoops => format!("{:.0}M", s.landing_spacing_m),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
@@ -179,6 +182,7 @@ impl Menu {
                 let mut v: Vec<Item> = Instrument::ALL.iter().map(|&i| Item::Slot(i)).collect();
                 v.push(Item::SafeEdge);
                 v.push(Item::HoopSize);
+                v.push(Item::LandingHoops);
                 v
             }
             Page::Map => vec![
@@ -346,6 +350,20 @@ impl Menu {
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Engage => MenuEvent::Nothing,
+            Item::LandingHoops => {
+                let n = LANDING_SPACINGS.len();
+                let i = LANDING_SPACINGS
+                    .iter()
+                    .position(|&x| x == s.landing_spacing_m)
+                    .unwrap_or(1);
+                let j = if forward {
+                    (i + 1) % n
+                } else {
+                    (i + n - 1) % n
+                };
+                s.landing_spacing_m = LANDING_SPACINGS[j];
+                MenuEvent::Changed(Change::Layout)
+            }
             Item::MapRings => {
                 let n = crate::map::RINGS_MAX + 1;
                 s.map_rings = if forward {

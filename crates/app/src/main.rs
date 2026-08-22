@@ -11,6 +11,7 @@
 mod capture;
 mod cockpit;
 mod input;
+mod landing;
 mod look;
 mod map;
 mod menu;
@@ -89,6 +90,16 @@ fn slot_of(
 /// How far ahead the path predictor looks, seconds. A little over one
 /// orbit at the spawn altitude (~8.5 min), so a closed orbit draws closed.
 const TRAJECTORY_HORIZON_S: f32 = 560.0;
+/// What the text readout shows this frame.
+struct Readout {
+    altitude_m: f64,
+    speed_mps: f64,
+    assist: bool,
+    show: bool,
+    /// The LANDING line, in landing mode.
+    landing: Option<String>,
+}
+
 /// How close (aspect-corrected NDC) the gaze must be to a dial's anchor to
 /// pick it up with the left button.
 const DRAG_REACH: f32 = 0.30;
@@ -125,6 +136,7 @@ const MACH1_MPS: f64 = 340.0;
 ///                           for where the nose points (else the planet)
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
+///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
 ///   FARFALL_CAPTURE=final  (screenshots take the presented frame, with the
 ///                           post pass, the map and the text, instead of the
 ///                           scene target)
@@ -437,15 +449,16 @@ impl Gpu {
 
     /// Close out the frame: record its duration, refresh the live readout in
     /// the title bar, and periodically summarise the window to the log.
-    fn frame_timing(
-        &mut self,
-        cpu_seconds: f64,
-        wait_seconds: f64,
-        altitude_m: f64,
-        speed_mps: f64,
-        assist: bool,
-        show_readout: bool,
-    ) {
+    fn frame_timing(&mut self, cpu_seconds: f64, wait_seconds: f64, readout: &Readout) {
+        let Readout {
+            altitude_m,
+            speed_mps,
+            assist,
+            show: show_readout,
+            landing,
+        } = readout;
+        let (altitude_m, speed_mps, assist, show_readout) =
+            (*altitude_m, *speed_mps, *assist, *show_readout);
         self.perf.cpu.record(cpu_seconds);
         self.perf.wait.record(wait_seconds);
         let now = Instant::now();
@@ -503,6 +516,9 @@ impl Gpu {
                 .draw(0, 48, if assist { "FC ON" } else { "FC OFF" });
             if self.cfg.bench {
                 self.text.draw(0, 54, "BENCH SIM FROZEN");
+            }
+            if let Some(line) = landing {
+                self.text.draw(0, 60, line);
             }
         }
 
@@ -583,6 +599,10 @@ struct Game {
     drag: Option<(Instrument, [f32; 2])>,
     /// The map's orbiting camera.
     map_view: map::MapView,
+    /// LANDING mode (G): the hoops close up and judge the touchdown.
+    landing: bool,
+    /// The predicted touchdown, refreshed each frame in landing mode.
+    touchdown: Option<landing::Touchdown>,
     /// Mouse: last cursor position and whether the left button is down,
     /// for dragging the map round.
     cursor: Option<(f32, f32)>,
@@ -651,6 +671,8 @@ impl Game {
             look: Look::new(),
             drag: None,
             map_view: map::MapView::default(),
+            landing: false,
+            touchdown: None,
             cursor: None,
             left_down: false,
             warp: Warp::new(),
@@ -720,11 +742,61 @@ impl Game {
 
     /// The path's world-fixed marks, from the odometer and the settings.
     fn marks(&self) -> farfall_render::trajectory::Marks {
+        let spacing = self.mark_spacing_m();
         farfall_render::trajectory::Marks {
             odometer_m: (self.odometer_m % 1.0e6) as f32,
             hoops: self.settings.layout.shown(Instrument::Hoops),
-            hoop_scale: self.settings.hoop_size,
+            // Landing hoops are big: a gate to fly through, not a bead.
+            hoop_scale: self.settings.hoop_size * if self.landing { 2.5 } else { 1.0 },
+            spacing_m: spacing,
+            landing: if self.landing {
+                Some(self.touchdown.map_or(0.0, |t| t.danger()))
+            } else {
+                None
+            },
         }
+    }
+
+    /// The marks' spacing: the landing hoops' setting in LANDING mode, a
+    /// kilometre otherwise.
+    fn mark_spacing_m(&self) -> f32 {
+        if self.landing {
+            self.settings.landing_spacing_m
+        } else {
+            MARK_SPACING_M
+        }
+    }
+
+    /// G: landing mode on or off.
+    fn toggle_landing(&mut self) {
+        self.landing = !self.landing;
+        if !self.landing {
+            self.touchdown = None;
+        }
+        log::info!("landing mode {}", if self.landing { "on" } else { "off" });
+    }
+
+    /// The landing readout line, if there is one.
+    fn landing_text(&self) -> Option<String> {
+        if !self.landing {
+            return None;
+        }
+        let (_, vspeed) = self.altitude_vspeed();
+        Some(match self.touchdown {
+            Some(t) => format!(
+                "LAND {} IN {:.0}S  DOWN {:.0}  ALONG {:.0} M/S  VS {:+.0}",
+                t.verdict(),
+                t.in_s,
+                t.into_mps,
+                t.along_mps,
+                vspeed
+            ),
+            None => format!(
+                "LAND  NO TOUCHDOWN IN {:.0}S  VS {:+.0}",
+                landing::HORIZON_S,
+                vspeed
+            ),
+        })
     }
 
     /// Gravity's up at the ship, world frame — whichever body is pulling.
@@ -846,9 +918,10 @@ impl Game {
             self.input.controls(self.assist)
         };
         while self.accumulator >= sim::DT {
-            let before = (self.odometer_m / MARK_SPACING_M as f64).floor();
+            let spacing = self.mark_spacing_m() as f64;
+            let before = (self.odometer_m / spacing).floor();
             self.odometer_m += self.state.ship.vel_mps.length() * sim::DT;
-            let after = (self.odometer_m / MARK_SPACING_M as f64).floor();
+            let after = (self.odometer_m / spacing).floor();
             // A hoop is a thing on the glass: unseen, or unwanted, it makes
             // no sound.
             let audible = self.trajectory_vis > 0.5
@@ -864,6 +937,10 @@ impl Game {
                 (sim::felt_acceleration(&self.params, before_t, &before, &self.state.ship).length()
                     / 9.81) as f32;
             self.accumulator -= sim::DT;
+        }
+
+        if self.landing {
+            self.touchdown = landing::predict(&self.params, &self.state.ship, self.state.time_s);
         }
 
         // Camera response to the ship's own physics. Exponential smoothing,
@@ -1373,6 +1450,10 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_MAP").is_ok() {
             game.menu.open_map();
         }
+        if game.frozen && std::env::var("FARFALL_BENCH_LAND").is_ok() {
+            game.toggle_landing();
+            game.touchdown = landing::predict(&game.params, &game.state.ship, game.state.time_s);
+        }
         if let Some(head) = std::env::var("FARFALL_BENCH_HEAD")
             .ok()
             .filter(|_| game.frozen)
@@ -1482,6 +1563,7 @@ impl ApplicationHandler for App {
                         log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
                     }
                     KeyCode::KeyJ if pressed && !event.repeat => game.engage_warp(),
+                    KeyCode::KeyG if pressed && !event.repeat => game.toggle_landing(),
                     KeyCode::KeyL if pressed && !event.repeat => {
                         game.look.toggle_lock();
                         gpu.set_look_cursor(game.look.engaged());
@@ -1977,10 +2059,13 @@ impl ApplicationHandler for App {
                 gpu.frame_timing(
                     cpu_seconds,
                     wait_seconds,
-                    game.state.ship.pos_m.length() - game.params.planet.radius_m,
-                    game.state.ship.vel_mps.length(),
-                    game.assist,
-                    game.settings.layout.shown(Instrument::Readout),
+                    &Readout {
+                        altitude_m: game.state.ship.pos_m.length() - game.params.planet.radius_m,
+                        speed_mps: game.state.ship.vel_mps.length(),
+                        assist: game.assist,
+                        show: game.settings.layout.shown(Instrument::Readout) || game.landing,
+                        landing: game.landing_text(),
+                    },
                 );
                 if game.menu.open {
                     gpu.text.clear();

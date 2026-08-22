@@ -26,6 +26,11 @@ pub struct Marks {
     pub hoops: bool,
     /// Hoop diameter as a multiple of the stock size.
     pub hoop_scale: f32,
+    /// Spacing of the marks along the path, metres.
+    pub spacing_m: f32,
+    /// Landing mode: the hoops carry the predicted touchdown's danger,
+    /// 0 (calm) to 1 (fatal).
+    pub landing: Option<f32>,
 }
 
 /// The world's laws, as the prediction needs them. Plain numbers copied
@@ -100,8 +105,12 @@ impl TrajectoryUniforms {
             ],
             mark: [
                 marks.odometer_m.max(0.0),
-                MARK_SPACING_M,
-                if marks.hoops { 1.0 } else { 0.0 },
+                marks.spacing_m.max(1.0),
+                match (marks.hoops, marks.landing) {
+                    (false, _) => 0.0,
+                    (true, None) => 1.0,
+                    (true, Some(d)) => 2.0 + d.clamp(0.0, 1.0),
+                },
                 HOOP_RADIUS_M * marks.hoop_scale.clamp(0.1, 10.0),
             ],
         }
@@ -247,6 +256,8 @@ mod tests {
             odometer_m: -3.0,
             hoops: false,
             hoop_scale: 0.0,
+            spacing_m: 0.0,
+            landing: None,
         };
         let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0, marks);
         assert_eq!(u.mark[0], 0.0);
@@ -260,6 +271,15 @@ mod tests {
         let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0, marks);
         assert_eq!(u.mark[2], 1.0);
         assert_eq!(u.mark[3], HOOP_RADIUS_M * 2.0);
+        assert_eq!(u.mark[1], 1.0);
+        let marks = Marks {
+            spacing_m: 250.0,
+            landing: Some(0.4),
+            ..marks
+        };
+        let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0, marks);
+        assert_eq!(u.mark[1], 250.0);
+        assert!((u.mark[2] - 2.4).abs() < 1e-6);
         assert!(u.centre_radius[3] >= 1.0);
         assert_eq!(u.phys[0], 0.0);
         assert!(u.phys[2] >= 1.0);

@@ -19,6 +19,9 @@ fn parse_pair(v: &str) -> Option<[f32; 2]> {
     (x.is_finite() && y.is_finite()).then_some([x, y])
 }
 
+/// The landing hoops' spacings on offer, metres.
+pub const LANDING_SPACINGS: [f32; 4] = [100.0, 250.0, 500.0, 1000.0];
+
 /// Hoop size range, as a multiple of the stock diameter.
 pub const HOOP_SIZE_MIN: f32 = 0.25;
 pub const HOOP_SIZE_MAX: f32 = 4.0;
@@ -34,6 +37,8 @@ pub struct Settings {
     pub look_sensitivity: f32,
     /// Hoop diameter, as a multiple of the stock size.
     pub hoop_size: f32,
+    /// Spacing of the landing hoops, metres.
+    pub landing_spacing_m: f32,
     /// Rings drawn around each body on the map, 0..=6.
     pub map_rings: u32,
     /// The map's reference grid.
@@ -52,6 +57,7 @@ impl Default for Settings {
             layout: Layout::default(),
             look_sensitivity: 1.0,
             hoop_size: 1.0,
+            landing_spacing_m: 250.0,
             map_rings: 4,
             map_grid: true,
             plan: Plan::default(),
@@ -141,6 +147,13 @@ impl Settings {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.look_sensitivity = f.clamp(0.1, 5.0);
+                        }
+                    }
+                }
+                "ui.landing-hoops" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if LANDING_SPACINGS.contains(&f) {
+                            s.landing_spacing_m = f;
                         }
                     }
                 }
@@ -236,6 +249,10 @@ impl Settings {
             self.look_sensitivity
         ));
         out.push_str(&format!("ui.hoop-size = {:.2}\n", self.hoop_size));
+        out.push_str(&format!(
+            "ui.landing-hoops = {:.0}\n",
+            self.landing_spacing_m
+        ));
         out.push_str(&format!("map.rings = {}\n", self.map_rings));
         out.push_str(&format!(
             "map.grid = {}\n",
@@ -291,6 +308,7 @@ mod tests {
         s.look_sensitivity = 1.75;
         s.hoop_size = 2.5;
         s.map_rings = 2;
+        s.landing_spacing_m = 500.0;
         s.map_grid = false;
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);

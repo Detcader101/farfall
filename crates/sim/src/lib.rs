@@ -83,6 +83,17 @@ pub struct Body {
 }
 
 impl WorldParams {
+    /// Each body's velocity in the planet's frame at `t`, m/s: the planet
+    /// and the Sun are still, the Moon goes round. Finite difference over
+    /// one step, so it is exactly consistent with where `bodies` puts it
+    /// from one step to the next.
+    pub fn body_velocities(&self, t_s: f64) -> [DVec3; 3] {
+        let moon = (self.moon.centre(self.planet.mu, t_s + DT)
+            - self.moon.centre(self.planet.mu, t_s))
+            / DT;
+        [DVec3::ZERO, moon, DVec3::ZERO]
+    }
+
     /// Every body at sim time `t`: planet, moon, sun.
     pub fn bodies(&self, t_s: f64) -> [Body; 3] {
         [
@@ -602,16 +613,21 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     // No tunnelling is possible at any speed the ship can reach — a step moves
     // metres against a radius of tens of kilometres, and a straight line into a
     // sphere cannot cross the far side without crossing the near one.
-    // Every body is solid: the same contact, about each one's centre.
+    // Every body is solid: the same contact, about each one's centre, in
+    // that body's own frame — the Moon is moving, and a ship set down on it
+    // must come to rest on *it*, carried along, not scrubbed to a stop in
+    // the planet's frame while the ground slides away underneath.
     let mut pos = pos;
     let mut vel = vel;
-    for b in params.bodies(state.time_s) {
+    let body_vel = params.body_velocities(state.time_s);
+    for (i, b) in params.bodies(state.time_s + DT).iter().enumerate() {
         let rel = pos - b.centre;
         let r = rel.length();
         if r < b.radius_m && r > 0.0 {
             let up = rel / r;
-            let into = vel.dot(up);
-            let tangential = vel - up * into;
+            let v_rel = vel - body_vel[i];
+            let into = v_rel.dot(up);
+            let tangential = v_rel - up * into;
             let bounced = if into < 0.0 {
                 up * (-into * params.ship.ground_restitution)
             } else {
@@ -619,7 +635,7 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
             };
             let friction = libm::pow(params.ship.ground_friction, DT);
             pos = b.centre + up * b.radius_m;
-            vel = tangential * friction + bounced;
+            vel = body_vel[i] + tangential * friction + bounced;
         }
     }
 

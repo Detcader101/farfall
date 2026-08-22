@@ -63,6 +63,38 @@ fn the_moon_is_solid() {
     }
 }
 
+/// Set down on the Moon, the ship stays set down: it rides along with the
+/// Moon rather than being left behind by it.
+#[test]
+fn a_ship_landed_on_the_moon_goes_with_it() {
+    let params = presets::earth_compact();
+    let [_, moon, _] = params.bodies(0.0);
+    let up = DVec3::Y;
+    let mut state = at(
+        &params,
+        moon.centre + up * (moon.radius_m + 2.0),
+        params.body_velocities(0.0)[1] - up * 1.0,
+    );
+    for _ in 0..2400 {
+        state = step(&params, &state, Controls::default());
+    }
+    let [_, moon, _] = params.bodies(state.time_s);
+    let rel = state.ship.pos_m - moon.centre;
+    assert!(
+        (rel.length() - moon.radius_m).abs() < 0.5,
+        "not on the surface: {}",
+        rel.length() - moon.radius_m
+    );
+    let v_rel = state.ship.vel_mps - params.body_velocities(state.time_s)[1];
+    assert!(
+        v_rel.length() < 0.5,
+        "still moving over the ground at {} m/s",
+        v_rel.length()
+    );
+    // And it has not drifted round the Moon: still under the +Y point.
+    assert!(rel.normalize().dot(up) > 0.999, "{rel:?}");
+}
+
 #[test]
 fn the_moon_orbits_the_planet() {
     let params = presets::earth_compact();

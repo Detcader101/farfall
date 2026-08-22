@@ -39,7 +39,9 @@ struct Traj {
     look: vec4<f32>,
     // x: odometer — metres of path the ship has already flown, so the marks
     // can stay fixed to the world and stream past. y: mark spacing, m.
-    // z: 1 to draw the hoops (the ribbon's dashes stay either way).
+    // z: 0 no hoops, 1 hoops, 2 + danger: LANDING hoops, coloured by how
+    // hard the predicted touchdown is (0 calm .. 1 fatal). The ribbon's
+    // dashes stay either way.
     // w: hoop radius at one kilometre, metres (the pilot's size setting).
     mark: vec4<f32>,
 }
@@ -382,7 +384,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let red = vec3<f32>(1.0, 0.18, 0.12);
         let d = in.kind.w;
         let closing = 1.0 - smoothstep(0.0, 1.5, d);
-        let tint = mix(cyan, red, closing);
+        var tint = mix(cyan, red, closing);
+        if (tj.mark.z >= 2.0) {
+            // Landing: the hoops themselves carry the verdict — calm green
+            // for a touchdown the hull takes, amber as it gets hard, red
+            // for one it will not survive — the whole way down.
+            let danger = clamp(tj.mark.z - 2.0, 0.0, 1.0);
+            let calm = vec3<f32>(0.35, 1.0, 0.6);
+            let hard = vec3<f32>(1.0, 0.62, 0.18);
+            let verdict = select(mix(calm, hard, danger * 2.0), mix(hard, red, danger * 2.0 - 1.0), danger > 0.5);
+            tint = mix(verdict, red, closing * 0.5);
+        }
         let astern = 1.0 - smoothstep(0.0, f32(RINGS_ASTERN), -d);
         colour = tint * hoop * 0.8 * astern;
     } else {
