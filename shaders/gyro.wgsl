@@ -89,9 +89,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         p = duv.xy;
     }
+    let rot = gyro.p1.w;
+    let cr0 = cos(rot);
+    let sr0 = sin(rot);
+    p = vec2<f32>(cr0 * p.x - sr0 * p.y, sr0 * p.x + cr0 * p.y);
     if (length(p) > RADIUS * 1.35) {
         discard;
     }
+    // JET: the ball is a solid sphere — shaded sky and earth halves with
+    // a lamp from the upper left and a rim — sitting in its bowl.
+    let jet = gyro.d.x > 0.5;
     let sway = select(gyro.c.xy, vec2<f32>(0.0), in_dash);
     let p_face = p - sway * 0.18;
     let p_mid = p - sway * 0.55;
@@ -199,15 +206,29 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         hot += 1.0 - smoothstep(0.0030, 0.0030 + aa * 1.6, dot_d);
     }
 
-    let cyan = vec3<f32>(0.22, 0.85, 1.0);
-    let amber = vec3<f32>(1.0, 0.62, 0.18);
-    let scan = select(0.90 + 0.10 * sin(in.ndc.y * gyro.b.y * 1.7), 1.0, in_dash);
-    let glass = select(canopy_glass(in.ndc, aspect), 1.0, in_dash);
+    let period = in_dash || jet;
+    let cyan = select(vec3<f32>(0.22, 0.85, 1.0), vec3<f32>(0.82, 0.78, 0.62), period);
+    let amber = select(vec3<f32>(1.0, 0.62, 0.18), vec3<f32>(0.85, 0.22, 0.10), period);
+    let scan = select(0.90 + 0.10 * sin(in.ndc.y * gyro.b.y * 1.7), 1.0, period);
+    let glass = select(canopy_glass(in.ndc, aspect), 1.0, period);
     var colour = cyan * glow
-        + vec3<f32>(1.0) * hot * 0.9
-        + amber * warn
-        + cyan * sky * 0.10
-        + amber * ground * 0.06;
+        + select(vec3<f32>(1.0), vec3<f32>(0.96, 0.92, 0.80), period) * hot * 0.9
+        + amber * warn;
+    if (jet) {
+        // The solid ball: sky blue above, earth brown below, shaded as a
+        // sphere (z from the radius) with a lamp up-left.
+        let rb = r_ball / RADIUS;
+        let z = sqrt(max(1.0 - rb * rb, 0.0));
+        let n3 = vec3<f32>(p_mid / RADIUS, z);
+        let lamp = normalize(vec3<f32>(-0.5, 0.6, 0.7));
+        let shade = 0.25 + 0.75 * max(dot(n3, lamp), 0.0);
+        let rim = pow(1.0 - z, 3.0);
+        let sky_rgb = vec3<f32>(0.16, 0.32, 0.58);
+        let earth_rgb = vec3<f32>(0.36, 0.22, 0.10);
+        colour += (sky_rgb * sky + earth_rgb * ground) * shade * 1.6 + vec3<f32>(0.6, 0.6, 0.55) * rim * 0.25 * ball_edge;
+    } else {
+        colour += cyan * sky * 0.10 + amber * ground * 0.06;
+    }
     colour *= scan * glass * vis;
     return vec4<f32>(colour, 1.0);
 }

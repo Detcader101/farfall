@@ -33,6 +33,16 @@ impl Page {
     /// The settings menu's pages. The MAP is its own panel (M), not a page.
     const ALL: [Page; 4] = [Page::Graphics, Page::Controls, Page::Cockpit, Page::Gauges];
 
+    fn short(self) -> &'static str {
+        match self {
+            Page::Graphics => "GFX",
+            Page::Controls => "KEYS",
+            Page::Cockpit => "CABIN",
+            Page::Gauges => "GAUGES",
+            Page::Map => "MAP",
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Page::Graphics => "GRAPHICS",
@@ -89,6 +99,7 @@ enum Item {
     DialSize,
     DialStyle,
     DialFade,
+    DialRot,
     MapRings,
     MapGrid,
     LookSens,
@@ -123,6 +134,7 @@ impl Item {
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
             Item::DialFade => "  FADE",
+            Item::DialRot => "  ROTATE",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
@@ -160,6 +172,7 @@ impl Item {
             Item::DialSize => String::new(),
             Item::DialStyle => String::new(),
             Item::DialFade => String::new(),
+            Item::DialRot => String::new(),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
@@ -251,6 +264,7 @@ impl Menu {
                 v.push(Item::DialSize);
                 v.push(Item::DialStyle);
                 v.push(Item::DialFade);
+                v.push(Item::DialRot);
                 v
             }
             Page::Map => vec![
@@ -529,6 +543,11 @@ impl Menu {
                 };
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::DialRot => {
+                let d = &mut s.dials[self.dial as usize];
+                d.rot_deg = (d.rot_deg + if forward { 15.0 } else { -15.0 }).rem_euclid(360.0);
+                MenuEvent::Changed(Change::Layout)
+            }
             Item::DialFade => {
                 let d = &mut s.dials[self.dial as usize];
                 d.stay = match (d.stay, forward) {
@@ -610,6 +629,7 @@ impl Menu {
                 Some(false) => "FADE",
             }
             .to_string(),
+            Item::DialRot => format!("{:.0} DEG", d.rot_deg),
             other => other.value(s),
         }
     }
@@ -623,11 +643,12 @@ impl Menu {
         if self.standalone {
             header.push_str(&format!("[{}]  WORMHOLE DRIVE", self.page.name()));
         } else {
+            // Short names, so four pages fit the row.
             for p in Page::ALL {
                 if p == self.page {
-                    header.push_str(&format!("[{}]", p.name()));
+                    header.push_str(&format!("[{}]", p.short()));
                 } else {
-                    header.push_str(&format!(" {} ", p.name()));
+                    header.push_str(&format!(" {} ", p.short()));
                 }
             }
         }
@@ -762,7 +783,7 @@ mod tests {
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
         // The per-dial block at the page's end: select the gyro, size it.
         let items = m.items().len();
-        for _ in 0..(items - 2 - 4) {
+        for _ in 0..(items - 2 - 5) {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         m.key(KeyCode::ArrowRight, &mut s); // DIAL: speed -> altitude

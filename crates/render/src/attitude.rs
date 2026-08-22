@@ -54,6 +54,12 @@ pub struct GyroUniforms {
 }
 
 impl GyroUniforms {
+    /// JET: a solid shaded ball in its bowl.
+    pub fn jet(mut self, jet: bool) -> Self {
+        self.d[0] = if jet { 1.0 } else { 0.0 };
+        self
+    }
+
     /// Set into the dash: the ball drawn in the dash's plane.
     pub fn placed(mut self, place: Option<crate::cabin::Placement>) -> Self {
         self.place = place.unwrap_or(crate::cabin::Placement::GLASS);

@@ -23,6 +23,7 @@ fn parse_pair(v: &str) -> Option<[f32; 2]> {
 /// until the pilot drags them.
 pub const MENU_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
 pub const MAP_ANCHOR_DEFAULT: [f32; 2] = [0.42, 0.12];
+pub const READOUT_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
 
 fn clamp_anchor(a: [f32; 2]) -> [f32; 2] {
     [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)]
@@ -37,6 +38,8 @@ pub struct DialTweak {
     pub style: Option<GaugeStyle>,
     /// Stay lit / fade by relevance, or the cockpit's.
     pub stay: Option<bool>,
+    /// Turned about its own axis, degrees.
+    pub rot_deg: f32,
 }
 
 impl DialTweak {
@@ -44,7 +47,44 @@ impl DialTweak {
         size: 1.0,
         style: None,
         stay: None,
+        rot_deg: 0.0,
     };
+}
+
+/// The next style a dial may take: the sphere (JET) is only for the gyro
+/// — the one instrument that is a ball; the rest are a hologram or a dial.
+pub fn next_dial_style(
+    cur: Option<GaugeStyle>,
+    dial: Instrument,
+    forward: bool,
+) -> Option<GaugeStyle> {
+    let ring: &[Option<GaugeStyle>] = if dial == Instrument::Gyro {
+        &[
+            None,
+            Some(GaugeStyle::Tron),
+            Some(GaugeStyle::Jet),
+            Some(GaugeStyle::Dial),
+        ]
+    } else {
+        &[None, Some(GaugeStyle::Tron), Some(GaugeStyle::Dial)]
+    };
+    let i = ring.iter().position(|&s| s == cur).unwrap_or(0);
+    let n = ring.len();
+    ring[if forward {
+        (i + 1) % n
+    } else {
+        (i + n - 1) % n
+    }]
+}
+
+/// A style as a given dial can actually take it: JET is the gyro's alone;
+/// for any other dial it means DIAL.
+pub fn style_for(style: GaugeStyle, dial: Instrument) -> GaugeStyle {
+    if style == GaugeStyle::Jet && dial != Instrument::Gyro {
+        GaugeStyle::Dial
+    } else {
+        style
+    }
 }
 
 pub const DIAL_SIZE_MIN: f32 = 0.5;
@@ -134,6 +174,8 @@ pub struct Settings {
     /// Where the map pane's centre sits (canopy NDC); the DRIVE panel
     /// hangs off its left edge.
     pub map_anchor: [f32; 2],
+    /// Where the text readout's block sits (top-left, canopy NDC).
+    pub readout_anchor: [f32; 2],
     /// The wireframe cabin: drawn at all, how bright its lines, how opaque
     /// its hull.
     pub cockpit_frame: bool,
@@ -174,6 +216,7 @@ impl Default for Settings {
             hoop_size: 1.0,
             menu_anchor: MENU_ANCHOR_DEFAULT,
             map_anchor: MAP_ANCHOR_DEFAULT,
+            readout_anchor: READOUT_ANCHOR_DEFAULT,
             cockpit_frame: true,
             cockpit_glow: 1.0,
             cockpit_hull: 0.92,
@@ -279,6 +322,11 @@ impl Settings {
                 "ui.panel-menu" => {
                     if let Some(a) = parse_pair(v) {
                         s.menu_anchor = clamp_anchor(a);
+                    }
+                }
+                "ui.panel-readout" => {
+                    if let Some(a) = parse_pair(v) {
+                        s.readout_anchor = clamp_anchor(a);
                     }
                 }
                 "ui.panel-map" => {
@@ -399,6 +447,13 @@ impl Settings {
                                         GaugeStyle::from_key(v).or(d.style)
                                     }
                                 }
+                                "rot" => {
+                                    if let Ok(f) = v.parse::<f32>() {
+                                        if f.is_finite() {
+                                            d.rot_deg = f.rem_euclid(360.0);
+                                        }
+                                    }
+                                }
                                 "fade" => {
                                     d.stay = match v {
                                         "auto" => None,
@@ -476,6 +531,10 @@ impl Settings {
             self.map_anchor[0], self.map_anchor[1]
         ));
         out.push_str(&format!(
+            "ui.panel-readout = {:.3},{:.3}\n",
+            self.readout_anchor[0], self.readout_anchor[1]
+        ));
+        out.push_str(&format!(
             "cockpit.frame = {}\n",
             if self.cockpit_frame { "on" } else { "off" }
         ));
@@ -533,6 +592,7 @@ impl Settings {
                         Some(false) => "fade",
                     }
                 ));
+                out.push_str(&format!("ui.{}.rot = {:.0}\n", i.key(), d.rot_deg));
             }
         }
         out.push_str(&format!(
@@ -582,12 +642,14 @@ mod tests {
         s.guide = true;
         s.dials[Instrument::Speed as usize] = DialTweak {
             size: 1.5,
-            style: Some(GaugeStyle::Jet),
+            style: Some(GaugeStyle::Dial),
             stay: Some(true),
+            rot_deg: 45.0,
         };
         s.dials[Instrument::Gyro as usize].stay = Some(false);
         s.menu_anchor = [-0.25, 0.5];
         s.map_anchor = [0.125, -0.125];
+        s.readout_anchor = [-0.5, 0.25];
         s.map_grid = false;
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);

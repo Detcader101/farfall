@@ -146,6 +146,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         p = duv.xy;
     }
+    // Turned about its own axis (p1.w, radians).
+    let rot = gauge.p1.w;
+    let cr = cos(rot);
+    let sr = sin(rot);
+    p = vec2<f32>(cr * p.x - sr * p.y, sr * p.x + cr * p.y);
     let radius = 0.155;
 
     // Early out: everything (shock ring included) lives inside this.
@@ -401,9 +406,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         hot += 0.35 * glint;
         glow += 0.25 * (1.0 - smoothstep(0.0, aa * 1.6, abs(rf - radius * 1.06) - 0.0012));
     }
-    let cyan = vec3<f32>(0.22, 0.85, 1.0);
-    let amber = vec3<f32>(1.0, 0.62, 0.18);
+    // The palette: hologram cyan and amber on the glass; in the dash, a
+    // period instrument — ivory markings on a black face, a cream needle,
+    // red for the warning arc — lit by its own small lamp, no glow.
+    let cyan = select(vec3<f32>(0.22, 0.85, 1.0), vec3<f32>(0.82, 0.78, 0.62), in_dash);
+    let amber = select(vec3<f32>(1.0, 0.62, 0.18), vec3<f32>(0.85, 0.22, 0.10), in_dash);
     let tint = mix(cyan, amber, warning);
+    if (in_dash) {
+        // Markings only: the soft glow halos are hologram light.
+        glow *= 0.55;
+        hot *= 0.85;
+    }
 
     // Scanlines: static spatial modulation — hologram texture without
     // temporal noise (P1: no shimmer, no smear).
@@ -413,7 +426,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // The whole instrument surges with the flash, then settles.
     let surge = 1.0 + 1.1 * alert * alert;
-    var colour = (tint * glow + vec3<f32>(1.0, 1.0, 1.0) * hot * 0.9 + amber * warn_glow)
+    let hot_rgb = select(vec3<f32>(1.0), vec3<f32>(0.96, 0.92, 0.80), in_dash);
+    var colour = (tint * glow + hot_rgb * hot * 0.9 + amber * warn_glow)
         * scan * glass * vis * surge;
 
     // Additive blend: what is black costs nothing and shows nothing.

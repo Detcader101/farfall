@@ -187,7 +187,7 @@ features:
     e2e: needs a flight under throttle / an FOV change (bench cannot flare the FOV)
 
   - id: design-mode
-    name: DESIGN mode (K) — guide on, the mouse cursor as pointer (hover, click-drag), a card of the hovered dial's own settings; per-dial SIZE / STYLE / FADE saved individually (ui.<dial>.size/style/fade); the same block on the menu's GAUGES page
+    name: DESIGN mode (K) — guide on, the mouse cursor as pointer (hover, click-drag, the readout too), a card of the hovered dial's own settings; per-dial SIZE / STYLE / FADE / ROTATE saved individually (ui.<dial>.size/style/fade/rot); the same block on the menu's GAUGES page; JET (solid shaded ball) offered for the gyro only; DIAL in a period palette
     state: complete
     tests: [crates/app/src/settings.rs::edits_round_trip, crates/render/src/cabin.rs]
     settings: [ui.<dial>.size, ui.<dial>.style, ui.<dial>.fade]

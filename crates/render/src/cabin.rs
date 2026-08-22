@@ -194,6 +194,12 @@ impl Placement {
         p
     }
 
+    /// Turned about its own axis, radians (up.w).
+    pub fn rotated(mut self, rot: f32) -> Placement {
+        self.up[3] = if rot.is_finite() { rot } else { 0.0 };
+        self
+    }
+
     /// In the dash under the hologram's direction `dir` (ship frame), for
     /// a head turned by `head` and a camera of this tan(fov/2).
     pub fn in_dash(head: Quat, tan_half_fov: f32, dir: Vec3, size: f32) -> Option<Placement> {
@@ -637,6 +643,7 @@ mod tests {
         );
         assert!(Placement::in_dash(Quat::IDENTITY, 0.55, Vec3::new(0.0, 0.8, -0.6), 1.0).is_none());
         assert_eq!(Placement::glass_sized(1.5).right[3], 1.5);
+        assert_eq!(Placement::glass_sized(1.0).rotated(0.5).up[3], 0.5);
         assert_eq!(UNIFORM_BYTES, 9 * 16);
         // Unchanged inputs compare equal (no clock inside), a turned head
         // is a moved view, a changed socket is not.

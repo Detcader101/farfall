@@ -113,6 +113,7 @@ struct DialEffective {
     size: f32,
     style: settings::GaugeStyle,
     stay: bool,
+    rot: f32,
 }
 
 /// Something on the glass the gaze can pick up.
@@ -121,6 +122,8 @@ enum Dragged {
     Dial(Instrument),
     /// The settings menu's text block.
     MenuPanel,
+    /// The text readout.
+    Readout,
     /// The map pane with its DRIVE panel.
     MapPanel,
 }
@@ -130,6 +133,7 @@ impl Dragged {
         match self {
             Dragged::Dial(i) => i.name(),
             Dragged::MenuPanel => "SETTINGS PANEL",
+            Dragged::Readout => "READOUT",
             Dragged::MapPanel => "MAP",
         }
     }
@@ -148,9 +152,6 @@ struct Readout {
 /// How close (aspect-corrected NDC) the gaze must be to a dial's anchor to
 /// pick it up with the left button.
 const DRAG_REACH: f32 = 0.30;
-/// The text readout's top-left corner on the canopy (the settings panel
-/// and the DRIVE panel have anchors of their own in the settings).
-const HUD_TEXT_ANCHOR: [f32; 2] = [-0.72, 0.62];
 /// Speed of sound for the mach instrument and the sonic boom, m/s. The
 /// gauge shader hard-codes the same number for its barrier tick (shaders
 /// cannot import Rust consts) — change one, change both.
@@ -491,6 +492,7 @@ impl Gpu {
                 sway,
                 cam.time_s,
             )
+            .jet(jet(Instrument::Gyro))
             .placed(placed(Instrument::Gyro)),
         );
         // The design guide: the glass ruled, every shown dial's anchor and
@@ -1017,7 +1019,7 @@ impl Game {
                 .and_then(|i| self.settings.layout.anchor(i))
             {
                 Some(a) => [a[0] + 0.2, a[1] + 0.12],
-                None => self.settings.layout.inset(HUD_TEXT_ANCHOR),
+                None => self.settings.readout_anchor,
             };
         }
         if self.map_open() {
@@ -1025,7 +1027,7 @@ impl Game {
         } else if self.menu.open {
             self.settings.menu_anchor
         } else {
-            self.settings.layout.inset(HUD_TEXT_ANCHOR)
+            self.settings.readout_anchor
         }
     }
 
@@ -1113,8 +1115,9 @@ impl Game {
         let tw = self.settings.dials[i as usize];
         DialEffective {
             size: tw.size,
-            style: tw.style.unwrap_or(self.settings.gauge_style),
+            style: settings::style_for(tw.style.unwrap_or(self.settings.gauge_style), i),
             stay: tw.stay.unwrap_or(self.settings.gauges_stay),
+            rot: tw.rot_deg.to_radians(),
         }
     }
 
@@ -1169,14 +1172,9 @@ impl Game {
             KeyCode::Minus | KeyCode::NumpadSubtract => {
                 d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
             }
-            KeyCode::Tab => {
-                d.style = match d.style {
-                    None => Some(settings::GaugeStyle::Tron),
-                    Some(settings::GaugeStyle::Tron) => Some(settings::GaugeStyle::Jet),
-                    Some(settings::GaugeStyle::Jet) => Some(settings::GaugeStyle::Dial),
-                    Some(settings::GaugeStyle::Dial) => None,
-                };
-            }
+            KeyCode::Tab => d.style = settings::next_dial_style(d.style, i, true),
+            KeyCode::Comma => d.rot_deg = (d.rot_deg - 15.0).rem_euclid(360.0),
+            KeyCode::Period => d.rot_deg = (d.rot_deg + 15.0).rem_euclid(360.0),
             KeyCode::KeyF => {
                 d.stay = match d.stay {
                     None => Some(true),
@@ -1205,12 +1203,13 @@ impl Game {
                         if d.style.is_none() { " (AUTO)" } else { "" }
                     ),
                     format!(
-                        "{}{}",
+                        "{}{}  ROT {:.0}",
                         if eff.stay { "STAY" } else { "FADE" },
-                        if d.stay.is_none() { " (AUTO)" } else { "" }
+                        if d.stay.is_none() { " (AUTO)" } else { "" },
+                        d.rot_deg
                     ),
                     "- = SIZE  TAB STYLE  F FADE".to_string(),
-                    "BKSP RESET  CLICK DRAG  K DONE".to_string(),
+                    ", . ROTATE  BKSP RESET  K DONE".to_string(),
                 ]
             }
             None => vec![
@@ -1641,6 +1640,19 @@ impl Game {
             }
             return false;
         }
+        // In design mode the readout's block can be taken too.
+        if self.design {
+            let a = self.settings.readout_anchor;
+            let on_text = gaze[0] >= a[0] - 0.02
+                && gaze[0] <= a[0] + text_w + 0.02
+                && gaze[1] <= a[1] + 0.02
+                && gaze[1] >= a[1] - 0.45;
+            if on_text {
+                self.drag = Some((Dragged::Readout, [a[0] - gaze[0], a[1] - gaze[1]]));
+                log::info!("drag: picked up the readout");
+                return true;
+            }
+        }
         let layout = &self.settings.layout;
         let mut best: Option<(Instrument, f32, [f32; 2])> = None;
         for i in Instrument::ALL.iter().copied().filter(|i| i.slotted()) {
@@ -1678,6 +1690,7 @@ impl Game {
                 self.settings.layout.set_free(i, at);
             }
             Dragged::MenuPanel => self.settings.menu_anchor = clamp(at),
+            Dragged::Readout => self.settings.readout_anchor = clamp(at),
             Dragged::MapPanel => self.settings.map_anchor = clamp(at),
         }
     }
