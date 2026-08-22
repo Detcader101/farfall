@@ -1,0 +1,152 @@
+# FARFALL feature ledger.
+#
+# A feature is `complete` ONLY when all three hold:
+#   1. unit tests cover it and pass through the pre-commit gate
+#      (cargo fmt --check, clippy -D warnings, cargo test --workspace);
+#   2. it went through the workflow: committed on cockpit-slots, fast-forwarded
+#      into m1-planet, release build in ~/space-game;
+#   3. end-to-end verification: a bench capture (FARFALL_BENCH / FARFALL_CAPTURE)
+#      or a flight was looked at and matched the intent.
+# Otherwise: `tests-pass` (1 only), `in-progress`, `planned`, or `deferred`.
+# `e2e:` names what was looked at. Keep this file honest; update it per chunk.
+
+rules:
+  gpu_only: every visual thing is a WGSL shader
+  customisable: every applicable feature ships with a setting (menu + ~/.farfall/settings.cfg)
+
+features:
+  - id: sim-core
+    name: Deterministic f64 fixed-step sim with golden hash
+    state: complete
+    tests: [crates/sim/tests/invariants.rs, crates/sim/tests/aero.rs, crates/sim/tests/contact.rs]
+    e2e: flown since M1
+
+  - id: planet-render
+    name: Analytic planet with atmosphere, clouds, night lights
+    state: complete
+    e2e: many captures
+
+  - id: thermal-plasma
+    name: GPU hull heat field and plasma sheath on entry
+    state: complete
+    e2e: entry captures; tear artefact fixed
+
+  - id: aero-attitude
+    name: Attitude-dependent drag, lift, CoP/CoG torque, aero damping
+    state: complete
+    tests: [crates/sim/tests/aero.rs]
+    e2e: dives reach mach 1 on gravity alone
+
+  - id: trajectory-hoops
+    name: GPU-integrated predicted path; world-fixed hoops/dashes/dots; hoops astern fade red
+    state: complete
+    tests: [crates/render/src/trajectory.rs]
+    e2e: captures fore and aft (FARFALL_BENCH_LOOK)
+    settings: [ui.path, ui.hoops, ui.hoop-sound, ui.hoop-size]
+
+  - id: gauges
+    name: Speed / altitude / G / gyro / horizon+ladder instruments on the canopy
+    state: complete
+    settings: [ui.speed, ui.altitude, ui.g-meter, ui.gyro, ui.horizon, ui.ladder, ui.safe-edge]
+    e2e: captures
+
+  - id: menu-settings
+    name: In-game menu (GRAPHICS / CONTROLS / COCKPIT / MAP) and settings file
+    state: complete
+    tests: [crates/app/src/menu.rs, crates/app/src/settings.rs]
+    e2e: captures with the menu open
+
+  - id: relativity
+    name: Light limit above 9,500 m/s; mouldable speed units
+    state: complete
+    tests: [crates/sim/tests/relativity.rs]
+
+  - id: bodies
+    name: Moon and Sun rendered at 1:100; finder tags
+    state: complete
+    settings: [ui.body-tags]
+    e2e: captures
+
+  - id: multi-body-sim
+    name: Moon and Sun pull (tidal, planet frame) and are solid; contact in the body's frame
+    state: complete
+    tests: [crates/sim/tests/bodies.rs]
+    e2e: warp to Moon/Sun flown by user
+
+  - id: occlusion
+    name: Moon and Sun hide the planet
+    state: complete
+    tests: [crates/render/src/planet.rs]
+    e2e: captures from behind the Moon (full and partial)
+
+  - id: freelook
+    name: Head look (right mouse / L); glass re-projected as a sphere about the head
+    state: complete
+    tests: [crates/app/src/look.rs]
+    e2e: FARFALL_BENCH_HEAD capture
+
+  - id: gaze-drag-dials
+    name: Left-click while looking drags a dial; free anchors saved
+    state: complete
+    tests: [crates/app/src/cockpit.rs, crates/app/src/settings.rs]
+    e2e: user dragged the speed dial (settings file shows `at x,y`)
+
+  - id: warp-drive
+    name: Wormhole jump with charge / flip / arrive post effects and sound; arrival in circular orbit
+    state: complete
+    tests: [crates/app/src/warp.rs, crates/audio/src/synth.rs]
+    e2e: FARFALL_BENCH_WARP captures; flown
+
+  - id: warp-crack
+    name: The warp-barrier crack at the jump (bassier, heavier than the sonic boom)
+    state: tests-pass
+    tests: [crates/audio/src/synth.rs::the_warp_crack_is_a_heavier_deeper_boom]
+    e2e: not yet heard in flight
+
+  - id: map-3d
+    name: 3D log-radial system map — grid plane, poles, ship dart, orbit camera, BODY RINGS / GRID
+    state: complete
+    tests: [crates/app/src/map.rs]
+    settings: [map.rings, map.grid]
+    e2e: FARFALL_BENCH_MAP capture
+
+  - id: warp-mode-pane
+    name: Map as a framed pane with full-screen dim
+    state: complete
+    e2e: capture
+
+  - id: landing-mode
+    name: G toggles LANDING — close gates down the path coloured by predicted touchdown; readout
+    state: complete
+    tests: [crates/app/src/landing.rs, crates/render/src/trajectory.rs]
+    settings: [ui.landing-hoops]
+    e2e: FARFALL_BENCH_LAND capture (HARD verdict, red gates)
+
+  - id: ladder-on-nose
+    name: Pitch ladder stays on the boresight under freelook
+    state: tests-pass
+    tests: [crates/render/src/attitude.rs]
+    e2e: pending a head-turned capture
+
+  - id: uranus
+    name: Uranus as a body and destination (1:100, 19.2 AU, rings); altitude over nearest body
+    state: complete
+    tests: [crates/sim/tests/bodies.rs::uranus_is_far_large_and_pulls_like_uranus, crates/app/src/map.rs]
+    e2e: FARFALL_BENCH_WARP arrival capture — ice giant overhead, 939 m/s circular orbit, tag ring
+
+  - id: map-panel-m
+    name: Map as its own UI feature on M with its own drive panel
+    state: planned
+
+  - id: panels-gaze-drag
+    name: Settings and map panels gaze-draggable like dials
+    state: planned
+
+  - id: cockpit-wireframe
+    name: Tron-style GPU wireframe cockpit around the head
+    state: planned
+
+  - id: crash
+    name: Ship loss on hard impact / Sun contact
+    state: deferred
+    note: user asked to hold this until more features exist

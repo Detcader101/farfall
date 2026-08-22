@@ -17,7 +17,7 @@ fn at(params: &farfall_sim::WorldParams, pos: DVec3, vel: DVec3) -> WorldState {
 #[test]
 fn moon_surface_gravity_is_lunar() {
     let params = presets::earth_compact();
-    let [_, moon, _] = params.bodies(0.0);
+    let [_, moon, _, _] = params.bodies(0.0);
     let up = DVec3::Y;
     let g = gravity_all(&params, 0.0, moon.centre + up * moon.radius_m);
     let down = -g.dot(up);
@@ -27,11 +27,28 @@ fn moon_surface_gravity_is_lunar() {
 #[test]
 fn sun_surface_gravity_is_solar() {
     let params = presets::earth_compact();
-    let [_, _, sun] = params.bodies(0.0);
+    let [_, _, sun, _] = params.bodies(0.0);
     let up = -params.sun.dir;
     let g = gravity_all(&params, 0.0, sun.centre + up * sun.radius_m);
     let down = -g.dot(up);
     assert!((down - 274.0).abs() < 1.0, "solar surface gravity {down}");
+}
+
+#[test]
+fn uranus_is_far_large_and_pulls_like_uranus() {
+    let params = presets::earth_compact();
+    let [_, _, sun, uranus] = params.bodies(0.0);
+    let from_sun = (uranus.centre - sun.centre).length();
+    // 19.2 AU at 1:100, against the Sun at 1 AU.
+    assert!(
+        (from_sun / params.sun.distance_m - 19.19).abs() < 0.05,
+        "{from_sun}"
+    );
+    assert!(uranus.radius_m > 3.9 * params.planet.radius_m);
+    let up = DVec3::Y;
+    let g = gravity_all(&params, 0.0, uranus.centre + up * uranus.radius_m);
+    let down = -g.dot(up);
+    assert!((down - 8.69).abs() < 0.05, "uranus surface gravity {down}");
 }
 
 /// The planet's frame falls with the Sun and the Moon, so at the planet they
@@ -48,7 +65,7 @@ fn other_bodies_are_only_a_tide_near_the_planet() {
 #[test]
 fn the_moon_is_solid() {
     let params = presets::earth_compact();
-    let [_, moon, _] = params.bodies(0.0);
+    let [_, moon, _, _] = params.bodies(0.0);
     let up = DVec3::Y;
     let mut state = at(
         &params,
@@ -57,7 +74,7 @@ fn the_moon_is_solid() {
     );
     for _ in 0..600 {
         state = step(&params, &state, Controls::default());
-        let [_, moon, _] = params.bodies(state.time_s);
+        let [_, moon, _, _] = params.bodies(state.time_s);
         let r = (state.ship.pos_m - moon.centre).length();
         assert!(r >= moon.radius_m - 1e-6, "fell through the moon: {r}");
     }
@@ -68,7 +85,7 @@ fn the_moon_is_solid() {
 #[test]
 fn a_ship_landed_on_the_moon_goes_with_it() {
     let params = presets::earth_compact();
-    let [_, moon, _] = params.bodies(0.0);
+    let [_, moon, _, _] = params.bodies(0.0);
     let up = DVec3::Y;
     let mut state = at(
         &params,
@@ -78,7 +95,7 @@ fn a_ship_landed_on_the_moon_goes_with_it() {
     for _ in 0..2400 {
         state = step(&params, &state, Controls::default());
     }
-    let [_, moon, _] = params.bodies(state.time_s);
+    let [_, moon, _, _] = params.bodies(state.time_s);
     let rel = state.ship.pos_m - moon.centre;
     assert!(
         (rel.length() - moon.radius_m).abs() < 0.5,

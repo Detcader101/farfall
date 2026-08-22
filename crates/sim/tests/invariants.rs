@@ -128,6 +128,11 @@ fn scale_invariance() {
             distance_m: base.sun.distance_m * s,
             dir: base.sun.dir,
         },
+        uranus: farfall_sim::PlanetAfarParams {
+            radius_m: base.uranus.radius_m * s,
+            mu: base.uranus.mu * s * s * s,
+            from_sun: base.uranus.from_sun * s,
+        },
         ship: farfall_sim::ShipParams {
             cd_area_m2: base.ship.cd_area_m2 / s,
             cd_area_side_m2: base.ship.cd_area_side_m2 / s,

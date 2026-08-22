@@ -41,6 +41,8 @@ struct Map {
     // x: time, y: rings per body (0..6), z: moon orbit radius (map units),
     // w: grid on (1) / off (0)
     misc: vec4<f32>,
+    // xyz: Uranus' map position, w: drawn radius
+    uranus: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> map: Map;
@@ -119,7 +121,7 @@ fn to_ship(p: vec3<f32>) -> vec3<f32> {
 
 struct Hit {
     d: f32,
-    // 0 body (white), 1 sun, 2 ship, 3 pole, 4 dest ring
+    // 0 body (white), 1 sun, 2 ship, 3 pole, 4 dest ring, 5 uranus
     kind: f32,
 }
 
@@ -133,9 +135,11 @@ fn scene(p: vec3<f32>) -> Hit {
     if (dm < h.d) { h = Hit(dm, 0.0); }
     let ds = sd_sphere(p, map.sun.xyz, map.sun.w);
     if (ds < h.d) { h = Hit(ds, 1.0); }
+    let du = sd_sphere(p, map.uranus.xyz, map.uranus.w);
+    if (du < h.d) { h = Hit(du, 5.0); }
     let dship = sd_ship_local(to_ship(p)) * max(map.ship.w, 1e-4);
     if (dship < h.d) { h = Hit(dship, 2.0); }
-    let dp = min(min(pole(p, map.moon.xyz), pole(p, map.sun.xyz)), pole(p, map.ship.xyz));
+    let dp = min(min(pole(p, map.moon.xyz), pole(p, map.sun.xyz)), min(pole(p, map.ship.xyz), pole(p, map.uranus.xyz)));
     if (dp < h.d) { h = Hit(dp, 3.0); }
     let dr = sd_torus_y(p, map.dest.xyz, map.dest.w, 0.008);
     if (dr < h.d) { h = Hit(dr, 4.0); }
@@ -178,6 +182,7 @@ fn plane_light(xz: vec2<f32>, aa: f32) -> vec3<f32> {
         glow += 0.16 * ring2(xz, map.planet.xz, k, 0.003, aa);
         glow += 0.10 * ring2(xz, map.moon.xz, 0.12 * k, 0.002, aa);
         glow += 0.10 * ring2(xz, map.sun.xz, 0.18 * k, 0.002, aa);
+        glow += 0.10 * ring2(xz, map.uranus.xz, 0.14 * k, 0.002, aa);
     }
     // The Moon's orbit.
     glow += 0.30 * ring2(xz, map.planet.xz, map.misc.z, 0.003, aa);
@@ -185,6 +190,7 @@ fn plane_light(xz: vec2<f32>, aa: f32) -> vec3<f32> {
     glow += 0.25 * (1.0 - smoothstep(0.0, 0.10, length(xz - map.moon.xz)));
     glow += 0.25 * (1.0 - smoothstep(0.0, 0.10, length(xz - map.ship.xz)));
     warn += 0.35 * (1.0 - smoothstep(0.0, 0.20, length(xz - map.sun.xz)));
+    glow += 0.25 * (1.0 - smoothstep(0.0, 0.14, length(xz - map.uranus.xz)));
     // The destination's arrival ring, projected, and a dashed line from
     // the ship to it.
     warn += 0.5 * ring2(xz, map.dest.xz, max(map.dest.w, 0.03), 0.004, aa);
@@ -269,8 +275,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             colour = cyan * (0.5 + 0.7 * lit) * pulse + vec3<f32>(1.0) * rim * 0.5;
         } else if (hit.kind < 3.5) {
             colour = cyan * 0.45;
-        } else {
+        } else if (hit.kind < 4.5) {
             colour = amber * 0.9;
+        } else {
+            colour = vec3<f32>(0.56, 0.8, 0.88) * (0.4 + 0.7 * lit) + cyan * rim * 0.5;
         }
         solid = 1.0;
     }

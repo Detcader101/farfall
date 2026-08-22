@@ -32,6 +32,24 @@ pub struct WorldParams {
     /// only the planet has air.
     pub moon: MoonParams,
     pub sun: SunParams,
+    pub uranus: PlanetAfarParams,
+}
+
+/// Another planet of the system: fixed in the planet's frame, placed
+/// relative to the Sun. (Everything orbits far too slowly to matter over a
+/// session; the frame is frozen at one moment of the year.)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanetAfarParams {
+    pub radius_m: f64,
+    pub mu: f64,
+    /// Its position relative to the Sun's centre, metres.
+    pub from_sun: DVec3,
+}
+
+impl PlanetAfarParams {
+    pub fn centre(&self, sun: &SunParams) -> DVec3 {
+        sun.centre() + self.from_sun
+    }
 }
 
 /// A moon on a circular orbit about the planet, in the XZ plane.
@@ -87,15 +105,15 @@ impl WorldParams {
     /// and the Sun are still, the Moon goes round. Finite difference over
     /// one step, so it is exactly consistent with where `bodies` puts it
     /// from one step to the next.
-    pub fn body_velocities(&self, t_s: f64) -> [DVec3; 3] {
+    pub fn body_velocities(&self, t_s: f64) -> [DVec3; BODIES] {
         let moon = (self.moon.centre(self.planet.mu, t_s + DT)
             - self.moon.centre(self.planet.mu, t_s))
             / DT;
-        [DVec3::ZERO, moon, DVec3::ZERO]
+        [DVec3::ZERO, moon, DVec3::ZERO, DVec3::ZERO]
     }
 
-    /// Every body at sim time `t`: planet, moon, sun.
-    pub fn bodies(&self, t_s: f64) -> [Body; 3] {
+    /// Every body at sim time `t`: planet, moon, sun, uranus.
+    pub fn bodies(&self, t_s: f64) -> [Body; BODIES] {
         [
             Body {
                 centre: DVec3::ZERO,
@@ -112,9 +130,17 @@ impl WorldParams {
                 radius_m: self.sun.radius_m,
                 mu: self.sun.mu,
             },
+            Body {
+                centre: self.uranus.centre(&self.sun),
+                radius_m: self.uranus.radius_m,
+                mu: self.uranus.mu,
+            },
         ]
     }
 }
+
+/// How many bodies there are: planet, Moon, Sun, Uranus.
+pub const BODIES: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlanetParams {
@@ -303,6 +329,15 @@ pub mod presets {
                 mu: 274.0 * 6_963_400.0 * 6_963_400.0,
                 distance_m: 1_495_978_700.0,
                 dir: DVec3::new(0.62, 0.42, -0.66),
+            },
+            // Uranus at 1:100 too: 25,362 km radius, 8.69 m/s² at the
+            // cloud tops, 19.2 AU from the Sun — placed round the far side
+            // of the Sun from us, a little out of our plane, so the line
+            // there runs past the Sun on the way.
+            uranus: PlanetAfarParams {
+                radius_m: 253_620.0,
+                mu: 8.69 * 253_620.0 * 253_620.0,
+                from_sun: DVec3::new(0.55, 0.10, -0.83).normalize() * 28_706_000_000.0,
             },
             ship: ShipParams {
                 mass_kg: 12_000.0,

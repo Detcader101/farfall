@@ -700,7 +700,7 @@ impl Game {
     /// The Sun and the Moon as the camera sees them: where the sim has them
     /// at sim time, subtracted in f64 (P3).
     fn bodies_uniforms(&self, cam: &CameraFrame, height_px: f32) -> BodiesUniforms {
-        let [_, moon, sun] = self.params.bodies(self.state.time_s);
+        let [_, moon, sun, uranus] = self.params.bodies(self.state.time_s);
         let tags = if self.settings.layout.shown(Instrument::BodyTags) {
             1.0
         } else {
@@ -716,6 +716,10 @@ impl Game {
                 (sun.centre - self.state.ship.pos_m).as_vec3(),
                 sun.radius_m as f32,
             ),
+            (
+                (uranus.centre - self.state.ship.pos_m).as_vec3(),
+                uranus.radius_m as f32,
+            ),
             tags,
             height_px,
         )
@@ -723,13 +727,14 @@ impl Game {
 
     /// The system map, from the plan and the pilot's view of it.
     fn map_uniforms(&self, aspect: f32, time_s: f32) -> map::MapUniforms {
-        let [_, moon, sun] = self.params.bodies(self.state.time_s);
+        let [_, moon, sun, uranus] = self.params.bodies(self.state.time_s);
         let dest = self.settings.plan.dest;
         let world = map::MapWorld {
             ship: self.state.ship.pos_m,
             ship_orient: self.state.ship.orient,
             moon: moon.centre,
             sun: sun.centre,
+            uranus: uranus.centre,
             dest_centre: dest.centre(&self.params, self.state.time_s),
             dest_arrival_m: dest.radius_m(&self.params) + self.settings.plan.safe_m(&self.params),
         };
@@ -984,13 +989,22 @@ impl Game {
     }
 
     /// Altitude above the sphere and radial (climb) velocity, m and m/s.
+    /// Altitude and vertical speed over the NEAREST body's surface —
+    /// whichever ground is closest is the one that matters.
     fn altitude_vspeed(&self) -> (f64, f64) {
-        let r = self.state.ship.pos_m.length();
-        let up = self.state.ship.pos_m / r.max(1.0);
-        (
-            r - self.params.planet.radius_m,
-            self.state.ship.vel_mps.dot(up),
-        )
+        let bodies = self.params.bodies(self.state.time_s);
+        let vels = self.params.body_velocities(self.state.time_s);
+        let mut best = (f64::INFINITY, 0.0);
+        for (b, v) in bodies.iter().zip(vels) {
+            let rel = self.state.ship.pos_m - b.centre;
+            let r = rel.length();
+            let alt = r - b.radius_m;
+            if alt < best.0 {
+                let up = rel / r.max(1.0);
+                best = (alt, (self.state.ship.vel_mps - v).dot(up));
+            }
+        }
+        best
     }
 
     /// Planet as the camera sees it. The world-space subtraction happens here,
@@ -998,7 +1012,7 @@ impl Game {
     /// whole floating-origin discipline in one line (SPEC P3).
     fn planet_uniforms(&self, cam: &CameraFrame) -> PlanetUniforms {
         let centre_rel = (DVec3::ZERO - self.state.ship.pos_m).as_vec3();
-        let [_, moon, sun] = self.params.bodies(self.state.time_s);
+        let [_, moon, sun, _] = self.params.bodies(self.state.time_s);
         let rel = |b: &sim::Body| {
             (
                 (b.centre - self.state.ship.pos_m).as_vec3(),
@@ -2066,7 +2080,7 @@ impl ApplicationHandler for App {
                     cpu_seconds,
                     wait_seconds,
                     &Readout {
-                        altitude_m: game.state.ship.pos_m.length() - game.params.planet.radius_m,
+                        altitude_m: game.altitude_vspeed().0,
                         speed_mps: game.state.ship.vel_mps.length(),
                         assist: game.assist,
                         show: game.settings.layout.shown(Instrument::Readout) || game.landing,

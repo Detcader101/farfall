@@ -28,6 +28,37 @@ struct Bodies {
     // x: tags 0..1 — a thin ring around each body so a half-degree disc
     // can be found on a big sky. y: screen height, px. zw: unused.
     look: vec4<f32>,
+    // xyz: Uranus' centre relative to the camera, metres. w: radius, m.
+    uranus: vec4<f32>,
+}
+
+// A body's disc coverage and surface normal along `ray`, or cover 0.
+struct Disc {
+    cover: f32,
+    n: vec3<f32>,
+    angle: f32,
+    limb: f32,
+}
+
+fn disc_of(ray: vec3<f32>, centre: vec3<f32>, radius: f32) -> Disc {
+    let d = length(centre);
+    var out = Disc(0.0, vec3<f32>(0.0, 0.0, 1.0), 0.0, 0.0);
+    if (radius <= 0.0 || d <= radius) {
+        return out;
+    }
+    let to_c = centre / d;
+    out.angle = acos(clamp(dot(ray, to_c), -1.0, 1.0));
+    out.limb = asin(clamp(radius / d, 0.0, 1.0));
+    let g = vec2<f32>(dpdx(out.angle), dpdy(out.angle));
+    let px = max(0.5 * length(g), 1e-7);
+    out.cover = 1.0 - smoothstep(out.limb - px, out.limb + px, out.angle);
+    if (out.cover > 0.001) {
+        let along = dot(ray, centre);
+        let disc_b = along * along - (d * d - radius * radius);
+        let t = along - sqrt(max(disc_b, 0.0));
+        out.n = normalize(ray * t - centre);
+    }
+    return out;
 }
 
 @group(0) @binding(0) var<uniform> bd: Bodies;
@@ -103,6 +134,47 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
     }
 
+    // ---- Uranus ----------------------------------------------------------
+    // A pale cyan ice giant, faintly banded about an axis tipped nearly
+    // onto its side, with its thin dark rings seen edge-on-ish.
+    let ur = disc_of(ray, bd.uranus.xyz, bd.uranus.w);
+    if (ur.cover > 0.001) {
+        let n = ur.n;
+        // The spin axis: tipped 98 degrees — lying in the orbital plane.
+        let axis = normalize(vec3<f32>(0.97, 0.14, 0.2));
+        let lat = dot(n, axis);
+        let bands = 0.5 + 0.5 * sin(lat * 18.0 + fbm3(n * 2.5) * 2.0);
+        let base = vec3<f32>(0.56, 0.78, 0.86);
+        let band_rgb = mix(base * 0.92, base * 1.05, bands);
+        let light = max(dot(n, sun), 0.0);
+        let ur_rgb = band_rgb * (light * 1.9 + 0.02);
+        rgb = mix(rgb, ur_rgb, ur.cover);
+        alpha = max(alpha, ur.cover);
+    }
+    // The rings: a flat annulus in the plane normal to the spin axis, from
+    // 1.6 to 2.0 radii, dark and narrow — a thread, as Uranus' are.
+    {
+        let c = bd.uranus.xyz;
+        let rr = bd.uranus.w;
+        let axis = normalize(vec3<f32>(0.97, 0.14, 0.2));
+        let denom = dot(ray, axis);
+        if (rr > 0.0 && abs(denom) > 1e-5) {
+            let t = dot(c, axis) / denom;
+            if (t > 0.0) {
+                let hit = ray * t - c;
+                let rad = length(hit) / rr;
+                let in_ring = smoothstep(1.62, 1.66, rad) * (1.0 - smoothstep(1.96, 2.0, rad));
+                // Hidden behind the planet itself.
+                let behind = ur.cover > 0.5 && t > length(c);
+                if (in_ring > 0.001 && !behind) {
+                    let lit = max(abs(dot(axis, sun)), 0.15);
+                    rgb = mix(rgb, vec3<f32>(0.5, 0.55, 0.6) * lit * 1.2, in_ring * 0.55);
+                    alpha = max(alpha, in_ring * 0.55);
+                }
+            }
+        }
+    }
+
     // ---- tags ------------------------------------------------------------
     // A ring a few pixels outside each body's limb, never thinner than the
     // pixel, so the Moon is findable at its honest size. Additive, cyan,
@@ -119,6 +191,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let ring_r = max(limb * 1.8, 10.0 * px_rad);
             let ring = 1.0 - smoothstep(0.0, px_rad * 1.5, abs(angle - ring_r) - px_rad * 0.6);
             rgb += cyan * ring;
+        }
+        // Uranus.
+        if (bd.uranus.w > 0.0 && length(bd.uranus.xyz) > bd.uranus.w) {
+            let ud = length(bd.uranus.xyz);
+            let angle = acos(clamp(dot(ray, bd.uranus.xyz / ud), -1.0, 1.0));
+            let limb = asin(clamp(bd.uranus.w / ud, 0.0, 1.0));
+            let ring_r = max(limb * 1.8, 10.0 * px_rad);
+            let ring = 1.0 - smoothstep(0.0, px_rad * 1.5, abs(angle - ring_r) - px_rad * 0.6);
+            rgb += cyan * ring * 0.8;
         }
         // Sun: only while it is still a dot — at a wall of fire a tag is noise.
         if (sun_limb < 0.2) {

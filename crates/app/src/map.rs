@@ -103,7 +103,7 @@ impl MapView {
     }
 }
 
-/// Everything the shader needs, 14 vec4s.
+/// Everything the shader needs, 15 vec4s.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MapUniforms {
@@ -121,6 +121,7 @@ pub struct MapUniforms {
     ship_fwd: [f32; 4],
     dest: [f32; 4],
     misc: [f32; 4],
+    uranus: [f32; 4],
 }
 
 pub const UNIFORM_BYTES: u64 = std::mem::size_of::<MapUniforms>() as u64;
@@ -131,6 +132,7 @@ pub struct MapWorld {
     pub ship_orient: DQuat,
     pub moon: DVec3,
     pub sun: DVec3,
+    pub uranus: DVec3,
     pub dest_centre: DVec3,
     pub dest_arrival_m: f64,
 }
@@ -175,6 +177,7 @@ impl MapUniforms {
                 radius(w.moon.length()),
                 if l.grid { 1.0 } else { 0.0 },
             ],
+            uranus: v4(project3(w.uranus), 0.14),
         }
     }
 }
@@ -243,12 +246,13 @@ mod tests {
 
     #[test]
     fn uniforms_are_fourteen_vec4s_and_carry_the_attitude() {
-        assert_eq!(UNIFORM_BYTES, 14 * 16);
+        assert_eq!(UNIFORM_BYTES, 15 * 16);
         let w = MapWorld {
             ship: DVec3::new(1.0e5 * 10.0, 0.0, 0.0),
             ship_orient: DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2),
             moon: DVec3::new(0.0, 0.0, 3.844e6),
             sun: DVec3::new(0.62, 0.42, -0.66) * 1.496e9,
+            uranus: DVec3::new(0.62, 0.42, -0.66) * 1.496e9 + DVec3::X * 2.87e10,
             dest_centre: DVec3::ZERO,
             dest_arrival_m: 2.0e5,
         };
@@ -264,6 +268,7 @@ mod tests {
         assert_eq!(u.eye[3], 1.0);
         assert_eq!(u.misc[1], RINGS_MAX as f32);
         assert!(u.sun[1] > 0.0, "the Sun sits above the plane");
+        assert!(u.uranus[0] > u.sun[0], "Uranus lies beyond the Sun");
         // Nose (-Z) turned about +Y by 90°: points along -X.
         assert!((u.ship_fwd[0] + 1.0).abs() < 1e-6, "{:?}", u.ship_fwd);
         assert!((u.ship[0] - 1.0).abs() < 1e-6);

@@ -17,16 +17,23 @@ pub enum Destination {
     Planet,
     Moon,
     Sun,
+    Uranus,
 }
 
 impl Destination {
-    pub const ALL: [Destination; 3] = [Destination::Planet, Destination::Moon, Destination::Sun];
+    pub const ALL: [Destination; 4] = [
+        Destination::Planet,
+        Destination::Moon,
+        Destination::Sun,
+        Destination::Uranus,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Destination::Planet => "PLANET",
             Destination::Moon => "MOON",
             Destination::Sun => "SUN",
+            Destination::Uranus => "URANUS",
         }
     }
 
@@ -35,6 +42,7 @@ impl Destination {
             Destination::Planet => "planet",
             Destination::Moon => "moon",
             Destination::Sun => "sun",
+            Destination::Uranus => "uranus",
         }
     }
 
@@ -44,11 +52,12 @@ impl Destination {
 
     /// The body itself, from the sim, at sim time `t`.
     pub fn body(self, params: &WorldParams, t_s: f64) -> Body {
-        let [planet, moon, sun] = params.bodies(t_s);
+        let [planet, moon, sun, uranus] = params.bodies(t_s);
         match self {
             Destination::Planet => planet,
             Destination::Moon => moon,
             Destination::Sun => sun,
+            Destination::Uranus => uranus,
         }
     }
 

@@ -14,6 +14,8 @@ pub struct BodiesUniforms {
     moon: [f32; 4],
     sun: [f32; 4],
     look: [f32; 4],
+    /// Uranus: xyz camera-relative centre, w radius.
+    uranus: [f32; 4],
 }
 
 impl BodiesUniforms {
@@ -24,6 +26,7 @@ impl BodiesUniforms {
         cam: &CameraFrame,
         moon: (Vec3, f32),
         sun: (Vec3, f32),
+        uranus: (Vec3, f32),
         tags: f32,
         height_px: f32,
     ) -> Self {
@@ -43,6 +46,7 @@ impl BodiesUniforms {
             moon: [moon_rel.x, moon_rel.y, moon_rel.z, moon_r],
             sun: [s.x, s.y, s.z, sun_r],
             look: [tags.clamp(0.0, 1.0), height_px.max(1.0), 0.0, 0.0],
+            uranus: [uranus.0.x, uranus.0.y, uranus.0.z, uranus.1],
         }
     }
 }

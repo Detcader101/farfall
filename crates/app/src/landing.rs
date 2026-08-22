@@ -107,7 +107,7 @@ mod tests {
     fn a_free_fall_arrives_at_sqrt_2gh() {
         let params = presets::earth_compact();
         // Straight down from 2 km, in (effectively) vacuum: the Moon.
-        let [_, moon, _] = params.bodies(0.0);
+        let [_, moon, _, _] = params.bodies(0.0);
         let up = DVec3::Y;
         // At rest relative to the Moon — which is itself going round the
         // planet at a hundred metres a second.
