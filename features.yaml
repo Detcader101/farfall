@@ -168,6 +168,11 @@ features:
     tests: [crates/render/src/cabin.rs]
     e2e: FARFALL_BENCH_THRUST=1,1,0,1 looking aft — twin blue plumes over the spine, roll puff at the left tip
 
+  - id: cockpit-detail
+    name: Cockpit detail — stick and grip, throttle, switch banks, instrument hood, panel seams, environment reflections and contact shadows on the metal
+    state: complete
+    e2e: FARFALL_BENCH_HEAD=-40,-30 capture; fullscreen spin still 16.6 ms
+
   - id: cabin-cached
     name: The cabin is re-marched only when the head, the light or a socket changes — small while moving, sharpened in four strips once still; thruster light drawn by the composite
     state: complete

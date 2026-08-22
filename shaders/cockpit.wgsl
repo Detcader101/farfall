@@ -108,9 +108,27 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
     let dq0 = p - DASH_C;
     let dq = vec3<f32>(dq0.x, dq0.y * ca + dq0.z * sa, -dq0.y * sa + dq0.z * ca);
     let dash = sd_round_box(dq - vec3<f32>(0.0, -0.2, 0.0), vec3<f32>(0.95, 0.2, 0.42), 0.04);
-    let con_l = sd_round_box(p - vec3<f32>(-0.74, -0.7, -0.1), vec3<f32>(0.2, 0.1, 0.8), 0.03);
-    let con_r = sd_round_box(p - vec3<f32>(0.74, -0.7, -0.1), vec3<f32>(0.2, 0.1, 0.8), 0.03);
-    var furniture = min(dash, min(con_l, con_r));
+    let cq = vec3<f32>(abs(p.x), p.y, p.z);
+    let console = sd_round_box(cq - vec3<f32>(0.74, -0.7, -0.1), vec3<f32>(0.2, 0.1, 0.8), 0.03);
+    var furniture = min(dash, console);
+    // The instrument hood: a lip along the dash's far edge, shading the
+    // glass from the dash's own light.
+    let hood = sd_round_box(dq - vec3<f32>(0.0, 0.04, -0.40), vec3<f32>(0.97, 0.035, 0.045), 0.02);
+    furniture = min(furniture, hood);
+    // Switch banks on both consoles: rows of small toggles, repeated.
+    let sq = vec3<f32>(cq.x - 0.74, cq.y + 0.60, fract((cq.z + 0.5) / 0.09) * 0.09 - 0.045);
+    let in_bank = step(abs(cq.z - 0.1), 0.55);
+    // A toggle: a short upright cylinder with a bead on top.
+    let toggle = max(length(sq.xz) - 0.007, abs(sq.y - 0.014) - 0.014);
+    let bead = length(sq - vec3<f32>(0.0, 0.03, 0.0)) - 0.011;
+    let switch_ = mix(1e9, min(toggle, bead), in_bank);
+    furniture = min(furniture, switch_);
+    // The stick between the knees and the throttle on the left console:
+    // the pilot's own hands' furniture.
+    let stick = sd_capsule_ab(p, vec3<f32>(0.0, -1.0, -0.45), vec3<f32>(0.0, -0.62, -0.5), 0.022);
+    let grip = sd_ellipsoid_c(p, vec3<f32>(0.0, -0.58, -0.5), vec3<f32>(0.035, 0.07, 0.04));
+    let throttle = sd_round_box(p - vec3<f32>(-0.74, -0.53, -0.3), vec3<f32>(0.045, 0.06, 0.03), 0.012);
+    furniture = min(furniture, min(min(stick, grip), throttle));
     // Sockets: shallow recesses in the furniture under each hologram, with
     // a raised rim.
     let n = i32(ck.misc.w);
@@ -179,6 +197,11 @@ fn cabin_normal(p: vec3<f32>) -> vec3<f32> {
 fn sd_lines(p: vec3<f32>) -> f32 {
     var d = sd_capsule_ab(p, vec3<f32>(-0.95, -0.62, -0.65), vec3<f32>(0.95, -0.62, -0.65), 0.004);
     let cq = vec3<f32>(abs(p.x), p.y, p.z);
+    // Panel seams across the dash, and the strip of light under the hood.
+    d = min(d, sd_capsule_ab(cq, vec3<f32>(0.32, -0.6, -0.65), vec3<f32>(0.32, -0.45, -1.4), 0.003));
+    d = min(d, sd_capsule_ab(p, vec3<f32>(-0.95, -0.43, -1.40), vec3<f32>(0.95, -0.43, -1.40), 0.004));
+    // Console borders.
+    d = min(d, sd_capsule_ab(cq, vec3<f32>(0.56, -0.6, 0.7), vec3<f32>(0.56, -0.6, -0.9), 0.003));
     d = min(d, sd_capsule_ab(cq, vec3<f32>(0.94, -0.6, 0.7), vec3<f32>(0.94, -0.6, -0.9), 0.004));
     d = min(d, sd_capsule_ab(cq, vec3<f32>(0.55, 0.72, -1.2), vec3<f32>(0.5, 0.64, 1.0), 0.004));
     // Wing leading edges, seen from inside: a line of light along each.
@@ -311,6 +334,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let half_v = normalize(sun - ray);
         let spec = pow(max(dot(n, half_v), 0.0), 48.0);
         let fresnel = pow(1.0 - max(dot(n, -ray), 0.0), 4.0);
+        // What the metal reflects: a cheap sky — black space above the
+        // sill, the planet's blue-grey glow below, a warm band for the
+        // Sun — seen in the mirror of the surface, strongest at the rim.
+        let refl = reflect(ray, n);
+        let env = mix(vec3<f32>(0.05, 0.07, 0.10), vec3<f32>(0.012, 0.014, 0.02), smoothstep(-0.3, 0.3, refl.y))
+            + vec3<f32>(1.0, 0.9, 0.7) * pow(max(dot(refl, sun), 0.0), 24.0) * 0.6;
+        // Contact shadow: how open the space above the surface is, from
+        // one distance sample a hand off it — the sockets, the lip under
+        // the hood and the foot of the stick all darken.
+        let ao = clamp(sd_cabin(p + n * 0.08).d / 0.08, 0.15, 1.0);
         // Linear albedos: dark graphite reads as mid-grey once tonemapped
         // and gamma'd, so these are low.
         var base = vec3<f32>(0.030, 0.032, 0.038);
@@ -319,8 +352,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         } else if (hit.kind > 1.5 && hit.kind < 2.5) {
             base = vec3<f32>(0.05, 0.052, 0.06);
         }
-        var lit = base * (0.22 + 0.9 * ndl) + vec3<f32>(0.9, 0.95, 1.0) * spec * 0.35
-            + cyan * fresnel * 0.08;
+        var lit = (base * (0.22 + 0.9 * ndl) + env * (0.15 + 0.55 * fresnel)) * ao
+            + vec3<f32>(0.9, 0.95, 1.0) * spec * 0.35;
         // The socket rims are lit from within.
         if (hit.kind > 2.5) {
             lit = cyan * 1.0 * glow_k;
