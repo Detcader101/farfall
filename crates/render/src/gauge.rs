@@ -261,13 +261,112 @@ pub fn speed_text(speed_mps: f32) -> String {
 }
 
 pub fn km_readout(altitude_m: f32) -> (u32, u32) {
-    let km = (altitude_m / 1_000.0).max(0.0);
-    if km < 9.995 {
-        (((km * 100.0).round() as u32).min(999), 1)
-    } else if km < 99.95 {
-        (((km * 10.0).round() as u32).min(999), 2)
+    let (digits, dot, _) = sci_readout(altitude_m / 1_000.0);
+    (digits, dot)
+}
+
+/// A three-digit readout that never caps: three significant digits with a
+/// floating dot, and past 999 an exponent — "2.87" with E7 is 2.87×10⁷.
+/// Returns (digits 0..999, dot position 0/1/2, exponent). Below 10 the dot
+/// sits after the first digit, below 100 after the second, to 999 none;
+/// beyond, the mantissa is 1.00..9.99 with the exponent alongside.
+pub fn sci_readout(value: f32) -> (u32, u32, u32) {
+    let v = if value.is_finite() {
+        value.max(0.0)
     } else {
-        ((km.round() as u32).min(999), 0)
+        0.0
+    };
+    if v < 9.995 {
+        (((v * 100.0).round() as u32).min(999), 1, 0)
+    } else if v < 99.95 {
+        (((v * 10.0).round() as u32).min(999), 2, 0)
+    } else if v < 999.5 {
+        (v.round() as u32, 0, 0)
+    } else {
+        let exp = v.log10().floor() as u32;
+        let mant = v / 10f32.powi(exp as i32);
+        // Rounding 9.995 up would show "10.0": bump the exponent instead.
+        if mant >= 9.995 {
+            (100, 1, exp + 1)
+        } else {
+            ((mant * 100.0).round() as u32, 1, exp)
+        }
+    }
+}
+
+/// The dial's range: full scale is the base times a 1-2-5 decade step, the
+/// smallest that holds the value — so the needle never pins and never
+/// crawls at the bottom either. The multiplier beside the dial reads
+/// "×mEk": base × m × 10ᵏ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Range {
+    /// 1, 2 or 5.
+    pub mantissa: u32,
+    pub exponent: u32,
+}
+
+impl Range {
+    pub fn for_value(value: f32, base: f32) -> Self {
+        let v = if value.is_finite() {
+            value.max(0.0)
+        } else {
+            0.0
+        };
+        let base = base.max(1e-6);
+        let mut mantissa = 1u32;
+        let mut exponent = 0u32;
+        // Walk the 1-2-5 ladder until the value fits; 38 decades is past
+        // what f32 can hold, so the walk always ends.
+        while v > base * mantissa as f32 * 10f32.powi(exponent as i32) && exponent < 38 {
+            match mantissa {
+                1 => mantissa = 2,
+                2 => mantissa = 5,
+                _ => {
+                    mantissa = 1;
+                    exponent += 1;
+                }
+            }
+        }
+        Self { mantissa, exponent }
+    }
+
+    pub fn factor(self) -> f32 {
+        self.mantissa as f32 * 10f32.powi(self.exponent as i32)
+    }
+
+    /// The multiplier is only shown once the dial is past its base range.
+    pub fn shown(self) -> bool {
+        self.mantissa != 1 || self.exponent != 0
+    }
+
+    /// Packed for the shader: mantissa + 10 × exponent, 0 when not shown.
+    pub fn packed(self) -> f32 {
+        if self.shown() {
+            (self.mantissa + 10 * self.exponent) as f32
+        } else {
+            0.0
+        }
+    }
+}
+
+/// A length for the text readout, in SI: "2.87GM", "127KM", "650M".
+pub fn length_text(m: f32) -> String {
+    let v = if m.is_finite() { m.max(0.0) } else { 0.0 };
+    const PREFIXES: [&str; 7] = ["M", "KM", "MM", "GM", "TM", "PM", "EM"];
+    let mut i = 0;
+    let mut x = v;
+    while x >= 999.5 && i + 1 < PREFIXES.len() {
+        x /= 1000.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{x:.0}M")
+    } else if x < 9.995 {
+        format!("{x:.2}{}", PREFIXES[i])
+    } else if x < 99.95 {
+        format!("{x:.1}{}", PREFIXES[i])
+    } else {
+        format!("{x:.0}{}", PREFIXES[i])
     }
 }
 
@@ -278,8 +377,9 @@ pub struct GaugeUniforms {
     a: [f32; 4],
     /// x: arc full scale, y: target height px, zw: canopy anchor NDC
     b: [f32; 4],
-    /// x: readout digits, y: decimal dot slot, z: warning sense (0 high/1 low),
-    /// w: 1 if the arc wraps (the needle laps the dial and a multiplier shows)
+    /// x: readout digits + 1000 × readout exponent, y: decimal dot slot,
+    /// z: warning sense (0 high/1 low), w: range multiplier packed as
+    /// mantissa + 10 × exponent (0: base range, nothing shown)
     c: [f32; 4],
     /// xy: hologram sway (canopy units), z: mach-alert flash 0..1,
     /// w: mach number (negative: this instrument has no mach readout)
@@ -308,22 +408,29 @@ impl GaugeUniforms {
         alert: f32,
     ) -> Self {
         let (digits, dot) = speed_readout(speed_mps);
+        // The arc's base range is mach 2 (680 m/s at this planet's 340):
+        // the amber bars sit at each mach. Past it the dial re-ranges in
+        // 1-2-5 decades with the multiplier beside it — orbital speed is
+        // ×20, two thirds round; nothing pins, all the way to c. 680 here
+        // must match the MACH1_MPS the app owns.
+        let range = Range::for_value(speed_mps, SPEED_LAP_MPS);
         Self {
             a: [speed_mps, visibility, time_s, aspect],
-            // One lap of the arc is mach 2 (680 m/s at this planet's 340):
-            // the amber bars sit at mach 1 and mach 2, and past the end the
-            // needle laps the dial with a ×N multiplier beside it — orbital
-            // speed is lap 2, halfway round. 680 here must match the
-            // MACH1_MPS the app owns.
-            b: [SPEED_LAP_MPS, height_px, anchor_ndc[0], anchor_ndc[1]],
-            c: [digits as f32, dot as f32, 0.0, 1.0],
+            b: [
+                SPEED_LAP_MPS * range.factor(),
+                height_px,
+                anchor_ndc[0],
+                anchor_ndc[1],
+            ],
+            c: [digits as f32, dot as f32, 0.0, range.packed()],
             d: [sway[0], sway[1], alert.clamp(0.0, 1.0), mach],
         }
     }
 
-    /// The G meter: felt acceleration in g, 0..10 on the arc, two decimals
-    /// on the readout, amber at the top — the hull and the pilot both have
-    /// a limit up there.
+    /// The G meter: felt acceleration in g, 0..10 on the arc and re-ranging
+    /// beyond, two decimals on the readout to 9.99 and three significant
+    /// digits after — amber at the top of the base range, where the hull
+    /// and the pilot both have a limit.
     pub fn g_force(
         g: f32,
         visibility: f32,
@@ -333,20 +440,32 @@ impl GaugeUniforms {
         anchor_ndc: [f32; 2],
         sway: [f32; 2],
     ) -> Self {
-        let g = g.max(0.0);
-        let digits = ((g * 100.0).round() as u32).min(999);
+        let g = if g.is_finite() { g.max(0.0) } else { 0.0 };
+        let (digits, dot, exp) = sci_readout(g);
+        let range = Range::for_value(g, 10.0);
         Self {
             a: [g, visibility, time_s, aspect],
-            b: [10.0, height_px, anchor_ndc[0], anchor_ndc[1]],
-            c: [digits as f32, 1.0, 0.0, 0.0],
+            b: [
+                10.0 * range.factor(),
+                height_px,
+                anchor_ndc[0],
+                anchor_ndc[1],
+            ],
+            c: [
+                (digits + 1000 * exp) as f32,
+                dot as f32,
+                0.0,
+                range.packed(),
+            ],
             d: [sway[0], sway[1], 0.0, -1.0],
         }
     }
 
     /// The altimeter: same instrument, different numbers. The arc spans the
-    /// atmosphere-relevant band (0..15 km); the readout auto-ranges in km,
-    /// and the warning amber sits at the BOTTOM of the arc — low is what an
-    /// altimeter warns about.
+    /// atmosphere-relevant band (0..15 km) and re-ranges beyond it; the
+    /// readout is km to 999, then km with an exponent — Uranus is 2.87E7
+    /// km out and the instrument says so. The warning amber sits at the
+    /// BOTTOM of the arc — low is what an altimeter warns about.
     pub fn altitude(
         altitude_m: f32,
         visibility: f32,
@@ -356,11 +475,27 @@ impl GaugeUniforms {
         anchor_ndc: [f32; 2],
         sway: [f32; 2],
     ) -> Self {
-        let (digits, dot) = km_readout(altitude_m);
+        let alt = if altitude_m.is_finite() {
+            altitude_m.max(0.0)
+        } else {
+            0.0
+        };
+        let (digits, dot, exp) = sci_readout(alt / 1_000.0);
+        let range = Range::for_value(alt, 15_000.0);
         Self {
-            a: [altitude_m.max(0.0), visibility, time_s, aspect],
-            b: [15_000.0, height_px, anchor_ndc[0], anchor_ndc[1]],
-            c: [digits as f32, dot as f32, 1.0, 0.0],
+            a: [alt, visibility, time_s, aspect],
+            b: [
+                15_000.0 * range.factor(),
+                height_px,
+                anchor_ndc[0],
+                anchor_ndc[1],
+            ],
+            c: [
+                (digits + 1000 * exp) as f32,
+                dot as f32,
+                1.0,
+                range.packed(),
+            ],
             d: [sway[0], sway[1], 0.0, -1.0],
         }
     }
@@ -531,8 +666,18 @@ mod tests {
         assert_eq!(u.b[0], 10.0);
         let wild = GaugeUniforms::g_force(-2.0, 1.0, 0.0, 1.6, 900.0, [0.0, 0.0], [0.0, 0.0]);
         assert_eq!(wild.a[0], 0.0);
+        // 40 g: the dial re-ranges to ×5 (50 g full), the readout reads 40.0.
         let huge = GaugeUniforms::g_force(40.0, 1.0, 0.0, 1.6, 900.0, [0.0, 0.0], [0.0, 0.0]);
-        assert_eq!(huge.c[0], 999.0);
+        assert_eq!(huge.c[0], 400.0);
+        assert_eq!(huge.c[1], 2.0);
+        assert_eq!(huge.b[0], 50.0);
+        assert_eq!(huge.c[3], 5.0);
+        // 4000 g: ×5E2, readout 4.00 E3.
+        let wild = GaugeUniforms::g_force(4_000.0, 1.0, 0.0, 1.6, 900.0, [0.0, 0.0], [0.0, 0.0]);
+        assert_eq!(wild.b[0], 5_000.0);
+        assert_eq!(wild.c[3], 25.0);
+        assert_eq!(wild.c[0], 400.0 + 3_000.0);
+        assert_eq!(wild.c[1], 1.0);
     }
 
     #[test]
@@ -551,6 +696,42 @@ mod tests {
     }
 
     #[test]
+    fn ranges_climb_the_1_2_5_ladder_and_never_pin() {
+        let r = Range::for_value(500.0, 680.0);
+        assert_eq!((r.mantissa, r.exponent), (1, 0));
+        assert!(!r.shown());
+        assert_eq!(Range::for_value(1_000.0, 680.0).factor(), 2.0);
+        assert_eq!(Range::for_value(3_000.0, 680.0).factor(), 5.0);
+        assert_eq!(Range::for_value(7_700.0, 680.0).factor(), 20.0);
+        assert_eq!(Range::for_value(LIGHT_SPEED_MPS, 680.0).factor(), 500_000.0);
+        assert_eq!(Range::for_value(2.87e10, 15_000.0).packed(), 2.0 + 60.0);
+        for v in [0.0, 1.0, 1e3, 1e6, 1e12, 1e30, f32::NAN, -5.0] {
+            let r = Range::for_value(v, 10.0);
+            let full = 10.0 * r.factor();
+            let v = if v.is_finite() { v.max(0.0) } else { 0.0 };
+            assert!(v <= full, "{v} pins on {full}");
+            assert!(r.mantissa == 1 || r.mantissa == 2 || r.mantissa == 5);
+        }
+    }
+
+    #[test]
+    fn sci_readout_never_caps() {
+        assert_eq!(sci_readout(0.05), (5, 1, 0));
+        assert_eq!(sci_readout(3.52), (352, 1, 0));
+        assert_eq!(sci_readout(12.4), (124, 2, 0));
+        assert_eq!(sci_readout(127.0), (127, 0, 0));
+        assert_eq!(sci_readout(9.996), (100, 2, 0));
+        assert_eq!(sci_readout(2_870.0), (287, 1, 3));
+        assert_eq!(sci_readout(2.87e7), (287, 1, 7));
+        assert_eq!(sci_readout(9_996.0), (100, 1, 4));
+        assert_eq!(sci_readout(f32::INFINITY), (0, 1, 0));
+        assert_eq!(length_text(650.0), "650M");
+        assert_eq!(length_text(12_400.0), "12.4KM");
+        assert_eq!(length_text(2.87e10), "28.7GM");
+        assert_eq!(length_text(1.5e9), "1.50GM");
+    }
+
+    #[test]
     fn km_readout_auto_ranges() {
         assert_eq!(km_readout(50.0), (5, 1)); // 0.05 km
         assert_eq!(km_readout(3_520.0), (352, 1)); // 3.52
@@ -558,7 +739,9 @@ mod tests {
         assert_eq!(km_readout(127_000.0), (127, 0)); // 127
                                                      // Range edges do not overflow three digits.
         assert_eq!(km_readout(9_996.0), (100, 2)); // 9.996 -> 10.0
-        assert_eq!(km_readout(1.0e9), (999, 0));
+                                                   // Past three digits the km readout hands over to sci_readout's
+                                                   // exponent; this view keeps the mantissa.
+        assert_eq!(km_readout(1.0e9), (100, 1));
         assert_eq!(km_readout(-5.0), (0, 1));
     }
 

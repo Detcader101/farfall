@@ -156,6 +156,12 @@ features:
     e2e: FARFALL_BENCH_SPIN=8 — forward (dash, arch, nose), 90° (wing leading edge), 200° (spine, fin); ~2 ms at half res
     notes: map dart replaced by the same fighter SDF (common.wgsl sd_fighter_exterior)
 
+  - id: gauges-unending
+    name: Gauges never cap — 1-2-5 decade ranging with ×mEk multiplier, scientific readouts past three digits, SI altitude text
+    state: complete
+    tests: [crates/render/src/gauge.rs::ranges_climb_the_1_2_5_ladder_and_never_pin, crates/render/src/gauge.rs::sci_readout_never_caps]
+    e2e: captures — speedo ×2 at Uranus (939 m/s); altimeter 1.14E3 km at ×1E2 sinking toward the Moon
+
   - id: bench-spin
     name: FARFALL_BENCH_SPIN=n — the head turns a full circle over the bench, n captures on the way
     state: complete

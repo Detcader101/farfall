@@ -580,7 +580,14 @@ impl Gpu {
                 ),
             );
             self.text.draw(0, 30, &format!("{sw}X{sh}"));
-            self.text.draw(0, 36, &format!("ALT {altitude_m:.0}M"));
+            self.text.draw(
+                0,
+                36,
+                &format!(
+                    "ALT {}",
+                    farfall_render::gauge::length_text(altitude_m as f32)
+                ),
+            );
             self.text.draw(
                 0,
                 42,
@@ -1971,7 +1978,14 @@ impl ApplicationHandler for App {
                                 } else if capture_text {
                                     gpu.text.clear();
                                     gpu.text.draw(0, 0, "HEADLESS CAPTURE");
-                                    gpu.text.draw(0, 6, &format!("ALT {altitude_m:.0}M"));
+                                    gpu.text.draw(
+                                        0,
+                                        6,
+                                        &format!(
+                                            "ALT {}",
+                                            farfall_render::gauge::length_text(altitude_m as f32)
+                                        ),
+                                    );
                                     gpu.text.draw(
                                         0,
                                         12,

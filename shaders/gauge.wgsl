@@ -145,14 +145,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let aa = max(fwidth(p.x), 1e-5) * 0.9;
 
     let value = max(gauge.a.x, 0.0);
-    let full = max(gauge.b.x, 1.0);
-    // A wrapping arc laps: the needle resets at the end of the dial and a
-    // multiplier counts the laps. A clamping arc pins at full scale.
-    // Laps are counted to 99; past that the arc pins at full and the
-    // readout, which never lies, carries the number alone.
-    let wraps = gauge.c.w > 0.5;
-    let lap = select(0.0, min(floor(value / full), 99.0), wraps);
-    let frac = select(clamp(value / full, 0.0, 1.0), clamp(value / full - lap, 0.0, 1.0), wraps);
+    // Full scale already carries the range: base × m × 10^k, chosen on the
+    // CPU so the value always fits. The multiplier beside the dial says
+    // what a lap is worth; the readout, which never lies, carries the
+    // number alone.
+    let full = max(gauge.b.x, 1e-6);
+    let frac = clamp(value / full, 0.0, 1.0);
+    let packed = u32(max(round(gauge.c.w), 0.0));
+    let mult_m = packed % 10u;
+    let mult_e = packed / 10u;
     let mach = gauge.d.w;
 
     // Dial-face polar frame.
@@ -195,7 +196,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // 340 m/s here must match MACH1_MPS in the app, which owns the "in
     // atmosphere" gate. On later laps the same bars mean mach 3 and 4, 5
     // and 6: the multiplier says which.
-    if (gauge.c.z < 0.5 && mach >= 0.0) {
+    // Only while a mach is a readable slice of the dial (to ×5: ten bars).
+    if (gauge.c.z < 0.5 && mach >= 0.0 && full <= 3400.5) {
         for (var m = 1.0; m * 340.0 <= full + 0.5; m += 1.0) {
             let mfrac = m * 340.0 / full;
             let mth = -SWEEP_HALF + 2.0 * SWEEP_HALF * mfrac;
@@ -205,11 +207,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
     }
 
-    // Lap multiplier: "×N" beside the dial, top right, once the needle has
-    // gone round at least once. Amber, like everything that says "more
-    // than the dial".
-    if (lap >= 1.0) {
-        let mult = u32(clamp(lap + 1.0, 2.0, 100.0));
+    // Range multiplier: "×m" beside the dial, top right, and "Ek" under it
+    // once the decades climb — base × m × 10^k. Amber, like everything that
+    // says "more than the dial". There is no top: the numbers in this
+    // game do not end, and neither does the instrument.
+    if (packed > 0u) {
         let base = vec2<f32>(radius + 0.030, radius * 0.55);
         let dh = 0.017;
         let dw = 0.009;
@@ -221,18 +223,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             seg_dist(p_near - xc, vec2<f32>(-0.008, 0.008), vec2<f32>(0.008, -0.008)),
         );
         warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, xd - 0.0012));
-        // One digit to ×9, two beyond.
-        let tens = mult / 10u;
-        let ones = mult % 10u;
-        let first = select(base, base + vec2<f32>(pitch, 0.0), tens > 0u);
-        if (tens > 0u) {
-            let dt = digit_dist(p_near - base, digit_mask(tens), dw, dh);
-            warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, dt - 0.0012));
-            glow += 0.15 * (1.0 - smoothstep(0.0, 0.006, dt));
-        }
-        let dd = digit_dist(p_near - first, digit_mask(ones), dw, dh);
+        let dd = digit_dist(p_near - base, digit_mask(mult_m), dw, dh);
         warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, dd - 0.0012));
         glow += 0.15 * (1.0 - smoothstep(0.0, 0.006, dd));
+        if (mult_e > 0u) {
+            // "E" and the exponent's digits, a row below.
+            let eb = base + vec2<f32>(-0.026, -2.6 * dh);
+            let ed = digit_dist(p_near - eb, 121u, dw, dh); // E: a, d, e, f, g
+            warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, ed - 0.0012));
+            let tens = mult_e / 10u;
+            let ones = mult_e % 10u;
+            var cell = eb + vec2<f32>(pitch, 0.0);
+            if (tens > 0u) {
+                let dt = digit_dist(p_near - cell, digit_mask(tens), dw, dh);
+                warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, dt - 0.0012));
+                cell += vec2<f32>(pitch, 0.0);
+            }
+            let d1 = digit_dist(p_near - cell, digit_mask(ones), dw, dh);
+            warn_glow += 1.1 * (1.0 - smoothstep(0.0, aa * 1.8, d1 - 0.0012));
+        }
     }
 
     // Sweep fill: a translucent band from zero to the needle — the "tape".
@@ -261,7 +270,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let dw = 0.016;
         let pitch = 0.052;
         let base = vec2<f32>(0.0, -0.075);
-        let shown = u32(clamp(round(gauge.c.x), 0.0, 999.0));
+        let packed_ro = u32(max(round(gauge.c.x), 0.0));
+        let shown = packed_ro % 1000u;
+        let ro_exp = packed_ro / 1000u;
         let digits = array<u32, 3>(shown / 100u, (shown / 10u) % 10u, shown % 10u);
         // Leading zeros stay lit: instruments read as instruments.
         for (var i = 0u; i < 3u; i += 1u) {
@@ -280,6 +291,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let dr = length(p_near - dot_pos);
             hot += 0.9 * (1.0 - smoothstep(0.004, 0.004 + aa * 1.8, dr));
             glow += 0.25 * (1.0 - smoothstep(0.004, 0.012, dr));
+        }
+        // The readout's exponent, small, to the right of the digits: past
+        // three digits the number keeps its three and says how many more.
+        if (ro_exp > 0u) {
+            let eh = 0.014;
+            let ew = 0.0075;
+            let ep = 0.022;
+            var cell = base + vec2<f32>(2.0 * pitch - 0.01, -dh + eh);
+            let ed = digit_dist(p_near - cell, 121u, ew, eh);
+            hot += 0.8 * (1.0 - smoothstep(0.0, aa * 1.8, ed - 0.0012));
+            cell += vec2<f32>(ep, 0.0);
+            let tens = ro_exp / 10u;
+            if (tens > 0u) {
+                let dt = digit_dist(p_near - cell, digit_mask(tens), ew, eh);
+                hot += 0.8 * (1.0 - smoothstep(0.0, aa * 1.8, dt - 0.0012));
+                cell += vec2<f32>(ep, 0.0);
+            }
+            let d1 = digit_dist(p_near - cell, digit_mask(ro_exp % 10u), ew, eh);
+            hot += 0.8 * (1.0 - smoothstep(0.0, aa * 1.8, d1 - 0.0012));
         }
     }
 
