@@ -127,9 +127,25 @@ impl Look {
     /// at the rim swings through a wider arc than one at the centre, and
     /// all of them keep their places relative to each other. Points turned
     /// behind the head are pushed far off screen.
+    #[cfg(test)]
     pub fn reproject(&self, ndc: [f32; 2], tan_half_fov: f32, aspect: f32) -> [f32; 2] {
+        self.reproject_from(ndc, tan_half_fov, tan_half_fov, aspect)
+    }
+
+    /// The same, for a point given in a REFERENCE projection (the glass is
+    /// laid out at the pilot's base field of view) and shown through the
+    /// live one (thrust widens it, the drive flares it): the point is a
+    /// direction fixed to the ship, and only its screen place changes.
+    pub fn reproject_from(
+        &self,
+        ndc: [f32; 2],
+        tan_half_ref: f32,
+        tan_half_fov: f32,
+        aspect: f32,
+    ) -> [f32; 2] {
+        let tr = tan_half_ref.max(1e-4);
         let t = tan_half_fov.max(1e-4);
-        let d = Vec3::new(ndc[0] * aspect * t, ndc[1] * t, -1.0).normalize();
+        let d = Vec3::new(ndc[0] * aspect * tr, ndc[1] * tr, -1.0).normalize();
         let v = self.rotation().inverse() * d;
         let depth = -v.z;
         if depth < 0.02 {
@@ -239,6 +255,19 @@ mod tests {
         // Perspective: the far-left one, swung toward the edge of vision,
         // has moved further in NDC than the centre one.
         assert!((a[0] + 0.8).abs() > (b[0]).abs(), "{a:?} {b:?}");
+    }
+
+    #[test]
+    fn a_wider_fov_pulls_a_ship_fixed_point_toward_the_centre() {
+        let l = Look::new();
+        let narrow = l.reproject_from([0.6, -0.4], 0.5, 0.5, 1.5);
+        let wide = l.reproject_from([0.6, -0.4], 0.5, 0.8, 1.5);
+        assert!((narrow[0] - 0.6).abs() < 1e-5 && (narrow[1] + 0.4).abs() < 1e-5);
+        assert!(
+            wide[0] < 0.6 && wide[0] > 0.0 && wide[1] > -0.4 && wide[1] < 0.0,
+            "{wide:?}"
+        );
+        assert!((wide[0] - 0.6 * 0.5 / 0.8).abs() < 1e-5);
     }
 
     #[test]

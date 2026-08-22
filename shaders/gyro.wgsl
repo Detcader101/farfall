@@ -53,7 +53,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     );
     let aspect = gyro.a.w;
     let centre = canopy(gyro.b.zw, aspect);
-    let half = select(QUAD_HALF, QUAD_HALF * 1.8, gyro.p3.w > 0.0);
+    let size = select(max(gyro.p0.w, 0.25), 1.8, gyro.p3.w > 0.0);
+    let half = QUAD_HALF * size;
     let xy = canopy_inverse(centre + corners[vi] * half, aspect);
     var out: VsOut;
     out.pos = vec4<f32>(xy, 0.0, 1.0);
@@ -80,7 +81,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     let aspect = gyro.a.w;
     let in_dash = gyro.p3.w > 0.0;
-    var p = canopy(in.ndc, aspect) - canopy(gyro.b.zw, aspect);
+    var p = (canopy(in.ndc, aspect) - canopy(gyro.b.zw, aspect)) / max(gyro.p0.w, 0.25);
     if (in_dash) {
         let duv = dial_plane_uv(in.ndc, aspect, gyro.p0, gyro.p1, gyro.p2, gyro.p3, DIAL_DASH_N);
         if (duv.z < 0.5) {

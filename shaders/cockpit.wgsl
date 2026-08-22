@@ -29,7 +29,7 @@ struct Cockpit {
     // xyz: the Sun's direction in ship frame. w: exposure
     sun: vec4<f32>,
     // Sockets: xyz the hologram's direction from the head (ship frame), w
-    // 1 if in use.
+    // 0 if unused, else 1 + style (0 TRON, 1 JET, 2 DIAL) + 10 × size.
     pad0: vec4<f32>,
     pad1: vec4<f32>,
     pad2: vec4<f32>,
@@ -140,35 +140,40 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
         if (i >= n || !near_dash) { break; }
         let pd = pad_dir(i);
         if (pd.w < 0.5) { continue; }
+        // w = (style + 1) + 10 × round(size × 100): exact integers.
+        let style = pd.w - 10.0 * floor(pd.w / 10.0) - 1.0;
+        let size = max(floor(pd.w / 10.0) / 100.0, 0.25);
         let c = socket_centre(pd.xyz);
-        let lq = p - c;
-        let along = dot(lq, DASH_N);
-        let radial = length(lq - DASH_N * along);
-        if (ck.misc.y > 1.5) {
+        // The socket's geometry in its own scaled space: distances come
+        // back multiplied by the size, so the march stays honest.
+        let q = (p - c) / size;
+        let along = dot(q, DASH_N);
+        let radial = length(q - DASH_N * along);
+        if (style > 1.5) {
             // DIAL: a shallow flush well, the instrument's face set into
-            // the dash a finger deep behind a thin bezel — the face itself
-            // is drawn in this plane by the gauge pass.
-            // The cut reaches above the surface too, or it is flush and cuts
-            // nothing; below it, two and a half centimetres of well.
-            let well = max(radial - 0.205, abs(along - 0.01) - 0.06);
+            // the dash a finger deep behind a raised bezel — the face
+            // itself is drawn in this plane by the gauge pass. The cut
+            // reaches above the surface too, or it is flush and cuts
+            // nothing.
+            let well = max(radial - 0.205, abs(along - 0.01) - 0.06) * size;
             furniture = max(furniture, -well);
-            let bezel = length(vec2<f32>(radial - 0.215, along - 0.012)) - 0.016;
+            let bezel = (length(vec2<f32>(radial - 0.215, along - 0.012)) - 0.016) * size;
             rim = min(rim, bezel);
-        } else if (ck.misc.y > 0.5) {
+        } else if (style > 0.5) {
             // JET: a spherical bowl hollowed into the dash, the classic
             // round instrument's well, with a raised bezel at its mouth
             // the hologram sits in. The dial is drawn after the cabin, on
             // the glass, so there is nothing here to fight it for depth.
-            let bowl = length(lq + DASH_N * 0.10) - 0.21;
+            let bowl = (length(q + DASH_N * 0.10) - 0.21) * size;
             furniture = max(furniture, -bowl);
-            let bezel = length(vec2<f32>(radial - 0.185, along - 0.015)) - 0.016;
+            let bezel = (length(vec2<f32>(radial - 0.185, along - 0.015)) - 0.016) * size;
             rim = min(rim, bezel);
         } else {
             // TRON: a shallow recess, a thin lit rim, a beam up to the
             // hologram.
-            let recess = max(radial - 0.085, abs(along - 0.0) - 0.025);
+            let recess = max(radial - 0.085, abs(along) - 0.025) * size;
             furniture = max(furniture, -recess);
-            let ring = length(vec2<f32>(radial - 0.095, along - 0.012)) - 0.012;
+            let ring = (length(vec2<f32>(radial - 0.095, along - 0.012)) - 0.012) * size;
             rim = min(rim, ring);
         }
     }
@@ -246,6 +251,8 @@ fn beam_light(ray: vec3<f32>, reach: f32) -> f32 {
         if (i >= n) { break; }
         let pd = pad_dir(i);
         if (pd.w < 0.5) { continue; }
+        let style = pd.w - 10.0 * floor(pd.w / 10.0) - 1.0;
+        if (style > 0.5) { continue; }
         let c = socket_centre(pd.xyz);
         let top = pd.xyz * HOLO_M;
         // Closest approach of the beam segment to the ray's line: the
@@ -395,7 +402,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The beams, up to where the ray stopped (TRON only: a JET dial sits
     // in its bowl). Saturating: a beam seen end-on is a bright point, not
     // a white-out.
-    if (ck.misc.w > 0.5 && ck.misc.y < 0.5) {
+    if (ck.misc.w > 0.5) {
         let reach = min(select(MAX_T, hit.d, hit.kind >= 0.0), 1.6);
         beams = beam_light(ray, reach);
     }

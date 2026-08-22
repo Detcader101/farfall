@@ -28,6 +28,28 @@ fn clamp_anchor(a: [f32; 2]) -> [f32; 2] {
     [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)]
 }
 
+/// One dial's own settings, over the cockpit-wide ones.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DialTweak {
+    /// Size, as a multiple of the stock dial.
+    pub size: f32,
+    /// Its own style, or the cockpit's.
+    pub style: Option<GaugeStyle>,
+    /// Stay lit / fade by relevance, or the cockpit's.
+    pub stay: Option<bool>,
+}
+
+impl DialTweak {
+    pub const DEFAULT: DialTweak = DialTweak {
+        size: 1.0,
+        style: None,
+        stay: None,
+    };
+}
+
+pub const DIAL_SIZE_MIN: f32 = 0.5;
+pub const DIAL_SIZE_MAX: f32 = 2.5;
+
 /// How the dials are shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GaugeStyle {
@@ -128,6 +150,8 @@ pub struct Settings {
     pub gauges_stay: bool,
     /// The design guide overlay.
     pub guide: bool,
+    /// Each dial's own settings, by [`Instrument`] index.
+    pub dials: [DialTweak; Instrument::ALL.len()],
     /// Spacing of the landing hoops, metres.
     pub landing_spacing_m: f32,
     /// Rings drawn around each body on the map, 0..=6.
@@ -158,6 +182,7 @@ impl Default for Settings {
             gauge_style: GaugeStyle::Tron,
             gauges_stay: false,
             guide: false,
+            dials: [DialTweak::DEFAULT; Instrument::ALL.len()],
             landing_spacing_m: 250.0,
             map_rings: 4,
             map_grid: true,
@@ -351,6 +376,40 @@ impl Settings {
                         ) {
                             s.bindings.bind(action, key);
                         }
+                    } else if let Some((name, field)) =
+                        k.strip_prefix("ui.").and_then(|rest| rest.split_once('.'))
+                    {
+                        // A dial's own setting: ui.<dial>.<field>.
+                        if let Some(inst) =
+                            Instrument::ALL.iter().copied().find(|i| i.key() == name)
+                        {
+                            let d = &mut s.dials[inst as usize];
+                            match field {
+                                "size" => {
+                                    if let Ok(f) = v.parse::<f32>() {
+                                        if f.is_finite() {
+                                            d.size = f.clamp(DIAL_SIZE_MIN, DIAL_SIZE_MAX);
+                                        }
+                                    }
+                                }
+                                "style" => {
+                                    d.style = if v == "auto" {
+                                        None
+                                    } else {
+                                        GaugeStyle::from_key(v).or(d.style)
+                                    }
+                                }
+                                "fade" => {
+                                    d.stay = match v {
+                                        "auto" => None,
+                                        "stay" => Some(true),
+                                        "fade" => Some(false),
+                                        _ => d.stay,
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
                     } else if let Some(name) = k.strip_prefix("ui.") {
                         let inst = Instrument::ALL.iter().copied().find(|i| i.key() == name);
                         // "slot at x,y": the slot, then the dragged anchor.
@@ -456,6 +515,26 @@ impl Settings {
                 None => out.push_str(&format!("ui.{} = {}\n", i.key(), self.layout.get(i).key())),
             }
         }
+        for i in Instrument::ALL {
+            let d = self.dials[i as usize];
+            if d != DialTweak::DEFAULT {
+                out.push_str(&format!("ui.{}.size = {:.2}\n", i.key(), d.size));
+                out.push_str(&format!(
+                    "ui.{}.style = {}\n",
+                    i.key(),
+                    d.style.map_or("auto", |st| st.key())
+                ));
+                out.push_str(&format!(
+                    "ui.{}.fade = {}\n",
+                    i.key(),
+                    match d.stay {
+                        None => "auto",
+                        Some(true) => "stay",
+                        Some(false) => "fade",
+                    }
+                ));
+            }
+        }
         out.push_str(&format!(
             "ui.safe-edge = {:.0}%\n",
             self.layout.safe_edge * 100.0
@@ -501,6 +580,12 @@ mod tests {
         s.gauge_style = GaugeStyle::Dial;
         s.gauges_stay = true;
         s.guide = true;
+        s.dials[Instrument::Speed as usize] = DialTweak {
+            size: 1.5,
+            style: Some(GaugeStyle::Jet),
+            stay: Some(true),
+        };
+        s.dials[Instrument::Gyro as usize].stay = Some(false);
         s.menu_anchor = [-0.25, 0.5];
         s.map_anchor = [0.125, -0.125];
         s.map_grid = false;

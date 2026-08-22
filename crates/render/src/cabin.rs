@@ -30,6 +30,15 @@ pub struct BlitUniforms {
 
 pub const UNIFORM_BYTES: u64 = std::mem::size_of::<CabinUniforms>() as u64;
 
+/// A dial's socket on the dash: where, in what style, how big.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Socket {
+    pub dir: Vec3,
+    /// 0 TRON, 1 JET, 2 DIAL.
+    pub style: u32,
+    pub size: f32,
+}
+
 /// The cabin as the pilot has it set.
 #[derive(Debug, Clone, Copy)]
 pub struct CabinLook {
@@ -58,13 +67,20 @@ impl CabinUniforms {
         head: Quat,
         sun_ship: Vec3,
         look: CabinLook,
-        sockets: &[Vec3],
+        sockets: &[Socket],
     ) -> Self {
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
         let mut pads = [[0.0; 4]; 4];
-        for (slot, d) in pads.iter_mut().zip(sockets.iter()) {
-            let d = d.normalize_or_zero();
-            *slot = [d.x, d.y, d.z, if d == Vec3::ZERO { 0.0 } else { 1.0 }];
+        for (slot, sk) in pads.iter_mut().zip(sockets.iter()) {
+            let d = sk.dir.normalize_or_zero();
+            // w packs "in use", the style and the size as exact integers:
+            // (style + 1) + 10 × round(size × 100).
+            let w = if d == Vec3::ZERO {
+                0.0
+            } else {
+                (sk.style.min(2) + 1) as f32 + 10.0 * (sk.size.clamp(0.25, 4.0) * 100.0).round()
+            };
+            *slot = [d.x, d.y, d.z, w];
         }
         Self {
             right: v4(head * Vec3::X, look.glow.clamp(0.0, 3.0)),
@@ -165,25 +181,32 @@ pub struct Placement {
 impl Placement {
     /// On the glass: no placement at all.
     pub const GLASS: Placement = Placement {
-        right: [0.0; 4],
+        right: [1.0, 0.0, 0.0, 1.0],
         up: [0.0; 4],
         fwd: [0.0; 4],
         centre: [0.0; 4],
     };
 
+    /// On the glass at this size (1 = stock).
+    pub fn glass_sized(size: f32) -> Placement {
+        let mut p = Placement::GLASS;
+        p.right[3] = size.clamp(0.25, 4.0);
+        p
+    }
+
     /// In the dash under the hologram's direction `dir` (ship frame), for
     /// a head turned by `head` and a camera of this tan(fov/2).
-    pub fn in_dash(head: Quat, tan_half_fov: f32, dir: Vec3) -> Option<Placement> {
+    pub fn in_dash(head: Quat, tan_half_fov: f32, dir: Vec3, size: f32) -> Option<Placement> {
         if !on_dash(dir) {
             return None;
         }
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
         let centre = socket_centre(dir) - DASH_N * 0.012;
         Some(Placement {
-            right: v4(head * Vec3::X, 0.0),
+            right: v4(head * Vec3::X, 1.0),
             up: v4(head * Vec3::Y, 0.0),
             fwd: v4(head * Vec3::NEG_Z, tan_half_fov),
-            centre: v4(centre, DIAL_SCALE_M),
+            centre: v4(centre, DIAL_SCALE_M * size.clamp(0.25, 4.0)),
         })
     }
 }
@@ -557,11 +580,25 @@ mod tests {
             thrust: [0.5, 2.0, -0.5, 0.0],
             style: 0,
         };
-        let sockets = [anchor_direction([0.7, -0.6], 0.55, 1.5), Vec3::ZERO];
+        let sockets = [
+            Socket {
+                dir: anchor_direction([0.7, -0.6], 0.55, 1.5),
+                style: 1,
+                size: 1.0,
+            },
+            Socket {
+                dir: Vec3::ZERO,
+                style: 0,
+                size: 1.0,
+            },
+        ];
         let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
         assert_eq!(&still.fwd[..3], &[0.0, 0.0, -1.0]);
         assert_eq!(still.misc[3], 2.0);
-        assert_eq!(still.pads[0][3], 1.0, "a placed dial gets a socket");
+        assert_eq!(
+            still.pads[0][3], 1002.0,
+            "a placed dial gets a socket: (JET + 1) + 10 × 100"
+        );
         assert_eq!(still.pads[1][3], 0.0, "an empty slot does not");
         assert!(still.pads[0][0] > 0.0 && still.pads[0][1] < 0.0 && still.pads[0][2] < 0.0);
         // Looking right: the forward ray swings toward +X in the ship's
@@ -585,21 +622,32 @@ mod tests {
         // A dial straight down-ahead sits in the dash; one up and away does not.
         let down = anchor_direction([0.0, -0.6], 0.55, 1.5);
         assert!(on_dash(down));
-        let place = Placement::in_dash(Quat::IDENTITY, 0.55, down).unwrap();
+        let place = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0).unwrap();
         assert!(
             place.centre[1] < -0.4 && place.centre[2] < -0.6,
             "{:?}",
             place.centre
         );
         assert_eq!(place.centre[3], DIAL_SCALE_M);
-        assert!(Placement::in_dash(Quat::IDENTITY, 0.55, Vec3::new(0.0, 0.8, -0.6)).is_none());
+        assert_eq!(
+            Placement::in_dash(Quat::IDENTITY, 0.55, down, 2.0)
+                .unwrap()
+                .centre[3],
+            DIAL_SCALE_M * 2.0
+        );
+        assert!(Placement::in_dash(Quat::IDENTITY, 0.55, Vec3::new(0.0, 0.8, -0.6), 1.0).is_none());
+        assert_eq!(Placement::glass_sized(1.5).right[3], 1.5);
         assert_eq!(UNIFORM_BYTES, 9 * 16);
         // Unchanged inputs compare equal (no clock inside), a turned head
         // is a moved view, a changed socket is not.
         let again = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
         assert_eq!(still, again);
         assert!(still.view_moved(&turned));
-        let other_sockets = [anchor_direction([-0.7, -0.6], 0.55, 1.5)];
+        let other_sockets = [Socket {
+            dir: anchor_direction([-0.7, -0.6], 0.55, 1.5),
+            style: 1,
+            size: 1.0,
+        }];
         let resocketed = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &other_sockets);
         assert!(!still.view_moved(&resocketed));
         assert_ne!(still, resocketed);

@@ -61,7 +61,9 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let aspect = gauge.a.w;
     let centre = canopy(gauge.b.zw, aspect);
     // A dial in the dash is seen in perspective: a wider quad to be safe.
-    let half = select(QUAD_HALF, QUAD_HALF * 1.8, gauge.p3.w > 0.0);
+    // On the glass, its own size (p0.w, 1 = stock).
+    let size = select(max(gauge.p0.w, 0.25), 1.8, gauge.p3.w > 0.0);
+    let half = QUAD_HALF * size;
     let xy = canopy_inverse(centre + corners[vi] * half, aspect);
     var out: VsOut;
     out.pos = vec4<f32>(xy, 0.0, 1.0);
@@ -135,7 +137,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // curvature — slightly bowed at screen edges, flat near centre.
     let anchor = gauge.b.zw;
     let in_dash = gauge.p3.w > 0.0;
-    var p = canopy(in.ndc, aspect) - canopy(anchor, aspect);
+    var p = (canopy(in.ndc, aspect) - canopy(anchor, aspect)) / max(gauge.p0.w, 0.25);
     if (in_dash) {
         // DIAL: the face lies in the dash; map this pixel's ray onto it.
         let duv = dial_plane_uv(in.ndc, aspect, gauge.p0, gauge.p1, gauge.p2, gauge.p3, DIAL_DASH_N);
@@ -168,6 +170,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Pixel footprint for AA, in gauge units.
     let aa = max(fwidth(p.x), 1e-5) * 0.9;
+    // A dial in the dash is a scaled object too: its face's radius scales
+    // with its size (the well in the cabin is sized to match).
 
     let value = max(gauge.a.x, 0.0);
     // Full scale already carries the range: base × m × 10^k, chosen on the

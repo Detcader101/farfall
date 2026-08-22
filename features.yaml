@@ -180,6 +180,19 @@ features:
     settings: [ui.gauge-style, ui.gauges, ui.guide, graphics.fov]
     e2e: FARFALL_BENCH_HEAD=10,-22 capture with jet + guide on — bowls, bezels, dials inside, ruled glass, reach rings, gaze reticle; FARFALL_BENCH_HEAD=8,-24 with dial — flush wells, bezels, faces foreshortened in the dash
 
+  - id: ship-fixed-glass
+    name: Glass anchors laid out in a reference projection (the FOV setting) and shown through the live FOV — dials stay fixed to the ship through throttle flare and warp, and scale like objects
+    state: tests-pass
+    tests: [crates/app/src/look.rs::a_wider_fov_pulls_a_ship_fixed_point_toward_the_centre]
+    e2e: needs a flight under throttle (bench cannot flare the FOV)
+
+  - id: design-mode
+    name: DESIGN mode (K) — guide on, look locked, the dial under the gaze selected with a card of its own settings; per-dial SIZE / STYLE / FADE saved individually (ui.<dial>.size/style/fade)
+    state: complete
+    tests: [crates/app/src/settings.rs::edits_round_trip, crates/render/src/cabin.rs]
+    settings: [ui.<dial>.size, ui.<dial>.style, ui.<dial>.fade]
+    e2e: FARFALL_BENCH_DESIGN=1 capture — per-dial bowls/wells at their own sizes, reach rings, gaze reticle
+
   - id: cabin-cached
     name: The cabin is re-marched only when the head, the light or a socket changes — small while moving, sharpened in four strips once still; thruster light drawn by the composite
     state: complete

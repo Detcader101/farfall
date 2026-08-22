@@ -70,9 +70,12 @@ const STAR_DENSITY: f64 = 1.0;
 /// How often the frame-time window is summarised to the log.
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 /// A glass anchor as the turned head sees it: the glass is a sphere about
-/// the pilot, so every element is re-projected, not slid (look.rs).
-fn on_glass(look: &Look, cam: &CameraFrame, a: [f32; 2]) -> [f32; 2] {
-    look.reproject(a, (cam.fov_y * 0.5).tan(), cam.aspect)
+/// the pilot, so every element is re-projected, not slid (look.rs). The
+/// anchors are laid out in a REFERENCE projection — the pilot's base field
+/// of view, head centred — and shown through the live one, so a throttle
+/// flare or a warp does not slide them over the ship.
+fn on_glass(look: &Look, cam: &CameraFrame, ref_tan: f32, a: [f32; 2]) -> [f32; 2] {
+    look.reproject_from(a, ref_tan, (cam.fov_y * 0.5).tan(), cam.aspect)
 }
 
 /// Where a dial sits and whether it shows: a hidden instrument keeps any
@@ -83,10 +86,11 @@ fn slot_of(
     layout: &cockpit::Layout,
     look: &Look,
     cam: &CameraFrame,
+    ref_tan: f32,
     i: Instrument,
 ) -> ([f32; 2], f32) {
     match layout.anchor(i) {
-        Some(a) => (on_glass(look, cam, a), 1.0),
+        Some(a) => (on_glass(look, cam, ref_tan, a), 1.0),
         None => ([0.0, 0.0], 0.0),
     }
 }
@@ -97,6 +101,14 @@ const TRAJECTORY_HORIZON_S: f32 = 560.0;
 /// `px_canopy`: the bitmap is 128 font pixels across.
 fn text_width_ndc(px_canopy: f32) -> f32 {
     128.0 * px_canopy
+}
+
+/// A dial's settings once its own are laid over the cockpit's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DialEffective {
+    size: f32,
+    style: settings::GaugeStyle,
+    stay: bool,
 }
 
 /// Something on the glass the gaze can pick up.
@@ -167,6 +179,7 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
+///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
 ///   FARFALL_BENCH_THRUST=m,p,y,r (benchmark only: force main thrust 0..1 and
 ///                           pitch/yaw/roll demands -1..1, for the plumes)
 ///   FARFALL_BENCH_FULL=1   (benchmark only: borderless fullscreen, the real
@@ -390,27 +403,37 @@ impl Gpu {
         let h = self.scene.size().1 as f32;
         let sway = game.holo_sway.sway();
         let look = &game.look;
-        let stay = game.settings.gauges_stay;
-        let fade = |level: f32| if stay { 1.0 } else { level };
-        let style = game.settings.gauge_style;
-        let jet = style == settings::GaugeStyle::Jet;
-        // DIAL: each dial set into the dash under its hologram's direction.
+        let ref_tan = game.ref_tan();
+        // Each dial's own style, size and fade, over the cockpit's.
+        let tweak = |i: Instrument| game.dial_tweak(i);
+        let fade = |i: Instrument, level: f32| if tweak(i).stay { 1.0 } else { level };
+        let jet = |i: Instrument| tweak(i).style == settings::GaugeStyle::Jet;
+        // Placement: in the dash for a DIAL (under its hologram's
+        // direction, at its size), else on the glass at its size — which
+        // also shrinks with a wider live field of view, as a fixed object
+        // would.
         let t = (cam.fov_y * 0.5).tan();
         let head = look.rotation();
+        let fov_scale = ref_tan / t.max(1e-4);
         let placed = |i: Instrument| -> Option<farfall_render::cabin::Placement> {
-            if style != settings::GaugeStyle::Dial {
-                return None;
+            let tw = tweak(i);
+            if tw.style == settings::GaugeStyle::Dial {
+                let a = layout.anchor(i)?;
+                let dir = farfall_render::cabin::anchor_direction(a, ref_tan, cam.aspect);
+                if let Some(p) = farfall_render::cabin::Placement::in_dash(head, t, dir, tw.size) {
+                    return Some(p);
+                }
             }
-            let a = layout.anchor(i)?;
-            let dir = farfall_render::cabin::anchor_direction(a, t, cam.aspect);
-            farfall_render::cabin::Placement::in_dash(head, t, dir)
+            Some(farfall_render::cabin::Placement::glass_sized(
+                tw.size * fov_scale,
+            ))
         };
-        let (speed_anchor, speed_on) = slot_of(layout, look, cam, Instrument::Speed);
+        let (speed_anchor, speed_on) = slot_of(layout, look, cam, ref_tan, Instrument::Speed);
         self.passes.gauge.update(
             &self.queue,
             &GaugeUniforms::speed(
                 game.state.ship.vel_mps.length() as f32,
-                fade(game.gauge_fade.level()) * speed_on,
+                fade(Instrument::Speed, game.gauge_fade.level()) * speed_on,
                 cam.time_s,
                 aspect,
                 h,
@@ -419,40 +442,40 @@ impl Gpu {
                 game.mach(),
                 game.mach_alert.level() * speed_on,
             )
-            .jet(jet)
+            .jet(jet(Instrument::Speed))
             .placed(placed(Instrument::Speed)),
         );
-        let (alt_anchor, alt_on) = slot_of(layout, look, cam, Instrument::Altitude);
+        let (alt_anchor, alt_on) = slot_of(layout, look, cam, ref_tan, Instrument::Altitude);
         self.passes.alt_gauge.update(
             &self.queue,
             &GaugeUniforms::altitude(
                 altitude_m,
-                fade(game.alt_fade.level()) * alt_on,
+                fade(Instrument::Altitude, game.alt_fade.level()) * alt_on,
                 cam.time_s,
                 aspect,
                 h,
                 alt_anchor,
                 sway,
             )
-            .jet(jet)
+            .jet(jet(Instrument::Altitude))
             .placed(placed(Instrument::Altitude)),
         );
-        let (g_anchor, g_on) = slot_of(layout, look, cam, Instrument::GForce);
+        let (g_anchor, g_on) = slot_of(layout, look, cam, ref_tan, Instrument::GForce);
         self.passes.g_gauge.update(
             &self.queue,
             &GaugeUniforms::g_force(
                 game.felt_g,
-                fade(game.g_fade.level()) * g_on,
+                fade(Instrument::GForce, game.g_fade.level()) * g_on,
                 cam.time_s,
                 aspect,
                 h,
                 g_anchor,
                 sway,
             )
-            .jet(jet)
+            .jet(jet(Instrument::GForce))
             .placed(placed(Instrument::GForce)),
         );
-        let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, Instrument::Gyro);
+        let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, ref_tan, Instrument::Gyro);
         self.passes.gyro.update(
             &self.queue,
             &GyroUniforms::new(
@@ -469,23 +492,22 @@ impl Gpu {
         // The design guide: the glass ruled, every shown dial's anchor and
         // reach, the gaze.
         {
-            let t = (cam.fov_y * 0.5).tan();
-            let gaze = look.gaze(t, cam.aspect);
+            let gaze = look.gaze(ref_tan, cam.aspect);
             let anchors: Vec<[f32; 2]> = Instrument::ALL
                 .iter()
                 .copied()
                 .filter(|i| i.slotted())
                 .filter_map(|i| layout.anchor(i))
-                .map(|a| on_glass(look, cam, a))
+                .map(|a| on_glass(look, cam, ref_tan, a))
                 .take(4)
                 .collect();
             self.passes.guide.update(
                 &self.queue,
                 &GuideUniforms::new(
                     aspect,
-                    game.settings.guide,
+                    game.settings.guide || game.design,
                     layout.safe_edge,
-                    on_glass(look, cam, gaze),
+                    on_glass(look, cam, ref_tan, gaze),
                     DRAG_REACH,
                     look.engaged(),
                     &anchors,
@@ -749,6 +771,10 @@ struct Game {
     jumps: u32,
     /// Bench: thrust and RCS demands forced for a capture.
     bench_thrust: Option<[f32; 4]>,
+    /// DESIGN mode (K): lay the cockpit out — the guide on, the look
+    /// locked, the dial under the gaze selected and its own settings on a
+    /// card beside it.
+    design: bool,
     /// LANDING mode (G): the hoops close up and judge the touchdown.
     landing: bool,
     /// The predicted touchdown, refreshed each frame in landing mode.
@@ -827,6 +853,7 @@ impl Game {
                 let xs: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                 (xs.len() == 4).then(|| [xs[0], xs[1], xs[2], xs[3]])
             }),
+            design: false,
             landing: false,
             touchdown: None,
             cursor: None,
@@ -936,7 +963,7 @@ impl Game {
 
     /// Any panel is up: the world waits and the keys go to it.
     fn panel_open(&self) -> bool {
-        self.menu.open || self.map_panel.open
+        self.menu.open || self.map_panel.open || self.design
     }
 
     /// M: the map up or down. One panel at a time.
@@ -972,6 +999,16 @@ impl Game {
     /// Where the text block's top-left sits this frame: the DRIVE panel
     /// beside the map, the settings panel at its anchor, else the readout.
     fn text_anchor(&self, aspect: f32, text_w: f32) -> [f32; 2] {
+        if self.design {
+            // Beside the selected dial, or where the readout lives.
+            return match self
+                .design_target(aspect)
+                .and_then(|i| self.settings.layout.anchor(i))
+            {
+                Some(a) => [a[0] + 0.2, a[1] + 0.12],
+                None => self.settings.layout.inset(HUD_TEXT_ANCHOR),
+            };
+        }
         if self.map_open() {
             self.drive_text_anchor(aspect, text_w)
         } else if self.menu.open {
@@ -993,13 +1030,20 @@ impl Game {
         use farfall_render::cabin::{anchor_direction, CabinLook, CabinUniforms};
         let ship_inv = self.state.ship.orient.as_quat().inverse();
         let sun_ship = ship_inv * self.params.sun.dir.as_vec3();
-        let t = (cam.fov_y * 0.5).tan();
-        let sockets: Vec<glam::Vec3> = Instrument::ALL
+        let ref_tan = self.ref_tan();
+        let sockets: Vec<farfall_render::cabin::Socket> = Instrument::ALL
             .iter()
             .copied()
             .filter(|i| i.slotted())
-            .filter_map(|i| self.settings.layout.anchor(i))
-            .map(|a| anchor_direction(a, t, cam.aspect))
+            .filter_map(|i| self.settings.layout.anchor(i).map(|a| (i, a)))
+            .map(|(i, a)| {
+                let tw = self.dial_tweak(i);
+                farfall_render::cabin::Socket {
+                    dir: anchor_direction(a, ref_tan, cam.aspect),
+                    style: tw.style.index(),
+                    size: tw.size,
+                }
+            })
             .take(4)
             .collect();
         let look = CabinLook {
@@ -1020,6 +1064,121 @@ impl Game {
         let cu = CabinUniforms::new(cam, self.look.rotation(), sun_ship, look, &sockets);
         let bu = cu.blit(look);
         (cu, bu)
+    }
+
+    /// tan(fov/2) of the reference projection the glass is laid out in.
+    fn ref_tan(&self) -> f32 {
+        (self.settings.fov.to_radians() * 0.5).tan()
+    }
+
+    /// A dial's effective settings: its own over the cockpit's.
+    fn dial_tweak(&self, i: Instrument) -> DialEffective {
+        let tw = self.settings.dials[i as usize];
+        DialEffective {
+            size: tw.size,
+            style: tw.style.unwrap_or(self.settings.gauge_style),
+            stay: tw.stay.unwrap_or(self.settings.gauges_stay),
+        }
+    }
+
+    /// K: design mode on or off. On: the look locks so the gaze can be
+    /// steered, the guide comes up; off: everything is saved.
+    fn toggle_design(&mut self) {
+        self.design = !self.design;
+        if self.design {
+            if !self.look.engaged() {
+                self.look.toggle_lock();
+            }
+            self.menu.open = false;
+            self.map_panel.open = false;
+        } else {
+            self.settings.save();
+        }
+        self.input.release_all();
+        log::info!("design mode {}", if self.design { "on" } else { "off" });
+    }
+
+    /// The dial under the gaze (within reach), in design mode.
+    fn design_target(&self, aspect: f32) -> Option<Instrument> {
+        let gaze = self.look.gaze(self.ref_tan(), aspect);
+        let mut best: Option<(Instrument, f32)> = None;
+        for i in Instrument::ALL.iter().copied().filter(|i| i.slotted()) {
+            if let Some(a) = self.settings.layout.anchor(i) {
+                let dx = (a[0] - gaze[0]) * aspect;
+                let dy = a[1] - gaze[1];
+                let d = (dx * dx + dy * dy).sqrt();
+                if d < DRAG_REACH && best.is_none_or(|b| d < b.1) {
+                    best = Some((i, d));
+                }
+            }
+        }
+        best.map(|b| b.0)
+    }
+
+    /// A key in design mode: the selected dial's own settings.
+    fn design_key(&mut self, code: KeyCode, aspect: f32) {
+        let Some(i) = self.design_target(aspect) else {
+            return;
+        };
+        let d = &mut self.settings.dials[i as usize];
+        match code {
+            KeyCode::Equal | KeyCode::NumpadAdd => {
+                d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+            }
+            KeyCode::Minus | KeyCode::NumpadSubtract => {
+                d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+            }
+            KeyCode::Tab => {
+                d.style = match d.style {
+                    None => Some(settings::GaugeStyle::Tron),
+                    Some(settings::GaugeStyle::Tron) => Some(settings::GaugeStyle::Jet),
+                    Some(settings::GaugeStyle::Jet) => Some(settings::GaugeStyle::Dial),
+                    Some(settings::GaugeStyle::Dial) => None,
+                };
+            }
+            KeyCode::KeyF => {
+                d.stay = match d.stay {
+                    None => Some(true),
+                    Some(true) => Some(false),
+                    Some(false) => None,
+                };
+            }
+            KeyCode::Backspace => *d = settings::DialTweak::DEFAULT,
+            _ => {}
+        }
+    }
+
+    /// The design card: the selected dial's settings, a few short lines,
+    /// and the keys.
+    fn design_text(&self, aspect: f32) -> Vec<String> {
+        match self.design_target(aspect) {
+            Some(i) => {
+                let d = self.settings.dials[i as usize];
+                let eff = self.dial_tweak(i);
+                vec![
+                    format!("[{}]", i.name()),
+                    format!("SIZE {:.2}X", d.size),
+                    format!(
+                        "STYLE {}{}",
+                        eff.style.name(),
+                        if d.style.is_none() { " (AUTO)" } else { "" }
+                    ),
+                    format!(
+                        "{}{}",
+                        if eff.stay { "STAY" } else { "FADE" },
+                        if d.stay.is_none() { " (AUTO)" } else { "" }
+                    ),
+                    "- = SIZE  TAB STYLE  F FADE".to_string(),
+                    "BKSP RESET  CLICK DRAG  K DONE".to_string(),
+                ]
+            }
+            None => vec![
+                "[DESIGN]".to_string(),
+                "LOOK AT A DIAL".to_string(),
+                "CLICK DRAG TO MOVE".to_string(),
+                "K DONE".to_string(),
+            ],
+        }
     }
 
     /// G: landing mode on or off.
@@ -1407,8 +1566,8 @@ impl Game {
         if !self.look.engaged() {
             return false;
         }
-        let t = (cam.fov_y * 0.5).tan();
-        let gaze = self.look.gaze(t, cam.aspect);
+        // The glass is laid out in the reference projection.
+        let gaze = self.look.gaze(self.ref_tan(), cam.aspect);
         // A panel that is up is what the gaze can take: the map by its
         // pane, the settings by its text block.
         if self.map_open() {
@@ -1470,8 +1629,7 @@ impl Game {
             self.end_drag();
             return;
         }
-        let t = (cam.fov_y * 0.5).tan();
-        let gaze = self.look.gaze(t, cam.aspect);
+        let gaze = self.look.gaze(self.ref_tan(), cam.aspect);
         let at = [gaze[0] + off[0], gaze[1] + off[1]];
         let clamp = |a: [f32; 2]| [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)];
         match i {
@@ -1756,6 +1914,9 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_MAP").is_ok() {
             game.toggle_map();
         }
+        if game.frozen && std::env::var("FARFALL_BENCH_DESIGN").is_ok() {
+            game.toggle_design();
+        }
         if game.frozen && std::env::var("FARFALL_BENCH_LAND").is_ok() {
             game.toggle_landing();
             game.touchdown = landing::predict(&game.params, &game.state.ship, game.state.time_s);
@@ -1810,6 +1971,16 @@ impl ApplicationHandler for App {
                     return;
                 };
                 let pressed = event.state == ElementState::Pressed;
+                if game.design {
+                    if pressed && !event.repeat {
+                        let aspect = gpu.config.width as f32 / gpu.config.height as f32;
+                        match code {
+                            KeyCode::KeyK | KeyCode::Escape => game.toggle_design(),
+                            other => game.design_key(other, aspect),
+                        }
+                    }
+                    return;
+                }
                 if game.panel_open() {
                     // M closes the map from anywhere in it.
                     if pressed && !event.repeat && code == KeyCode::KeyM {
@@ -1879,6 +2050,10 @@ impl ApplicationHandler for App {
                     }
                     KeyCode::KeyJ if pressed && !event.repeat => game.engage_warp(),
                     KeyCode::KeyG if pressed && !event.repeat => game.toggle_landing(),
+                    KeyCode::KeyK if pressed && !event.repeat => {
+                        game.toggle_design();
+                        gpu.set_look_cursor(game.look.engaged());
+                    }
                     KeyCode::KeyL if pressed && !event.repeat => {
                         game.look.toggle_lock();
                         gpu.set_look_cursor(game.look.engaged());
@@ -2043,7 +2218,12 @@ impl ApplicationHandler for App {
                                     gpu.map
                                         .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
                                 }
-                                if capture_text && game.map_open() {
+                                if capture_text && game.design {
+                                    gpu.text.clear();
+                                    for (row, line) in game.design_text(aspect).iter().enumerate() {
+                                        gpu.text.draw(0, row * 6, line);
+                                    }
+                                } else if capture_text && game.map_open() {
                                     game.map_panel.render(&mut gpu.text, &game.settings);
                                 } else if capture_text && game.menu.open {
                                     game.menu.render(&mut gpu.text, &game.settings);
@@ -2072,6 +2252,7 @@ impl ApplicationHandler for App {
                                         on_glass(
                                             &game.look,
                                             &cam,
+                                            game.ref_tan(),
                                             game.text_anchor(aspect, text_width_ndc(px_canopy)),
                                         ),
                                         px_canopy,
@@ -2261,6 +2442,7 @@ impl ApplicationHandler for App {
                     on_glass(
                         &game.look,
                         &cam,
+                        game.ref_tan(),
                         game.text_anchor(aspect, text_width_ndc(px_canopy)),
                     ),
                     px_canopy,
@@ -2423,7 +2605,13 @@ impl ApplicationHandler for App {
                         landing: game.landing_text(),
                     },
                 );
-                if game.map_open() {
+                if game.design {
+                    gpu.text.clear();
+                    let aspect = gpu.config.width as f32 / gpu.config.height as f32;
+                    for (row, line) in game.design_text(aspect).iter().enumerate() {
+                        gpu.text.draw(0, row * 6, line);
+                    }
+                } else if game.map_open() {
                     gpu.text.clear();
                     game.map_panel.render(&mut gpu.text, &game.settings);
                 } else if game.menu.open {
