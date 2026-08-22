@@ -174,11 +174,11 @@ features:
     e2e: FARFALL_BENCH_HEAD=-40,-30 capture; fullscreen spin still 16.6 ms
 
   - id: gauge-styles
-    name: GAUGE STYLE tron/jet (jet — spherical bowls hollowed into the dash with bezels, glass glints), GAUGES fade/stay, GUIDE overlay, FOV setting, placement past the locked view
+    name: GAUGE STYLE tron/jet/dial (jet — spherical bowls hollowed into the dash with bezels, glass glints; dial — real instruments set flush into the dash, the face drawn in the dash's plane with true perspective), GAUGES fade/stay, GUIDE overlay, FOV setting, placement past the locked view
     state: complete
     tests: [crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense, crates/render/src/cabin.rs, crates/app/src/settings.rs, crates/app/src/menu.rs]
     settings: [ui.gauge-style, ui.gauges, ui.guide, graphics.fov]
-    e2e: FARFALL_BENCH_HEAD=10,-22 capture with jet + guide on — bowls, bezels, dials inside, ruled glass, reach rings, gaze reticle
+    e2e: FARFALL_BENCH_HEAD=10,-22 capture with jet + guide on — bowls, bezels, dials inside, ruled glass, reach rings, gaze reticle; FARFALL_BENCH_HEAD=8,-24 with dial — flush wells, bezels, faces foreshortened in the dash
 
   - id: cabin-cached
     name: The cabin is re-marched only when the head, the light or a socket changes — small while moving, sharpened in four strips once still; thruster light drawn by the composite

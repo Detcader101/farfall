@@ -17,6 +17,10 @@
 // cockpit feel seamless instead of cluttered.
 
 struct Gauge {
+    // The glass numbers (64 bytes), then the placement for a DIAL in the
+    // dash: p0 right, p1 up, p2 fwd (w: tan half fov) of the head in ship
+    // frame, p3 the dial's centre (w: metres per drawing unit; 0 means the
+    // instrument is on the glass, not in the dash).
     // x: arc value, y: visibility 0..1, z: time (s), w: aspect (w/h)
     a: vec4<f32>,
     // x: arc full-scale value, y: target height in px, zw: anchor in NDC
@@ -28,6 +32,10 @@ struct Gauge {
     // xy: hologram sway (canopy units), z: mach-alert flash 0..1,
     // w: mach number (negative: no mach readout on this instrument).
     d: vec4<f32>,
+    p0: vec4<f32>,
+    p1: vec4<f32>,
+    p2: vec4<f32>,
+    p3: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> gauge: Gauge;
@@ -52,7 +60,9 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     );
     let aspect = gauge.a.w;
     let centre = canopy(gauge.b.zw, aspect);
-    let xy = canopy_inverse(centre + corners[vi] * QUAD_HALF, aspect);
+    // A dial in the dash is seen in perspective: a wider quad to be safe.
+    let half = select(QUAD_HALF, QUAD_HALF * 1.8, gauge.p3.w > 0.0);
+    let xy = canopy_inverse(centre + corners[vi] * half, aspect);
     var out: VsOut;
     out.pos = vec4<f32>(xy, 0.0, 1.0);
     out.ndc = xy;
@@ -124,7 +134,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // wherever the shell puts it, and its shape inherits the shell's local
     // curvature — slightly bowed at screen edges, flat near centre.
     let anchor = gauge.b.zw;
-    let p = canopy(in.ndc, aspect) - canopy(anchor, aspect);
+    let in_dash = gauge.p3.w > 0.0;
+    var p = canopy(in.ndc, aspect) - canopy(anchor, aspect);
+    if (in_dash) {
+        // DIAL: the face lies in the dash; map this pixel's ray onto it.
+        let duv = dial_plane_uv(in.ndc, aspect, gauge.p0, gauge.p1, gauge.p2, gauge.p3, DIAL_DASH_N);
+        if (duv.z < 0.5) {
+            discard;
+        }
+        p = duv.xy;
+    }
     let radius = 0.155;
 
     // Early out: everything (shock ring included) lives inside this.
@@ -138,7 +157,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // each layer by its depth. Under rotation the layers disagree slightly,
     // and that disagreement is parallax: flat SDFs become a thing with
     // shape. At rest all three collapse to the same place.
-    let sway = gauge.d.xy;
+    // A dial in the dash does not sway: it is bolted down.
+    let sway = select(gauge.d.xy, vec2<f32>(0.0), in_dash);
     let p_face = p - sway * 0.18;
     let p_mid = p - sway * 0.55;
     let p_near = p - sway * 1.0;
@@ -383,9 +403,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Scanlines: static spatial modulation — hologram texture without
     // temporal noise (P1: no shimmer, no smear).
-    let scan = 0.90 + 0.10 * sin(in.ndc.y * gauge.b.y * 1.7);
+    let scan = select(0.90 + 0.10 * sin(in.ndc.y * gauge.b.y * 1.7), 1.0, in_dash);
 
-    let glass = canopy_glass(in.ndc, aspect);
+    let glass = select(canopy_glass(in.ndc, aspect), 1.0, in_dash);
 
     // The whole instrument surges with the flash, then settles.
     let surge = 1.0 + 1.1 * alert * alert;

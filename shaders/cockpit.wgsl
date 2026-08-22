@@ -24,7 +24,7 @@ struct Cockpit {
     // xyz: the head's forward axis in ship frame (-Z is the nose). w: tan(fov/2)
     fwd: vec4<f32>,
     // x: aspect, y: gauge style (0 TRON sockets and beams, 1 JET bowls
-    // and bezels), z: on 0..1, w: number of sockets
+    // and bezels, 2 DIAL flush wells), z: on 0..1, w: number of sockets
     misc: vec4<f32>,
     // xyz: the Sun's direction in ship frame. w: exposure
     sun: vec4<f32>,
@@ -144,7 +144,17 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
         let lq = p - c;
         let along = dot(lq, DASH_N);
         let radial = length(lq - DASH_N * along);
-        if (ck.misc.y > 0.5) {
+        if (ck.misc.y > 1.5) {
+            // DIAL: a shallow flush well, the instrument's face set into
+            // the dash a finger deep behind a thin bezel — the face itself
+            // is drawn in this plane by the gauge pass.
+            // The cut reaches above the surface too, or it is flush and cuts
+            // nothing; below it, two and a half centimetres of well.
+            let well = max(radial - 0.205, abs(along - 0.01) - 0.06);
+            furniture = max(furniture, -well);
+            let bezel = length(vec2<f32>(radial - 0.215, along - 0.012)) - 0.016;
+            rim = min(rim, bezel);
+        } else if (ck.misc.y > 0.5) {
             // JET: a spherical bowl hollowed into the dash, the classic
             // round instrument's well, with a raised bezel at its mouth
             // the hologram sits in. The dial is drawn after the cabin, on

@@ -384,6 +384,8 @@ pub struct GaugeUniforms {
     /// xy: hologram sway (canopy units), z: mach-alert flash 0..1,
     /// w: mach number (negative: this instrument has no mach readout)
     d: [f32; 4],
+    /// A DIAL's placement in the dash; [`Placement::GLASS`] on the glass.
+    place: crate::cabin::Placement,
 }
 
 impl GaugeUniforms {
@@ -424,6 +426,7 @@ impl GaugeUniforms {
             ],
             c: [digits as f32, dot as f32, 0.0, range.packed()],
             d: [sway[0], sway[1], alert.clamp(0.0, 1.0), mach],
+            place: crate::cabin::Placement::GLASS,
         }
     }
 
@@ -458,6 +461,7 @@ impl GaugeUniforms {
                 range.packed(),
             ],
             d: [sway[0], sway[1], 0.0, -1.0],
+            place: crate::cabin::Placement::GLASS,
         }
     }
 
@@ -497,11 +501,18 @@ impl GaugeUniforms {
                 range.packed(),
             ],
             d: [sway[0], sway[1], 0.0, -1.0],
+            place: crate::cabin::Placement::GLASS,
         }
     }
 }
 
 impl GaugeUniforms {
+    /// Set into the dash: the face drawn in the dash's plane.
+    pub fn placed(mut self, place: Option<crate::cabin::Placement>) -> Self {
+        self.place = place.unwrap_or(crate::cabin::Placement::GLASS);
+        self
+    }
+
     /// JET style: glass glint and face ring, for a dial set in a bowl.
     pub fn jet(mut self, jet: bool) -> Self {
         let sense = self.c[2] % 2.0;
@@ -520,12 +531,13 @@ pub fn gauge_pass(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> GaugePass {
-    GaugePass::new(
+    GaugePass::new_sized(
         device,
         target_format,
         sample_count,
         "gauge",
         crate::shaders::GAUGE,
+        std::mem::size_of::<GaugeUniforms>() as u64,
     )
 }
 

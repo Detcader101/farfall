@@ -50,6 +50,15 @@ pub struct GyroUniforms {
     b: [f32; 4],
     c: [f32; 4],
     d: [f32; 4],
+    place: crate::cabin::Placement,
+}
+
+impl GyroUniforms {
+    /// Set into the dash: the ball drawn in the dash's plane.
+    pub fn placed(mut self, place: Option<crate::cabin::Placement>) -> Self {
+        self.place = place.unwrap_or(crate::cabin::Placement::GLASS);
+        self
+    }
 }
 
 impl GyroUniforms {
@@ -67,6 +76,7 @@ impl GyroUniforms {
             b: [att.drift, height_px, anchor_ndc[0], anchor_ndc[1]],
             c: [sway[0], sway[1], time_s, 0.0],
             d: [0.0; 4],
+            place: crate::cabin::Placement::GLASS,
         }
     }
 }
@@ -143,12 +153,13 @@ pub fn gyro_pass(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> InstrumentPass {
-    InstrumentPass::new(
+    InstrumentPass::new_sized(
         device,
         target_format,
         sample_count,
         "gyro",
         crate::shaders::GYRO,
+        std::mem::size_of::<GyroUniforms>() as u64,
     )
 }
 

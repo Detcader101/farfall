@@ -25,6 +25,12 @@ struct Gyro {
     // xy: hologram sway. z: time s. w: unused.
     c: vec4<f32>,
     d: vec4<f32>,
+    // DIAL placement, as the gauges: right, up, fwd (w tan half fov), centre
+    // (w metres per unit; 0 = on the glass).
+    p0: vec4<f32>,
+    p1: vec4<f32>,
+    p2: vec4<f32>,
+    p3: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> gyro: Gyro;
@@ -47,7 +53,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     );
     let aspect = gyro.a.w;
     let centre = canopy(gyro.b.zw, aspect);
-    let xy = canopy_inverse(centre + corners[vi] * QUAD_HALF, aspect);
+    let half = select(QUAD_HALF, QUAD_HALF * 1.8, gyro.p3.w > 0.0);
+    let xy = canopy_inverse(centre + corners[vi] * half, aspect);
     var out: VsOut;
     out.pos = vec4<f32>(xy, 0.0, 1.0);
     out.ndc = xy;
@@ -72,11 +79,19 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     let aspect = gyro.a.w;
-    let p = canopy(in.ndc, aspect) - canopy(gyro.b.zw, aspect);
+    let in_dash = gyro.p3.w > 0.0;
+    var p = canopy(in.ndc, aspect) - canopy(gyro.b.zw, aspect);
+    if (in_dash) {
+        let duv = dial_plane_uv(in.ndc, aspect, gyro.p0, gyro.p1, gyro.p2, gyro.p3, DIAL_DASH_N);
+        if (duv.z < 0.5) {
+            discard;
+        }
+        p = duv.xy;
+    }
     if (length(p) > RADIUS * 1.35) {
         discard;
     }
-    let sway = gyro.c.xy;
+    let sway = select(gyro.c.xy, vec2<f32>(0.0), in_dash);
     let p_face = p - sway * 0.18;
     let p_mid = p - sway * 0.55;
     let p_near = p - sway * 1.0;
@@ -185,8 +200,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     let cyan = vec3<f32>(0.22, 0.85, 1.0);
     let amber = vec3<f32>(1.0, 0.62, 0.18);
-    let scan = 0.90 + 0.10 * sin(in.ndc.y * gyro.b.y * 1.7);
-    let glass = canopy_glass(in.ndc, aspect);
+    let scan = select(0.90 + 0.10 * sin(in.ndc.y * gyro.b.y * 1.7), 1.0, in_dash);
+    let glass = select(canopy_glass(in.ndc, aspect), 1.0, in_dash);
     var colour = cyan * glow
         + vec3<f32>(1.0) * hot * 0.9
         + amber * warn

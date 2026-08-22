@@ -314,3 +314,38 @@ fn sd_fighter_hull(q: vec3<f32>) -> f32 {
     // exactly that reason.
     return max(outer, -min(cavity, glass));
 }
+
+// --------------------------------------------------------------- dial plane
+//
+// A DIAL-style instrument lies flat in the dash, a real face under glass:
+// the pixel's ray (in the ship's frame, turned by the pilot's head) is
+// intersected with the dial's plane and the hit is mapped into the dial's
+// own 2D coordinates, scaled so the dial's drawing radius is the same
+// number it is on the glass. Returns (u, v, hit): hit < 0.5 means the ray
+// never meets the plane from the front.
+//
+// `place0..3`: right, up, fwd of the head in ship frame (w of fwd: tan of
+// half the fov), and the dial's centre (w: metres per drawing unit).
+// The dial's basis: U along the ship's x, V = N x U on the dash plane.
+fn dial_plane_uv(ndc: vec2<f32>, aspect: f32, right: vec4<f32>, up: vec4<f32>,
+                 fwd: vec4<f32>, centre: vec4<f32>, normal: vec3<f32>) -> vec3<f32> {
+    let tan_half = fwd.w;
+    let ray = normalize(fwd.xyz + right.xyz * (ndc.x * tan_half * aspect) + up.xyz * (ndc.y * tan_half));
+    let denom = dot(ray, normal);
+    if (denom > -1e-4) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+    let t = dot(centre.xyz, normal) / denom;
+    if (t <= 0.0) {
+        return vec3<f32>(0.0, 0.0, 0.0);
+    }
+    let hit = ray * t - centre.xyz;
+    let u_axis = vec3<f32>(1.0, 0.0, 0.0);
+    let v_axis = normalize(cross(normal, u_axis));
+    let scale = max(centre.w, 1e-4);
+    return vec3<f32>(dot(hit, u_axis) / scale, dot(hit, v_axis) / scale, 1.0);
+}
+
+// The dash's plane, shared with the cockpit: a point on it and its normal.
+const DIAL_DASH_C: vec3<f32> = vec3<f32>(0.0, -0.50, -1.05);
+const DIAL_DASH_N: vec3<f32> = vec3<f32>(0.0, 0.9563, 0.2924);

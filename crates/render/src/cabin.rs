@@ -42,9 +42,9 @@ pub struct CabinLook {
     /// Main thrust 0..1 (the plumes) and the pitch / yaw / roll demands
     /// -1..1 (the RCS puffs).
     pub thrust: [f32; 4],
-    /// JET style: bowls and bezels in the dash instead of sockets and
-    /// beams.
-    pub jet: bool,
+    /// Gauge style: 0 TRON (sockets and beams), 1 JET (bowls and bezels),
+    /// 2 DIAL (flush wells, the face in the dash).
+    pub style: u32,
 }
 
 impl CabinUniforms {
@@ -74,7 +74,7 @@ impl CabinUniforms {
             // about it changes, and time would be change every frame.
             misc: [
                 cam.aspect,
-                if look.jet { 1.0 } else { 0.0 },
+                look.style.min(2) as f32,
                 if look.on { 1.0 } else { 0.0 },
                 sockets.len().min(4) as f32,
             ],
@@ -111,6 +111,81 @@ impl CabinUniforms {
 
 fn quantise(v: Vec3, step: f32) -> Vec3 {
     (v / step).round() * step
+}
+
+/// The dash's plane in the ship's frame — the same numbers as DASH_C /
+/// DASH_N in cockpit.wgsl and DIAL_DASH_* in common.wgsl.
+pub const DASH_C: Vec3 = Vec3::new(0.0, -0.50, -1.05);
+pub const DASH_N: Vec3 = Vec3::new(0.0, 0.9563, 0.2924);
+/// Metres of dash per drawing unit of a dial: a dial's drawing radius is
+/// 0.155 units; at this scale that is a 20 cm instrument.
+pub const DIAL_SCALE_M: f32 = 1.3;
+/// Where the holograms float (the cockpit's HOLO_M).
+pub const HOLO_M: f32 = 1.05;
+
+/// Where a hologram's direction meets the dash (the socket, the well), or
+/// a point just under the hologram if it misses the dash — the mirror of
+/// socket_centre() in cockpit.wgsl.
+pub fn socket_centre(dir: Vec3) -> Vec3 {
+    let denom = dir.dot(DASH_N);
+    if denom < -1e-4 {
+        let t = DASH_C.dot(DASH_N) / denom;
+        let p = dir * t;
+        if t > 0.3 && t < 2.2 && p.x.abs() < 1.0 {
+            return p;
+        }
+    }
+    dir * HOLO_M - Vec3::new(0.0, 0.16, 0.0)
+}
+
+/// Does this direction's instrument sit in the dash at all (a DIAL needs a
+/// dash to be set into; one that misses it stays on the glass)?
+pub fn on_dash(dir: Vec3) -> bool {
+    let denom = dir.dot(DASH_N);
+    if denom >= -1e-4 {
+        return false;
+    }
+    let t = DASH_C.dot(DASH_N) / denom;
+    let p = dir * t;
+    t > 0.3 && t < 2.2 && p.x.abs() < 1.0
+}
+
+/// A DIAL's placement in the dash, for the instrument shaders: the head's
+/// basis in the ship's frame and the dial's centre, a hair under the dash
+/// surface so the face sits in its well.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Placement {
+    right: [f32; 4],
+    up: [f32; 4],
+    fwd: [f32; 4],
+    centre: [f32; 4],
+}
+
+impl Placement {
+    /// On the glass: no placement at all.
+    pub const GLASS: Placement = Placement {
+        right: [0.0; 4],
+        up: [0.0; 4],
+        fwd: [0.0; 4],
+        centre: [0.0; 4],
+    };
+
+    /// In the dash under the hologram's direction `dir` (ship frame), for
+    /// a head turned by `head` and a camera of this tan(fov/2).
+    pub fn in_dash(head: Quat, tan_half_fov: f32, dir: Vec3) -> Option<Placement> {
+        if !on_dash(dir) {
+            return None;
+        }
+        let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
+        let centre = socket_centre(dir) - DASH_N * 0.012;
+        Some(Placement {
+            right: v4(head * Vec3::X, 0.0),
+            up: v4(head * Vec3::Y, 0.0),
+            fwd: v4(head * Vec3::NEG_Z, tan_half_fov),
+            centre: v4(centre, DIAL_SCALE_M),
+        })
+    }
 }
 
 /// A glass anchor (canopy NDC with the head centred, for a camera of this
@@ -480,7 +555,7 @@ mod tests {
             metal: 0.8,
             on: true,
             thrust: [0.5, 2.0, -0.5, 0.0],
-            jet: false,
+            style: 0,
         };
         let sockets = [anchor_direction([0.7, -0.6], 0.55, 1.5), Vec3::ZERO];
         let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
@@ -497,7 +572,7 @@ mod tests {
             metal: -1.0,
             on: true,
             thrust: [9.0, 0.0, 0.0, 0.0],
-            jet: true,
+            style: 2,
         };
         let turned = CabinUniforms::new(&cam, Quat::from_rotation_y(-0.5), Vec3::Y, loud, &[]);
         assert!(turned.fwd[0] > 0.4, "{:?}", turned.fwd);
@@ -506,7 +581,18 @@ mod tests {
         assert_eq!(still.misc[2], 1.0);
         assert_eq!(still.blit(look).thrust, [0.5, 1.0, -0.5, 0.0]);
         assert_eq!(turned.blit(loud).thrust[0], 1.0);
-        assert_eq!(turned.misc[1], 1.0);
+        assert_eq!(turned.misc[1], 2.0);
+        // A dial straight down-ahead sits in the dash; one up and away does not.
+        let down = anchor_direction([0.0, -0.6], 0.55, 1.5);
+        assert!(on_dash(down));
+        let place = Placement::in_dash(Quat::IDENTITY, 0.55, down).unwrap();
+        assert!(
+            place.centre[1] < -0.4 && place.centre[2] < -0.6,
+            "{:?}",
+            place.centre
+        );
+        assert_eq!(place.centre[3], DIAL_SCALE_M);
+        assert!(Placement::in_dash(Quat::IDENTITY, 0.55, Vec3::new(0.0, 0.8, -0.6)).is_none());
         assert_eq!(UNIFORM_BYTES, 9 * 16);
         // Unchanged inputs compare equal (no clock inside), a turned head
         // is a moved view, a changed socket is not.

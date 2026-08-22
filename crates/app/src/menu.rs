@@ -142,7 +142,7 @@ impl Item {
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
             Item::Fov => format!("{:.0} DEG", s.fov),
-            Item::GaugeStyle => if s.gauge_jet { "JET" } else { "TRON" }.to_string(),
+            Item::GaugeStyle => s.gauge_style.name().to_string(),
             Item::GaugesStay => if s.gauges_stay { "STAY" } else { "FADE" }.to_string(),
             Item::Guide => if s.guide { "ON" } else { "OFF" }.to_string(),
             Item::MapRings => s.map_rings.to_string(),
@@ -443,7 +443,7 @@ impl Menu {
                 MenuEvent::Changed(Change::Layout)
             }
             Item::GaugeStyle => {
-                s.gauge_jet = !s.gauge_jet;
+                s.gauge_style = s.gauge_style.next(forward);
                 MenuEvent::Changed(Change::Layout)
             }
             Item::GaugesStay => {

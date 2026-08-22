@@ -57,6 +57,38 @@ impl InstrumentPass {
         )
     }
 
+    /// An additive instrument with a bigger block of numbers (a dial that
+    /// may be placed in the dash carries its placement too).
+    pub fn new_sized(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        sample_count: u32,
+        label: &'static str,
+        shader_src: &str,
+        uniform_bytes: u64,
+    ) -> Self {
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::OVER,
+        };
+        Self::with_blend(
+            device,
+            target_format,
+            sample_count,
+            label,
+            shader_src,
+            PaneTarget {
+                blend: additive,
+                uniform_bytes,
+                write_mask: wgpu::ColorWrites::COLOR,
+            },
+        )
+    }
+
     /// A pane: premultiplied over, for something that darkens what it sits
     /// on (the map).
     pub fn new_pane(

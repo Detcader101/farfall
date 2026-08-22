@@ -392,7 +392,19 @@ impl Gpu {
         let look = &game.look;
         let stay = game.settings.gauges_stay;
         let fade = |level: f32| if stay { 1.0 } else { level };
-        let jet = game.settings.gauge_jet;
+        let style = game.settings.gauge_style;
+        let jet = style == settings::GaugeStyle::Jet;
+        // DIAL: each dial set into the dash under its hologram's direction.
+        let t = (cam.fov_y * 0.5).tan();
+        let head = look.rotation();
+        let placed = |i: Instrument| -> Option<farfall_render::cabin::Placement> {
+            if style != settings::GaugeStyle::Dial {
+                return None;
+            }
+            let a = layout.anchor(i)?;
+            let dir = farfall_render::cabin::anchor_direction(a, t, cam.aspect);
+            farfall_render::cabin::Placement::in_dash(head, t, dir)
+        };
         let (speed_anchor, speed_on) = slot_of(layout, look, cam, Instrument::Speed);
         self.passes.gauge.update(
             &self.queue,
@@ -407,7 +419,8 @@ impl Gpu {
                 game.mach(),
                 game.mach_alert.level() * speed_on,
             )
-            .jet(jet),
+            .jet(jet)
+            .placed(placed(Instrument::Speed)),
         );
         let (alt_anchor, alt_on) = slot_of(layout, look, cam, Instrument::Altitude);
         self.passes.alt_gauge.update(
@@ -421,7 +434,8 @@ impl Gpu {
                 alt_anchor,
                 sway,
             )
-            .jet(jet),
+            .jet(jet)
+            .placed(placed(Instrument::Altitude)),
         );
         let (g_anchor, g_on) = slot_of(layout, look, cam, Instrument::GForce);
         self.passes.g_gauge.update(
@@ -435,7 +449,8 @@ impl Gpu {
                 g_anchor,
                 sway,
             )
-            .jet(jet),
+            .jet(jet)
+            .placed(placed(Instrument::GForce)),
         );
         let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, Instrument::Gyro);
         self.passes.gyro.update(
@@ -448,7 +463,8 @@ impl Gpu {
                 gyro_anchor,
                 sway,
                 cam.time_s,
-            ),
+            )
+            .placed(placed(Instrument::Gyro)),
         );
         // The design guide: the glass ruled, every shown dial's anchor and
         // reach, the gaze.
@@ -984,17 +1000,13 @@ impl Game {
             .filter(|i| i.slotted())
             .filter_map(|i| self.settings.layout.anchor(i))
             .map(|a| anchor_direction(a, t, cam.aspect))
-            .take(if std::env::var("FARFALL_NO_SOCKETS").is_ok() {
-                0
-            } else {
-                4
-            })
+            .take(4)
             .collect();
         let look = CabinLook {
             glow: self.settings.cockpit_glow,
             metal: self.settings.cockpit_hull,
             on: self.settings.cockpit_frame,
-            jet: self.settings.gauge_jet,
+            style: self.settings.gauge_style.index(),
             thrust: self.bench_thrust.unwrap_or_else(|| {
                 let c = self.input.controls(self.assist);
                 [

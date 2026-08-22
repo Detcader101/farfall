@@ -28,6 +28,60 @@ fn clamp_anchor(a: [f32; 2]) -> [f32; 2] {
     [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)]
 }
 
+/// How the dials are shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GaugeStyle {
+    /// Holograms on the glass over lit sockets with beams.
+    Tron,
+    /// Spherical bowls hollowed into the dash, the hologram in each.
+    Jet,
+    /// Real instruments set flush into the dash, faces in its plane.
+    Dial,
+}
+
+impl GaugeStyle {
+    pub const ALL: [GaugeStyle; 3] = [GaugeStyle::Tron, GaugeStyle::Jet, GaugeStyle::Dial];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            GaugeStyle::Tron => "tron",
+            GaugeStyle::Jet => "jet",
+            GaugeStyle::Dial => "dial",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            GaugeStyle::Tron => "TRON",
+            GaugeStyle::Jet => "JET",
+            GaugeStyle::Dial => "DIAL",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|s| s.key() == k)
+    }
+
+    pub fn next(self, forward: bool) -> Self {
+        let i = Self::ALL.iter().position(|&s| s == self).unwrap_or(0);
+        let n = Self::ALL.len();
+        Self::ALL[if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        }]
+    }
+
+    /// The cabin's number for it.
+    pub fn index(self) -> u32 {
+        match self {
+            GaugeStyle::Tron => 0,
+            GaugeStyle::Jet => 1,
+            GaugeStyle::Dial => 2,
+        }
+    }
+}
+
 /// Field of view limits, degrees.
 pub const FOV_MIN: f32 = 50.0;
 pub const FOV_MAX: f32 = 110.0;
@@ -67,9 +121,9 @@ pub struct Settings {
     pub cockpit_res: f32,
     /// Base field of view, degrees (vertical).
     pub fov: f32,
-    /// Gauge style: false = TRON holograms on the glass; true = JET —
-    /// spherical bowls hollowed into the dash with a bezel and a glass.
-    pub gauge_jet: bool,
+    /// Gauge style: TRON holograms on the glass; JET bowls hollowed into
+    /// the dash; DIAL real instruments set flush into the dash.
+    pub gauge_style: GaugeStyle,
     /// Gauges stay lit (true) or fade by relevance (false).
     pub gauges_stay: bool,
     /// The design guide overlay.
@@ -101,7 +155,7 @@ impl Default for Settings {
             cockpit_hull: 0.92,
             cockpit_res: 0.5,
             fov: 70.0,
-            gauge_jet: false,
+            gauge_style: GaugeStyle::Tron,
             gauges_stay: false,
             guide: false,
             landing_spacing_m: 250.0,
@@ -226,11 +280,11 @@ impl Settings {
                         }
                     }
                 }
-                "ui.gauge-style" => match v {
-                    "jet" => s.gauge_jet = true,
-                    "tron" => s.gauge_jet = false,
-                    _ => {}
-                },
+                "ui.gauge-style" => {
+                    if let Some(style) = GaugeStyle::from_key(v) {
+                        s.gauge_style = style;
+                    }
+                }
                 "ui.gauges" => match v {
                     "stay" => s.gauges_stay = true,
                     "fade" => s.gauges_stay = false,
@@ -370,10 +424,7 @@ impl Settings {
         out.push_str(&format!("cockpit.hull = {:.2}\n", self.cockpit_hull));
         out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
         out.push_str(&format!("graphics.fov = {:.0}\n", self.fov));
-        out.push_str(&format!(
-            "ui.gauge-style = {}\n",
-            if self.gauge_jet { "jet" } else { "tron" }
-        ));
+        out.push_str(&format!("ui.gauge-style = {}\n", self.gauge_style.key()));
         out.push_str(&format!(
             "ui.gauges = {}\n",
             if self.gauges_stay { "stay" } else { "fade" }
@@ -447,7 +498,7 @@ mod tests {
         s.cockpit_hull = 0.25;
         s.cockpit_res = 1.0;
         s.fov = 85.0;
-        s.gauge_jet = true;
+        s.gauge_style = GaugeStyle::Dial;
         s.gauges_stay = true;
         s.guide = true;
         s.menu_anchor = [-0.25, 0.5];
