@@ -1,25 +1,26 @@
-//! The system map's projection: the world at log scale, for `map.wgsl`.
+//! The system map's projection and camera: the world at log scale in three
+//! dimensions, for `map.wgsl`.
 //!
 //! The Moon is 60 planet radii out and the Sun 23,000: a linear map is
 //! either all planet or all nothing. One map unit per decade of distance
-//! from the planet, from 10⁵ m (inside the first ring) outward, directions
-//! taken in the Moon's orbital plane (XZ).
+//! from the planet, from 10⁵ m (inside the first ring) outward, in the
+//! direction the thing really lies — so height above the Moon's orbital
+//! plane (XZ) survives, and the map can show it on a pole. A camera orbits
+//! the planet; the pilot drags it round and zooms it.
 
-use glam::DVec3;
+use glam::{DQuat, DVec3, Vec3};
 
-/// Distance, metres, at the map's origin ring.
+/// Distance, metres, at the map's origin.
 pub const INNER_M: f64 = 1.0e5;
 
-/// A world position in the planet's frame to map units.
-pub fn project(pos: DVec3) -> [f32; 2] {
-    let flat = DVec3::new(pos.x, 0.0, pos.z);
-    let d = flat.length();
+/// A world position in the planet's frame to map units, all three axes.
+pub fn project3(pos: DVec3) -> Vec3 {
+    let d = pos.length();
     if d < 1.0 {
-        return [0.0, 0.0];
+        return Vec3::ZERO;
     }
-    let r = (pos.length() / INNER_M).log10().max(0.0);
-    let dir = flat / d;
-    [(dir.x * r) as f32, (dir.z * r) as f32]
+    let r = (d / INNER_M).log10().max(0.0);
+    ((pos / d) * r).as_vec3()
 }
 
 /// A distance to a map radius.
@@ -47,41 +48,133 @@ pub fn pane_rect(aspect: f32) -> [f32; 3] {
     [RIGHT - half_w, CENTRE_Y, half_w]
 }
 
+pub const RINGS_MAX: u32 = 6;
+pub const ZOOM_MIN: f32 = 0.35;
+pub const ZOOM_MAX: f32 = 6.0;
+
+/// The orbiting camera: yaw round the planet, pitch above the plane, zoom.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapView {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub zoom: f32,
+}
+
+impl Default for MapView {
+    fn default() -> Self {
+        Self {
+            yaw: 0.6,
+            pitch: 0.55,
+            zoom: 1.0,
+        }
+    }
+}
+
+impl MapView {
+    /// Radians per pixel of drag.
+    const DRAG_RATE: f32 = 0.006;
+
+    /// A drag of the mouse: right turns the map one way, up tips it over.
+    pub fn drag(&mut self, dx: f32, dy: f32) {
+        self.yaw += dx * Self::DRAG_RATE;
+        self.pitch = (self.pitch + dy * Self::DRAG_RATE).clamp(-1.45, 1.45);
+    }
+
+    /// Wheel notches (or key taps): positive zooms in.
+    pub fn zoom_by(&mut self, notches: f32) {
+        self.zoom = (self.zoom * 1.15f32.powf(notches)).clamp(ZOOM_MIN, ZOOM_MAX);
+    }
+
+    /// Eye position and basis, looking at the planet from `distance /
+    /// zoom` away.
+    pub fn camera(&self) -> (Vec3, Vec3, Vec3, Vec3) {
+        let dist = 9.0 / self.zoom;
+        let (sy, cy) = self.yaw.sin_cos();
+        let (sp, cp) = self.pitch.sin_cos();
+        let eye = Vec3::new(cp * sy, sp, cp * cy) * dist;
+        let fwd = (-eye).normalize();
+        let mut right = Vec3::Y.cross(fwd);
+        if right.length() < 1e-4 {
+            right = Vec3::X;
+        }
+        let right = right.normalize();
+        let up = fwd.cross(right).normalize();
+        (eye, right, up, fwd)
+    }
+}
+
+/// Everything the shader needs, 14 vec4s.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MapUniforms {
-    a: [f32; 4],
-    b: [f32; 4],
-    c: [f32; 4],
-    d: [f32; 4],
+    eye: [f32; 4],
+    right: [f32; 4],
+    up: [f32; 4],
+    fwd: [f32; 4],
+    pane: [f32; 4],
+    planet: [f32; 4],
+    moon: [f32; 4],
+    sun: [f32; 4],
+    ship: [f32; 4],
+    ship_right: [f32; 4],
+    ship_up: [f32; 4],
+    ship_fwd: [f32; 4],
+    dest: [f32; 4],
+    misc: [f32; 4],
+}
+
+pub const UNIFORM_BYTES: u64 = std::mem::size_of::<MapUniforms>() as u64;
+
+/// The world as the map needs it.
+pub struct MapWorld {
+    pub ship: DVec3,
+    pub ship_orient: DQuat,
+    pub moon: DVec3,
+    pub sun: DVec3,
+    pub dest_centre: DVec3,
+    pub dest_arrival_m: f64,
+}
+
+/// What the pilot has set.
+pub struct MapLook {
+    pub view: MapView,
+    pub rings: u32,
+    pub grid: bool,
+    pub visibility: f32,
+    pub aspect: f32,
+    pub time_s: f32,
 }
 
 impl MapUniforms {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        ship: DVec3,
-        moon: DVec3,
-        sun: DVec3,
-        dest_centre: DVec3,
-        dest_arrival_m: f64,
-        visibility: f32,
-        aspect: f32,
-        time_s: f32,
-    ) -> Self {
-        let s = project(ship);
-        let m = project(moon);
-        let su = project(sun);
-        let dc = project(dest_centre);
-        // The ring of arrival, as a map radius about the destination: in
-        // log space a ring does not stay a ring, so this is indicative —
-        // the log-radius of the arrival distance, shown around the body.
-        let ring = radius(dest_arrival_m).max(0.05);
-        let pane = pane_rect(aspect);
+    pub fn new(w: &MapWorld, l: &MapLook) -> Self {
+        let (eye, right, up, fwd) = l.view.camera();
+        let tan_half = (40.0f32).to_radians().tan();
+        let pane = pane_rect(l.aspect);
+        let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
+        let q = w.ship_orient.as_quat();
+        // The ring of arrival as a map radius about the destination: in log
+        // space a ring does not stay a ring, so this is indicative.
+        let ring = radius(w.dest_arrival_m).max(0.04);
         Self {
-            a: [s[0], s[1], visibility.clamp(0.0, 1.0), aspect],
-            b: [m[0], m[1], su[0], su[1]],
-            c: [dc[0], dc[1], ring, time_s],
-            d: [radius(moon.length()), pane[0], pane[1], pane[2]],
+            eye: v4(eye, l.visibility.clamp(0.0, 1.0)),
+            right: v4(right, 0.0),
+            up: v4(up, 0.0),
+            fwd: v4(fwd, tan_half),
+            pane: [pane[0], pane[1], pane[2], l.aspect],
+            planet: [0.0, 0.0, 0.0, 0.10],
+            moon: v4(project3(w.moon), 0.05),
+            sun: v4(project3(w.sun), 0.22),
+            ship: v4(project3(w.ship), 0.16),
+            ship_right: v4(q * Vec3::X, 0.0),
+            ship_up: v4(q * Vec3::Y, 0.0),
+            ship_fwd: v4(q * Vec3::NEG_Z, 0.0),
+            dest: v4(project3(w.dest_centre), ring),
+            misc: [
+                l.time_s,
+                l.rings.min(RINGS_MAX) as f32,
+                radius(w.moon.length()),
+                if l.grid { 1.0 } else { 0.0 },
+            ],
         }
     }
 }
@@ -92,13 +185,16 @@ mod tests {
 
     #[test]
     fn decades_are_units_and_directions_are_kept() {
-        assert_eq!(project(DVec3::new(INNER_M, 0.0, 0.0)), [0.0, 0.0]);
-        let p = project(DVec3::new(INNER_M * 10.0, 0.0, 0.0));
-        assert!((p[0] - 1.0).abs() < 1e-6 && p[1].abs() < 1e-6);
-        let q = project(DVec3::new(0.0, 0.0, INNER_M * 1000.0));
-        assert!(q[0].abs() < 1e-6 && (q[1] - 3.0).abs() < 1e-6);
+        assert_eq!(project3(DVec3::new(INNER_M, 0.0, 0.0)), Vec3::ZERO);
+        let p = project3(DVec3::new(INNER_M * 10.0, 0.0, 0.0));
+        assert!((p - Vec3::X).length() < 1e-6);
+        let q = project3(DVec3::new(0.0, 0.0, INNER_M * 1000.0));
+        assert!((q - Vec3::Z * 3.0).length() < 1e-6);
+        // Height survives: a body above the plane maps above the plane.
+        let h = project3(DVec3::new(0.6, 0.8, 0.0) * INNER_M * 100.0);
+        assert!((h.y - 1.6).abs() < 1e-5 && (h.x - 1.2).abs() < 1e-5, "{h}");
         // Inside the first ring: at the origin, never negative.
-        assert_eq!(project(DVec3::new(50.0, 0.0, 0.0)), [0.0, 0.0]);
+        assert_eq!(project3(DVec3::new(50.0, 0.0, 0.0)), Vec3::ZERO);
     }
 
     #[test]
@@ -108,7 +204,6 @@ mod tests {
             let hh = hw * aspect;
             assert!((cx + hw - 0.90).abs() < 1e-6, "not right-anchored");
             assert!(cx - hw >= 0.0, "reaches into the text at {aspect}");
-            // Above the bottom-rim instruments, below the top edge.
             assert!(cy - hh >= -0.36 && cy + hh <= 0.95, "{aspect}: {cy} {hh}");
         }
         assert_eq!(pane_rect(f32::NAN), pane_rect(1.0));
@@ -119,5 +214,58 @@ mod tests {
         let a = radius(3.844e6);
         let b = radius(1.496e9);
         assert!(a > 1.0 && b > a && b < 5.0, "{a} {b}");
+    }
+
+    #[test]
+    fn the_camera_orbits_the_planet_and_zooms_within_limits() {
+        let mut v = MapView::default();
+        let (eye, right, up, fwd) = v.camera();
+        assert!(
+            (fwd - (-eye).normalize()).length() < 1e-6,
+            "not looking at the planet"
+        );
+        assert!(right.dot(up).abs() < 1e-5 && right.dot(fwd).abs() < 1e-5);
+        assert!(up.y > 0.0, "camera upside down");
+        let d0 = eye.length();
+        v.zoom_by(3.0);
+        assert!(v.camera().0.length() < d0, "zoom in did not come closer");
+        v.zoom_by(100.0);
+        assert_eq!(v.zoom, ZOOM_MAX);
+        v.zoom_by(-1000.0);
+        assert_eq!(v.zoom, ZOOM_MIN);
+        // Pitch is bounded short of the poles; yaw is free.
+        v.drag(0.0, 1.0e5);
+        assert!(v.pitch <= 1.45);
+        let y = v.yaw;
+        v.drag(100.0, 0.0);
+        assert!(v.yaw > y);
+    }
+
+    #[test]
+    fn uniforms_are_fourteen_vec4s_and_carry_the_attitude() {
+        assert_eq!(UNIFORM_BYTES, 14 * 16);
+        let w = MapWorld {
+            ship: DVec3::new(1.0e5 * 10.0, 0.0, 0.0),
+            ship_orient: DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2),
+            moon: DVec3::new(0.0, 0.0, 3.844e6),
+            sun: DVec3::new(0.62, 0.42, -0.66) * 1.496e9,
+            dest_centre: DVec3::ZERO,
+            dest_arrival_m: 2.0e5,
+        };
+        let l = MapLook {
+            view: MapView::default(),
+            rings: 99,
+            grid: true,
+            visibility: 2.0,
+            aspect: 1.5,
+            time_s: 3.0,
+        };
+        let u = MapUniforms::new(&w, &l);
+        assert_eq!(u.eye[3], 1.0);
+        assert_eq!(u.misc[1], RINGS_MAX as f32);
+        assert!(u.sun[1] > 0.0, "the Sun sits above the plane");
+        // Nose (-Z) turned about +Y by 90°: points along -X.
+        assert!((u.ship_fwd[0] + 1.0).abs() < 1e-6, "{:?}", u.ship_fwd);
+        assert!((u.ship[0] - 1.0).abs() < 1e-6);
     }
 }

@@ -34,6 +34,10 @@ pub struct Settings {
     pub look_sensitivity: f32,
     /// Hoop diameter, as a multiple of the stock size.
     pub hoop_size: f32,
+    /// Rings drawn around each body on the map, 0..=6.
+    pub map_rings: u32,
+    /// The map's reference grid.
+    pub map_grid: bool,
     /// The wormhole drive's destination and safe distance.
     pub plan: Plan,
 }
@@ -48,6 +52,8 @@ impl Default for Settings {
             layout: Layout::default(),
             look_sensitivity: 1.0,
             hoop_size: 1.0,
+            map_rings: 4,
+            map_grid: true,
             plan: Plan::default(),
         }
     }
@@ -138,6 +144,16 @@ impl Settings {
                         }
                     }
                 }
+                "map.rings" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        s.map_rings = n.min(crate::map::RINGS_MAX);
+                    }
+                }
+                "map.grid" => match v {
+                    "on" => s.map_grid = true,
+                    "off" => s.map_grid = false,
+                    _ => {}
+                },
                 "ui.hoop-size" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -220,6 +236,11 @@ impl Settings {
             self.look_sensitivity
         ));
         out.push_str(&format!("ui.hoop-size = {:.2}\n", self.hoop_size));
+        out.push_str(&format!("map.rings = {}\n", self.map_rings));
+        out.push_str(&format!(
+            "map.grid = {}\n",
+            if self.map_grid { "on" } else { "off" }
+        ));
         out.push_str(&format!("warp.destination = {}\n", self.plan.dest.key()));
         out.push_str(&format!("warp.safe-radii = {:.3}\n", self.plan.safe_radii));
         for i in Instrument::ALL {
@@ -269,6 +290,8 @@ mod tests {
         s.layout.set_free(Instrument::Speed, [0.125, -0.5]);
         s.look_sensitivity = 1.75;
         s.hoop_size = 2.5;
+        s.map_rings = 2;
+        s.map_grid = false;
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);
         assert_eq!(Settings::parse(&s.render()), s);

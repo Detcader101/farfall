@@ -69,6 +69,8 @@ enum Item {
     Slot(Instrument),
     SafeEdge,
     HoopSize,
+    MapRings,
+    MapGrid,
     LookSens,
     Destination,
     SafeDist,
@@ -88,6 +90,8 @@ impl Item {
             Item::Slot(i) => i.name(),
             Item::SafeEdge => "SAFE EDGE",
             Item::HoopSize => "HOOP SIZE",
+            Item::MapRings => "BODY RINGS",
+            Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
             Item::Destination => "DESTINATION",
             Item::SafeDist => "SAFE DISTANCE",
@@ -110,6 +114,8 @@ impl Item {
             },
             Item::SafeEdge => format!("{:.0}%", s.layout.safe_edge * 100.0),
             Item::HoopSize => format!("{:.2}x", s.hoop_size),
+            Item::MapRings => s.map_rings.to_string(),
+            Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
             Item::Destination => s.plan.dest.name().to_string(),
             Item::SafeDist => format!("{:.2} R", s.plan.safe_radii),
@@ -175,7 +181,13 @@ impl Menu {
                 v.push(Item::HoopSize);
                 v
             }
-            Page::Map => vec![Item::Destination, Item::SafeDist, Item::Engage],
+            Page::Map => vec![
+                Item::Destination,
+                Item::SafeDist,
+                Item::Engage,
+                Item::MapRings,
+                Item::MapGrid,
+            ],
         }
     }
 
@@ -334,6 +346,19 @@ impl Menu {
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Engage => MenuEvent::Nothing,
+            Item::MapRings => {
+                let n = crate::map::RINGS_MAX + 1;
+                s.map_rings = if forward {
+                    (s.map_rings + 1) % n
+                } else {
+                    (s.map_rings + n - 1) % n
+                };
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::MapGrid => {
+                s.map_grid = !s.map_grid;
+                MenuEvent::Changed(Change::Layout)
+            }
             Item::HoopSize => {
                 let step = if forward { 0.25 } else { -0.25 };
                 let next = (s.hoop_size + step).clamp(HOOP_SIZE_MIN, HOOP_SIZE_MAX);
@@ -409,7 +434,7 @@ impl Menu {
         } else {
             match self.page {
                 Page::Controls => "TAB PAGE  ENTER BIND  ESC BACK",
-                Page::Map => "TAB PAGE  < > SET  ENTER ENGAGE",
+                Page::Map => "TAB PAGE  < > SET  ENTER ENGAGE  DRAG TURN  WHEEL ZOOM",
                 _ => "TAB PAGE  < > ADJUST  ESC BACK",
             }
         };

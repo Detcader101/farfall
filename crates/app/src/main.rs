@@ -581,6 +581,12 @@ struct Game {
     /// A dial being dragged by the gaze: which, and where it sits relative
     /// to the point the pilot is looking at.
     drag: Option<(Instrument, [f32; 2])>,
+    /// The map's orbiting camera.
+    map_view: map::MapView,
+    /// Mouse: last cursor position and whether the left button is down,
+    /// for dragging the map round.
+    cursor: Option<(f32, f32)>,
+    left_down: bool,
     /// The wormhole drive's sequence.
     warp: Warp,
     /// Felt acceleration over the last sim step, g, and the meter's fade.
@@ -644,6 +650,9 @@ impl Game {
             horizon_fade: HorizonFade::new(),
             look: Look::new(),
             drag: None,
+            map_view: map::MapView::default(),
+            cursor: None,
+            left_down: false,
             warp: Warp::new(),
             felt_g: 0.0,
             g_fade: GForceFade::new(),
@@ -686,22 +695,27 @@ impl Game {
         )
     }
 
-    /// The system map, from the plan.
+    /// The system map, from the plan and the pilot's view of it.
     fn map_uniforms(&self, aspect: f32, time_s: f32) -> map::MapUniforms {
         let [_, moon, sun] = self.params.bodies(self.state.time_s);
         let dest = self.settings.plan.dest;
-        let centre = dest.centre(&self.params, self.state.time_s);
-        let arrival = dest.radius_m(&self.params) + self.settings.plan.safe_m(&self.params);
-        map::MapUniforms::new(
-            self.state.ship.pos_m,
-            moon.centre,
-            sun.centre,
-            centre,
-            arrival,
-            if self.menu.map_open() { 1.0 } else { 0.0 },
+        let world = map::MapWorld {
+            ship: self.state.ship.pos_m,
+            ship_orient: self.state.ship.orient,
+            moon: moon.centre,
+            sun: sun.centre,
+            dest_centre: dest.centre(&self.params, self.state.time_s),
+            dest_arrival_m: dest.radius_m(&self.params) + self.settings.plan.safe_m(&self.params),
+        };
+        let look = map::MapLook {
+            view: self.map_view,
+            rings: self.settings.map_rings,
+            grid: self.settings.map_grid,
+            visibility: if self.menu.map_open() { 1.0 } else { 0.0 },
             aspect,
             time_s,
-        )
+        };
+        map::MapUniforms::new(&world, &look)
     }
 
     /// The path's world-fixed marks, from the odometer and the settings.
@@ -1309,12 +1323,13 @@ impl App {
         // is always native resolution and single-sampled however low the scene
         // scale goes (P1: the readout must never soften).
         let hud = HudPass::new(&device, config.format, 1);
-        let map = InstrumentPass::new_pane(
+        let map = InstrumentPass::new_pane_sized(
             &device,
             config.format,
             1,
             "map",
             farfall_render::shaders::MAP,
+            map::UNIFORM_BYTES,
         );
 
         window.request_redraw();
@@ -1409,6 +1424,14 @@ impl ApplicationHandler for App {
                 };
                 let pressed = event.state == ElementState::Pressed;
                 if game.menu.open {
+                    // Map zoom from the keyboard, for a mouse with no wheel.
+                    if pressed && game.menu.map_open() {
+                        match code {
+                            KeyCode::Equal | KeyCode::NumpadAdd => game.map_view.zoom_by(1.0),
+                            KeyCode::Minus | KeyCode::NumpadSubtract => game.map_view.zoom_by(-1.0),
+                            _ => {}
+                        }
+                    }
                     if pressed && !event.repeat {
                         match game.menu.key(code, &mut game.settings) {
                             MenuEvent::Changed(change) => {
@@ -1489,18 +1512,38 @@ impl ApplicationHandler for App {
                     game.end_drag();
                 }
             }
-            // Left button while looking: drag the dial under the gaze.
+            // Left button: on the map, drag it round; while looking, drag
+            // the dial under the gaze.
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
             } => {
-                if state == ElementState::Pressed {
+                game.left_down = state == ElementState::Pressed;
+                if game.left_down && !game.menu.open {
                     let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                     let cam = game.camera(aspect);
                     game.begin_drag(&cam);
-                } else {
+                } else if !game.left_down {
                     game.end_drag();
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let now = (position.x as f32, position.y as f32);
+                if let Some(last) = game.cursor {
+                    if game.left_down && game.menu.map_open() {
+                        game.map_view.drag(now.0 - last.0, now.1 - last.1);
+                    }
+                }
+                game.cursor = Some(now);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if game.menu.map_open() {
+                    let notches = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+                    };
+                    game.map_view.zoom_by(notches);
                 }
             }
             // A key held while the window loses focus never sees its release

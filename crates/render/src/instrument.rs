@@ -11,6 +11,7 @@ pub struct InstrumentPass {
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    uniform_bytes: u64,
 }
 
 /// Every instrument's uniform block is four vec4s. The shaders agree on the
@@ -41,6 +42,7 @@ impl InstrumentPass {
             label,
             shader_src,
             additive,
+            UNIFORM_BYTES,
         )
     }
 
@@ -60,6 +62,28 @@ impl InstrumentPass {
             label,
             shader_src,
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            UNIFORM_BYTES,
+        )
+    }
+
+    /// A pane with a bigger block of numbers than a dial needs (the 3D map
+    /// carries a camera, four bodies and a ship).
+    pub fn new_pane_sized(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        sample_count: u32,
+        label: &'static str,
+        shader_src: &str,
+        uniform_bytes: u64,
+    ) -> Self {
+        Self::with_blend(
+            device,
+            target_format,
+            sample_count,
+            label,
+            shader_src,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            uniform_bytes,
         )
     }
 
@@ -70,6 +94,7 @@ impl InstrumentPass {
         label: &'static str,
         shader_src: &str,
         blend: wgpu::BlendState,
+        uniform_bytes: u64,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(label),
@@ -77,7 +102,7 @@ impl InstrumentPass {
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
-            size: UNIFORM_BYTES,
+            size: uniform_bytes,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -140,17 +165,19 @@ impl InstrumentPass {
             pipeline,
             uniforms,
             bind_group,
+            uniform_bytes,
         }
     }
 
-    /// Upload this instrument's numbers. Any 64-byte Pod block will do; the
-    /// shader decides what the lanes mean.
+    /// Upload this instrument's numbers. Any Pod block of the size the pass
+    /// was made with will do; the shader decides what the lanes mean.
     pub fn update<T: Pod>(&self, queue: &wgpu::Queue, uniforms: &T) {
         let bytes = bytemuck::bytes_of(uniforms);
         assert_eq!(
             bytes.len() as u64,
-            UNIFORM_BYTES,
-            "instrument uniforms must be 64 bytes"
+            self.uniform_bytes,
+            "instrument uniforms must be {} bytes",
+            self.uniform_bytes
         );
         queue.write_buffer(&self.uniforms, 0, bytes);
     }
