@@ -228,7 +228,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let tan_half = ck.fwd.w;
     let glow_k = ck.right.w;
     let metal_k = ck.up.w;
-    let time = ck.misc.y;
     let sun = normalize(ck.sun.xyz);
     let exposure = ck.sun.w;
 
@@ -324,7 +323,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             + cyan * fresnel * 0.08;
         // The socket rims are lit from within.
         if (hit.kind > 2.5) {
-            lit = cyan * (0.9 + 0.3 * sin(time * 2.0)) * glow_k;
+            lit = cyan * 1.0 * glow_k;
         }
         // Emissive lines where the surface runs near one of the light
         // lines; a hint of the cabin light everywhere.

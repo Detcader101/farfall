@@ -164,6 +164,10 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
+///   FARFALL_BENCH_THRUST=m,p,y,r (benchmark only: force main thrust 0..1 and
+///                           pitch/yaw/roll demands -1..1, for the plumes)
+///   FARFALL_BENCH_FULL=1   (benchmark only: borderless fullscreen, the real
+///                           pixel count)
 ///   FARFALL_BENCH_SPIN=n   (benchmark only: the head turns a full circle over
 ///                           the bench and n frames are captured on the way —
 ///                           a look round the whole cabin)
@@ -232,8 +236,10 @@ impl Config {
             std::env::var("FARFALL_BENCH").as_deref(),
             Ok("1" | "on" | "true")
         );
-        if bench {
-            // Never fullscreen: a benchmark must be visibly not the game.
+        if bench && std::env::var("FARFALL_BENCH_FULL").is_err() {
+            // Not fullscreen: a benchmark must be visibly not the game —
+            // unless asked, because the display's own size is the number
+            // that matters.
             windowed = true;
         }
         let bench_seconds = std::env::var("FARFALL_BENCH_SECONDS")
@@ -437,9 +443,6 @@ impl Gpu {
         } else {
             0.0
         };
-        self.passes
-            .cabin
-            .update(&self.queue, &game.cabin_uniforms(cam));
         self.passes.horizon.update(
             &self.queue,
             &HorizonUniforms::new(
@@ -690,6 +693,8 @@ struct Game {
     map_view: map::MapView,
     /// Jumps made, for the drive's crack.
     jumps: u32,
+    /// Bench: thrust and RCS demands forced for a capture.
+    bench_thrust: Option<[f32; 4]>,
     /// LANDING mode (G): the hoops close up and judge the touchdown.
     landing: bool,
     /// The predicted touchdown, refreshed each frame in landing mode.
@@ -764,6 +769,10 @@ impl Game {
             drag: None,
             map_view: map::MapView::default(),
             jumps: 0,
+            bench_thrust: std::env::var("FARFALL_BENCH_THRUST").ok().and_then(|v| {
+                let xs: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                (xs.len() == 4).then(|| [xs[0], xs[1], xs[2], xs[3]])
+            }),
             landing: false,
             touchdown: None,
             cursor: None,
@@ -920,7 +929,13 @@ impl Game {
 
     /// The cabin: the head's turn, the Sun in the ship's frame, and a
     /// socket under every dial the pilot has on the glass.
-    fn cabin_uniforms(&self, cam: &CameraFrame) -> farfall_render::cabin::CabinUniforms {
+    fn cabin_uniforms(
+        &self,
+        cam: &CameraFrame,
+    ) -> (
+        farfall_render::cabin::CabinUniforms,
+        farfall_render::cabin::BlitUniforms,
+    ) {
         use farfall_render::cabin::{anchor_direction, CabinLook, CabinUniforms};
         let ship_inv = self.state.ship.orient.as_quat().inverse();
         let sun_ship = ship_inv * self.params.sun.dir.as_vec3();
@@ -937,17 +952,23 @@ impl Game {
                 4
             })
             .collect();
-        CabinUniforms::new(
-            cam,
-            self.look.rotation(),
-            sun_ship,
-            CabinLook {
-                glow: self.settings.cockpit_glow,
-                metal: self.settings.cockpit_hull,
-                on: self.settings.cockpit_frame,
-            },
-            &sockets,
-        )
+        let look = CabinLook {
+            glow: self.settings.cockpit_glow,
+            metal: self.settings.cockpit_hull,
+            on: self.settings.cockpit_frame,
+            thrust: self.bench_thrust.unwrap_or_else(|| {
+                let c = self.input.controls(self.assist);
+                [
+                    self.effort,
+                    c.torque_body.x as f32,
+                    c.torque_body.y as f32,
+                    c.torque_body.z as f32,
+                ]
+            }),
+        };
+        let cu = CabinUniforms::new(cam, self.look.rotation(), sun_ship, look, &sockets);
+        let bu = cu.blit(look);
+        (cu, bu)
     }
 
     /// G: landing mode on or off.
@@ -2028,7 +2049,8 @@ impl ApplicationHandler for App {
                                 {
                                     let (sw, sh) = gpu.scene.size();
                                     gpu.passes.cabin.ensure(&gpu.device, sw, sh);
-                                    gpu.passes.cabin.render(&mut encoder);
+                                    let (cu, bu) = game.cabin_uniforms(&cam);
+                                    gpu.passes.cabin.update(&gpu.queue, &mut encoder, &cu, &bu);
                                 }
                                 gpu.passes.trajectory.update(
                                     &gpu.queue,
@@ -2205,7 +2227,8 @@ impl ApplicationHandler for App {
                 if gpu.cfg.draws("cockpit") && game.settings.cockpit_frame {
                     let (sw, sh) = gpu.scene.size();
                     gpu.passes.cabin.ensure(&gpu.device, sw, sh);
-                    gpu.passes.cabin.render(&mut encoder);
+                    let (cu, bu) = game.cabin_uniforms(&cam);
+                    gpu.passes.cabin.update(&gpu.queue, &mut encoder, &cu, &bu);
                 }
                 {
                     // Pass 1: the expensive world, at whatever scale is set.

@@ -6,7 +6,7 @@ use crate::CameraFrame;
 use glam::{Quat, Vec3};
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CabinUniforms {
     right: [f32; 4],
     up: [f32; 4],
@@ -14,6 +14,18 @@ pub struct CabinUniforms {
     misc: [f32; 4],
     sun: [f32; 4],
     pads: [[f32; 4]; 4],
+}
+
+/// What the composite needs each frame: the head's basis for the thruster
+/// light's rays, and the throttle and RCS demands.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BlitUniforms {
+    right: [f32; 4],
+    up: [f32; 4],
+    fwd: [f32; 4],
+    misc: [f32; 4],
+    thrust: [f32; 4],
 }
 
 pub const UNIFORM_BYTES: u64 = std::mem::size_of::<CabinUniforms>() as u64;
@@ -27,6 +39,9 @@ pub struct CabinLook {
     pub metal: f32,
     /// Drawn at all.
     pub on: bool,
+    /// Main thrust 0..1 (the plumes) and the pitch / yaw / roll demands
+    /// -1..1 (the RCS puffs).
+    pub thrust: [f32; 4],
 }
 
 impl CabinUniforms {
@@ -52,16 +67,47 @@ impl CabinUniforms {
             right: v4(head * Vec3::X, look.glow.clamp(0.0, 3.0)),
             up: v4(head * Vec3::Y, look.metal.clamp(0.0, 1.0)),
             fwd: v4(head * Vec3::NEG_Z, (cam.fov_y * 0.5).tan()),
+            // No clock in here: the cabin is only re-marched when something
+            // about it changes, and time would be change every frame.
             misc: [
                 cam.aspect,
-                cam.time_s,
+                0.0,
                 if look.on { 1.0 } else { 0.0 },
                 sockets.len().min(4) as f32,
             ],
-            sun: v4(sun_ship.normalize_or_zero(), cam.exposure),
+            // The Sun's direction quantised to about a degree: the cabin is
+            // re-marched only when its inputs change, and a ship turning
+            // slowly in orbit must not count as change every frame.
+            sun: v4(quantise(sun_ship.normalize_or_zero(), 0.02), cam.exposure),
             pads,
         }
     }
+
+    /// The composite's share: the rays and the throttle.
+    pub fn blit(&self, look: CabinLook) -> BlitUniforms {
+        BlitUniforms {
+            right: self.right,
+            up: self.up,
+            fwd: self.fwd,
+            misc: [self.misc[0], self.misc[2], 0.0, 0.0],
+            thrust: [
+                look.thrust[0].clamp(0.0, 1.0),
+                look.thrust[1].clamp(-1.0, 1.0),
+                look.thrust[2].clamp(-1.0, 1.0),
+                look.thrust[3].clamp(-1.0, 1.0),
+            ],
+        }
+    }
+
+    /// Did the head or the light move — a re-march at the moving size —
+    /// as against a sharp re-render of the same view?
+    pub fn view_moved(&self, other: &CabinUniforms) -> bool {
+        self.right != other.right || self.up != other.up || self.fwd != other.fwd
+    }
+}
+
+fn quantise(v: Vec3, step: f32) -> Vec3 {
+    (v / step).round() * step
 }
 
 /// A glass anchor (canopy NDC with the head centred, for a camera of this
@@ -76,21 +122,41 @@ pub fn anchor_direction(anchor: [f32; 2], tan_half_fov: f32, aspect: f32) -> Vec
     .normalize()
 }
 
-/// The cabin's own render target and the composite that lays it over the
-/// scene: the SDF march runs at `fraction` of the scene's size, the
-/// composite at full size.
+/// The cabin's render targets and the composite that lays the cabin over
+/// the scene. The march is the dearest thing per pixel in the frame and
+/// the cabin is a function of the head's direction alone, so it is marched
+/// only when that (or the light, or a socket) changes: while the head is
+/// turning, at a reduced size every frame; once it rests, re-marched sharp
+/// over four frames in strips and swapped in; and then not at all. The
+/// thruster light, which changes with the throttle, is drawn by the
+/// composite at full size every frame.
 pub struct CabinPass {
     inner: InstrumentPass,
     composite: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    bind_group: Option<wgpu::BindGroup>,
-    texture: Option<wgpu::Texture>,
-    view: Option<wgpu::TextureView>,
-    size: (u32, u32),
+    blit_uniforms: wgpu::Buffer,
+    moving: Target,
+    still: Target,
+    showing_still: bool,
+    /// Strips of the sharp render done so far, 0..=STRIPS.
+    still_progress: u32,
+    last: Option<CabinUniforms>,
     fraction: f32,
     format: wgpu::TextureFormat,
+    scene_size: (u32, u32),
 }
+
+/// A cabin texture with its composite bind group.
+struct Target {
+    view: Option<wgpu::TextureView>,
+    bind_group: Option<wgpu::BindGroup>,
+    size: (u32, u32),
+}
+
+const STRIPS: u32 = 4;
+/// While the head turns, the cabin is marched at this much of its still size.
+const MOVING_SCALE: f32 = 0.6;
 
 impl CabinPass {
     pub fn new(
@@ -99,8 +165,6 @@ impl CabinPass {
         sample_count: u32,
         fraction: f32,
     ) -> Self {
-        // The cabin texture is single-sampled at its own size; the march is
-        // analytic and needs no MSAA, the upscale smooths it anyway.
         let inner = InstrumentPass::new_pane_sized(
             device,
             target_format,
@@ -134,6 +198,16 @@ impl CabinPass {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -141,6 +215,12 @@ impl CabinPass {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
+        });
+        let blit_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cabin blit uniforms"),
+            size: std::mem::size_of::<BlitUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("cabin blit layout"),
@@ -175,17 +255,25 @@ impl CabinPass {
             multiview_mask: None,
             cache: None,
         });
+        let empty = || Target {
+            view: None,
+            bind_group: None,
+            size: (0, 0),
+        };
         Self {
             inner,
             composite,
             layout,
             sampler,
-            bind_group: None,
-            texture: None,
-            view: None,
-            size: (0, 0),
+            blit_uniforms,
+            moving: empty(),
+            still: empty(),
+            showing_still: false,
+            still_progress: 0,
+            last: None,
             fraction: fraction.clamp(0.25, 1.0),
             format: target_format,
+            scene_size: (0, 0),
         }
     }
 
@@ -195,21 +283,37 @@ impl CabinPass {
 
     pub fn set_fraction(&mut self, fraction: f32) {
         self.fraction = fraction.clamp(0.25, 1.0);
-        self.size = (0, 0);
+        self.scene_size = (0, 0);
     }
 
-    /// Size the cabin texture for a scene of this size.
+    /// Size both cabin textures for a scene of this size.
     pub fn ensure(&mut self, device: &wgpu::Device, scene_w: u32, scene_h: u32) {
-        let w = ((scene_w as f32 * self.fraction).round() as u32).max(1);
-        let h = ((scene_h as f32 * self.fraction).round() as u32).max(1);
-        if self.size == (w, h) && self.view.is_some() {
+        if self.scene_size == (scene_w, scene_h) && self.still.view.is_some() {
             return;
         }
+        self.scene_size = (scene_w, scene_h);
+        let size = |f: f32| {
+            (
+                ((scene_w as f32 * f).round() as u32).max(1),
+                ((scene_h as f32 * f).round() as u32).max(1),
+            )
+        };
+        let still = size(self.fraction);
+        let moving = size(self.fraction * MOVING_SCALE);
+        self.still = self.make_target(device, still);
+        self.moving = self.make_target(device, moving);
+        // Everything is stale: the next frame re-marches.
+        self.last = None;
+        self.showing_still = false;
+        self.still_progress = 0;
+    }
+
+    fn make_target(&self, device: &wgpu::Device, size: (u32, u32)) -> Target {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("cabin colour"),
             size: wgpu::Extent3d {
-                width: w,
-                height: h,
+                width: size.0,
+                height: size.1,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -220,7 +324,7 @@ impl CabinPass {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("cabin blit bg"),
             layout: &self.layout,
             entries: &[
@@ -232,21 +336,61 @@ impl CabinPass {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.blit_uniforms.as_entire_binding(),
+                },
             ],
-        }));
-        self.texture = Some(texture);
-        self.view = Some(view);
-        self.size = (w, h);
+        });
+        Target {
+            view: Some(view),
+            bind_group: Some(bind_group),
+            size,
+        }
     }
 
-    pub fn update(&self, queue: &wgpu::Queue, uniforms: &CabinUniforms) {
-        self.inner.update(queue, uniforms);
+    /// Bring the cabin up to date for this frame's inputs: nothing if they
+    /// are unchanged and the sharp render is done; a strip of the sharp
+    /// render if the view is resting; the whole cabin at the moving size if
+    /// it has moved. Returns what it did, for the record.
+    pub fn update(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        uniforms: &CabinUniforms,
+        blit: &BlitUniforms,
+    ) -> CabinWork {
+        queue.write_buffer(&self.blit_uniforms, 0, bytemuck::bytes_of(blit));
+        let changed = self.last.as_ref() != Some(uniforms);
+        if changed {
+            let moved = self.last.as_ref().is_none_or(|l| l.view_moved(uniforms));
+            self.last = Some(*uniforms);
+            self.inner.update(queue, uniforms);
+            self.still_progress = 0;
+            if moved || !self.showing_still {
+                // Re-march small now; sharpen over the coming frames.
+                self.render_into(encoder, true, None);
+                self.showing_still = false;
+                return CabinWork::Moving;
+            }
+            // The view is the same (a socket, the light, a setting): keep
+            // showing the sharp one while it is redone in strips.
+        }
+        if self.still_progress < STRIPS {
+            let strip = self.still_progress;
+            self.render_into(encoder, false, Some(strip));
+            self.still_progress += 1;
+            if self.still_progress == STRIPS {
+                self.showing_still = true;
+            }
+            return CabinWork::Strip(strip);
+        }
+        CabinWork::Nothing
     }
 
-    /// Render the cabin into its own texture (a pass of its own, before the
-    /// scene's).
-    pub fn render(&self, encoder: &mut wgpu::CommandEncoder) {
-        let Some(view) = &self.view else {
+    fn render_into(&self, encoder: &mut wgpu::CommandEncoder, moving: bool, strip: Option<u32>) {
+        let target = if moving { &self.moving } else { &self.still };
+        let Some(view) = &target.view else {
             return;
         };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -256,7 +400,12 @@ impl CabinPass {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    // A strip keeps the rest of the texture as it was.
+                    load: if strip.is_some_and(|s| s > 0) {
+                        wgpu::LoadOp::Load
+                    } else {
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                    },
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -265,18 +414,38 @@ impl CabinPass {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        if let Some(s) = strip {
+            let (w, h) = target.size;
+            let y0 = h * s / STRIPS;
+            let y1 = h * (s + 1) / STRIPS;
+            pass.set_scissor_rect(0, y0, w, (y1 - y0).max(1));
+        }
         self.inner.draw(&mut pass);
     }
 
-    /// Lay the cabin over the scene.
+    /// Lay the cabin over the scene: the sharp one if it is complete, else
+    /// the moving one.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        let Some(bind_group) = &self.bind_group else {
+        let target = if self.showing_still {
+            &self.still
+        } else {
+            &self.moving
+        };
+        let Some(bind_group) = &target.bind_group else {
             return;
         };
         pass.set_pipeline(&self.composite);
         pass.set_bind_group(0, bind_group, &[]);
         pass.draw(0..3, 0..1);
     }
+}
+
+/// What [`CabinPass::update`] did this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CabinWork {
+    Nothing,
+    Strip(u32),
+    Moving,
 }
 
 #[cfg(test)]
@@ -296,6 +465,7 @@ mod tests {
             glow: 1.0,
             metal: 0.8,
             on: true,
+            thrust: [0.5, 2.0, -0.5, 0.0],
         };
         let sockets = [anchor_direction([0.7, -0.6], 0.55, 1.5), Vec3::ZERO];
         let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
@@ -311,12 +481,33 @@ mod tests {
             glow: 5.0,
             metal: -1.0,
             on: true,
+            thrust: [9.0, 0.0, 0.0, 0.0],
         };
         let turned = CabinUniforms::new(&cam, Quat::from_rotation_y(-0.5), Vec3::Y, loud, &[]);
         assert!(turned.fwd[0] > 0.4, "{:?}", turned.fwd);
         assert_eq!(turned.right[3], 3.0);
         assert_eq!(turned.up[3], 0.0);
         assert_eq!(still.misc[2], 1.0);
+        assert_eq!(still.blit(look).thrust, [0.5, 1.0, -0.5, 0.0]);
+        assert_eq!(turned.blit(loud).thrust[0], 1.0);
         assert_eq!(UNIFORM_BYTES, 9 * 16);
+        // Unchanged inputs compare equal (no clock inside), a turned head
+        // is a moved view, a changed socket is not.
+        let again = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
+        assert_eq!(still, again);
+        assert!(still.view_moved(&turned));
+        let other_sockets = [anchor_direction([-0.7, -0.6], 0.55, 1.5)];
+        let resocketed = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &other_sockets);
+        assert!(!still.view_moved(&resocketed));
+        assert_ne!(still, resocketed);
+        // A slow drift of the Sun below a degree is no change at all.
+        let sun_drift = CabinUniforms::new(
+            &cam,
+            Quat::IDENTITY,
+            Vec3::new(0.004, 1.0, 0.0),
+            look,
+            &sockets,
+        );
+        assert_eq!(still, sun_drift);
     }
 }

@@ -379,11 +379,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let aa = max(fwidth(r) * 1.2, 0.01);
         let thickness = 0.02 + 0.09 * clamp(in.kind.z, 0.0, 1.0);
         let hoop = 1.0 - smoothstep(0.0, aa, abs(r - (0.92 - thickness)) - thickness);
-        // Cyan out ahead, red by the time it is on us, gone a few marks
-        // astern: the colour is the hoop's signed distance in spacings.
+        // Cyan all the way in, and red only once the hoop is clear behind
+        // us — half a spacing astern — then gone a few marks back: the
+        // colour is the hoop's signed distance in spacings.
         let red = vec3<f32>(1.0, 0.18, 0.12);
         let d = in.kind.w;
-        let closing = 1.0 - smoothstep(0.0, 1.5, d);
+        let closing = 1.0 - smoothstep(-0.6, -0.15, d);
         var tint = mix(cyan, red, closing);
         if (tj.mark.z >= 2.0) {
             // Landing: the hoops themselves carry the verdict — calm green

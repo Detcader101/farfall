@@ -8,8 +8,77 @@
 // then this lays it over the scene, premultiplied, scaled up with a linear
 // filter. The holograms are drawn after, full size, and stay sharp.
 
+struct CabinBlit {
+    // The head's basis in ship frame; w of fwd: tan(fov/2)
+    right: vec4<f32>,
+    up: vec4<f32>,
+    fwd: vec4<f32>,
+    // x: aspect, y: on 0..1
+    misc: vec4<f32>,
+    // x: main thrust 0..1 (the plumes), y: pitch demand -1..1, z: yaw
+    // demand, w: roll demand — the RCS puffs.
+    thrust: vec4<f32>,
+}
+
 @group(0) @binding(0) var cabin_tex: texture_2d<f32>;
 @group(0) @binding(1) var cabin_sampler: sampler;
+@group(0) @binding(2) var<uniform> cb: CabinBlit;
+
+fn sd_capsule_line(p: vec3<f32>, a: vec3<f32>, b: vec3<f32>) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+// The engines' light: two plumes out of the nozzles, their length with the
+// thrust, gathered along the ray by closest approach — the same trick as
+// the socket beams, a glowing line with a soft skirt. And the RCS: small
+// puffs at the nose and the wingtips, lit by the demand on each axis.
+fn thruster_light(ray: vec3<f32>, reach: f32) -> vec3<f32> {
+    var light = vec3<f32>(0.0);
+    let main = clamp(cb.thrust.x, 0.0, 1.0);
+    if (main > 0.01) {
+        let len = 1.5 + 6.0 * main;
+        for (var i = 0; i < 2; i += 1) {
+            let x = select(-0.62, 0.62, i == 1);
+            let a = vec3<f32>(x, -0.85, 7.6);
+            let e = vec3<f32>(0.0, 0.0, len);
+            let ac = a - ray * dot(a, ray);
+            let bc = e - ray * dot(e, ray);
+            let u = clamp(-dot(ac, bc) / max(dot(bc, bc), 1e-8), 0.0, 1.0);
+            let q = a + e * u;
+            let t = clamp(dot(q, ray), 0.0, reach);
+            let d = length(q - ray * t);
+            // Hot near the nozzle, thinning to a blue wisp at the end.
+            let core = exp(-d / (0.25 + 0.35 * u)) * (1.0 - 0.7 * u);
+            light += mix(vec3<f32>(0.9, 0.95, 1.0), vec3<f32>(0.3, 0.5, 1.0), u) * core * main;
+        }
+    }
+    // RCS puffs: nose up/down for pitch, nose left/right for yaw, the
+    // wingtips for roll. A puff is a small bright ball of gas.
+    let pitch = cb.thrust.y;
+    let yaw = cb.thrust.z;
+    let roll = cb.thrust.w;
+    let puffs = array<vec4<f32>, 6>(
+        vec4<f32>(0.0, -0.55, -5.6, max(pitch, 0.0)),
+        vec4<f32>(0.0, -1.35, -5.6, max(-pitch, 0.0)),
+        vec4<f32>(-0.55, -0.95, -5.4, max(yaw, 0.0)),
+        vec4<f32>(0.55, -0.95, -5.4, max(-yaw, 0.0)),
+        vec4<f32>(-5.6, -0.75, 4.5, max(-roll, 0.0)),
+        vec4<f32>(5.6, -0.75, 4.5, max(roll, 0.0)),
+    );
+    for (var i = 0; i < 6; i += 1) {
+        let pf = puffs[i];
+        if (pf.w < 0.02) { continue; }
+        let t = clamp(dot(pf.xyz, ray), 0.0, reach);
+        let d = length(pf.xyz - ray * t);
+        light += vec3<f32>(0.85, 0.9, 1.0) * exp(-d / 0.18) * pf.w * 0.8;
+    }
+    return light;
+}
+
+
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -27,7 +96,19 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(cabin_tex, cabin_sampler, in.uv);
+    var c = textureSample(cabin_tex, cabin_sampler, in.uv);
+    // The engines and the RCS, drawn here at full size every frame (they
+    // change with the throttle; the cabin behind them does not): light
+    // gathered along this pixel's ray, hidden where the hull is in front.
+    if (cb.misc.y > 0.5 && (cb.thrust.x > 0.01 || dot(cb.thrust.yzw, cb.thrust.yzw) > 1e-4)) {
+        let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+        let ray = normalize(
+            cb.fwd.xyz + cb.right.xyz * (ndc.x * cb.fwd.w * cb.misc.x) + cb.up.xyz * (ndc.y * cb.fwd.w)
+        );
+        let tl = thruster_light(ray, 40.0);
+        let lit = (vec3<f32>(1.0) - exp(-tl * 1.2)) * (1.0 - c.a);
+        c = vec4<f32>(c.rgb + lit, c.a);
+    }
     if (c.a < 0.002 && dot(c.rgb, c.rgb) < 1e-6) {
         discard;
     }

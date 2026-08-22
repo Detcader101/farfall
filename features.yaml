@@ -162,6 +162,18 @@ features:
     tests: [crates/render/src/gauge.rs::ranges_climb_the_1_2_5_ladder_and_never_pin, crates/render/src/gauge.rs::sci_readout_never_caps]
     e2e: captures — speedo ×2 at Uranus (939 m/s); altimeter 1.14E3 km at ×1E2 sinking toward the Moon
 
+  - id: thrusters
+    name: Engine nozzles on the nacelles, exhaust plumes with the throttle, RCS puffs at nose and wingtips with the demands; hoops go red only once clear astern
+    state: complete
+    tests: [crates/render/src/cabin.rs]
+    e2e: FARFALL_BENCH_THRUST=1,1,0,1 looking aft — twin blue plumes over the spine, roll puff at the left tip
+
+  - id: cabin-cached
+    name: The cabin is re-marched only when the head, the light or a socket changes — small while moving, sharpened in four strips once still; thruster light drawn by the composite
+    state: complete
+    tests: [crates/render/src/cabin.rs]
+    e2e: FARFALL_BENCH_FULL at 2880x1800 — 11 ms flying, 17 ms turning the head (was 31 ms)
+
   - id: bench-spin
     name: FARFALL_BENCH_SPIN=n — the head turns a full circle over the bench, n captures on the way
     state: complete

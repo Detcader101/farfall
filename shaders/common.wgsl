@@ -286,8 +286,13 @@ fn sd_fighter_exterior(q: vec3<f32>) -> f32 {
     d = min(d, wing);
     // Engines: two nacelles under the tail, and the fin between them.
     let eq = vec3<f32>(abs(q.x) - 0.62, q.y + 0.85, q.z);
-    let eng = sd_capsule_ab(eq, vec3<f32>(0.0, 0.0, 4.2), vec3<f32>(0.0, 0.0, 7.6), 0.44);
+    let eng = sd_capsule_ab(eq, vec3<f32>(0.0, 0.0, 4.2), vec3<f32>(0.0, 0.0, 7.3), 0.44);
     d = min(d, eng);
+    // The nozzle: a ring at each nacelle's tail, a flared lip the plume
+    // comes out of.
+    let nz = vec2<f32>(length(eq.xy) - 0.36, eq.z - 7.55);
+    let nozzle = length(nz) - 0.07;
+    d = min(d, nozzle);
     let fq = vec3<f32>(q.x, q.y - 0.35, q.z - 6.0 - 0.55 * max(q.y - 0.35, 0.0));
     let fin = sd_round_box(fq, vec3<f32>(0.035, 1.0, 0.75), 0.02);
     return min(d, fin);
