@@ -98,6 +98,11 @@ fn digit_dist(p: vec2<f32>, mask: u32, w: f32, h: f32) -> f32 {
     return d;
 }
 
+// c.z carries the warning sense (0 high, 1 low) plus 2 for the JET style.
+fn sense_of(cz: f32) -> f32 {
+    return cz - 2.0 * floor(cz / 2.0);
+}
+
 fn digit_mask(n: u32) -> u32 {
     // 0..9 in the segment numbering above.
     let masks = array<u32, 10>(63u, 6u, 91u, 79u, 102u, 109u, 125u, 7u, 127u, 111u);
@@ -197,7 +202,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // atmosphere" gate. On later laps the same bars mean mach 3 and 4, 5
     // and 6: the multiplier says which.
     // Only while a mach is a readable slice of the dial (to ×5: ten bars).
-    if (gauge.c.z < 0.5 && mach >= 0.0 && full <= 3400.5) {
+    if (sense_of(gauge.c.z) < 0.5 && mach >= 0.0 && full <= 3400.5) {
         for (var m = 1.0; m * 340.0 <= full + 0.5; m += 1.0) {
             let mfrac = m * 340.0 / full;
             let mth = -SWEEP_HALF + 2.0 * SWEEP_HALF * mfrac;
@@ -316,7 +321,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Mach readout: two small digits and a dot under the main readout,
     // fading in as the barrier becomes a live concern. Absent entirely when
     // mach is meaningless (negative: no atmosphere).
-    if (gauge.c.z < 0.5 && mach >= 0.0) {
+    if (sense_of(gauge.c.z) < 0.5 && mach >= 0.0) {
         let mfade = smoothstep(0.30, 0.45, mach);
         if (mfade > 0.001) {
             let dh = 0.017;
@@ -358,7 +363,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // altimeter (ground coming up).
     let warn_high = smoothstep(0.85, 1.0, frac);
     let warn_low = 1.0 - smoothstep(0.04, 0.14, frac);
-    let warning = mix(warn_high, warn_low, clamp(gauge.c.z, 0.0, 1.0));
+    let sense = gauge.c.z - 2.0 * floor(gauge.c.z / 2.0);
+    let jet = gauge.c.z >= 2.0;
+    let warning = mix(warn_high, warn_low, clamp(sense, 0.0, 1.0));
+    // JET: the glass over the dial — a soft glint arcing across the top
+    // left, and a faint full-circle face ring — so the dial reads as a
+    // round instrument under glass in its bowl, not a projection.
+    if (jet) {
+        let rf = length(p_face);
+        let gdir = normalize(vec2<f32>(-0.55, 0.8));
+        let along_g = dot(p_face, gdir);
+        let glint = (1.0 - smoothstep(0.0, 0.05, abs(rf - radius * 0.78))) * smoothstep(0.2, 0.8, along_g / radius);
+        hot += 0.35 * glint;
+        glow += 0.25 * (1.0 - smoothstep(0.0, aa * 1.6, abs(rf - radius * 1.06) - 0.0012));
+    }
     let cyan = vec3<f32>(0.22, 0.85, 1.0);
     let amber = vec3<f32>(1.0, 0.62, 0.18);
     let tint = mix(cyan, amber, warning);

@@ -32,7 +32,10 @@ use std::time::{Duration, Instant};
 use capture::Capture;
 use farfall_audio::Audio;
 use farfall_render::{
-    attitude::{gyro_pass, horizon_pass, Attitude, GyroUniforms, HorizonFade, HorizonUniforms},
+    attitude::{
+        guide_pass, gyro_pass, horizon_pass, Attitude, GuideUniforms, GyroUniforms, HorizonFade,
+        HorizonUniforms,
+    },
     bake::BakedMaps,
     blit::{BlitPass, PostUniforms},
     bodies::{BodiesPass, BodiesUniforms},
@@ -316,6 +319,8 @@ struct Passes {
     g_gauge: GaugePass,
     gyro: InstrumentPass,
     horizon: InstrumentPass,
+    /// The design guide overlay.
+    guide: InstrumentPass,
     /// The wireframe cabin around the head.
     cabin: farfall_render::cabin::CabinPass,
     /// The hull heat field, simulated on the GPU, and the sheath it lights.
@@ -344,6 +349,7 @@ impl Passes {
             g_gauge: gauge_pass(device, format, msaa),
             gyro: gyro_pass(device, format, msaa),
             horizon: horizon_pass(device, format, msaa),
+            guide: guide_pass(device, format, msaa),
             cabin: farfall_render::cabin::CabinPass::new(device, format, msaa, cabin_res),
             thermal,
             plasma,
@@ -384,12 +390,15 @@ impl Gpu {
         let h = self.scene.size().1 as f32;
         let sway = game.holo_sway.sway();
         let look = &game.look;
+        let stay = game.settings.gauges_stay;
+        let fade = |level: f32| if stay { 1.0 } else { level };
+        let jet = game.settings.gauge_jet;
         let (speed_anchor, speed_on) = slot_of(layout, look, cam, Instrument::Speed);
         self.passes.gauge.update(
             &self.queue,
             &GaugeUniforms::speed(
                 game.state.ship.vel_mps.length() as f32,
-                game.gauge_fade.level() * speed_on,
+                fade(game.gauge_fade.level()) * speed_on,
                 cam.time_s,
                 aspect,
                 h,
@@ -397,33 +406,36 @@ impl Gpu {
                 sway,
                 game.mach(),
                 game.mach_alert.level() * speed_on,
-            ),
+            )
+            .jet(jet),
         );
         let (alt_anchor, alt_on) = slot_of(layout, look, cam, Instrument::Altitude);
         self.passes.alt_gauge.update(
             &self.queue,
             &GaugeUniforms::altitude(
                 altitude_m,
-                game.alt_fade.level() * alt_on,
+                fade(game.alt_fade.level()) * alt_on,
                 cam.time_s,
                 aspect,
                 h,
                 alt_anchor,
                 sway,
-            ),
+            )
+            .jet(jet),
         );
         let (g_anchor, g_on) = slot_of(layout, look, cam, Instrument::GForce);
         self.passes.g_gauge.update(
             &self.queue,
             &GaugeUniforms::g_force(
                 game.felt_g,
-                game.g_fade.level() * g_on,
+                fade(game.g_fade.level()) * g_on,
                 cam.time_s,
                 aspect,
                 h,
                 g_anchor,
                 sway,
-            ),
+            )
+            .jet(jet),
         );
         let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, Instrument::Gyro);
         self.passes.gyro.update(
@@ -438,6 +450,32 @@ impl Gpu {
                 cam.time_s,
             ),
         );
+        // The design guide: the glass ruled, every shown dial's anchor and
+        // reach, the gaze.
+        {
+            let t = (cam.fov_y * 0.5).tan();
+            let gaze = look.gaze(t, cam.aspect);
+            let anchors: Vec<[f32; 2]> = Instrument::ALL
+                .iter()
+                .copied()
+                .filter(|i| i.slotted())
+                .filter_map(|i| layout.anchor(i))
+                .map(|a| on_glass(look, cam, a))
+                .take(4)
+                .collect();
+            self.passes.guide.update(
+                &self.queue,
+                &GuideUniforms::new(
+                    aspect,
+                    game.settings.guide,
+                    layout.safe_edge,
+                    on_glass(look, cam, gaze),
+                    DRAG_REACH,
+                    look.engaged(),
+                    &anchors,
+                ),
+            );
+        }
         let horizon_on = if layout.shown(Instrument::Horizon) {
             1.0
         } else {
@@ -956,6 +994,7 @@ impl Game {
             glow: self.settings.cockpit_glow,
             metal: self.settings.cockpit_hull,
             on: self.settings.cockpit_frame,
+            jet: self.settings.gauge_jet,
             thrust: self.bench_thrust.unwrap_or_else(|| {
                 let c = self.input.controls(self.assist);
                 [
@@ -1449,7 +1488,8 @@ impl Game {
         let orient = self.state.ship.orient.as_quat() * self.look.rotation();
         CameraFrame {
             orient,
-            fov_y: ((BASE_FOV + FOV_THRUST_GAIN * self.effort) * self.warp.look().fov_scale)
+            fov_y: ((self.settings.fov + FOV_THRUST_GAIN * self.effort)
+                * self.warp.look().fov_scale)
                 .to_radians()
                 .min(2.9),
             aspect,
@@ -1473,7 +1513,6 @@ const SPAWN_PITCH_DEG: f64 = 12.0;
 const SPAWN_ALTITUDE_M: f64 = 12_000.0;
 
 /// Base vertical field of view, degrees.
-const BASE_FOV: f32 = 70.0;
 /// How much the view opens up under full boost, degrees. The camera reads the
 /// ship's own thrust demand, so acceleration is *seen*, not just measured — the
 /// cheapest honest speed cue there is, and it costs nothing but a lerp.
@@ -2086,6 +2125,8 @@ impl ApplicationHandler for App {
                                     gpu.passes.alt_gauge.draw(&mut pass);
                                     gpu.passes.g_gauge.draw(&mut pass);
                                     gpu.passes.gyro.draw(&mut pass);
+                                    gpu.passes.guide.draw(&mut pass);
+                                    gpu.passes.guide.draw(&mut pass);
                                     if capture_text && game.map_open() {
                                         gpu.map.draw(&mut pass);
                                     }
@@ -2264,6 +2305,7 @@ impl ApplicationHandler for App {
                         gpu.passes.alt_gauge.draw(&mut pass);
                         gpu.passes.g_gauge.draw(&mut pass);
                         gpu.passes.gyro.draw(&mut pass);
+                        gpu.passes.guide.draw(&mut pass);
                     }
                 }
                 {

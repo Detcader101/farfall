@@ -14,7 +14,8 @@
 use crate::cockpit::{Instrument, SAFE_EDGE_MAX};
 use crate::input::{is_reserved, key_name, Action};
 use crate::settings::{
-    Settings, COCKPIT_RES_CHOICES, HOOP_SIZE_MAX, HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
+    Settings, COCKPIT_RES_CHOICES, FOV_MAX, FOV_MIN, HOOP_SIZE_MAX, HOOP_SIZE_MIN,
+    LANDING_SPACINGS, MSAA_CHOICES,
 };
 use farfall_render::text::TextBitmap;
 use winit::keyboard::KeyCode;
@@ -77,6 +78,10 @@ enum Item {
     CockpitGlow,
     CockpitHull,
     CockpitRes,
+    Fov,
+    GaugeStyle,
+    GaugesStay,
+    Guide,
     MapRings,
     MapGrid,
     LookSens,
@@ -103,6 +108,10 @@ impl Item {
             Item::CockpitGlow => "CABIN GLOW",
             Item::CockpitHull => "CABIN METAL",
             Item::CockpitRes => "CABIN DETAIL",
+            Item::Fov => "FOV",
+            Item::GaugeStyle => "GAUGE STYLE",
+            Item::GaugesStay => "GAUGES",
+            Item::Guide => "GUIDE",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
@@ -132,6 +141,10 @@ impl Item {
             Item::CockpitGlow => format!("{:.2}x", s.cockpit_glow),
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
+            Item::Fov => format!("{:.0} DEG", s.fov),
+            Item::GaugeStyle => if s.gauge_jet { "JET" } else { "TRON" }.to_string(),
+            Item::GaugesStay => if s.gauges_stay { "STAY" } else { "FADE" }.to_string(),
+            Item::Guide => if s.guide { "ON" } else { "OFF" }.to_string(),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
@@ -193,6 +206,7 @@ impl Menu {
                 Item::Msaa,
                 Item::Scale,
                 Item::Vsync,
+                Item::Fov,
                 Item::CockpitRes,
                 Item::Quit,
             ],
@@ -204,7 +218,8 @@ impl Menu {
                 v
             }
             Page::Cockpit => {
-                let mut v: Vec<Item> = Instrument::ALL.iter().map(|&i| Item::Slot(i)).collect();
+                let mut v: Vec<Item> = vec![Item::GaugeStyle, Item::GaugesStay, Item::Guide];
+                v.extend(Instrument::ALL.iter().map(|&i| Item::Slot(i)));
                 v.push(Item::SafeEdge);
                 v.push(Item::HoopSize);
                 v.push(Item::LandingHoops);
@@ -418,6 +433,27 @@ impl Menu {
                 s.cockpit_hull = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::Fov => {
+                let step = if forward { 5.0 } else { -5.0 };
+                let next = (s.fov + step).clamp(FOV_MIN, FOV_MAX);
+                if (next - s.fov).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.fov = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::GaugeStyle => {
+                s.gauge_jet = !s.gauge_jet;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::GaugesStay => {
+                s.gauges_stay = !s.gauges_stay;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::Guide => {
+                s.guide = !s.guide;
+                MenuEvent::Changed(Change::Layout)
+            }
             Item::CockpitRes => {
                 let n = COCKPIT_RES_CHOICES.len();
                 let i = COCKPIT_RES_CHOICES
@@ -611,14 +647,17 @@ mod tests {
         let mut s = Settings::default();
         m.toggle();
         m.key(KeyCode::Tab, &mut s);
-        m.key(KeyCode::Tab, &mut s); // cockpit
+        m.key(KeyCode::Tab, &mut s); // cockpit: style, stay, guide, then the slots
+        for _ in 0..3 {
+            m.key(KeyCode::ArrowDown, &mut s);
+        }
         assert_eq!(
             m.key(KeyCode::ArrowRight, &mut s),
             MenuEvent::Changed(Change::Layout)
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
         m.key(KeyCode::Tab, &mut s); // back to graphics
-        for _ in 0..4 {
+        for _ in 0..5 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Quit);

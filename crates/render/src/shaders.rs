@@ -20,6 +20,7 @@ pub const BODIES: &str = include_str!("../../../shaders/bodies.wgsl");
 pub const MAP: &str = include_str!("../../../shaders/map.wgsl");
 pub const COCKPIT: &str = include_str!("../../../shaders/cockpit.wgsl");
 pub const CABIN_BLIT: &str = include_str!("../../../shaders/cabin_blit.wgsl");
+pub const GUIDE: &str = include_str!("../../../shaders/guide.wgsl");
 
 /// Every pass: display name, source, and required entry points.
 pub const PASSES: &[(&str, &str, &[&str])] = &[
@@ -49,6 +50,7 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("map", MAP, &["vs_main", "fs_main"]),
     ("cockpit", COCKPIT, &["vs_main", "fs_main"]),
     ("cabin_blit", CABIN_BLIT, &["vs_main", "fs_main"]),
+    ("guide", GUIDE, &["vs_main", "fs_main"]),
 ];
 
 /// Prepend the shared prelude to a pass source.

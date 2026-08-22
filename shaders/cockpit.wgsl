@@ -23,7 +23,8 @@ struct Cockpit {
     up: vec4<f32>,
     // xyz: the head's forward axis in ship frame (-Z is the nose). w: tan(fov/2)
     fwd: vec4<f32>,
-    // x: aspect, y: time, z: on 0..1, w: number of sockets
+    // x: aspect, y: gauge style (0 TRON sockets and beams, 1 JET bowls
+    // and bezels), z: on 0..1, w: number of sockets
     misc: vec4<f32>,
     // xyz: the Sun's direction in ship frame. w: exposure
     sun: vec4<f32>,
@@ -140,15 +141,26 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
         let pd = pad_dir(i);
         if (pd.w < 0.5) { continue; }
         let c = socket_centre(pd.xyz);
-        // Recess: a short cylinder along the dash normal, cut out.
         let lq = p - c;
         let along = dot(lq, DASH_N);
         let radial = length(lq - DASH_N * along);
-        let recess = max(radial - 0.085, abs(along - 0.0) - 0.025);
-        furniture = max(furniture, -recess);
-        // The rim: a thin torus at the mouth.
-        let ring = length(vec2<f32>(radial - 0.095, along - 0.012)) - 0.012;
-        rim = min(rim, ring);
+        if (ck.misc.y > 0.5) {
+            // JET: a spherical bowl hollowed into the dash, the classic
+            // round instrument's well, with a raised bezel at its mouth
+            // the hologram sits in. The dial is drawn after the cabin, on
+            // the glass, so there is nothing here to fight it for depth.
+            let bowl = length(lq + DASH_N * 0.10) - 0.21;
+            furniture = max(furniture, -bowl);
+            let bezel = length(vec2<f32>(radial - 0.185, along - 0.015)) - 0.016;
+            rim = min(rim, bezel);
+        } else {
+            // TRON: a shallow recess, a thin lit rim, a beam up to the
+            // hologram.
+            let recess = max(radial - 0.085, abs(along - 0.0) - 0.025);
+            furniture = max(furniture, -recess);
+            let ring = length(vec2<f32>(radial - 0.095, along - 0.012)) - 0.012;
+            rim = min(rim, ring);
+        }
     }
     if (furniture < h.d) { h = Hit(furniture, 1.0); }
     if (rim < h.d) { h = Hit(rim, 3.0); }
@@ -356,9 +368,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         var lit = (base * (0.22 + 0.9 * ndl) + env * (0.15 + 0.55 * fresnel)) * ao
             + vec3<f32>(0.9, 0.95, 1.0) * spec * 0.35;
-        // The socket rims are lit from within.
+        // The socket rims are lit from within (TRON); a JET bezel is a
+        // brushed ring with a thread of light at its inner edge.
         if (hit.kind > 2.5) {
-            lit = cyan * 1.0 * glow_k;
+            lit = select(cyan * 1.0 * glow_k, lit * 1.6 + cyan * 0.12 * glow_k, ck.misc.y > 0.5);
         }
         // Emissive lines where the surface runs near one of the light
         // lines; a hint of the cabin light everywhere.
@@ -369,9 +382,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         alpha = 1.0;
     }
 
-    // The beams, up to where the ray stopped. Saturating: a beam seen
-    // end-on is a bright point, not a white-out.
-    if (ck.misc.w > 0.5) {
+    // The beams, up to where the ray stopped (TRON only: a JET dial sits
+    // in its bowl). Saturating: a beam seen end-on is a bright point, not
+    // a white-out.
+    if (ck.misc.w > 0.5 && ck.misc.y < 0.5) {
         let reach = min(select(MAX_T, hit.d, hit.kind >= 0.0), 1.6);
         beams = beam_light(ray, reach);
     }

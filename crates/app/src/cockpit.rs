@@ -181,8 +181,10 @@ pub struct Layout {
     pub safe_edge: f32,
 }
 
-/// How far out a free anchor may go, NDC: just short of the rim.
-pub const FREE_LIMIT: f32 = 0.95;
+/// How far out a free anchor may go, NDC: past the rim of the locked view
+/// — the glass goes on round the pilot, and a dial may live where only a
+/// turned head sees it.
+pub const FREE_LIMIT: f32 = 1.6;
 
 pub const SAFE_EDGE_MAX: f32 = 0.30;
 

@@ -501,6 +501,15 @@ impl GaugeUniforms {
     }
 }
 
+impl GaugeUniforms {
+    /// JET style: glass glint and face ring, for a dial set in a bowl.
+    pub fn jet(mut self, jet: bool) -> Self {
+        let sense = self.c[2] % 2.0;
+        self.c[2] = sense + if jet { 2.0 } else { 0.0 };
+        self
+    }
+}
+
 /// The speedo and the altimeter are [`InstrumentPass`]es running
 /// `gauge.wgsl`; see [`crate::instrument`].
 pub type GaugePass = crate::instrument::InstrumentPass;
@@ -693,6 +702,17 @@ mod tests {
         assert!(f.level() > 0.95);
         f.update(0.1, 0.0);
         assert!(f.level() > 0.8, "dropped too fast: {}", f.level());
+    }
+
+    #[test]
+    fn jet_style_rides_on_the_warning_sense() {
+        let alt = GaugeUniforms::altitude(100.0, 1.0, 0.0, 1.6, 900.0, [0.0, 0.0], [0.0, 0.0]);
+        assert_eq!(alt.c[2], 1.0);
+        assert_eq!(alt.jet(true).c[2], 3.0);
+        assert_eq!(alt.jet(true).jet(false).c[2], 1.0);
+        let spd =
+            GaugeUniforms::speed(1.0, 1.0, 0.0, 1.6, 900.0, [0.0, 0.0], [0.0, 0.0], -1.0, 0.0);
+        assert_eq!(spd.jet(true).c[2], 2.0);
     }
 
     #[test]

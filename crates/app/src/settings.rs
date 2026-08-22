@@ -28,6 +28,10 @@ fn clamp_anchor(a: [f32; 2]) -> [f32; 2] {
     [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)]
 }
 
+/// Field of view limits, degrees.
+pub const FOV_MIN: f32 = 50.0;
+pub const FOV_MAX: f32 = 110.0;
+
 /// The cabin's render sizes on offer, as fractions of the scene.
 pub const COCKPIT_RES_CHOICES: [f32; 3] = [0.5, 0.75, 1.0];
 
@@ -61,6 +65,15 @@ pub struct Settings {
     pub cockpit_hull: f32,
     /// The cabin is drawn at this fraction of the scene's size.
     pub cockpit_res: f32,
+    /// Base field of view, degrees (vertical).
+    pub fov: f32,
+    /// Gauge style: false = TRON holograms on the glass; true = JET —
+    /// spherical bowls hollowed into the dash with a bezel and a glass.
+    pub gauge_jet: bool,
+    /// Gauges stay lit (true) or fade by relevance (false).
+    pub gauges_stay: bool,
+    /// The design guide overlay.
+    pub guide: bool,
     /// Spacing of the landing hoops, metres.
     pub landing_spacing_m: f32,
     /// Rings drawn around each body on the map, 0..=6.
@@ -87,6 +100,10 @@ impl Default for Settings {
             cockpit_glow: 1.0,
             cockpit_hull: 0.92,
             cockpit_res: 0.5,
+            fov: 70.0,
+            gauge_jet: false,
+            gauges_stay: false,
+            guide: false,
             landing_spacing_m: 250.0,
             map_rings: 4,
             map_grid: true,
@@ -202,6 +219,28 @@ impl Settings {
                         }
                     }
                 }
+                "graphics.fov" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.fov = f.clamp(FOV_MIN, FOV_MAX);
+                        }
+                    }
+                }
+                "ui.gauge-style" => match v {
+                    "jet" => s.gauge_jet = true,
+                    "tron" => s.gauge_jet = false,
+                    _ => {}
+                },
+                "ui.gauges" => match v {
+                    "stay" => s.gauges_stay = true,
+                    "fade" => s.gauges_stay = false,
+                    _ => {}
+                },
+                "ui.guide" => match v {
+                    "on" => s.guide = true,
+                    "off" => s.guide = false,
+                    _ => {}
+                },
                 "cockpit.res" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if COCKPIT_RES_CHOICES.contains(&f) {
@@ -330,6 +369,19 @@ impl Settings {
         out.push_str(&format!("cockpit.glow = {:.2}\n", self.cockpit_glow));
         out.push_str(&format!("cockpit.hull = {:.2}\n", self.cockpit_hull));
         out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
+        out.push_str(&format!("graphics.fov = {:.0}\n", self.fov));
+        out.push_str(&format!(
+            "ui.gauge-style = {}\n",
+            if self.gauge_jet { "jet" } else { "tron" }
+        ));
+        out.push_str(&format!(
+            "ui.gauges = {}\n",
+            if self.gauges_stay { "stay" } else { "fade" }
+        ));
+        out.push_str(&format!(
+            "ui.guide = {}\n",
+            if self.guide { "on" } else { "off" }
+        ));
         out.push_str(&format!(
             "ui.landing-hoops = {:.0}\n",
             self.landing_spacing_m
@@ -394,6 +446,10 @@ mod tests {
         s.cockpit_glow = 1.5;
         s.cockpit_hull = 0.25;
         s.cockpit_res = 1.0;
+        s.fov = 85.0;
+        s.gauge_jet = true;
+        s.gauges_stay = true;
+        s.guide = true;
         s.menu_anchor = [-0.25, 0.5];
         s.map_anchor = [0.125, -0.125];
         s.map_grid = false;

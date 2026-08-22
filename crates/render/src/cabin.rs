@@ -42,6 +42,9 @@ pub struct CabinLook {
     /// Main thrust 0..1 (the plumes) and the pitch / yaw / roll demands
     /// -1..1 (the RCS puffs).
     pub thrust: [f32; 4],
+    /// JET style: bowls and bezels in the dash instead of sockets and
+    /// beams.
+    pub jet: bool,
 }
 
 impl CabinUniforms {
@@ -71,7 +74,7 @@ impl CabinUniforms {
             // about it changes, and time would be change every frame.
             misc: [
                 cam.aspect,
-                0.0,
+                if look.jet { 1.0 } else { 0.0 },
                 if look.on { 1.0 } else { 0.0 },
                 sockets.len().min(4) as f32,
             ],
@@ -477,6 +480,7 @@ mod tests {
             metal: 0.8,
             on: true,
             thrust: [0.5, 2.0, -0.5, 0.0],
+            jet: false,
         };
         let sockets = [anchor_direction([0.7, -0.6], 0.55, 1.5), Vec3::ZERO];
         let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
@@ -493,6 +497,7 @@ mod tests {
             metal: -1.0,
             on: true,
             thrust: [9.0, 0.0, 0.0, 0.0],
+            jet: true,
         };
         let turned = CabinUniforms::new(&cam, Quat::from_rotation_y(-0.5), Vec3::Y, loud, &[]);
         assert!(turned.fwd[0] > 0.4, "{:?}", turned.fwd);
@@ -501,6 +506,7 @@ mod tests {
         assert_eq!(still.misc[2], 1.0);
         assert_eq!(still.blit(look).thrust, [0.5, 1.0, -0.5, 0.0]);
         assert_eq!(turned.blit(loud).thrust[0], 1.0);
+        assert_eq!(turned.misc[1], 1.0);
         assert_eq!(UNIFORM_BYTES, 9 * 16);
         // Unchanged inputs compare equal (no clock inside), a turned head
         // is a moved view, a changed socket is not.
