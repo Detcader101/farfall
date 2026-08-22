@@ -19,6 +19,15 @@ fn parse_pair(v: &str) -> Option<[f32; 2]> {
     (x.is_finite() && y.is_finite()).then_some([x, y])
 }
 
+/// Where the settings menu's text starts and the map pane is centred,
+/// until the pilot drags them.
+pub const MENU_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
+pub const MAP_ANCHOR_DEFAULT: [f32; 2] = [0.42, 0.12];
+
+fn clamp_anchor(a: [f32; 2]) -> [f32; 2] {
+    [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)]
+}
+
 /// The landing hoops' spacings on offer, metres.
 pub const LANDING_SPACINGS: [f32; 4] = [100.0, 250.0, 500.0, 1000.0];
 
@@ -37,6 +46,11 @@ pub struct Settings {
     pub look_sensitivity: f32,
     /// Hoop diameter, as a multiple of the stock size.
     pub hoop_size: f32,
+    /// Where the settings menu's text block sits (top-left, canopy NDC).
+    pub menu_anchor: [f32; 2],
+    /// Where the map pane's centre sits (canopy NDC); the DRIVE panel
+    /// hangs off its left edge.
+    pub map_anchor: [f32; 2],
     /// Spacing of the landing hoops, metres.
     pub landing_spacing_m: f32,
     /// Rings drawn around each body on the map, 0..=6.
@@ -57,6 +71,8 @@ impl Default for Settings {
             layout: Layout::default(),
             look_sensitivity: 1.0,
             hoop_size: 1.0,
+            menu_anchor: MENU_ANCHOR_DEFAULT,
+            map_anchor: MAP_ANCHOR_DEFAULT,
             landing_spacing_m: 250.0,
             map_rings: 4,
             map_grid: true,
@@ -148,6 +164,16 @@ impl Settings {
                         if f.is_finite() {
                             s.look_sensitivity = f.clamp(0.1, 5.0);
                         }
+                    }
+                }
+                "ui.panel-menu" => {
+                    if let Some(a) = parse_pair(v) {
+                        s.menu_anchor = clamp_anchor(a);
+                    }
+                }
+                "ui.panel-map" => {
+                    if let Some(a) = parse_pair(v) {
+                        s.map_anchor = clamp_anchor(a);
                     }
                 }
                 "ui.landing-hoops" => {
@@ -250,6 +276,14 @@ impl Settings {
         ));
         out.push_str(&format!("ui.hoop-size = {:.2}\n", self.hoop_size));
         out.push_str(&format!(
+            "ui.panel-menu = {:.3},{:.3}\n",
+            self.menu_anchor[0], self.menu_anchor[1]
+        ));
+        out.push_str(&format!(
+            "ui.panel-map = {:.3},{:.3}\n",
+            self.map_anchor[0], self.map_anchor[1]
+        ));
+        out.push_str(&format!(
             "ui.landing-hoops = {:.0}\n",
             self.landing_spacing_m
         ));
@@ -309,6 +343,8 @@ mod tests {
         s.hoop_size = 2.5;
         s.map_rings = 2;
         s.landing_spacing_m = 500.0;
+        s.menu_anchor = [-0.25, 0.5];
+        s.map_anchor = [0.125, -0.125];
         s.map_grid = false;
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);

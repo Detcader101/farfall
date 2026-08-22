@@ -28,24 +28,26 @@ pub fn radius(d_m: f64) -> f32 {
     (d_m / INNER_M).log10().max(0.0) as f32
 }
 
-/// Where the map pane sits on the glass: a square (in pixels) on the right
-/// of the screen, a little above centre — clear of the menu text on the
-/// left and of the instruments along the bottom rim — as `[cx, cy, half_w]`
-/// in NDC (its half height is `half_w * aspect`). The rest of the screen is
-/// dimmed around it.
-pub fn pane_rect(aspect: f32) -> [f32; 3] {
+/// Where the map pane sits on the glass: a square (in pixels) centred on
+/// `centre` (the pilot's anchor for it), as `[cx, cy, half_w]` in NDC (its
+/// half height is `half_w * aspect`). The rest of the screen is dimmed
+/// around it.
+pub fn pane_rect(aspect: f32, centre: [f32; 2]) -> [f32; 3] {
     let aspect = if aspect.is_finite() && aspect > 0.0 {
         aspect
     } else {
         1.0
     };
-    const RIGHT: f32 = 0.90;
-    const CENTRE_Y: f32 = 0.12;
     const HALF_H: f32 = 0.44;
-    // Square in pixels; never reaching past the screen's middle-left,
-    // where the menu's text lives.
     let half_w = (HALF_H / aspect).min(0.4);
-    [RIGHT - half_w, CENTRE_Y, half_w]
+    let c = |v: f32| {
+        if v.is_finite() {
+            v.clamp(-0.95, 0.95)
+        } else {
+            0.0
+        }
+    };
+    [c(centre[0]), c(centre[1]), half_w]
 }
 
 pub const RINGS_MAX: u32 = 6;
@@ -145,13 +147,15 @@ pub struct MapLook {
     pub visibility: f32,
     pub aspect: f32,
     pub time_s: f32,
+    /// The pane's centre on the glass.
+    pub centre: [f32; 2],
 }
 
 impl MapUniforms {
     pub fn new(w: &MapWorld, l: &MapLook) -> Self {
         let (eye, right, up, fwd) = l.view.camera();
         let tan_half = (40.0f32).to_radians().tan();
-        let pane = pane_rect(l.aspect);
+        let pane = pane_rect(l.aspect, l.centre);
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
         let q = w.ship_orient.as_quat();
         // The ring of arrival as a map radius about the destination: in log
@@ -201,15 +205,15 @@ mod tests {
     }
 
     #[test]
-    fn the_pane_is_a_square_on_the_right_clear_of_the_text() {
+    fn the_pane_is_a_square_where_the_pilot_put_it() {
         for aspect in [1.0f32, 4.0 / 3.0, 16.0 / 10.0, 21.0 / 9.0] {
-            let [cx, cy, hw] = pane_rect(aspect);
+            let [cx, cy, hw] = pane_rect(aspect, [0.42, 0.12]);
             let hh = hw * aspect;
-            assert!((cx + hw - 0.90).abs() < 1e-6, "not right-anchored");
-            assert!(cx - hw >= 0.0, "reaches into the text at {aspect}");
-            assert!(cy - hh >= -0.36 && cy + hh <= 0.95, "{aspect}: {cy} {hh}");
+            assert!((cx - 0.42).abs() < 1e-6 && (cy - 0.12).abs() < 1e-6);
+            assert!(hh <= 0.45 && hw <= 0.45, "{aspect}: {hw} {hh}");
         }
-        assert_eq!(pane_rect(f32::NAN), pane_rect(1.0));
+        // Garbage and the far beyond are kept on the glass.
+        assert_eq!(pane_rect(f32::NAN, [f32::NAN, 9.0])[..2], [0.0, 0.95]);
     }
 
     #[test]
@@ -263,6 +267,7 @@ mod tests {
             visibility: 2.0,
             aspect: 1.5,
             time_s: 3.0,
+            centre: [0.4, 0.1],
         };
         let u = MapUniforms::new(&w, &l);
         assert_eq!(u.eye[3], 1.0);

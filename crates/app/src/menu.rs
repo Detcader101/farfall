@@ -26,7 +26,8 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 4] = [Page::Graphics, Page::Controls, Page::Cockpit, Page::Map];
+    /// The settings menu's pages. The MAP is its own panel (M), not a page.
+    const ALL: [Page; 3] = [Page::Graphics, Page::Controls, Page::Cockpit];
 
     fn name(self) -> &'static str {
         match self {
@@ -141,6 +142,9 @@ const COLS: usize = 32;
 #[derive(Debug, Clone, Copy)]
 pub struct Menu {
     pub open: bool,
+    /// A one-page panel (the DRIVE panel beside the map): no paging, its
+    /// own header.
+    standalone: bool,
     page: Page,
     cursor: usize,
     scroll: usize,
@@ -154,6 +158,7 @@ impl Default for Menu {
     fn default() -> Self {
         Self {
             open: false,
+            standalone: false,
             page: Page::Graphics,
             cursor: 0,
             scroll: 0,
@@ -207,10 +212,14 @@ impl Menu {
         self.open && self.page == Page::Map
     }
 
-    /// Open straight onto the MAP page (the bench's way in).
-    pub fn open_map(&mut self) {
-        self.open = true;
-        self.set_page(Page::Map);
+    /// The DRIVE panel: the map's own controls, a one-page menu of its own
+    /// that opens with the map (M).
+    pub fn map_panel() -> Self {
+        Self {
+            standalone: true,
+            page: Page::Map,
+            ..Self::default()
+        }
     }
 
     pub fn toggle(&mut self) {
@@ -257,7 +266,7 @@ impl Menu {
                 self.open = false;
                 MenuEvent::Closed
             }
-            KeyCode::Tab => {
+            KeyCode::Tab if !self.standalone => {
                 let i = Page::ALL.iter().position(|&p| p == self.page).unwrap_or(0);
                 self.set_page(Page::ALL[(i + 1) % Page::ALL.len()]);
                 MenuEvent::Nothing
@@ -410,13 +419,18 @@ impl Menu {
     /// Draw the menu into the text bitmap.
     pub fn render(&self, text: &mut TextBitmap, s: &Settings) {
         text.clear();
-        // Header: the pages, the current one bracketed.
+        // Header: the pages, the current one bracketed — or, for a panel
+        // of its own, just its name.
         let mut header = String::new();
-        for p in Page::ALL {
-            if p == self.page {
-                header.push_str(&format!("[{}]", p.name()));
-            } else {
-                header.push_str(&format!(" {} ", p.name()));
+        if self.standalone {
+            header.push_str(&format!("[{}]  WORMHOLE DRIVE", self.page.name()));
+        } else {
+            for p in Page::ALL {
+                if p == self.page {
+                    header.push_str(&format!("[{}]", p.name()));
+                } else {
+                    header.push_str(&format!(" {} ", p.name()));
+                }
             }
         }
         text.draw(0, 0, &header);
@@ -452,7 +466,7 @@ impl Menu {
         } else {
             match self.page {
                 Page::Controls => "TAB PAGE  ENTER BIND  ESC BACK",
-                Page::Map => "TAB PAGE  < > SET  ENTER ENGAGE  DRAG TURN  WHEEL ZOOM",
+                Page::Map => "< > SET  ENTER ENGAGE  M CLOSE",
                 _ => "TAB PAGE  < > ADJUST  ESC BACK",
             }
         };
@@ -544,7 +558,6 @@ mod tests {
             MenuEvent::Changed(Change::Layout)
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
-        m.key(KeyCode::Tab, &mut s); // map
         m.key(KeyCode::Tab, &mut s); // back to graphics
         for _ in 0..3 {
             m.key(KeyCode::ArrowDown, &mut s);
@@ -553,14 +566,20 @@ mod tests {
     }
 
     #[test]
-    fn map_page_sets_the_plan_and_engages() {
-        let mut m = Menu::new();
+    fn the_drive_panel_sets_the_plan_and_engages_and_never_pages() {
+        // The settings menu has no MAP page any more: Tab cycles the three.
+        let mut settings_menu = Menu::new();
         let mut s = Settings::default();
-        m.toggle();
-        for _ in 0..3 {
-            m.key(KeyCode::Tab, &mut s);
+        settings_menu.toggle();
+        for _ in 0..Page::ALL.len() {
+            settings_menu.key(KeyCode::Tab, &mut s);
+            assert!(!settings_menu.map_open());
         }
+        let mut m = Menu::map_panel();
+        m.toggle();
         assert!(m.map_open());
+        m.key(KeyCode::Tab, &mut s);
+        assert!(m.map_open(), "the drive panel has nowhere to page to");
         let d0 = s.plan.dest;
         assert_eq!(
             m.key(KeyCode::ArrowRight, &mut s),

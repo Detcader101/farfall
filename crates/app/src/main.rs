@@ -90,6 +90,32 @@ fn slot_of(
 /// How far ahead the path predictor looks, seconds. A little over one
 /// orbit at the spawn altitude (~8.5 min), so a closed orbit draws closed.
 const TRAJECTORY_HORIZON_S: f32 = 560.0;
+/// The text block's full width on the glass, NDC, for one font pixel of
+/// `px_canopy`: the bitmap is 128 font pixels across.
+fn text_width_ndc(px_canopy: f32) -> f32 {
+    128.0 * px_canopy
+}
+
+/// Something on the glass the gaze can pick up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dragged {
+    Dial(Instrument),
+    /// The settings menu's text block.
+    MenuPanel,
+    /// The map pane with its DRIVE panel.
+    MapPanel,
+}
+
+impl Dragged {
+    fn name(self) -> &'static str {
+        match self {
+            Dragged::Dial(i) => i.name(),
+            Dragged::MenuPanel => "SETTINGS PANEL",
+            Dragged::MapPanel => "MAP",
+        }
+    }
+}
+
 /// What the text readout shows this frame.
 struct Readout {
     altitude_m: f64,
@@ -103,7 +129,8 @@ struct Readout {
 /// How close (aspect-corrected NDC) the gaze must be to a dial's anchor to
 /// pick it up with the left button.
 const DRAG_REACH: f32 = 0.30;
-/// The text readout's top-left corner on the canopy.
+/// The text readout's top-left corner on the canopy (the settings panel
+/// and the DRIVE panel have anchors of their own in the settings).
 const HUD_TEXT_ANCHOR: [f32; 2] = [-0.72, 0.62];
 /// Speed of sound for the mach instrument and the sonic boom, m/s. The
 /// gauge shader hard-codes the same number for its barrier tick (shaders
@@ -592,12 +619,14 @@ struct Game {
     /// state; the menu edits it in place.
     settings: Settings,
     menu: Menu,
+    /// The map and its DRIVE panel (M).
+    map_panel: Menu,
     horizon_fade: HorizonFade,
     /// The pilot's head: freelook, separate from the nose.
     look: Look,
-    /// A dial being dragged by the gaze: which, and where it sits relative
-    /// to the point the pilot is looking at.
-    drag: Option<(Instrument, [f32; 2])>,
+    /// What the gaze is dragging, and where it sits relative to the point
+    /// the pilot is looking at.
+    drag: Option<(Dragged, [f32; 2])>,
     /// The map's orbiting camera.
     map_view: map::MapView,
     /// Jumps made, for the drive's crack.
@@ -670,6 +699,7 @@ impl Game {
             trajectory_vis: 1.0,
             settings: Settings::default(),
             menu: Menu::new(),
+            map_panel: Menu::map_panel(),
             horizon_fade: HorizonFade::new(),
             look: Look::new(),
             drag: None,
@@ -742,9 +772,10 @@ impl Game {
             view: self.map_view,
             rings: self.settings.map_rings,
             grid: self.settings.map_grid,
-            visibility: if self.menu.map_open() { 1.0 } else { 0.0 },
+            visibility: if self.map_open() { 1.0 } else { 0.0 },
             aspect,
             time_s,
+            centre: self.settings.map_anchor,
         };
         map::MapUniforms::new(&world, &look)
     }
@@ -773,6 +804,58 @@ impl Game {
             self.settings.landing_spacing_m
         } else {
             MARK_SPACING_M
+        }
+    }
+
+    /// The map (and its DRIVE panel) is up.
+    fn map_open(&self) -> bool {
+        self.map_panel.open
+    }
+
+    /// Any panel is up: the world waits and the keys go to it.
+    fn panel_open(&self) -> bool {
+        self.menu.open || self.map_panel.open
+    }
+
+    /// M: the map up or down. One panel at a time.
+    fn toggle_map(&mut self) {
+        self.map_panel.toggle();
+        if self.map_panel.open {
+            self.menu.open = false;
+        }
+        self.input.release_all();
+    }
+
+    /// Esc: the settings menu up or down. One panel at a time.
+    fn toggle_menu(&mut self) {
+        self.menu.toggle();
+        if self.menu.open {
+            self.map_panel.open = false;
+        }
+        self.input.release_all();
+    }
+
+    /// The map pane's geometry this frame.
+    fn map_pane(&self, aspect: f32) -> [f32; 3] {
+        map::pane_rect(aspect, self.settings.map_anchor)
+    }
+
+    /// Where the DRIVE panel's text block starts: hung off the map pane's
+    /// top-left, `text_w` (NDC) to its left.
+    fn drive_text_anchor(&self, aspect: f32, text_w: f32) -> [f32; 2] {
+        let [cx, cy, hw] = self.map_pane(aspect);
+        [cx - hw - text_w - 0.03, cy + hw * aspect]
+    }
+
+    /// Where the text block's top-left sits this frame: the DRIVE panel
+    /// beside the map, the settings panel at its anchor, else the readout.
+    fn text_anchor(&self, aspect: f32, text_w: f32) -> [f32; 2] {
+        if self.map_open() {
+            self.drive_text_anchor(aspect, text_w)
+        } else if self.menu.open {
+            self.settings.menu_anchor
+        } else {
+            self.settings.layout.inset(HUD_TEXT_ANCHOR)
         }
     }
 
@@ -901,8 +984,8 @@ impl Game {
             self.jump();
         }
 
-        // A pilot reading a menu is not flying: the world waits.
-        if self.menu.open {
+        // A pilot reading a panel is not flying: the world waits.
+        if self.panel_open() {
             self.accumulator = 0.0;
             return;
         }
@@ -1157,12 +1240,44 @@ impl Game {
     /// sliding a detached camera around it.
     /// Left button while looking: pick up the dial under the gaze, if one
     /// is within reach. Returns whether something was picked up.
-    fn begin_drag(&mut self, cam: &CameraFrame) -> bool {
-        if !self.look.engaged() || self.menu.open {
+    fn begin_drag(&mut self, cam: &CameraFrame, text_w: f32) -> bool {
+        if !self.look.engaged() {
             return false;
         }
         let t = (cam.fov_y * 0.5).tan();
         let gaze = self.look.gaze(t, cam.aspect);
+        // A panel that is up is what the gaze can take: the map by its
+        // pane, the settings by its text block.
+        if self.map_open() {
+            let [cx, cy, hw] = self.map_pane(cam.aspect);
+            let hh = hw * cam.aspect;
+            let inside = (gaze[0] - cx).abs() <= hw + 0.02 && (gaze[1] - cy).abs() <= hh + 0.02;
+            let text = self.drive_text_anchor(cam.aspect, text_w);
+            let on_text = gaze[0] >= text[0] - 0.02
+                && gaze[0] <= text[0] + text_w + 0.02
+                && gaze[1] <= text[1] + 0.02
+                && gaze[1] >= text[1] - 0.5;
+            if inside || on_text {
+                let a = self.settings.map_anchor;
+                self.drag = Some((Dragged::MapPanel, [a[0] - gaze[0], a[1] - gaze[1]]));
+                log::info!("drag: picked up the map");
+                return true;
+            }
+            return false;
+        }
+        if self.menu.open {
+            let a = self.settings.menu_anchor;
+            let on_text = gaze[0] >= a[0] - 0.02
+                && gaze[0] <= a[0] + text_w + 0.02
+                && gaze[1] <= a[1] + 0.02
+                && gaze[1] >= a[1] - 0.5;
+            if on_text {
+                self.drag = Some((Dragged::MenuPanel, [a[0] - gaze[0], a[1] - gaze[1]]));
+                log::info!("drag: picked up the settings panel");
+                return true;
+            }
+            return false;
+        }
         let layout = &self.settings.layout;
         let mut best: Option<(Instrument, f32, [f32; 2])> = None;
         for i in Instrument::ALL.iter().copied().filter(|i| i.slotted()) {
@@ -1175,9 +1290,9 @@ impl Game {
                 }
             }
         }
-        self.drag = best.map(|(i, _, off)| (i, off));
-        if let Some((i, _)) = self.drag {
-            log::info!("drag: picked up {}", i.name());
+        self.drag = best.map(|(i, _, off)| (Dragged::Dial(i), off));
+        if let Some((d, _)) = self.drag {
+            log::info!("drag: picked up {}", d.name());
         }
         self.drag.is_some()
     }
@@ -1194,22 +1309,23 @@ impl Game {
         }
         let t = (cam.fov_y * 0.5).tan();
         let gaze = self.look.gaze(t, cam.aspect);
-        let at = self
-            .settings
-            .layout
-            .uninset([gaze[0] + off[0], gaze[1] + off[1]]);
-        self.settings.layout.set_free(i, at);
+        let at = [gaze[0] + off[0], gaze[1] + off[1]];
+        let clamp = |a: [f32; 2]| [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)];
+        match i {
+            Dragged::Dial(i) => {
+                let at = self.settings.layout.uninset(at);
+                self.settings.layout.set_free(i, at);
+            }
+            Dragged::MenuPanel => self.settings.menu_anchor = clamp(at),
+            Dragged::MapPanel => self.settings.map_anchor = clamp(at),
+        }
     }
 
     /// Drop it where it is, and keep that.
     fn end_drag(&mut self) {
-        if let Some((i, _)) = self.drag.take() {
+        if let Some((d, _)) = self.drag.take() {
             self.settings.save();
-            log::info!(
-                "drag: dropped {} at {:?}",
-                i.name(),
-                self.settings.layout.free(i)
-            );
+            log::info!("drag: dropped {}", d.name());
         }
     }
 
@@ -1468,7 +1584,7 @@ impl App {
         game.apply_settings(settings);
         game.menu.set_msaa_supported(&msaa_supported);
         if game.frozen && std::env::var("FARFALL_BENCH_MAP").is_ok() {
-            game.menu.open_map();
+            game.toggle_map();
         }
         if game.frozen && std::env::var("FARFALL_BENCH_LAND").is_ok() {
             game.toggle_landing();
@@ -1524,9 +1640,14 @@ impl ApplicationHandler for App {
                     return;
                 };
                 let pressed = event.state == ElementState::Pressed;
-                if game.menu.open {
+                if game.panel_open() {
+                    // M closes the map from anywhere in it.
+                    if pressed && !event.repeat && code == KeyCode::KeyM {
+                        game.toggle_map();
+                        return;
+                    }
                     // Map zoom from the keyboard, for a mouse with no wheel.
-                    if pressed && game.menu.map_open() {
+                    if pressed && game.map_open() {
                         match code {
                             KeyCode::Equal | KeyCode::NumpadAdd => game.map_view.zoom_by(1.0),
                             KeyCode::Minus | KeyCode::NumpadSubtract => game.map_view.zoom_by(-1.0),
@@ -1534,7 +1655,12 @@ impl ApplicationHandler for App {
                         }
                     }
                     if pressed && !event.repeat {
-                        match game.menu.key(code, &mut game.settings) {
+                        let panel = if game.map_open() {
+                            &mut game.map_panel
+                        } else {
+                            &mut game.menu
+                        };
+                        match panel.key(code, &mut game.settings) {
                             MenuEvent::Changed(change) => {
                                 game.settings.save();
                                 match change {
@@ -1560,12 +1686,11 @@ impl ApplicationHandler for App {
                     return;
                 }
                 match code {
-                    KeyCode::Escape if pressed && !event.repeat => {
-                        game.menu.toggle();
-                        // Whatever was held is released: the world pauses,
-                        // the keys must not carry a thrust demand across.
-                        game.input.release_all();
-                    }
+                    // Whatever was held is released when a panel opens: the
+                    // world pauses, the keys must not carry a thrust demand
+                    // across.
+                    KeyCode::Escape if pressed && !event.repeat => game.toggle_menu(),
+                    KeyCode::KeyM if pressed && !event.repeat => game.toggle_map(),
                     // Edge-triggered, and `repeat` is filtered: holding the key
                     // must not strobe the toggle.
                     KeyCode::KeyC if pressed && !event.repeat => game.cycle_appearance(),
@@ -1622,25 +1747,31 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 game.left_down = state == ElementState::Pressed;
-                if game.left_down && !game.menu.open {
+                if game.left_down {
                     let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                     let cam = game.camera(aspect);
-                    game.begin_drag(&cam);
-                } else if !game.left_down {
+                    let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
+                    game.begin_drag(
+                        &cam,
+                        text_width_ndc(hud_scale * 2.0 / gpu.config.height as f32),
+                    );
+                } else {
                     game.end_drag();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let now = (position.x as f32, position.y as f32);
                 if let Some(last) = game.cursor {
-                    if game.left_down && game.menu.map_open() {
+                    // Turning the map with the mouse, unless the gaze has
+                    // hold of the pane itself.
+                    if game.left_down && game.map_open() && game.drag.is_none() {
                         game.map_view.drag(now.0 - last.0, now.1 - last.1);
                     }
                 }
                 game.cursor = Some(now);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if game.menu.map_open() {
+                if game.map_open() {
                     let notches = match delta {
                         winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                         winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
@@ -1736,7 +1867,9 @@ impl ApplicationHandler for App {
                                     gpu.map
                                         .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
                                 }
-                                if capture_text && game.menu.open {
+                                if capture_text && game.map_open() {
+                                    game.map_panel.render(&mut gpu.text, &game.settings);
+                                } else if capture_text && game.menu.open {
                                     game.menu.render(&mut gpu.text, &game.settings);
                                 } else if capture_text {
                                     gpu.text.clear();
@@ -1749,15 +1882,16 @@ impl ApplicationHandler for App {
                                     );
                                     let (_, sh) = gpu.scene.size();
                                     let hud_scale = (sh as f32 / 260.0).clamp(2.0, 8.0).floor();
+                                    let px_canopy = hud_scale * 2.0 / sh as f32;
                                     gpu.hud.update(
                                         &gpu.queue,
                                         &gpu.text,
                                         on_glass(
                                             &game.look,
                                             &cam,
-                                            game.settings.layout.inset(HUD_TEXT_ANCHOR),
+                                            game.text_anchor(aspect, text_width_ndc(px_canopy)),
                                         ),
-                                        hud_scale * 2.0 / sh as f32,
+                                        px_canopy,
                                         aspect,
                                         sh as f32,
                                         game.holo_sway.sway(),
@@ -1813,7 +1947,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.alt_gauge.draw(&mut pass);
                                     gpu.passes.g_gauge.draw(&mut pass);
                                     gpu.passes.gyro.draw(&mut pass);
-                                    if capture_text && game.menu.map_open() {
+                                    if capture_text && game.map_open() {
                                         gpu.map.draw(&mut pass);
                                     }
                                     if capture_text {
@@ -1935,7 +2069,7 @@ impl ApplicationHandler for App {
                     on_glass(
                         &game.look,
                         &cam,
-                        game.settings.layout.inset(HUD_TEXT_ANCHOR),
+                        game.text_anchor(aspect, text_width_ndc(px_canopy)),
                     ),
                     px_canopy,
                     aspect,
@@ -2004,7 +2138,7 @@ impl ApplicationHandler for App {
                     if gpu.cfg.draws("blit") {
                         gpu.blit.draw(&mut pass);
                     }
-                    if game.menu.map_open() {
+                    if game.map_open() {
                         gpu.map.draw(&mut pass);
                     }
                     if gpu.cfg.draws("hud") {
@@ -2087,7 +2221,10 @@ impl ApplicationHandler for App {
                         landing: game.landing_text(),
                     },
                 );
-                if game.menu.open {
+                if game.map_open() {
+                    gpu.text.clear();
+                    game.map_panel.render(&mut gpu.text, &game.settings);
+                } else if game.menu.open {
                     gpu.text.clear();
                     game.menu.render(&mut gpu.text, &game.settings);
                 }

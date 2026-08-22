@@ -124,9 +124,9 @@ features:
 
   - id: ladder-on-nose
     name: Pitch ladder stays on the boresight under freelook
-    state: tests-pass
+    state: complete
     tests: [crates/render/src/attitude.rs]
-    e2e: pending a head-turned capture
+    e2e: FARFALL_BENCH_HEAD=25,0 capture with ui.ladder on — bars sit on the nose, left of view
 
   - id: uranus
     name: Uranus as a body and destination (1:100, 19.2 AU, rings); altitude over nearest body
@@ -135,12 +135,18 @@ features:
     e2e: FARFALL_BENCH_WARP arrival capture — ice giant overhead, 939 m/s circular orbit, tag ring
 
   - id: map-panel-m
-    name: Map as its own UI feature on M with its own drive panel
-    state: planned
+    name: Map as its own UI feature on M with its own DRIVE panel
+    state: complete
+    tests: [crates/app/src/menu.rs::the_drive_panel_sets_the_plan_and_engages_and_never_pages, crates/app/src/map.rs]
+    settings: [ui.panel-map]
+    e2e: FARFALL_BENCH_MAP capture — DRIVE panel beside the pane, settings menu has no MAP page
 
   - id: panels-gaze-drag
-    name: Settings and map panels gaze-draggable like dials
-    state: planned
+    name: Settings and map panels gaze-draggable like dials (anchors saved)
+    state: tests-pass
+    tests: [crates/app/src/settings.rs::defaults_round_trip, crates/app/src/map.rs::the_pane_is_a_square_where_the_pilot_put_it]
+    settings: [ui.panel-menu, ui.panel-map]
+    e2e: needs a flight — pick up the panel with the gaze and drop it
 
   - id: cockpit-wireframe
     name: Tron-style GPU wireframe cockpit around the head
