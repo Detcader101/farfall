@@ -51,6 +51,11 @@ pub struct Settings {
     /// Where the map pane's centre sits (canopy NDC); the DRIVE panel
     /// hangs off its left edge.
     pub map_anchor: [f32; 2],
+    /// The wireframe cabin: drawn at all, how bright its lines, how opaque
+    /// its hull.
+    pub cockpit_frame: bool,
+    pub cockpit_glow: f32,
+    pub cockpit_hull: f32,
     /// Spacing of the landing hoops, metres.
     pub landing_spacing_m: f32,
     /// Rings drawn around each body on the map, 0..=6.
@@ -73,6 +78,9 @@ impl Default for Settings {
             hoop_size: 1.0,
             menu_anchor: MENU_ANCHOR_DEFAULT,
             map_anchor: MAP_ANCHOR_DEFAULT,
+            cockpit_frame: true,
+            cockpit_glow: 1.0,
+            cockpit_hull: 0.92,
             landing_spacing_m: 250.0,
             map_rings: 4,
             map_grid: true,
@@ -174,6 +182,25 @@ impl Settings {
                 "ui.panel-map" => {
                     if let Some(a) = parse_pair(v) {
                         s.map_anchor = clamp_anchor(a);
+                    }
+                }
+                "cockpit.frame" => match v {
+                    "on" => s.cockpit_frame = true,
+                    "off" => s.cockpit_frame = false,
+                    _ => {}
+                },
+                "cockpit.glow" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.cockpit_glow = f.clamp(0.25, 2.0);
+                        }
+                    }
+                }
+                "cockpit.hull" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.cockpit_hull = f.clamp(0.0, 1.0);
+                        }
                     }
                 }
                 "ui.landing-hoops" => {
@@ -284,6 +311,12 @@ impl Settings {
             self.map_anchor[0], self.map_anchor[1]
         ));
         out.push_str(&format!(
+            "cockpit.frame = {}\n",
+            if self.cockpit_frame { "on" } else { "off" }
+        ));
+        out.push_str(&format!("cockpit.glow = {:.2}\n", self.cockpit_glow));
+        out.push_str(&format!("cockpit.hull = {:.2}\n", self.cockpit_hull));
+        out.push_str(&format!(
             "ui.landing-hoops = {:.0}\n",
             self.landing_spacing_m
         ));
@@ -343,6 +376,9 @@ mod tests {
         s.hoop_size = 2.5;
         s.map_rings = 2;
         s.landing_spacing_m = 500.0;
+        s.cockpit_frame = false;
+        s.cockpit_glow = 1.5;
+        s.cockpit_hull = 0.25;
         s.menu_anchor = [-0.25, 0.5];
         s.map_anchor = [0.125, -0.125];
         s.map_grid = false;

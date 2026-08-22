@@ -172,7 +172,7 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_WARP=s   (benchmark only: engage the wormhole drive s
 ///                           seconds in, so the sequence can be captured)
 ///   FARFALL_SKIP=a,b       (profiling only: leave out passes by name —
-///                           starfield, bodies, planet, plasma, trajectory, gauge,
+///                           starfield, bodies, planet, plasma, trajectory, cockpit, gauge,
 ///                           hud, blit —
 ///                           so each one's cost can be measured by its absence)
 struct Config {
@@ -299,6 +299,8 @@ struct Passes {
     g_gauge: GaugePass,
     gyro: InstrumentPass,
     horizon: InstrumentPass,
+    /// The wireframe cabin around the head.
+    cabin: InstrumentPass,
     /// The hull heat field, simulated on the GPU, and the sheath it lights.
     thermal: ThermalPass,
     plasma: PlasmaPass,
@@ -324,6 +326,7 @@ impl Passes {
             g_gauge: gauge_pass(device, format, msaa),
             gyro: gyro_pass(device, format, msaa),
             horizon: horizon_pass(device, format, msaa),
+            cabin: farfall_render::cabin::cabin_pass(device, format, msaa),
             thermal,
             plasma,
             trajectory: TrajectoryPass::new(device, format, msaa),
@@ -420,6 +423,20 @@ impl Gpu {
         } else {
             0.0
         };
+        self.passes.cabin.update(
+            &self.queue,
+            &farfall_render::cabin::CabinUniforms::new(
+                cam,
+                game.look.rotation(),
+                game.settings.cockpit_glow,
+                game.settings.cockpit_hull,
+                if game.settings.cockpit_frame {
+                    1.0
+                } else {
+                    0.0
+                },
+            ),
+        );
         self.passes.horizon.update(
             &self.queue,
             &HorizonUniforms::new(
@@ -1942,6 +1959,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.planet.draw(&mut pass);
                                     gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                                     gpu.passes.trajectory.draw(&mut pass);
+                                    gpu.passes.cabin.draw(&mut pass);
                                     gpu.passes.horizon.draw(&mut pass);
                                     gpu.passes.gauge.draw(&mut pass);
                                     gpu.passes.alt_gauge.draw(&mut pass);
@@ -2108,6 +2126,9 @@ impl ApplicationHandler for App {
                     }
                     if gpu.cfg.draws("trajectory") {
                         gpu.passes.trajectory.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("cockpit") {
+                        gpu.passes.cabin.draw(&mut pass);
                     }
                     if gpu.cfg.draws("gauge") {
                         gpu.passes.horizon.draw(&mut pass);

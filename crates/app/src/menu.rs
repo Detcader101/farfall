@@ -71,6 +71,9 @@ enum Item {
     SafeEdge,
     HoopSize,
     LandingHoops,
+    CockpitFrame,
+    CockpitGlow,
+    CockpitHull,
     MapRings,
     MapGrid,
     LookSens,
@@ -93,6 +96,9 @@ impl Item {
             Item::SafeEdge => "SAFE EDGE",
             Item::HoopSize => "HOOP SIZE",
             Item::LandingHoops => "LANDING HOOPS",
+            Item::CockpitFrame => "CABIN FRAME",
+            Item::CockpitGlow => "CABIN GLOW",
+            Item::CockpitHull => "CABIN HULL",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
@@ -118,6 +124,9 @@ impl Item {
             Item::SafeEdge => format!("{:.0}%", s.layout.safe_edge * 100.0),
             Item::HoopSize => format!("{:.2}x", s.hoop_size),
             Item::LandingHoops => format!("{:.0}M", s.landing_spacing_m),
+            Item::CockpitFrame => if s.cockpit_frame { "ON" } else { "OFF" }.to_string(),
+            Item::CockpitGlow => format!("{:.2}x", s.cockpit_glow),
+            Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
@@ -188,6 +197,9 @@ impl Menu {
                 v.push(Item::SafeEdge);
                 v.push(Item::HoopSize);
                 v.push(Item::LandingHoops);
+                v.push(Item::CockpitFrame);
+                v.push(Item::CockpitGlow);
+                v.push(Item::CockpitHull);
                 v
             }
             Page::Map => vec![
@@ -371,6 +383,28 @@ impl Menu {
                     (i + n - 1) % n
                 };
                 s.landing_spacing_m = LANDING_SPACINGS[j];
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::CockpitFrame => {
+                s.cockpit_frame = !s.cockpit_frame;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::CockpitGlow => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.cockpit_glow + step).clamp(0.25, 2.0);
+                if (next - s.cockpit_glow).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.cockpit_glow = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::CockpitHull => {
+                let step = if forward { 0.1 } else { -0.1 };
+                let next = (s.cockpit_hull + step).clamp(0.0, 1.0);
+                if (next - s.cockpit_hull).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.cockpit_hull = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::MapRings => {

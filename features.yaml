@@ -149,8 +149,11 @@ features:
     e2e: needs a flight — pick up the panel with the gaze and drop it
 
   - id: cockpit-wireframe
-    name: Tron-style GPU wireframe cockpit around the head
-    state: planned
+    name: Tron-style wireframe cabin around the head (dome ribs/hoops, sill, gridded dash, bulkhead)
+    state: complete
+    tests: [crates/render/src/cabin.rs]
+    settings: [cockpit.frame, cockpit.glow, cockpit.hull]
+    e2e: captures forward and FARFALL_BENCH_HEAD=120,-10 looking back at the bulkhead
 
   - id: crash
     name: Ship loss on hard impact / Sun contact

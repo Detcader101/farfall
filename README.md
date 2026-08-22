@@ -37,7 +37,7 @@ so it handles like a VTOL: hold the horizon and the orbit holds, pitch down and
 you descend. Switch it **off** and the ship is a pure ballistic body: attitude
 and velocity are independent, and orbits are conserved exactly.
 
-**Cockpit**: every instrument — speedo, altimeter, gyro, G meter, head-up horizon and its pitch ladder, predicted path and its hoops (and their sound), readout — can be moved between slots on the glass or switched off from the menu's COCKPIT page, and a SAFE EDGE pulls everything in from the rim. HOOP SIZE scales the path's hoops; the MAP page's 3D map (drag to turn, wheel or -/= to zoom; poles drop every body to the Moon's orbital plane, the ship is a dart in its true attitude) has BODY RINGS (0–6) and GRID settings; they pass around the ship and fade red astern, so a look back shows the path just flown.
+**Cockpit**: every instrument — speedo, altimeter, gyro, G meter, head-up horizon and its pitch ladder, predicted path and its hoops (and their sound), readout — can be moved between slots on the glass or switched off from the menu's COCKPIT page, and a SAFE EDGE pulls everything in from the rim. The CABIN FRAME / GLOW / HULL settings shape the wireframe cockpit drawn around your head (a canopy dome with ribs, a sill, a gridded dash, a bulkhead behind — turn your head and it goes round you). HOOP SIZE scales the path's hoops; the MAP page's 3D map (drag to turn, wheel or -/= to zoom; poles drop every body to the Moon's orbital plane, the ship is a dart in its true attitude) has BODY RINGS (0–6) and GRID settings; they pass around the ship and fade red astern, so a look back shows the path just flown.
 
 **Runtime knobs** (env vars, no rebuild needed; they override the settings file):
 
