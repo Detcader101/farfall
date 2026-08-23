@@ -34,7 +34,7 @@ pub const UNIFORM_BYTES: u64 = std::mem::size_of::<CabinUniforms>() as u64;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Socket {
     pub dir: Vec3,
-    /// 0 TRON, 1 JET, 2 DIAL.
+    /// 0 TRON, 1 JET, 2 DIAL, 3 BALL (the gyro's sphere in a JET bowl).
     pub style: u32,
     pub size: f32,
     /// Tilted toward the pilot (positive) about its own horizontal axis,
@@ -91,7 +91,7 @@ impl CabinUniforms {
             let w = if d == Vec3::ZERO {
                 0.0
             } else {
-                (sk.style.min(2) + 1) as f32
+                (sk.style.min(3) + 1) as f32
                     + 10.0 * (sk.size.clamp(0.25, 4.0) * 100.0).round()
                     + 10000.0 * tilt_code(sk.tilt)
             };
@@ -148,6 +148,11 @@ fn quantise(v: Vec3, step: f32) -> Vec3 {
 /// DASH_N in cockpit.wgsl and DIAL_DASH_* in common.wgsl.
 pub const DASH_C: Vec3 = Vec3::new(0.0, -0.50, -1.05);
 pub const DASH_N: Vec3 = Vec3::new(0.0, 0.9563, 0.2924);
+/// The gyro ball's radius (metres at stock size) and how far under the
+/// dash its centre sits — the JET bowl's own centre (cockpit.wgsl).
+pub const BALL_RADIUS_M: f32 = 0.17;
+pub const BALL_DEPTH_M: f32 = 0.10;
+
 /// Metres of dash per drawing unit of a dial: a dial's drawing radius is
 /// 0.155 units; at this scale that is a 20 cm instrument.
 pub const DIAL_SCALE_M: f32 = 1.3;
@@ -219,6 +224,22 @@ impl Placement {
             0.0
         };
         self
+    }
+
+    /// The gyro's ball: a sphere of this radius (metres, centre.w) at the
+    /// bowl's centre under the hologram's direction, or None off the dash.
+    pub fn ball(head: Quat, tan_half_fov: f32, dir: Vec3, size: f32) -> Option<Placement> {
+        if !on_dash(dir) {
+            return None;
+        }
+        let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
+        let centre = socket_centre(dir) - DASH_N * BALL_DEPTH_M;
+        Some(Placement {
+            right: v4(head * Vec3::X, 1.0),
+            up: v4(head * Vec3::Y, 0.0),
+            fwd: v4(head * Vec3::NEG_Z, tan_half_fov),
+            centre: v4(centre, BALL_RADIUS_M * size.clamp(0.25, 4.0)),
+        })
     }
 
     /// The dash normal turned toward the pilot by `tilt` (about +X).

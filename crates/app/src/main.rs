@@ -542,7 +542,8 @@ impl Gpu {
                 cam.time_s,
             )
             .jet(jet(Instrument::Gyro))
-            .placed(placed(Instrument::Gyro)),
+            .placed(placed(Instrument::Gyro))
+            .ball_if(game.gyro_ball(cam, tweak(Instrument::Gyro))),
         );
         // The design guide: the glass ruled, every shown dial's anchor and
         // reach, the gaze.
@@ -1126,7 +1127,12 @@ impl Game {
                 let tw = self.dial_tweak(i);
                 farfall_render::cabin::Socket {
                     dir: anchor_direction(a, ref_tan, cam.aspect),
-                    style: tw.style.index(),
+                    // The gyro's JET is the ball itself.
+                    style: if i == Instrument::Gyro && tw.style == settings::GaugeStyle::Jet {
+                        3
+                    } else {
+                        tw.style.index()
+                    },
                     size: tw.size,
                     tilt: tw.tilt,
                 }
@@ -1220,6 +1226,36 @@ impl Game {
         } else {
             None
         }
+    }
+
+    /// The gyro as a geometric ball: when it is JET and sits in the dash,
+    /// its sphere's placement and the world's up and east in the ship's
+    /// frame, for the gyro pass to paint.
+    fn gyro_ball(
+        &self,
+        cam: &CameraFrame,
+        tw: DialEffective,
+    ) -> Option<(farfall_render::cabin::Placement, glam::Vec3, glam::Vec3)> {
+        use farfall_render::cabin::anchor_direction;
+        use glam::Vec3;
+        if tw.style != settings::GaugeStyle::Jet {
+            return None;
+        }
+        let a = self.settings.layout.anchor(Instrument::Gyro)?;
+        let dir = anchor_direction(a, self.ref_tan(), cam.aspect);
+        let t = (cam.fov_y * 0.5).tan();
+        let place = farfall_render::cabin::Placement::ball(self.look.rotation(), t, dir, tw.size)?;
+        let ship_inv = self.state.ship.orient.as_quat().inverse();
+        let up_w = self.up_world().as_vec3();
+        let east_w = {
+            let e = Vec3::Y.cross(up_w);
+            if e.length() > 1e-4 {
+                e.normalize()
+            } else {
+                Vec3::X
+            }
+        };
+        Some((place, ship_inv * up_w, ship_inv * east_w))
     }
 
     /// The drive's look this frame: the wormhole sequence, with the hyper

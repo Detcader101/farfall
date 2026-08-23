@@ -243,6 +243,12 @@ features:
     settings: [sound.hull]
     e2e: needs a flight — listen at 3,000+ m/s in space
 
+  - id: gyro-ball
+    name: The gyro as a geometric sphere — JET gyro in the dash is a real ray-marched ball in its bowl (cabin socket style 3), painted by the gyro pass per pixel from the ray/sphere hit: the world's frame (up, east) on the ship, sky/earth through the ball as a real attitude ball, horizon, pitch lines, meridians, lamp + rim, fixed wings at the near point
+    state: complete
+    tests: [crates/render/tests/shader_validation.rs, crates/render/src/cabin.rs]
+    e2e: FARFALL_BENCH_HEAD=0,-28 capture, gyro JET ×1.5 — a shaded globe in the bowl, earth up for a nose-down ship
+
   - id: fps-floor
     name: FPS FLOOR (graphics.fps-floor, default 60) — a governor on the cabin's moving size; while turning the head costs more than the floor allows, the moving march shrinks (to 0.3 of the still size) and grows back when there is room; the sharp cabin is untouched
     state: complete

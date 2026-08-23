@@ -22,8 +22,12 @@ struct Gyro {
     // x: drift, rad (prograde to the right of the nose positive). y: target
     // height px (scanline frequency). zw: canopy anchor, NDC.
     b: vec4<f32>,
-    // xy: hologram sway. z: time s. w: unused.
+    // xy: hologram sway. zw: the world's east in the ship's frame,
+    // octahedral (the geometric ball).
     c: vec4<f32>,
+    // x: 0 hologram, 1 JET (a shaded disc), 2 the geometric ball — a
+    // sphere in the dash (p3: centre, w radius in metres) painted with
+    // the world's frame; yzw: the world's up in the ship's frame.
     d: vec4<f32>,
     // DIAL placement, as the gauges: right, up, fwd (w tan half fov), centre
     // (w metres per unit; 0 = on the glass).
@@ -73,6 +77,87 @@ fn line(d: f32, half_w: f32, aa: f32) -> f32 {
     return 1.0 - smoothstep(0.0, aa, d - half_w);
 }
 
+// The geometric ball: the pixel's ray from the head meets the sphere in
+// the dash; the hit's normal, in the ship's frame, is read against the
+// world's up and east — the ball is a globe that stays with the world as
+// the ship turns about it. Sky above the horizon, earth below, the
+// horizon line, pitch lines every 10°, meridians every 30°, and the
+// fixed wings at the point nearest the pilot. Lit by a lamp up-left of
+// the head, with a rim.
+fn ball_3d(ndc: vec2<f32>, aspect: f32, vis: f32) -> vec4<f32> {
+    let tan_half = gyro.p2.w;
+    let ray = normalize(gyro.p2.xyz + gyro.p0.xyz * (ndc.x * tan_half * aspect) + gyro.p1.xyz * (ndc.y * tan_half));
+    let c = gyro.p3.xyz;
+    let rad = max(gyro.p3.w, 1e-3);
+    let b = dot(ray, c);
+    let disc = b * b - (dot(c, c) - rad * rad);
+    if (disc < 0.0 || b <= 0.0) {
+        discard;
+    }
+    let t = b - sqrt(disc);
+    let hit = ray * t;
+    let n = (hit - c) / rad;
+    // Anti-aliasing width on the unit sphere: a pixel's footprint.
+    let aa = max(fwidth(n.x) + fwidth(n.y) + fwidth(n.z), 1e-4) * 0.7;
+
+    let up = normalize(gyro.d.yzw);
+    let east = normalize(oct_decode(gyro.c.zw));
+    let north = normalize(cross(up, east));
+    // Painted as a real attitude ball is: the world seen THROUGH the
+    // ball, so the point facing the pilot wears the antipode — nose down,
+    // and the earth rolls up into view.
+    let m = -n;
+    let lat = asin(clamp(dot(m, up), -1.0, 1.0));
+    let lon = atan2(dot(m, east), dot(m, north));
+
+    var glow = 0.0;
+    var hot = 0.0;
+    // Horizon and pitch lines: every 10°, the horizon itself heavier.
+    let horizon = 1.0 - smoothstep(0.0, aa * 1.8, abs(lat) - 0.004);
+    let pitch_line = abs(fract(lat / 0.17453 + 0.5) - 0.5) * 0.17453;
+    let pl = 1.0 - smoothstep(0.0, aa * 1.6, pitch_line - 0.0025);
+    // Meridians every 30°, fading toward the poles where they crowd.
+    let mer = abs(fract(lon / 0.5236 + 0.5) - 0.5) * 0.5236 * cos(lat);
+    let ml = (1.0 - smoothstep(0.0, aa * 1.6, mer - 0.002)) * (1.0 - smoothstep(1.2, 1.5, abs(lat)));
+    glow += 0.55 * pl + 0.3 * ml;
+    hot += 0.9 * horizon;
+
+    // Sky and earth, shaded as a sphere by a lamp up-left of the head.
+    let lamp = normalize(-0.5 * gyro.p0.xyz + 0.6 * gyro.p1.xyz - 0.7 * gyro.p2.xyz);
+    let shade = 0.25 + 0.75 * max(dot(n, lamp), 0.0);
+    let spec = pow(max(dot(n, normalize(lamp - ray)), 0.0), 40.0);
+    let rim = pow(1.0 - max(dot(n, -ray), 0.0), 3.0);
+    let sky = smoothstep(-0.004, 0.004, lat);
+    let sky_rgb = vec3<f32>(0.16, 0.32, 0.58);
+    let earth_rgb = vec3<f32>(0.36, 0.22, 0.10);
+    var colour = mix(earth_rgb, sky_rgb, sky) * shade * 1.6
+        + vec3<f32>(0.6, 0.6, 0.55) * rim * 0.25
+        + vec3<f32>(1.0, 0.97, 0.9) * spec * 0.35;
+
+    // The ship: fixed wings and a dot at the point of the ball nearest
+    // the pilot, in that point's tangent frame, the same drawing as the
+    // disc's at the ball's scale.
+    let f = -normalize(c);
+    let e1 = normalize(cross(gyro.p1.xyz, f));
+    let e2 = cross(f, e1);
+    let uv = vec2<f32>(dot(n, e1), dot(n, e2)) * RADIUS;
+    let aa2 = aa * RADIUS;
+    {
+        let wl = seg(uv, vec2<f32>(-0.075, 0.0), vec2<f32>(-0.018, 0.0));
+        let wr = seg(uv, vec2<f32>(0.018, 0.0), vec2<f32>(0.075, 0.0));
+        let tl = seg(uv, vec2<f32>(-0.018, 0.0), vec2<f32>(-0.018, -0.012));
+        let tr = seg(uv, vec2<f32>(0.018, 0.0), vec2<f32>(0.018, -0.012));
+        let w = min(min(wl, wr), min(tl, tr));
+        let front = step(0.0, dot(n, f));
+        hot += line(w, 0.0014, aa2 * 1.6) * front;
+        hot += (1.0 - smoothstep(0.0030, 0.0030 + aa2 * 1.6, length(uv))) * front;
+    }
+    let ivory = vec3<f32>(0.82, 0.78, 0.62);
+    let cream = vec3<f32>(0.96, 0.92, 0.80);
+    colour += ivory * glow * 0.55 + cream * hot * 0.9;
+    return vec4<f32>(colour * vis, 1.0);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let vis = gyro.a.z;
@@ -80,6 +165,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     let aspect = gyro.a.w;
+    if (gyro.d.x > 1.5) {
+        return ball_3d(in.ndc, aspect, vis);
+    }
     let in_dash = gyro.p3.w > 0.0;
     var p = (canopy(in.ndc, aspect) - canopy(gyro.b.zw, aspect)) / max(gyro.p0.w, 0.25);
     if (in_dash) {

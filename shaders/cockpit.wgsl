@@ -71,7 +71,7 @@ const DASH_N: vec3<f32> = vec3<f32>(0.0, 0.9563, 0.2924); // 17 degrees back
 struct Hit {
     d: f32,
     // 0 hull metal, 1 dash/console metal, 2 arch/rail, 3 socket rim,
-    // 4 a dial's face plate
+    // 4 a dial's face plate, 5 the gyro's ball
     kind: f32,
 }
 
@@ -141,6 +141,7 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
     let n = i32(ck.misc.w);
     var rim = 1e9;
     var face = 1e9;
+    var ball = 1e9;
     // Only near the dash and consoles are there sockets to cut.
     let near_dash = furniture < 0.2;
     for (var i = 0; i < 6; i += 1) {
@@ -186,6 +187,14 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
         } else if (style > 0.5) {
             // JET: a spherical bowl hollowed into the dash, the classic
             // round instrument's well, with a raised bezel at its mouth
+            // the hologram sits in. BALL (style 3): the gyro's sphere
+            // itself sits in the bowl, a solid the gyro pass paints.
+            if (style > 2.5) {
+                let sphere = (length(q + DASH_N * 0.10) - 0.17) * size;
+                ball = min(ball, sphere);
+            }
+            // — the classic
+            // round instrument's well, with a raised bezel at its mouth
             // the hologram sits in. The dial is drawn after the cabin, on
             // the glass, so there is nothing here to fight it for depth.
             let bowl = (length(q + DASH_N * 0.10) - 0.21) * size;
@@ -204,6 +213,7 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
     if (furniture < h.d) { h = Hit(furniture, 1.0); }
     if (rim < h.d) { h = Hit(rim, 3.0); }
     if (face < h.d) { h = Hit(face, 4.0); }
+    if (ball < h.d) { h = Hit(ball, 5.0); }
     // The frame is all above y = -0.35: below -0.4 the gap to that height
     // is a safe lower bound — and one that never reaches zero, so the
     // march cannot mistake the bound's plane for a surface.
@@ -410,10 +420,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         var lit = (base * (0.22 + 0.9 * ndl) + env * (0.15 + 0.55 * fresnel)) * ao
             + vec3<f32>(0.9, 0.95, 1.0) * spec * 0.35;
-        if (hit.kind > 3.5) {
+        if (hit.kind > 3.5 && hit.kind < 4.5) {
             // A dial's face plate: matte black, no mirror, barely lit —
             // the markings the gauge pass draws are what shows.
             lit = vec3<f32>(0.004, 0.004, 0.0045) * (0.3 + 0.7 * ndl) * ao;
+        }
+        if (hit.kind > 4.5) {
+            // The gyro's ball: black here; the gyro pass paints the world
+            // on it, lit and shaded, over this.
+            lit = vec3<f32>(0.002, 0.002, 0.0025) * ao;
         }
         // The socket rims are lit from within (TRON); a JET bezel is a
         // brushed ring with a thread of light at its inner edge.

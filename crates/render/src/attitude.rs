@@ -53,11 +53,49 @@ pub struct GyroUniforms {
     place: crate::cabin::Placement,
 }
 
+/// Octahedral encoding of a unit vector, the mirror of common.wgsl.
+fn oct_encode(d: Vec3) -> [f32; 2] {
+    let l1 = d.x.abs() + d.y.abs() + d.z.abs();
+    if l1 < 1e-9 {
+        return [0.0, 0.0];
+    }
+    let n = d / l1;
+    if n.z < 0.0 {
+        let sx = if n.x >= 0.0 { 1.0 } else { -1.0 };
+        let sy = if n.y >= 0.0 { 1.0 } else { -1.0 };
+        [(1.0 - n.y.abs()) * sx, (1.0 - n.x.abs()) * sy]
+    } else {
+        [n.x, n.y]
+    }
+}
+
 impl GyroUniforms {
     /// JET: a solid shaded ball in its bowl.
     pub fn jet(mut self, jet: bool) -> Self {
         self.d[0] = if jet { 1.0 } else { 0.0 };
         self
+    }
+
+    /// The geometric ball: a sphere in the dash (its placement carries
+    /// the centre and radius), shaded on the world's frame — `up` and
+    /// `east` in the ship's frame.
+    pub fn ball(mut self, place: crate::cabin::Placement, up_ship: Vec3, east_ship: Vec3) -> Self {
+        let up = up_ship.normalize_or_zero();
+        let east = east_ship.normalize_or_zero();
+        let oct = oct_encode(east);
+        self.d = [2.0, up.x, up.y, up.z];
+        self.c[2] = oct[0];
+        self.c[3] = oct[1];
+        self.place = place;
+        self
+    }
+
+    /// The geometric ball if there is one to be.
+    pub fn ball_if(self, ball: Option<(crate::cabin::Placement, Vec3, Vec3)>) -> Self {
+        match ball {
+            Some((place, up, east)) => self.ball(place, up, east),
+            None => self,
+        }
     }
 
     /// Set into the dash: the ball drawn in the dash's plane.
