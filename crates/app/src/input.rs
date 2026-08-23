@@ -114,6 +114,8 @@ const AXES: [(Action, bool, usize, f64); Action::COUNT] = [
 const BOOST_KEY: KeyCode = KeyCode::ShiftLeft;
 /// Air brake, likewise: it is a state, not a direction.
 const BRAKE_KEY: KeyCode = KeyCode::Space;
+/// The emergency gyro, likewise a state: hold to kill the spin.
+const DESPIN_KEY: KeyCode = KeyCode::KeyZ;
 
 /// Physical-key bindings. Physical (not logical) keys so the layout is the same
 /// shape on QWERTY, AZERTY, and Dvorak.
@@ -139,6 +141,7 @@ pub struct Bindings {
     keys: [KeyCode; Action::COUNT],
     pub boost: KeyCode,
     pub brake: KeyCode,
+    pub despin: KeyCode,
 }
 
 impl Default for Bindings {
@@ -151,6 +154,7 @@ impl Default for Bindings {
             keys,
             boost: BOOST_KEY,
             brake: BRAKE_KEY,
+            despin: DESPIN_KEY,
         }
     }
 }
@@ -201,6 +205,23 @@ impl Bindings {
             self.brake = self.boost;
         }
         self.boost = key;
+        true
+    }
+
+    pub fn bind_despin(&mut self, key: KeyCode) -> bool {
+        if is_reserved(key) {
+            return false;
+        }
+        if let Some(old) = self.action_for(key) {
+            self.keys[old as usize] = self.despin;
+        }
+        if self.boost == key {
+            self.boost = self.despin;
+        }
+        if self.brake == key {
+            self.brake = self.despin;
+        }
+        self.despin = key;
         true
     }
 
@@ -339,6 +360,7 @@ pub struct InputState {
     held: [bool; Action::COUNT],
     boost: bool,
     brake: bool,
+    despin: bool,
     /// Smoothed axis values: [thrust xyz, torque xyz].
     axes: [f64; 6],
     bindings: Option<Bindings>,
@@ -364,6 +386,9 @@ impl InputState {
         if key == b.brake {
             self.brake = pressed;
         }
+        if key == b.despin {
+            self.despin = pressed;
+        }
         if let Some(action) = b.action_for(key) {
             self.held[action as usize] = pressed;
         }
@@ -387,6 +412,7 @@ impl InputState {
         self.held = [false; Action::COUNT];
         self.boost = false;
         self.brake = false;
+        self.despin = false;
         self.axes = [0.0; 6];
     }
 
@@ -436,6 +462,7 @@ impl InputState {
             assist,
             boost: self.boost,
             brake: self.brake,
+            despin: self.despin,
         }
     }
 
@@ -452,6 +479,7 @@ impl InputState {
             assist,
             boost: self.boost,
             brake: self.brake,
+            despin: self.despin,
         }
     }
 }

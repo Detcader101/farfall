@@ -82,6 +82,7 @@ enum Item {
     Bind(Action),
     BindBoost,
     BindBrake,
+    BindDespin,
     Slot(Instrument),
     SafeEdge,
     HoopSize,
@@ -118,6 +119,7 @@ impl Item {
             Item::Bind(a) => a.name(),
             Item::BindBoost => "BOOST",
             Item::BindBrake => "AIR BRAKE",
+            Item::BindDespin => "DESPIN",
             Item::Slot(i) => i.name(),
             Item::SafeEdge => "SAFE EDGE",
             Item::HoopSize => "HOOP SIZE",
@@ -153,6 +155,7 @@ impl Item {
             Item::Bind(a) => key_name(s.bindings.key_for(a)).to_string(),
             Item::BindBoost => key_name(s.bindings.boost).to_string(),
             Item::BindBrake => key_name(s.bindings.brake).to_string(),
+            Item::BindDespin => key_name(s.bindings.despin).to_string(),
             Item::Slot(i) => match s.layout.free(i) {
                 Some(_) => "DRAGGED".to_string(),
                 None => s.layout.get(i).name().to_string(),
@@ -183,7 +186,10 @@ impl Item {
     }
 
     fn rebindable(self) -> bool {
-        matches!(self, Item::Bind(_) | Item::BindBoost | Item::BindBrake)
+        matches!(
+            self,
+            Item::Bind(_) | Item::BindBoost | Item::BindBrake | Item::BindDespin
+        )
     }
 }
 
@@ -245,6 +251,7 @@ impl Menu {
                 let mut v: Vec<Item> = Action::ALL.iter().map(|&a| Item::Bind(a)).collect();
                 v.push(Item::BindBoost);
                 v.push(Item::BindBrake);
+                v.push(Item::BindDespin);
                 v.push(Item::LookSens);
                 v
             }
@@ -327,6 +334,7 @@ impl Menu {
             let bound = match item {
                 Item::Bind(a) => settings.bindings.bind(a, key),
                 Item::BindBoost => settings.bindings.bind_boost(key),
+                Item::BindDespin => settings.bindings.bind_despin(key),
                 Item::BindBrake => settings.bindings.bind_brake(key),
                 _ => false,
             };
@@ -602,7 +610,9 @@ impl Menu {
                 s.layout.set_safe_edge(next);
                 MenuEvent::Changed(Change::Layout)
             }
-            Item::Quit | Item::Bind(_) | Item::BindBoost | Item::BindBrake => MenuEvent::Nothing,
+            Item::Quit | Item::Bind(_) | Item::BindBoost | Item::BindBrake | Item::BindDespin => {
+                MenuEvent::Nothing
+            }
         }
     }
 

@@ -1101,12 +1101,38 @@ impl Game {
     /// The pointer for picking and dragging: the cursor in design mode,
     /// the gaze while looking.
     fn pointer(&self, cam: &CameraFrame) -> Option<[f32; 2]> {
-        if self.design {
+        if self.menu.open || self.map_open() {
+            // The pause panels are fixed to the screen, and so is the
+            // pointer that moves them: the cursor, as it is.
+            self.cursor_screen()
+        } else if self.design {
             self.cursor_on_glass(cam)
         } else if self.look.engaged() {
             Some(self.look.gaze(self.ref_tan(), cam.aspect))
         } else {
             None
+        }
+    }
+
+    /// The cursor as screen NDC.
+    fn cursor_screen(&self) -> Option<[f32; 2]> {
+        let (cx, cy) = self.cursor?;
+        let (w, h) = self.window_size;
+        if w < 1.0 || h < 1.0 {
+            return None;
+        }
+        Some([cx / w * 2.0 - 1.0, 1.0 - cy / h * 2.0])
+    }
+
+    /// Where the text block goes on the SCREEN this frame: the pause
+    /// panels sit on the screen and follow the head; the readout and the
+    /// design card are on the glass, re-projected like a dial.
+    fn text_screen_anchor(&self, cam: &CameraFrame, text_w: f32) -> [f32; 2] {
+        let a = self.text_anchor(cam.aspect, text_w);
+        if self.menu.open || self.map_open() {
+            a
+        } else {
+            on_glass(&self.look, cam, self.ref_tan(), a)
         }
     }
 
@@ -1683,14 +1709,22 @@ impl Game {
             return;
         };
         let at = [gaze[0] + off[0], gaze[1] + off[1]];
+        // Panels stay on the screen; the readout is glass and may go anywhere
+        // a dial may.
         let clamp = |a: [f32; 2]| [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)];
+        let glass = |a: [f32; 2]| {
+            [
+                a[0].clamp(-cockpit::FREE_LIMIT, cockpit::FREE_LIMIT),
+                a[1].clamp(-cockpit::FREE_LIMIT, cockpit::FREE_LIMIT),
+            ]
+        };
         match i {
             Dragged::Dial(i) => {
                 let at = self.settings.layout.uninset(at);
                 self.settings.layout.set_free(i, at);
             }
             Dragged::MenuPanel => self.settings.menu_anchor = clamp(at),
-            Dragged::Readout => self.settings.readout_anchor = clamp(at),
+            Dragged::Readout => self.settings.readout_anchor = glass(at),
             Dragged::MapPanel => self.settings.map_anchor = clamp(at),
         }
     }
@@ -2306,12 +2340,7 @@ impl ApplicationHandler for App {
                                     gpu.hud.update(
                                         &gpu.queue,
                                         &gpu.text,
-                                        on_glass(
-                                            &game.look,
-                                            &cam,
-                                            game.ref_tan(),
-                                            game.text_anchor(aspect, text_width_ndc(px_canopy)),
-                                        ),
+                                        game.text_screen_anchor(&cam, text_width_ndc(px_canopy)),
                                         px_canopy,
                                         aspect,
                                         sh as f32,
@@ -2496,12 +2525,7 @@ impl ApplicationHandler for App {
                 gpu.hud.update(
                     &gpu.queue,
                     &gpu.text,
-                    on_glass(
-                        &game.look,
-                        &cam,
-                        game.ref_tan(),
-                        game.text_anchor(aspect, text_width_ndc(px_canopy)),
-                    ),
+                    game.text_screen_anchor(&cam, text_width_ndc(px_canopy)),
                     px_canopy,
                     aspect,
                     gpu.config.height as f32,

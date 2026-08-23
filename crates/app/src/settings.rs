@@ -326,7 +326,8 @@ impl Settings {
                 }
                 "ui.panel-readout" => {
                     if let Some(a) = parse_pair(v) {
-                        s.readout_anchor = clamp_anchor(a);
+                        // Glass, not screen: anywhere a dial may go.
+                        s.readout_anchor = [a[0].clamp(-1.6, 1.6), a[1].clamp(-1.6, 1.6)];
                     }
                 }
                 "ui.panel-map" => {
@@ -409,6 +410,11 @@ impl Settings {
                 "control.boost" => {
                     if let Some(key) = key_from_name(v) {
                         s.bindings.bind_boost(key);
+                    }
+                }
+                "control.despin" => {
+                    if let Some(key) = key_from_name(v) {
+                        s.bindings.bind_despin(key);
                     }
                 }
                 "control.brake" => {
@@ -516,6 +522,10 @@ impl Settings {
         out.push_str(&format!(
             "control.brake = {}\n",
             key_name(self.bindings.brake)
+        ));
+        out.push_str(&format!(
+            "control.despin = {}\n",
+            key_name(self.bindings.despin)
         ));
         out.push_str(&format!(
             "control.look-sens = {:.2}\n",

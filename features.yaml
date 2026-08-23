@@ -193,6 +193,17 @@ features:
     settings: [ui.<dial>.size, ui.<dial>.style, ui.<dial>.fade]
     e2e: FARFALL_BENCH_DESIGN=1 capture — per-dial bowls/wells at their own sizes, reach rings, gaze reticle
 
+  - id: despin
+    name: Emergency gyro (Z, rebindable DESPIN) — kills any spin on a fixed time constant in the sim
+    state: complete
+    tests: [crates/sim/tests/assist.rs::despin_kills_a_tumble_nothing_else_would]
+    e2e: deterministic sim; key wired like boost/brake
+
+  - id: panels-screen-fixed
+    name: Pause panels (settings, map/DRIVE) fixed to the screen and dragged with the cursor; the readout a glass element with no safe area
+    state: tests-pass
+    e2e: needs a flight
+
   - id: cabin-cached
     name: The cabin is re-marched only when the head, the light or a socket changes — small while moving, sharpened in four strips once still; thruster light drawn by the composite
     state: complete

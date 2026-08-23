@@ -181,6 +181,8 @@ pub struct ShipParams {
     pub brake_mps2: f64,
     /// Time constant for the brake, seconds.
     pub brake_tau_s: f64,
+    /// Time constant of the emergency gyro's despin, seconds.
+    pub despin_tau_s: f64,
     /// Restitution on hitting the ground: 0 lands, 1 bounces perfectly.
     pub ground_restitution: f64,
     /// Fraction of tangential speed kept per second while in contact.
@@ -277,6 +279,10 @@ pub struct Controls {
     pub boost: bool,
     /// Air brake: dump velocity, whatever direction it points in.
     pub brake: bool,
+    /// The emergency gyro: kill the spin, however fast, on a fixed time
+    /// constant — the one control that ignores the torque limits, for the
+    /// tumble nothing else gets you out of.
+    pub despin: bool,
 }
 
 impl Controls {
@@ -291,6 +297,7 @@ impl Controls {
             assist: self.assist,
             boost: self.boost,
             brake: self.brake,
+            despin: self.despin,
         }
     }
 }
@@ -352,6 +359,7 @@ pub mod presets {
                 align_tau_s: 1.1,
                 brake_mps2: 210.0,
                 brake_tau_s: 0.35,
+                despin_tau_s: 0.6,
                 // Landing, not bouncing — and enough friction to come to rest
                 // rather than skating around the equator forever.
                 ground_restitution: 0.0,
@@ -697,6 +705,13 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     } else {
         ship.ang_vel_radps
             + (c.torque_body * params.ship.max_torque_radps2 + aero.ang_accel_body) * DT
+    };
+    // The emergency gyro: an exponential bleed of the spin, whatever the
+    // torque limits say — deterministic, and it cannot overshoot.
+    let ang_vel = if c.despin {
+        ang_vel * libm::exp(-DT / params.ship.despin_tau_s)
+    } else {
+        ang_vel
     };
     // dq/dt = ½·ω_world·q, ω in world frame = orient · ω_body
     let w_world = ship.orient * ang_vel;

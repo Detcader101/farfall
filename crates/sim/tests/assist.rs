@@ -243,3 +243,31 @@ fn assist_survives_zero_spin() {
     assert!(end.ship.ang_vel_radps.is_finite());
     assert_eq!(end.ship.ang_vel_radps, DVec3::ZERO);
 }
+
+/// The emergency gyro kills any spin on its time constant, with or without
+/// the flight computer, far faster than the torque limits could.
+#[test]
+fn despin_kills_a_tumble_nothing_else_would() {
+    let params = presets::earth_compact();
+    let wild = DVec3::new(9.0, -7.0, 11.0);
+    let spun = spinning(&params, wild);
+    let despin = Controls {
+        despin: true,
+        ..Default::default()
+    };
+    // Two seconds: exp(-2 / 0.6) of it left, under 4 percent.
+    let after = run(&params, spun, 240, despin);
+    assert!(
+        after.ship.ang_vel_radps.length() < wild.length() * 0.04,
+        "still spinning at {:?}",
+        after.ship.ang_vel_radps
+    );
+    // Without it the flight computer alone is torque-limited: at 1.7 rad/s²
+    // it has barely dented 9 rad/s in a quarter of a second.
+    let fc = Controls {
+        assist: true,
+        ..Default::default()
+    };
+    let slow = run(&params, spun, 30, fc);
+    assert!(slow.ship.ang_vel_radps.length() > wild.length() * 0.5);
+}
