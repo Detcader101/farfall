@@ -265,9 +265,9 @@ features:
     tests: [crates/sim/tests/assist.rs::the_brake_kills_spin_harder_than_the_gyro]
 
   - id: asteroid-belt
-    name: The asteroid belt is Uranus' ring — URANUS RING on the DRIVE panel (arrival in the ring's plane at 1.8 radii, going round with it). A procedural population through the ring's volume (hashed cells of 1.4 km, 0–3 rocks each, 5–300 m, rigid ring rotation plus a drift of a few m/s so they meet); the nearest 48 are live on the CPU — rock on rock (mass by volume, restitution 0.4) and rock on ship (an impulse on the ship, a shield ripple, grit in the sound); belt.wgsl ray-traces them with noise-bumped silhouettes and normals, Sun-lit with the ring's dust-light for fill, each turning on its axis. From inside the ring the dust sheet is a faint haze
+    name: The asteroid belt is Uranus' ring — one universe, no separate level: drive to URANUS and fly on into the ring (1.6–2.0 radii, in the plane of its spin axis) and it is there. A procedural population through the ring's volume (hashed cells of 1.4 km, 0–3 rocks each, 5–300 m, rigid ring rotation plus a drift of a few m/s so they meet); the nearest 48 are live on the CPU — rock on rock (mass by volume, restitution 0.4) and rock on ship (an impulse on the ship, a shield ripple, grit in the sound); belt.wgsl ray-traces them with noise-bumped silhouettes and normals, Sun-lit with the ring's dust-light for fill, each turning on its axis. From inside the ring the dust sheet is a faint haze
     state: complete
-    tests: [crates/app/src/belt.rs, crates/render/src/belt.rs, crates/app/src/warp.rs::arrival_is_at_the_safe_distance_and_never_inside, crates/render/tests/shader_validation.rs]
+    tests: [crates/app/src/belt.rs, crates/render/src/belt.rs, crates/render/tests/shader_validation.rs, crates/app/tests/scenes.rs]
     e2e: capture parked in the ring — craggy rocks ahead, the ring's haze behind
 
   - id: warp-stop

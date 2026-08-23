@@ -18,12 +18,12 @@ pub enum Destination {
     Moon,
     Sun,
     Uranus,
-    /// Uranus' ring: the asteroid belt. Arrival is in the ring itself.
-    UranusRing,
 }
 
-/// The ring's plane: normal to Uranus' spin axis (bodies.wgsl has the
-/// same numbers), from RING_INNER to RING_OUTER radii, RING_HALF_M thick.
+/// Uranus' ring — the asteroid belt lives in it (crates/app/src/belt.rs);
+/// fly to Uranus and on into the ring and it is there. Its plane is
+/// normal to Uranus' spin axis (bodies.wgsl has the same numbers), from
+/// RING_INNER to RING_OUTER radii, RING_HALF_M thick.
 pub const RING_AXIS: DVec3 = DVec3::new(0.97, 0.14, 0.2);
 pub const RING_INNER: f64 = 1.62;
 pub const RING_OUTER: f64 = 1.98;
@@ -31,12 +31,11 @@ pub const RING_MID: f64 = 1.80;
 pub const RING_HALF_M: f64 = 900.0;
 
 impl Destination {
-    pub const ALL: [Destination; 5] = [
+    pub const ALL: [Destination; 4] = [
         Destination::Planet,
         Destination::Moon,
         Destination::Sun,
         Destination::Uranus,
-        Destination::UranusRing,
     ];
 
     pub fn name(self) -> &'static str {
@@ -45,7 +44,6 @@ impl Destination {
             Destination::Moon => "MOON",
             Destination::Sun => "SUN",
             Destination::Uranus => "URANUS",
-            Destination::UranusRing => "URANUS RING",
         }
     }
 
@@ -55,7 +53,6 @@ impl Destination {
             Destination::Moon => "moon",
             Destination::Sun => "sun",
             Destination::Uranus => "uranus",
-            Destination::UranusRing => "uranus-ring",
         }
     }
 
@@ -70,7 +67,7 @@ impl Destination {
             Destination::Planet => planet,
             Destination::Moon => moon,
             Destination::Sun => sun,
-            Destination::Uranus | Destination::UranusRing => uranus,
+            Destination::Uranus => uranus,
         }
     }
 
@@ -149,22 +146,8 @@ impl Plan {
         if away.length() < 1.0 {
             away = DVec3::X;
         }
-        let mut away = away.normalize();
-        let mut r = body.radius_m + self.safe_m(params);
-        if self.dest == Destination::UranusRing {
-            // Into the ring: in its plane, at its middle, going round
-            // with it — the belt is the destination, not the planet.
-            let axis = RING_AXIS.normalize();
-            let mut flat = away - axis * away.dot(axis);
-            if flat.length() < 1e-6 {
-                flat = axis.cross(DVec3::Y);
-            }
-            away = flat.normalize();
-            r = body.radius_m * RING_MID;
-            let pos = body.centre + away * r;
-            let vel = axis.cross(away).normalize() * (body.mu / r).sqrt();
-            return (pos, vel);
-        }
+        let away = away.normalize();
+        let r = body.radius_m + self.safe_m(params);
         let pos = body.centre + away * r;
         let nose = ship.orient * DVec3::NEG_Z;
         let mut tangent = nose - away * nose.dot(away);
@@ -410,18 +393,10 @@ mod tests {
                 let centre = dest.centre(&p, 0.0);
                 let d = (pos - centre).length();
                 let r = dest.radius_m(&p);
-                if dest == Destination::UranusRing {
-                    // The ring is the destination: its middle, in its
-                    // plane, whatever the safe distance says.
-                    assert!((d - r * RING_MID).abs() < 1e-3 * d, "{d}");
-                    let off_plane = (pos - centre).normalize().dot(RING_AXIS.normalize());
-                    assert!(off_plane.abs() < 1e-6, "in the ring's plane: {off_plane}");
-                } else {
-                    assert!(
-                        (d - r * (1.0 + radii)).abs() < 1e-3 * d,
-                        "{dest:?} {radii}: {d}"
-                    );
-                }
+                assert!(
+                    (d - r * (1.0 + radii)).abs() < 1e-3 * d,
+                    "{dest:?} {radii}: {d}"
+                );
                 assert!(d > r, "{dest:?} inside the body");
             }
         }
