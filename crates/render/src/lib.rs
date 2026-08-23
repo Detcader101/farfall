@@ -20,6 +20,7 @@ pub mod hud;
 pub mod instrument;
 pub mod planet;
 pub mod shaders;
+pub mod shield;
 pub mod starfield;
 pub mod text;
 pub mod thermal;

@@ -46,6 +46,7 @@ use farfall_render::{
     hud::HudPass,
     instrument::InstrumentPass,
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
+    shield::{shield_pass, Impact, ShieldPass, ShieldUniforms},
     starfield::StarfieldPass,
     text::TextBitmap,
     thermal::{PlasmaPass, PlasmaUniforms, ThermalInputs, ThermalPass},
@@ -231,6 +232,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
 ///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times)
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
+///   FARFALL_BENCH_STRIKES=n (benchmark only: n strikes on the shield at
+///                           staggered ages, for its ripples)
 ///   FARFALL_BENCH_G=x,y,z  (benchmark only: a felt load in g — right, up,
 ///                           forward — for the G instruments)
 ///   FARFALL_BENCH_THRUST=m,p,y,r (benchmark only: force main thrust 0..1 and
@@ -395,6 +398,7 @@ struct Passes {
     plasma: PlasmaPass,
     /// The predicted path, integrated on the GPU.
     trajectory: TrajectoryPass,
+    shield: ShieldPass,
 }
 
 impl Passes {
@@ -422,6 +426,7 @@ impl Passes {
             thermal,
             plasma,
             trajectory: TrajectoryPass::new(device, format, msaa),
+            shield: shield_pass(device, format, msaa),
         }
     }
 }
@@ -895,6 +900,8 @@ struct Game {
     /// Hoops that have passed the ship while the path was showing: the
     /// audio womps on every increment.
     hoops_passed: u32,
+    /// The shell's recent impacts (newest first), for the shield's ripples.
+    impacts: Vec<Impact>,
     /// Micrometeorite strikes so far, the latest one's size, and the dice.
     strikes: u32,
     strike_size: f32,
@@ -975,6 +982,7 @@ impl Game {
             g_fade: GForceFade::new(),
             odometer_m: 0.0,
             hoops_passed: 0,
+            impacts: Vec::new(),
             strikes: 0,
             strike_size: 0.0,
             strike_rng: 0x9E37_79B9,
@@ -1506,6 +1514,18 @@ impl Game {
         }
     }
 
+    /// The force field this frame: the head's frame, the clock, the
+    /// setting and the shell's recent impacts.
+    fn shield_uniforms(&self, cam: &CameraFrame) -> ShieldUniforms {
+        ShieldUniforms::new(
+            cam,
+            self.look.rotation(),
+            self.started.elapsed().as_secs_f32(),
+            self.settings.shield,
+            &self.impacts,
+        )
+    }
+
     /// The strain line for the readout, once there is any.
     fn strain_text(&self) -> Option<String> {
         (self.hyper_strain > 0.02).then(|| {
@@ -1916,6 +1936,25 @@ impl Game {
         if u1 < rate * sim::DT as f32 {
             self.strikes = self.strikes.wrapping_add(1);
             self.strike_size = strike_size_from(u2);
+            // Where it hit the shell: from ahead of the motion, scattered a
+            // little, in the ship's frame.
+            let ship_inv = self.state.ship.orient.inverse();
+            let ahead = if speed > 1.0 {
+                (ship_inv * self.state.ship.vel_mps.normalize()).as_vec3()
+            } else {
+                glam::Vec3::NEG_Z
+            };
+            let scatter = random_unit(self.next_unit(), self.next_unit()).as_vec3();
+            let dir = (ahead + scatter * 0.5).normalize_or_zero();
+            self.impacts.insert(
+                0,
+                Impact {
+                    dir,
+                    at_s: self.started.elapsed().as_secs_f32(),
+                    size: self.strike_size,
+                },
+            );
+            self.impacts.truncate(farfall_render::shield::IMPACTS);
         }
     }
 
@@ -2331,6 +2370,23 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_HYPER").is_ok() {
             game.hyper = 1.0;
         }
+        if let Some(n) = std::env::var("FARFALL_BENCH_STRIKES")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            // Staggered over the last second and a half, spread round the
+            // nose: each ripple is at a different age in the capture. The
+            // capture lands at t = 1 s of the bench clock.
+            for i in 0..n.min(farfall_render::shield::IMPACTS) {
+                let spread = random_unit(0.3 + 0.1 * i as f32, 0.13 * i as f32).as_vec3();
+                game.impacts.push(Impact {
+                    dir: (glam::Vec3::NEG_Z + spread * 0.8).normalize(),
+                    at_s: 1.0 - 0.1 - 0.35 * i as f32,
+                    size: 0.2 + 0.25 * (i % 4) as f32,
+                });
+            }
+        }
         if let Some(g) = std::env::var("FARFALL_BENCH_G")
             .ok()
             .filter(|_| game.frozen)
@@ -2736,6 +2792,9 @@ impl ApplicationHandler for App {
                                         game.marks(),
                                     ),
                                 );
+                                gpu.passes
+                                    .shield
+                                    .update(&gpu.queue, &game.shield_uniforms(&cam));
                                 {
                                     let mut pass =
                                         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2753,6 +2812,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.planet.draw(&mut pass);
                                     gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                                     gpu.passes.trajectory.draw(&mut pass);
+                                    gpu.passes.shield.draw(&mut pass);
                                     gpu.passes.cabin.draw(&mut pass);
                                     gpu.passes.horizon.draw(&mut pass);
                                     gpu.passes.gauge.draw(&mut pass);
@@ -2854,6 +2914,9 @@ impl ApplicationHandler for App {
                         game.marks(),
                     ),
                 );
+                gpu.passes
+                    .shield
+                    .update(&gpu.queue, &game.shield_uniforms(&cam));
                 let (altitude_m, _) = game.altitude_vspeed();
                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
 
@@ -2928,6 +2991,9 @@ impl ApplicationHandler for App {
                     }
                     if gpu.cfg.draws("trajectory") {
                         gpu.passes.trajectory.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("shield") {
+                        gpu.passes.shield.draw(&mut pass);
                     }
                     if gpu.cfg.draws("cockpit") {
                         gpu.passes.cabin.draw(&mut pass);
@@ -3201,6 +3267,16 @@ mod tests {
             slow.strikes,
             fast.strikes
         );
+        // Every strike leaves an impact on the shell, ahead of the motion,
+        // newest first, and the shell remembers only so many.
+        assert!(!fast.impacts.is_empty());
+        assert!(fast.impacts.len() <= farfall_render::shield::IMPACTS);
+        for im in &fast.impacts {
+            assert!((im.dir.length() - 1.0).abs() < 1e-4);
+            assert!(im.dir.z < 0.0, "from ahead: {:?}", im.dir);
+            assert!(im.size > 0.0 && im.size <= 1.0);
+        }
+        assert!(fast.impacts[0].at_s >= fast.impacts[fast.impacts.len() - 1].at_s);
         // Off: no rock at all.
         let mut mute = Game::new();
         mute.settings.hull_sound = false;

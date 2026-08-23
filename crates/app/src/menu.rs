@@ -98,6 +98,7 @@ enum Item {
     GaugesStay,
     Guide,
     HullSound,
+    Shield,
     /// The GAUGES page's per-dial block: which dial, and its own numbers.
     DialSelect,
     DialSize,
@@ -138,6 +139,7 @@ impl Item {
             Item::GaugesStay => "GAUGES",
             Item::Guide => "GUIDE",
             Item::HullSound => "HULL SOUNDS",
+            Item::Shield => "SHIELD",
             Item::DialSelect => "DIAL",
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
@@ -186,6 +188,13 @@ impl Item {
             Item::GaugesStay => if s.gauges_stay { "STAY" } else { "FADE" }.to_string(),
             Item::Guide => if s.guide { "ON" } else { "OFF" }.to_string(),
             Item::HullSound => if s.hull_sound { "ON" } else { "OFF" }.to_string(),
+            Item::Shield => {
+                if s.shield > 0.0 {
+                    format!("{:.0}%", s.shield * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
             Item::DialSelect => String::new(),
             Item::DialSize => String::new(),
             Item::DialStyle => String::new(),
@@ -282,6 +291,7 @@ impl Menu {
                 Item::HoopSize,
                 Item::LandingHoops,
                 Item::HullSound,
+                Item::Shield,
             ],
             // The gauges: the cockpit-wide look, then one dial's own
             // numbers, then where each instrument sits (or OFF).
@@ -529,6 +539,15 @@ impl Menu {
             }
             Item::HullSound => {
                 s.hull_sound = !s.hull_sound;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::Shield => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.shield + step).clamp(0.0, 2.0);
+                if (next - s.shield).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.shield = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::DialSelect => {

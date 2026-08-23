@@ -267,6 +267,13 @@ features:
     state: complete
     e2e: 8 frames inspected
 
+  - id: shield
+    name: The force field (shield.wgsl) — a 4.2 m shell about the hull, invisible until debris hits it; each strike raises a ripple of blue holographic light spreading evenly over the shell at 5 m/s with a wake, the field's honeycomb showing in a band behind the front and at the impact, fading over ~3 s; impacts come from ahead of the motion, scattered; SHIELD setting (ui.shield, 0..200%)
+    state: complete
+    tests: [crates/render/src/shield.rs, crates/render/tests/shader_validation.rs, crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air]
+    settings: [ui.shield]
+    e2e: FARFALL_BENCH_STRIKES=5 capture in space — rings spreading over the shell ahead
+
   - id: landed-no-strobe
     name: Sitting on a body no longer strobes — the eye is held at least 1.6 m above every body's surface in the planet and body shaders (the sim parks the hull at the surface and gravity dips it a few cm in before the next contact)
     state: complete

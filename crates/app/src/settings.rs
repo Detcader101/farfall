@@ -199,6 +199,8 @@ pub struct Settings {
     pub guide: bool,
     /// The hull's own voices: creak and crackle under speed, strikes.
     pub hull_sound: bool,
+    /// The force field's glow on a strike, 0 (off) .. 2.
+    pub shield: f32,
     /// Each dial's own settings, by [`Instrument`] index.
     pub dials: [DialTweak; Instrument::ALL.len()],
     /// Spacing of the landing hoops, metres.
@@ -235,6 +237,7 @@ impl Default for Settings {
             gauges_stay: true,
             guide: false,
             hull_sound: true,
+            shield: 1.0,
             dials: [DialTweak::DEFAULT; Instrument::ALL.len()],
             landing_spacing_m: 250.0,
             map_rings: 4,
@@ -374,6 +377,13 @@ impl Settings {
                     "fade" => s.gauges_stay = false,
                     _ => {}
                 },
+                "ui.shield" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.shield = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
                 "sound.hull" => match v {
                     "on" => s.hull_sound = true,
                     "off" => s.hull_sound = false,
@@ -601,6 +611,7 @@ impl Settings {
             "ui.guide = {}\n",
             if self.guide { "on" } else { "off" }
         ));
+        out.push_str(&format!("ui.shield = {:.2}\n", self.shield));
         out.push_str(&format!(
             "sound.hull = {}\n",
             if self.hull_sound { "on" } else { "off" }
@@ -684,6 +695,7 @@ mod tests {
         s.layout.set_free(Instrument::Speed, [0.125, -0.5]);
         s.look_sensitivity = 1.75;
         s.hull_sound = false;
+        s.shield = 1.5;
         s.hoop_size = 2.5;
         s.map_rings = 2;
         s.landing_spacing_m = 500.0;

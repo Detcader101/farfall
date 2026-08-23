@@ -37,6 +37,8 @@ so it handles like a VTOL: hold the horizon and the orbit holds, pitch down and
 you descend. Switch it **off** and the ship is a pure ballistic body: attitude
 and velocity are independent, and orbits are conserved exactly.
 
+**Shield**: the ship has a force field — a shell a few metres out, invisible until high-speed debris hits it; every strike sends a ripple of blue holographic light spreading evenly from the point of impact across the shell, the field's honeycomb showing through around it (SHIELD on the CABIN page).
+
 **Sky**: low down the day sky is the air's colour — blue here, amber or green on the other atmospheres — and hides the stars; it thins with height and is black by the top of the air (SKY on the GFX page).
 
 **Hull sounds** (CABIN page, HULL SOUNDS): space is silent, but the ship is not — under speed the frame groans and knocks (never hisses — there is no air), grains of rock hit the hull with a gritty scratch (the faster you go the more you meet; pebbles thud), and the hoops' womp quietens at speed and moulds into a low drone.
