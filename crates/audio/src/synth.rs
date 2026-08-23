@@ -235,11 +235,10 @@ pub struct Synth {
     crack_phase: f32,
     crack_sub_phase: f32,
     crack_lp: f32,
-    // The hull under speed: a creak, a crackle, a drone.
+    // The hull under speed: a groan, knocks, a drone.
     stress: Smooth,
     creak_phase: f32,
     creak_lfo: f32,
-    creak_lp: f32,
     tick_gate: f32,
     tick_lp: f32,
     drone_phase: f32,
@@ -249,7 +248,8 @@ pub struct Synth {
     strike_env: f32,
     strike_t: f32,
     strike_phase: f32,
-    strike_phase2: f32,
+    strike_bp: f32,
+    knock_f: f32,
     strike_f: f32,
     strike_size: f32,
     strike_lp: f32,
@@ -313,7 +313,6 @@ impl Synth {
             stress: Smooth::new(sample_rate, 0.25),
             creak_phase: 0.0,
             creak_lfo: 0.0,
-            creak_lp: 0.0,
             tick_gate: 0.0,
             tick_lp: 0.0,
             drone_phase: 0.0,
@@ -322,7 +321,8 @@ impl Synth {
             strike_env: 0.0,
             strike_t: 0.0,
             strike_phase: 0.0,
-            strike_phase2: 0.0,
+            strike_bp: 0.0,
+            knock_f: 300.0,
             strike_f: 2_000.0,
             strike_size: 0.0,
             strike_lp: 0.0,
@@ -597,7 +597,7 @@ impl Synth {
         // ---- the hull under speed -------------------------------------------
         // Structure-borne, so the vacuum is no mute. Three things with the
         // stress: a slow creak — a low tone whose pitch wanders on a
-        // drifting LFO, the frame working; a crackle — sparse, random,
+        // drifting LFO, the frame working; knocks — sparse, random,
         // low-passed ticks whose density grows as the square of the
         // stress, metal relieving itself; and the hoop drone — what the
         // womp moulds into when the kilometres blur: a 55 Hz hum pulsing
@@ -607,72 +607,83 @@ impl Synth {
         if stress > 1e-3 {
             let dt = 1.0 / self.rate;
             let s2 = stress * stress;
-            // Creak.
-            self.creak_lfo = (self.creak_lfo + 0.37 * dt).fract();
+            // Nothing in here may sound like wind: space has no air, and a
+            // noise bed of any kind reads as air. So — discrete sounds only.
+            // The groan: a clean low sine, its pitch wandering slowly, the
+            // frame working; felt more than heard.
+            self.creak_lfo = (self.creak_lfo + 0.23 * dt).fract();
             let wander =
-                (tau * self.creak_lfo).sin() * 0.5 + (tau * 2.7 * self.creak_lfo).sin() * 0.5;
-            let f = 42.0 + 18.0 * stress + 9.0 * wander;
+                (tau * self.creak_lfo).sin() * 0.6 + (tau * 2.3 * self.creak_lfo).sin() * 0.4;
+            let f = 34.0 + 10.0 * stress + 4.0 * wander;
             self.creak_phase = (self.creak_phase + f / self.rate).fract();
-            let saw = 2.0 * self.creak_phase - 1.0;
-            let lp = self.lp_coeff(120.0 + 400.0 * s2);
-            self.creak_lp += (saw - self.creak_lp) * lp;
-            let creak = self.creak_lp * 0.10 * s2 * (0.6 + 0.4 * wander.abs());
-            // Crackle: a gate that opens at random, ticks per second rising
-            // from nothing to a hundred at the wall.
-            let rate_hz = 120.0 * s2 * s2 + 4.0 * s2;
+            let groan = (tau * self.creak_phase).sin() * 0.045 * s2 * (0.7 + 0.3 * wander.abs());
+            // Knocks: a few a second at the wall, none at a crawl — each a
+            // damped low tone (a panel relieving itself), a couple of
+            // milliseconds of transient on its face, then gone. The tone's
+            // phase lives in tick_lp, its pitch in knock_f, the gate is
+            // its envelope.
+            let rate_hz = 4.0 * s2 * s2 + 0.3 * s2;
             let open = self.rng_l.white().abs() < rate_hz / self.rate;
             if open {
-                self.tick_gate = 1.0;
+                self.tick_gate = 0.5 + 0.5 * self.rng_r.white().abs();
+                self.tick_lp = 0.0;
+                self.knock_f = 180.0 + 240.0 * self.rng_r.white().abs();
             }
-            let tick = self.rng_r.white() * self.tick_gate;
-            self.tick_gate *= (-dt / 0.004).exp();
-            let tlp = self.lp_coeff(900.0 + 2_500.0 * stress);
-            self.tick_lp += (tick - self.tick_lp) * tlp;
-            let crackle = self.tick_lp * (0.25 + 0.55 * stress);
-            // Drone.
+            let mut knock = 0.0;
+            if self.tick_gate > 1e-3 {
+                self.tick_lp = (self.tick_lp + self.knock_f / self.rate).fract();
+                let face = (-(1.0 - self.tick_gate) * 400.0).exp();
+                knock = ((tau * self.tick_lp).sin() + 0.3 * face * self.rng_r.white())
+                    * self.tick_gate
+                    * (0.06 + 0.08 * stress);
+                self.tick_gate *= (-dt / 0.035).exp();
+            }
+            // The drone the hoops mould into: a faint 55 Hz pulse.
             self.drone_lfo = (self.drone_lfo + 0.8 * dt).fract();
             self.drone_phase = (self.drone_phase + 55.0 / self.rate).fract();
             let pulse = 0.55 + 0.45 * (tau * self.drone_lfo).sin();
-            let drone = ((tau * self.drone_phase).sin()
-                + 0.3 * (tau * 2.0 * self.drone_phase).sin())
-                * pulse
-                * 0.07
-                * s2;
-            hull_out = creak + crackle + drone;
+            let drone = (tau * self.drone_phase).sin() * pulse * 0.035 * s2;
+            hull_out = groan + knock + drone;
         }
 
         // ---- strikes --------------------------------------------------------
-        // A grain of rock on the hull: a bright metallic tink — two
-        // inharmonic partials at a pitch of their own per strike, over in
-        // a tenth of a second — and, for the bigger ones, a dull thud of
-        // low-passed noise under it. Rung through the frame, never muted.
+        // A grain of rock on the hull: no bell, no hiss — a gritty impact,
+        // a burst of band-passed noise over in 10–40 ms (too short to read
+        // as air), lower and longer for a bigger stone, with a dull thud
+        // under a pebble. Through the frame, never muted.
         let strikes = levels.strikes.max(0.0) as u32;
         if strikes != self.last_strikes {
             self.last_strikes = strikes;
             self.strike_env = 1.0;
             self.strike_t = 0.0;
             self.strike_phase = 0.0;
-            self.strike_phase2 = 0.0;
             self.strike_size = levels.strike_size.clamp(0.0, 1.0);
-            // A pitch of its own: small grains ring high, pebbles lower.
-            self.strike_f = 3_400.0 - 2_200.0 * self.strike_size + 600.0 * self.rng_l.white();
+            // A band of its own: grains scratch high, pebbles knock lower.
+            self.strike_f = 2_600.0 - 1_700.0 * self.strike_size + 400.0 * self.rng_l.white();
+            self.strike_bp = 0.0;
         }
         let mut strike_out = 0.0;
         if self.strike_env > 1e-3 {
             let dt = 1.0 / self.rate;
             self.strike_t += dt;
             let size = self.strike_size;
-            self.strike_phase = (self.strike_phase + self.strike_f / self.rate).fract();
-            self.strike_phase2 = (self.strike_phase2 + self.strike_f * 2.76 / self.rate).fract();
-            let ring = (tau * self.strike_phase).sin() + 0.5 * (tau * self.strike_phase2).sin();
-            let ring_env = (-self.strike_t * (40.0 - 25.0 * size)).exp();
-            let n = self.rng_r.white();
-            let lp = self.lp_coeff(150.0 + 250.0 * size);
-            self.strike_lp += (n - self.strike_lp) * lp;
-            let thud = self.strike_lp * (-self.strike_t * 12.0).exp() * size * size * 2.2;
-            let attack = (self.strike_t / 0.0015).min(1.0);
-            strike_out = (ring * ring_env * (0.12 + 0.3 * size) + thud) * attack;
-            self.strike_env = ring_env.max((-self.strike_t * 12.0).exp() * size);
+            // The grit: noise through a band around the strike's own
+            // centre (a low-pass minus a lower low-pass), gone fast.
+            let n = self.rng_l.white();
+            let band = self.lp_coeff(self.strike_f);
+            self.strike_phase += (n - self.strike_phase) * band;
+            let hp = self.lp_coeff(self.strike_f * 0.35);
+            self.strike_bp += (self.strike_phase - self.strike_bp) * hp;
+            let grit = self.strike_phase - self.strike_bp;
+            let grit_env = (-self.strike_t * (110.0 - 80.0 * size)).exp();
+            // The thud under a pebble.
+            let n2 = self.rng_r.white();
+            let lp = self.lp_coeff(120.0 + 200.0 * size);
+            self.strike_lp += (n2 - self.strike_lp) * lp;
+            let thud = self.strike_lp * (-self.strike_t * 16.0).exp() * size * size * 2.0;
+            let attack = (self.strike_t / 0.001).min(1.0);
+            strike_out = (grit * grit_env * (0.5 + 0.9 * size) + thud) * attack;
+            self.strike_env = grit_env.max((-self.strike_t * 16.0).exp() * size);
         }
 
         // ---- mix --------------------------------------------------------
@@ -1263,6 +1274,25 @@ mod tests {
             fast < calm * 0.6,
             "the womp hushes at speed: {fast} vs {calm}"
         );
+    }
+
+    /// Space must never sound like wind: the hull's voice at the wall is
+    /// low and discrete — nearly all of its power sits under 800 Hz, and
+    /// it is quiet.
+    #[test]
+    fn the_hull_at_the_wall_is_low_and_never_a_hiss() {
+        let mut s = Synth::new(48_000.0, 0xBEEF);
+        let wall = Levels {
+            stress: 1.0,
+            ..Default::default()
+        };
+        let mut b = vec![0.0f32; 48_000 * 2];
+        s.render(&wall, &mut b);
+        s.render(&wall, &mut b);
+        let total = rms(&b);
+        let low = low_band_rms(&b, 48_000.0, 800.0);
+        assert!(total > 0.01 && total < 0.12, "{total}");
+        assert!(low / total > 0.85, "hiss on the hull: low {low} of {total}");
     }
 
     /// A strike rings once, in vacuum, bright for a grain and with a thud
