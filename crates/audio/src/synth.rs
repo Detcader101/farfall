@@ -102,6 +102,14 @@ impl Default for Levels {
     }
 }
 
+fn select_f(first: bool, a: f32, b: f32) -> f32 {
+    if first {
+        a
+    } else {
+        b
+    }
+}
+
 /// One-pole smoother: reaches ~63% of a step in `tau` seconds regardless of
 /// sample rate, so parameter zipper noise cannot depend on the machine.
 #[derive(Clone, Copy)]
@@ -227,6 +235,8 @@ pub struct Synth {
     womp_env: f32,
     womp_t: f32,
     womp_phase: f32,
+    /// The second beat of the pair is still owed.
+    womp_dub: bool,
     /// The warp crack: a jump counter latched from Levels, its envelope and
     /// phases.
     last_jumps: u32,
@@ -302,6 +312,7 @@ impl Synth {
             womp_env: 0.0,
             womp_t: 0.0,
             womp_phase: 0.0,
+            womp_dub: false,
             last_jumps: 0,
             crack_env: 0.0,
             crack_t: 0.0,
@@ -515,15 +526,25 @@ impl Synth {
             self.womp_env = 1.0;
             self.womp_t = 0.0;
             self.womp_phase = 0.0;
+            self.womp_dub = true;
         }
         let mut womp = 0.0;
-        if self.womp_env > 1e-3 {
+        if self.womp_env > 1e-3 || self.womp_dub {
             let dt = 1.0 / self.rate;
             self.womp_t += dt;
+            // The hoops come in pairs: a heartbeat. The second beat lands
+            // 150 ms after the first, softer and a little lower.
+            if self.womp_dub && self.womp_t >= 0.15 {
+                self.womp_dub = false;
+                self.womp_env = 0.75;
+                self.womp_t = 0.0;
+                self.womp_phase = 0.0;
+            }
             // A thump, not a chime: a low sine that falls from 70 Hz to
             // 40 Hz and is gone in a tenth of a second — a soft knock on
             // the frame as a marker goes by, nothing that rings.
-            let f = 40.0 + 30.0 * (-self.womp_t * 25.0).exp();
+            let lower = select_f(self.womp_dub, 1.0, 0.85);
+            let f = (40.0 + 30.0 * (-self.womp_t * 25.0).exp()) * lower;
             self.womp_phase = (self.womp_phase + f / self.rate).fract();
             // Attack over 6 ms so it blooms rather than clicks.
             let attack = (self.womp_t / 0.006).min(1.0);
@@ -1283,6 +1304,33 @@ mod tests {
         let low = low_band_rms(&b, 48_000.0, 800.0);
         assert!(total > 0.01 && total < 0.12, "{total}");
         assert!(low / total > 0.85, "hiss on the hull: low {low} of {total}");
+    }
+
+    /// A hoop is a heartbeat: two beats, the second 150 ms on, then quiet.
+    #[test]
+    fn a_hoop_is_two_beats() {
+        let mut s = Synth::new(48_000.0, 0xBEA7);
+        let rest = Levels {
+            hoops: 1.0,
+            ..Default::default()
+        };
+        let mut b = vec![0.0f32; 48_000 / 10 * 2];
+        s.render(&rest, &mut b);
+        let hoop = Levels { hoops: 2.0, ..rest };
+        // 100 ms windows: beat, gap-ish, beat, quiet.
+        let mut windows = Vec::new();
+        for _ in 0..6 {
+            s.render(&hoop, &mut b);
+            windows.push(rms(&b));
+        }
+        assert!(windows[0] > 0.01, "first beat: {windows:?}");
+        assert!(
+            windows[1] > 0.005,
+            "second beat lands in the next window: {windows:?}"
+        );
+        assert!(windows[5] < 0.001, "then quiet: {windows:?}");
+        // The second beat is a fresh strike, not the tail of the first.
+        assert!(windows[1] > windows[0] * 0.3, "{windows:?}");
     }
 
     /// A strike rings once, in vacuum, bright for a grain and with a thud

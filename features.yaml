@@ -250,7 +250,7 @@ features:
     e2e: FARFALL_BENCH_HYPER=1 capture — view opened; flight needed for the slip
 
   - id: hull-sounds
-    name: The hull's own voices (HULL SOUNDS, sound.hull) — structure-borne, never muted by the vacuum. Under speed toward the relativity wall the frame groans (a clean wandering low sine) and thuds (sparse pitchless knocks — no tones to ring, no noise bed, because any noise bed in space reads as wind); micrometeorite strikes are gritty 10–40 ms impacts (a Poisson process with the square of the speed, none in air; a thud under a pebble), never a bell; the hoop marker is a short low thump that hushes at speed
+    name: The hull's own voices (HULL SOUNDS, sound.hull) — structure-borne, never muted by the vacuum. Under speed toward the relativity wall the frame groans (a clean wandering low sine) and thuds (sparse pitchless knocks — no tones to ring, no noise bed, because any noise bed in space reads as wind); micrometeorite strikes are gritty 10–40 ms impacts (a Poisson process with the square of the speed, none in air; a thud under a pebble), never a bell; the hoop marker is a heartbeat — two low thumps 150 ms apart, the second softer and lower — that hushes at speed
     state: complete
     tests: [crates/audio/src/synth.rs::the_hull_creaks_and_crackles_with_speed_and_the_womp_hushes, crates/audio/src/synth.rs::the_hull_at_the_wall_is_low_and_never_a_hiss, crates/audio/src/synth.rs::strikes_ring_once_and_pebbles_thud, crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air]
     settings: [sound.hull]
