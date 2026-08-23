@@ -37,6 +37,8 @@ pub struct ShieldUniforms {
     fwd: [f32; 4],
     shell: [f32; 4],
     look: [f32; 4],
+    /// x: the hyper drive's field 0..1 — the whole shell ablating; yzw unused.
+    flow: [f32; 4],
     hits: [[f32; 4]; IMPACTS],
 }
 
@@ -71,8 +73,20 @@ impl ShieldUniforms {
             fwd: v4(head * Vec3::NEG_Z, time_s.rem_euclid(1000.0)),
             shell: v4(SHELL_CENTRE, SHELL_RADIUS_M),
             look: [strength.clamp(0.0, 2.0), RIPPLE_MPS, CELL_M, n as f32],
+            flow: [0.0; 4],
             hits,
         }
+    }
+
+    /// Under the hyper drive the whole shell ablates: the field lights
+    /// from the nose back, streaming, at this level 0..1.
+    pub fn with_hyper(mut self, hyper: f32) -> Self {
+        self.flow[0] = if hyper.is_finite() {
+            hyper.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self
     }
 }
 
@@ -125,7 +139,8 @@ mod tests {
         assert!((u.hits[0][3] - (234.5 + 250_000.0)).abs() < 0.01);
         assert!((u.fwd[3] - 236.0).abs() < 1e-4);
         assert_eq!(u.shell[3], SHELL_RADIUS_M);
-        assert_eq!(std::mem::size_of::<ShieldUniforms>(), (5 + IMPACTS) * 16);
+        assert_eq!(std::mem::size_of::<ShieldUniforms>(), (6 + IMPACTS) * 16);
+        assert_eq!(u.with_hyper(0.5).flow[0], 0.5);
     }
 }
 

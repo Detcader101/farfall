@@ -217,6 +217,14 @@ impl Item {
     }
 }
 
+/// The path and its hoops belong with the cabin, not the dials.
+fn path_item(i: Instrument) -> bool {
+    matches!(
+        i,
+        Instrument::Trajectory | Instrument::Hoops | Instrument::HoopSound
+    )
+}
+
 /// Rows of text the bitmap can hold (64 px / 6 px pitch), minus the
 /// header and the footer.
 const VISIBLE_ITEMS: usize = 8;
@@ -282,19 +290,25 @@ impl Menu {
                 v.push(Item::LookSens);
                 v
             }
-            // The cabin: the ship around the pilot and what hangs outside
-            // it (the path's hoops). No safe edge: the glass has no margin.
+            // The cabin, in groups: the ship itself (frame, glow, metal,
+            // shield, its sounds), then everything about the path and its
+            // hoops together. No safe edge: the glass has no margin.
             Page::Cockpit => vec![
                 Item::CockpitFrame,
                 Item::CockpitGlow,
                 Item::CockpitHull,
+                Item::Shield,
+                Item::HullSound,
+                Item::Slot(Instrument::Trajectory),
+                Item::Slot(Instrument::Hoops),
+                Item::Slot(Instrument::HoopSound),
                 Item::HoopSize,
                 Item::LandingHoops,
-                Item::HullSound,
-                Item::Shield,
             ],
             // The gauges: the cockpit-wide look, then one dial's own
-            // numbers, then where each instrument sits (or OFF).
+            // numbers, then where each instrument sits (or OFF) — the
+            // dials and the glass's own elements; the path lives with the
+            // cabin.
             Page::Gauges => {
                 let mut v: Vec<Item> = vec![
                     Item::GaugeStyle,
@@ -306,7 +320,12 @@ impl Menu {
                     Item::DialFade,
                     Item::DialTilt,
                 ];
-                v.extend(Instrument::ALL.iter().map(|&i| Item::Slot(i)));
+                v.extend(
+                    Instrument::ALL
+                        .iter()
+                        .filter(|i| !path_item(**i))
+                        .map(|&i| Item::Slot(i)),
+                );
                 v
             }
             Page::Map => vec![
@@ -979,10 +998,27 @@ mod tests {
                 Page::Cockpit => {
                     assert!(on(Item::CockpitFrame) && on(Item::HoopSize));
                     assert!(!on(Item::GaugeStyle) && !on(Item::Guide));
+                    // The hoop settings sit together, in one run.
+                    let at = |it: Item| items.iter().position(|&x| x == it).unwrap();
+                    let hoops = [
+                        at(Item::Slot(Instrument::Trajectory)),
+                        at(Item::Slot(Instrument::Hoops)),
+                        at(Item::Slot(Instrument::HoopSound)),
+                        at(Item::HoopSize),
+                        at(Item::LandingHoops),
+                    ];
+                    for w in hoops.windows(2) {
+                        assert_eq!(w[1], w[0] + 1, "hoop settings together: {hoops:?}");
+                    }
+                    assert_eq!(at(Item::HullSound), at(Item::Shield) + 1);
                 }
                 Page::Gauges => {
                     assert!(on(Item::GaugeStyle) && on(Item::GaugesStay) && on(Item::Guide));
                     assert!(on(Item::DialTilt) && on(Item::Slot(Instrument::Gyro)));
+                    assert!(
+                        !on(Item::Slot(Instrument::Hoops)),
+                        "hoops live with the cabin"
+                    );
                 }
                 Page::Map => unreachable!(),
             }

@@ -235,14 +235,12 @@ pub struct Synth {
     crack_phase: f32,
     crack_sub_phase: f32,
     crack_lp: f32,
-    // The hull under speed: a groan, knocks, a drone.
+    // The hull under speed: a groan and thuds.
     stress: Smooth,
     creak_phase: f32,
     creak_lfo: f32,
     tick_gate: f32,
     tick_lp: f32,
-    drone_phase: f32,
-    drone_lfo: f32,
     // Strikes: a latched count, a ring with its own pitch, a thud.
     last_strikes: u32,
     strike_env: f32,
@@ -315,8 +313,6 @@ impl Synth {
             creak_lfo: 0.0,
             tick_gate: 0.0,
             tick_lp: 0.0,
-            drone_phase: 0.0,
-            drone_lfo: 0.0,
             last_strikes: 0,
             strike_env: 0.0,
             strike_t: 0.0,
@@ -524,16 +520,19 @@ impl Synth {
         if self.womp_env > 1e-3 {
             let dt = 1.0 / self.rate;
             self.womp_t += dt;
-            let f = 55.0 + 95.0 * (-self.womp_t * 7.0).exp();
+            // A thump, not a chime: a low sine that falls from 70 Hz to
+            // 40 Hz and is gone in a tenth of a second — a soft knock on
+            // the frame as a marker goes by, nothing that rings.
+            let f = 40.0 + 30.0 * (-self.womp_t * 25.0).exp();
             self.womp_phase = (self.womp_phase + f / self.rate).fract();
-            // Attack over 12 ms so it blooms rather than clicks.
-            let attack = (self.womp_t / 0.012).min(1.0);
-            let body = (tau * self.womp_phase).sin() + 0.25 * (tau * 2.0 * self.womp_phase).sin();
-            // At speed the womp is a quieter thing: the hoops come too
-            // fast to be events, and the drone below takes them.
+            // Attack over 6 ms so it blooms rather than clicks.
+            let attack = (self.womp_t / 0.006).min(1.0);
+            let body = (tau * self.womp_phase).sin();
+            // At speed the thump is a quieter thing: the hoops come too
+            // fast to be events.
             let hush = 1.0 - 0.75 * self.stress.value;
-            womp = body * self.womp_env * attack * 0.16 * hush;
-            self.womp_env *= (-dt / 0.22).exp();
+            womp = body * self.womp_env * attack * 0.14 * hush;
+            self.womp_env *= (-dt / 0.09).exp();
         }
 
         // ---- the wormhole drive -------------------------------------------
@@ -595,13 +594,11 @@ impl Synth {
         }
 
         // ---- the hull under speed -------------------------------------------
-        // Structure-borne, so the vacuum is no mute. Three things with the
-        // stress: a slow creak — a low tone whose pitch wanders on a
-        // drifting LFO, the frame working; knocks — sparse, random,
-        // low-passed ticks whose density grows as the square of the
-        // stress, metal relieving itself; and the hoop drone — what the
-        // womp moulds into when the kilometres blur: a 55 Hz hum pulsing
-        // slowly, growing as the womps fade.
+        // Structure-borne, so the vacuum is no mute. Two things with the
+        // stress: a slow groan — a low tone whose pitch wanders on a
+        // drifting LFO, the frame working — and thuds: sparse, random,
+        // pitchless knocks whose density grows as the square of the
+        // stress, metal relieving itself. Nothing rings.
         let stress = self.stress.next(levels.stress.clamp(0.0, 1.0));
         let mut hull_out = 0.0;
         if stress > 1e-3 {
@@ -617,33 +614,26 @@ impl Synth {
             let f = 34.0 + 10.0 * stress + 4.0 * wander;
             self.creak_phase = (self.creak_phase + f / self.rate).fract();
             let groan = (tau * self.creak_phase).sin() * 0.045 * s2 * (0.7 + 0.3 * wander.abs());
-            // Knocks: a few a second at the wall, none at a crawl — each a
-            // damped low tone (a panel relieving itself), a couple of
-            // milliseconds of transient on its face, then gone. The tone's
-            // phase lives in tick_lp, its pitch in knock_f, the gate is
-            // its envelope.
+            // Thuds: a few a second at the wall, none at a crawl — each a
+            // dull, pitchless knock of the frame: a few milliseconds of
+            // heavily low-passed noise (a panel relieving itself), no
+            // tone to ring. tick_lp is the filter, the gate its envelope,
+            // knock_f the filter's corner for this thud.
             let rate_hz = 4.0 * s2 * s2 + 0.3 * s2;
             let open = self.rng_l.white().abs() < rate_hz / self.rate;
             if open {
                 self.tick_gate = 0.5 + 0.5 * self.rng_r.white().abs();
-                self.tick_lp = 0.0;
-                self.knock_f = 180.0 + 240.0 * self.rng_r.white().abs();
+                self.knock_f = 90.0 + 110.0 * self.rng_r.white().abs();
             }
             let mut knock = 0.0;
             if self.tick_gate > 1e-3 {
-                self.tick_lp = (self.tick_lp + self.knock_f / self.rate).fract();
-                let face = (-(1.0 - self.tick_gate) * 400.0).exp();
-                knock = ((tau * self.tick_lp).sin() + 0.3 * face * self.rng_r.white())
-                    * self.tick_gate
-                    * (0.06 + 0.08 * stress);
-                self.tick_gate *= (-dt / 0.035).exp();
+                let n = self.rng_r.white();
+                let lp = self.lp_coeff(self.knock_f);
+                self.tick_lp += (n - self.tick_lp) * lp;
+                knock = self.tick_lp * self.tick_gate * (0.5 + 0.6 * stress);
+                self.tick_gate *= (-dt / 0.012).exp();
             }
-            // The drone the hoops mould into: a faint 55 Hz pulse.
-            self.drone_lfo = (self.drone_lfo + 0.8 * dt).fract();
-            self.drone_phase = (self.drone_phase + 55.0 / self.rate).fract();
-            let pulse = 0.55 + 0.45 * (tau * self.drone_lfo).sin();
-            let drone = (tau * self.drone_phase).sin() * pulse * 0.035 * s2;
-            hull_out = groan + knock + drone;
+            hull_out = groan + knock;
         }
 
         // ---- strikes --------------------------------------------------------

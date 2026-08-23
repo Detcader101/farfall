@@ -22,6 +22,8 @@ struct Shield {
     // x: strength 0..2 (the SHIELD setting), y: ripple speed (m/s),
     // z: honeycomb cell size (m), w: impact count in use
     look: vec4<f32>,
+    // x: the hyper drive's field 0..1 — the whole shell ablating
+    flow: vec4<f32>,
     // Impacts: xyz unit direction from the shell's centre, w packs the
     // strike's time (s) + 1000 × size (0..1).
     hits: array<vec4<f32>, 8>,
@@ -70,7 +72,8 @@ fn honeycomb(uv: vec2<f32>, cell: f32) -> f32 {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let strength = sh.look.x;
     let n_hits = u32(sh.look.w);
-    if (strength <= 0.0 || n_hits == 0u) {
+    let hyper = sh.flow.x;
+    if (strength <= 0.0 || (n_hits == 0u && hyper <= 0.001)) {
         discard;
     }
     let aspect = sh.right.w;
@@ -118,12 +121,28 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let at_hit = (1.0 - smoothstep(0.0, 0.5 + 1.0 * size, d)) * exp(-age * 2.0);
         comb += (band * 0.8 + at_hit) * fade;
     }
+    // The hyper drive: space streaming over the whole shell. The field
+    // lights from the nose back, the honeycomb everywhere under bands of
+    // light sweeping aft at speed, brightest where the stream meets it.
+    var stream = 0.0;
+    if (hyper > 0.001) {
+        let nose = vec3<f32>(0.0, 0.0, -1.0);
+        let head_on = dot(n, nose);
+        let from_front = smoothstep(-0.6, 0.9, head_on);
+        let along = acos(clamp(head_on, -1.0, 1.0)) * rad;
+        let bands = 0.5 + 0.5 * sin(along * 6.0 - now * 40.0);
+        let bands2 = 0.5 + 0.5 * sin(along * 13.0 - now * 71.0 + n.x * 9.0);
+        stream = hyper * (0.25 + 0.75 * from_front) * (0.35 + 0.4 * bands + 0.25 * bands2);
+        comb += stream * 1.2;
+        glow += stream * 0.45;
+    }
     if (glow + comb < 0.002) {
         discard;
     }
     // The chart: tangent coordinates about the nearest hit (the first
-    // one is fine — the cells only need to look like cells).
-    let h0 = sh.hits[0].xyz;
+    // one is fine — the cells only need to look like cells); under the
+    // hyper drive alone, about the nose.
+    let h0 = select(sh.hits[0].xyz, vec3<f32>(0.0, 0.0, -1.0), n_hits == 0u);
     let e1 = normalize(cross(h0, select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(h0.y) > 0.9)));
     let e2 = cross(h0, e1);
     let uv = vec2<f32>(dot(p - c, e1), dot(p - c, e2));

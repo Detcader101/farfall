@@ -117,13 +117,13 @@ fn hull_stress(speed_mps: f64) -> f32 {
     ((speed_mps / sim::RELATIVITY_FROM_MPS).clamp(0.0, 1.0)) as f32
 }
 
-/// Strikes per second: a grain now and then at rest, rising with the
-/// square of the speed (the ship sweeps a longer column per second and
-/// meets what is in it), capped so the wall is a patter, not a hail; in
-/// air, nothing — dust does not fly.
+/// Strikes per second: nothing at rest — a still ship meets nothing —
+/// one every couple of seconds at a kilometre a second, rising steeply
+/// with the speed (the ship sweeps a longer column and meets what is in
+/// it), capped at a patter; in air, nothing — dust does not fly.
 fn strike_rate_hz(speed_mps: f32, air: f32) -> f32 {
-    let v = speed_mps.max(0.0) / 3_000.0;
-    ((0.03 + 1.2 * v * v).min(5.0)) * (1.0 - air.clamp(0.0, 1.0))
+    let v = speed_mps.max(0.0) / 1_000.0;
+    ((0.5 * v.powf(1.5)).min(6.0)) * (1.0 - air.clamp(0.0, 1.0))
 }
 
 /// A strike's size from one uniform draw: mostly grains, a few pebbles.
@@ -883,6 +883,8 @@ struct Game {
     hyper: f32,
     /// Was the field up last frame (to feel its collapse).
     hyper_was: bool,
+    /// The bench holding the field up.
+    bench_hyper: bool,
     /// The drive's strain 0..1 from running the hyper field, and the point
     /// (drawn fresh each time) at which it slips: the wormhole drive fires
     /// of its own accord and drops the ship somewhere else entirely.
@@ -974,6 +976,7 @@ impl Game {
             warp: Warp::new(),
             hyper: 0.0,
             hyper_was: false,
+            bench_hyper: false,
             hyper_strain: 0.0,
             slip_at: 0.85,
             pending_slip: false,
@@ -1524,6 +1527,7 @@ impl Game {
             self.settings.shield,
             &self.impacts,
         )
+        .with_hyper(self.hyper)
     }
 
     /// The strain line for the readout, once there is any.
@@ -1653,7 +1657,9 @@ impl Game {
         self.g_fade.update(frame_dt.min(0.25) as f32, self.felt_g);
         // The hyper field forms over a moment and collapses faster.
         {
-            let want = if self.input.controls(self.assist).hyper && !self.warp.active() {
+            let want = if self.bench_hyper
+                || (self.input.controls(self.assist).hyper && !self.warp.active())
+            {
                 1.0
             } else {
                 0.0
@@ -1936,16 +1942,13 @@ impl Game {
         if u1 < rate * sim::DT as f32 {
             self.strikes = self.strikes.wrapping_add(1);
             self.strike_size = strike_size_from(u2);
-            // Where it hit the shell: from ahead of the motion, scattered a
-            // little, in the ship's frame.
+            // Where it hit the shell: anywhere at a crawl; the faster the
+            // ship, the more from ahead of the motion (ship frame).
             let ship_inv = self.state.ship.orient.inverse();
-            let ahead = if speed > 1.0 {
-                (ship_inv * self.state.ship.vel_mps.normalize()).as_vec3()
-            } else {
-                glam::Vec3::NEG_Z
-            };
+            let ahead = (ship_inv * self.state.ship.vel_mps.normalize_or_zero()).as_vec3();
             let scatter = random_unit(self.next_unit(), self.next_unit()).as_vec3();
-            let dir = (ahead + scatter * 0.5).normalize_or_zero();
+            let bias = (speed / 2_000.0).clamp(0.0, 0.85);
+            let dir = (ahead * bias + scatter * (1.0 - bias)).normalize_or_zero();
             self.impacts.insert(
                 0,
                 Impact {
@@ -2369,6 +2372,7 @@ impl App {
         }
         if game.frozen && std::env::var("FARFALL_BENCH_HYPER").is_ok() {
             game.hyper = 1.0;
+            game.bench_hyper = true;
         }
         if let Some(n) = std::env::var("FARFALL_BENCH_STRIKES")
             .ok()
@@ -3238,9 +3242,14 @@ mod tests {
 
     #[test]
     fn the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air() {
-        assert!(strike_rate_hz(0.0, 0.0) > 0.0 && strike_rate_hz(0.0, 0.0) < 0.1);
-        assert!(strike_rate_hz(3_000.0, 0.0) > strike_rate_hz(1_000.0, 0.0) * 4.0);
-        assert_eq!(strike_rate_hz(9_000.0, 0.0), 5.0, "capped at a patter");
+        assert_eq!(strike_rate_hz(0.0, 0.0), 0.0, "a still ship meets nothing");
+        let cruise = strike_rate_hz(1_000.0, 0.0);
+        assert!(
+            (0.4..0.6).contains(&cruise),
+            "one every couple of seconds: {cruise}"
+        );
+        assert!(strike_rate_hz(3_000.0, 0.0) > cruise * 4.0);
+        assert_eq!(strike_rate_hz(3.0e7, 0.0), 6.0, "capped at a patter");
         assert_eq!(strike_rate_hz(3_000.0, 1.0), 0.0, "no dust in air");
         assert_eq!(hull_stress(0.0), 0.0);
         assert_eq!(hull_stress(sim::RELATIVITY_FROM_MPS * 3.0), 1.0);
@@ -3261,12 +3270,7 @@ mod tests {
         for _ in 0..(60 * 120) {
             slow.roll_for_strikes();
         }
-        assert!(
-            slow.strikes < fast.strikes / 10,
-            "{} vs {}",
-            slow.strikes,
-            fast.strikes
-        );
+        assert_eq!(slow.strikes, 0, "still: nothing, ever");
         // Every strike leaves an impact on the shell, ahead of the motion,
         // newest first, and the shell remembers only so many.
         assert!(!fast.impacts.is_empty());

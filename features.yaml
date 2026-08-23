@@ -51,7 +51,7 @@ features:
     e2e: captures
 
   - id: menu-settings
-    name: In-game menu — GFX / KEYS / CABIN / GAUGES pages, a flat framed card on the screen with the chosen row banded; every row proven to fit; settings file
+    name: In-game menu — GFX / KEYS / CABIN / GAUGES pages, settings grouped by topic (the ship, then every path/hoop setting in one run on CABIN; dials on GAUGES), a flat framed card on the screen with the chosen row banded; every row proven to fit; settings file
     state: complete
     tests: [crates/app/src/menu.rs::every_row_of_every_page_fits_the_panel, crates/app/src/menu.rs::the_pages_are_categories_that_make_sense, crates/app/src/settings.rs]
     e2e: FARFALL_BENCH_MENU=3 capture — GAUGES page, rows aligned, card framed
@@ -237,7 +237,7 @@ features:
     e2e: FARFALL_BENCH_HYPER=1 capture — view opened; flight needed for the slip
 
   - id: hull-sounds
-    name: The hull's own voices (HULL SOUNDS, sound.hull) — structure-borne, never muted by the vacuum. Under speed toward the relativity wall the frame groans (a clean wandering low sine) and knocks (sparse damped low tones — no noise bed, because any noise bed in space reads as wind); micrometeorite strikes are gritty 10–40 ms impacts (a Poisson process with the square of the speed, none in air; a thud under a pebble), never a bell; the hoop womp hushes at speed and moulds into a pulsing 55 Hz drone
+    name: The hull's own voices (HULL SOUNDS, sound.hull) — structure-borne, never muted by the vacuum. Under speed toward the relativity wall the frame groans (a clean wandering low sine) and thuds (sparse pitchless knocks — no tones to ring, no noise bed, because any noise bed in space reads as wind); micrometeorite strikes are gritty 10–40 ms impacts (a Poisson process with the square of the speed, none in air; a thud under a pebble), never a bell; the hoop marker is a short low thump that hushes at speed
     state: complete
     tests: [crates/audio/src/synth.rs::the_hull_creaks_and_crackles_with_speed_and_the_womp_hushes, crates/audio/src/synth.rs::the_hull_at_the_wall_is_low_and_never_a_hiss, crates/audio/src/synth.rs::strikes_ring_once_and_pebbles_thud, crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air]
     settings: [sound.hull]
@@ -268,7 +268,7 @@ features:
     e2e: 8 frames inspected
 
   - id: shield
-    name: The force field (shield.wgsl) — a 4.2 m shell about the hull, invisible until debris hits it; each strike raises a ripple of blue holographic light spreading evenly over the shell at 5 m/s with a wake, the field's honeycomb showing in a band behind the front and at the impact, fading over ~3 s; impacts come from ahead of the motion, scattered; SHIELD setting (ui.shield, 0..200%)
+    name: The force field (shield.wgsl) — a 4.2 m shell about the hull, invisible until debris hits it (none at rest, one every couple of seconds at 1 km/s, a patter at speed, anywhere on the shell at a crawl and from ahead when fast; under the hyper drive the whole shell ablates, lit from the nose back under bands streaming aft); each strike raises a ripple of blue holographic light spreading evenly over the shell at 5 m/s with a wake, the field's honeycomb showing in a band behind the front and at the impact, fading over ~3 s; impacts come from ahead of the motion, scattered; SHIELD setting (ui.shield, 0..200%)
     state: complete
     tests: [crates/render/src/shield.rs, crates/render/tests/shader_validation.rs, crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air]
     settings: [ui.shield]
