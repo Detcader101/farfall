@@ -18,6 +18,7 @@ pub const GYRO: &str = include_str!("../../../shaders/gyro.wgsl");
 pub const GVEC: &str = include_str!("../../../shaders/gvec.wgsl");
 pub const SHIELD: &str = include_str!("../../../shaders/shield.wgsl");
 pub const GHOST: &str = include_str!("../../../shaders/ghost.wgsl");
+pub const BELT: &str = include_str!("../../../shaders/belt.wgsl");
 pub const HORIZON: &str = include_str!("../../../shaders/horizon.wgsl");
 pub const BODIES: &str = include_str!("../../../shaders/bodies.wgsl");
 pub const MAP: &str = include_str!("../../../shaders/map.wgsl");
@@ -51,6 +52,7 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("gvec", GVEC, &["vs_main", "fs_main"]),
     ("shield", SHIELD, &["vs_main", "fs_main"]),
     ("ghost", GHOST, &["vs_main", "fs_main"]),
+    ("belt", BELT, &["vs_main", "fs_main"]),
     ("horizon", HORIZON, &["vs_main", "fs_main"]),
     ("bodies", BODIES, &["vs_main", "fs_main"]),
     ("map", MAP, &["vs_main", "fs_main"]),

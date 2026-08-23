@@ -37,6 +37,8 @@ so it handles like a VTOL: hold the horizon and the orbit holds, pitch down and
 you descend. Switch it **off** and the ship is a pure ballistic body: attitude
 and velocity are independent, and orbits are conserved exactly.
 
+**Asteroid belt**: Uranus' ring is the belt — pick URANUS RING on the DRIVE panel (M) and the drive drops you into it. Rocks from five to three hundred metres go round with the ring, drift, knock each other about and knock the ship (the shield ripples, the hull grits); they are ray-traced on the GPU, craggy and Sun-lit.
+
 **Shield**: the ship has a force field — a shell a few metres out, invisible until high-speed debris hits it; every strike sends a ripple of blue holographic light spreading evenly from the point of impact across the shell, the field's honeycomb showing through around it; nothing at rest, a hit every couple of seconds at a kilometre a second, a patter when fast, and under the hyper drive the whole shell ablates (SHIELD on the CABIN page).
 
 **Sky**: low down the day sky is the air's colour — blue here, amber or green on the other atmospheres — and hides the stars; it thins with height and is black by the top of the air (SKY on the GFX page).

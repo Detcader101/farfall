@@ -8,6 +8,7 @@
 //! [`input`]), the camera rides the hull looking down the nose, and rotational
 //! flight assist is toggleable. Planet, HUD, and sun arrive in M1 tasks 4-6.
 
+mod belt;
 mod capture;
 mod cockpit;
 mod input;
@@ -37,6 +38,7 @@ use farfall_render::{
         HorizonUniforms,
     },
     bake::BakedMaps,
+    belt::{belt_pass, BeltPass, BeltUniforms, RockView},
     blit::{BlitPass, PostUniforms},
     bodies::{BodiesPass, BodiesUniforms},
     gauge::{
@@ -417,6 +419,7 @@ struct Passes {
     trajectory: TrajectoryPass,
     shield: ShieldPass,
     ghost: GhostPass,
+    belt: BeltPass,
 }
 
 impl Passes {
@@ -446,6 +449,7 @@ impl Passes {
             trajectory: TrajectoryPass::new(device, format, msaa),
             shield: shield_pass(device, format, msaa),
             ghost: ghost_pass(device, format, msaa),
+            belt: belt_pass(device, format, msaa),
         }
     }
 }
@@ -902,6 +906,8 @@ struct Game {
     hyper: f32,
     /// The after-image of the last WARP STOP, while it lasts.
     ghost: Option<Ghost>,
+    /// The asteroid belt's live rocks, when the ship is in Uranus' ring.
+    belt: belt::Belt,
     /// Was the field up last frame (to feel its collapse).
     hyper_was: bool,
     /// The bench holding the field up.
@@ -997,6 +1003,7 @@ impl Game {
             warp: Warp::new(),
             hyper: 0.0,
             ghost: None,
+            belt: belt::Belt::default(),
             hyper_was: false,
             bench_hyper: false,
             hyper_strain: 0.0,
@@ -1612,6 +1619,26 @@ impl Game {
         self.hyper_strain = (self.hyper_strain * 0.5).max(0.0);
     }
 
+    /// The belt's live rocks for the shader: relative to the head, in the
+    /// ship's frame; nothing when the ship is nowhere near the ring.
+    fn belt_uniforms(&self, cam: &CameraFrame) -> BeltUniforms {
+        let ship_inv = self.state.ship.orient.inverse();
+        let now = self.started.elapsed().as_secs_f32();
+        let rocks: Vec<RockView> = self
+            .belt
+            .rocks
+            .iter()
+            .map(|r| RockView {
+                centre: (ship_inv * (r.pos - self.state.ship.pos_m)).as_vec3(),
+                radius_m: r.radius_m as f32,
+                seed: r.seed,
+                phase: r.spin * now,
+            })
+            .collect();
+        let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        BeltUniforms::new(cam, self.look.rotation(), now, sun_ship, 1.0, &rocks)
+    }
+
     /// The after-image this frame, if one is still showing.
     fn ghost_uniforms(&self, cam: &CameraFrame) -> GhostUniforms {
         let head = self.look.rotation();
@@ -1766,6 +1793,16 @@ impl Game {
         }
         self.run_hyper_strain(frame_dt.min(0.25) as f32);
 
+        // A frozen bench still shows the belt: the rocks come live, unmoved.
+        if self.frozen {
+            self.belt.step(
+                &self.params,
+                self.state.time_s,
+                0.0,
+                self.state.ship.pos_m,
+                self.state.ship.vel_mps,
+            );
+        }
         // A pilot reading a panel is not flying: the world waits.
         if self.panel_open() {
             self.accumulator = 0.0;
@@ -1834,6 +1871,41 @@ impl Game {
             let before = self.state.ship;
             let before_t = self.state.time_s;
             self.state = sim::step(&self.params, &self.state, controls);
+            // The belt: rocks move, knock each other, and knock the ship
+            // — an impulse on its state, a bump on the shield, grit in
+            // the sound.
+            let shove = self.belt.step(
+                &self.params,
+                self.state.time_s,
+                sim::DT,
+                self.state.ship.pos_m,
+                self.state.ship.vel_mps,
+            );
+            if shove != DVec3::ZERO {
+                self.state.ship.vel_mps += shove;
+            }
+            let hits: Vec<belt::Hit> = self.belt.hits.clone();
+            for h in hits {
+                let ship_inv = self.state.ship.orient.inverse();
+                let dir = (ship_inv * h.from).as_vec3().normalize_or_zero();
+                let size = ((h.radius_m / 60.0).sqrt() as f32).clamp(0.35, 1.0);
+                self.strikes = self.strikes.wrapping_add(1);
+                self.strike_size = size;
+                self.impacts.insert(
+                    0,
+                    Impact {
+                        dir,
+                        at_s: self.started.elapsed().as_secs_f32(),
+                        size,
+                    },
+                );
+                self.impacts.truncate(farfall_render::shield::IMPACTS);
+                log::info!(
+                    "belt: a {:.0} m rock at {:.0} m/s",
+                    h.radius_m * 2.0,
+                    h.closing_mps
+                );
+            }
             let felt = sim::felt_acceleration(&self.params, before_t, &before, &self.state.ship);
             self.felt_g = (felt.length() / 9.81) as f32;
             // In the ship's frame: x right, y up, -z the nose — shown as
@@ -2835,6 +2907,9 @@ impl ApplicationHandler for App {
                                     &gpu.queue,
                                     &game.bodies_uniforms(&cam, gpu.scene.size().1 as f32),
                                 );
+                                gpu.passes
+                                    .belt
+                                    .update(&gpu.queue, &game.belt_uniforms(&cam));
                                 let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
                                 // The capture should show what the pilot
@@ -2946,6 +3021,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.starfield.draw(&mut pass);
                                     gpu.passes.bodies.draw(&mut pass);
                                     gpu.passes.planet.draw(&mut pass);
+                                    gpu.passes.belt.draw(&mut pass);
                                     gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                                     gpu.passes.trajectory.draw(&mut pass);
                                     gpu.passes.shield.draw(&mut pass);
@@ -3035,6 +3111,9 @@ impl ApplicationHandler for App {
                     &gpu.queue,
                     &game.bodies_uniforms(&cam, gpu.scene.size().1 as f32),
                 );
+                gpu.passes
+                    .belt
+                    .update(&gpu.queue, &game.belt_uniforms(&cam));
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,
@@ -3125,6 +3204,9 @@ impl ApplicationHandler for App {
                     }
                     if gpu.cfg.draws("planet") {
                         gpu.passes.planet.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("belt") {
+                        gpu.passes.belt.draw(&mut pass);
                     }
                     if gpu.cfg.draws("plasma") {
                         gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);

@@ -12,6 +12,7 @@ use glam::{Mat4, Quat, Vec3};
 
 pub mod attitude;
 pub mod bake;
+pub mod belt;
 pub mod blit;
 pub mod bodies;
 pub mod cabin;

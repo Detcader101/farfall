@@ -168,8 +168,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 let behind = ur.cover > 0.5 && t > length(c);
                 if (in_ring > 0.001 && !behind) {
                     let lit = max(abs(dot(axis, sun)), 0.15);
-                    rgb = mix(rgb, vec3<f32>(0.5, 0.55, 0.6) * lit * 1.2, in_ring * 0.55);
-                    alpha = max(alpha, in_ring * 0.55);
+                    // From inside the ring (the belt, up close) the sheet
+                    // is not a wall: a faint haze of dust, the rocks are
+                    // what there is to see. The camera's height above the
+                    // plane, against the ring's thickness, says how far in.
+                    let h = abs(dot(c, axis));
+                    let inside = 1.0 - smoothstep(0.0, 0.006 * rr, h);
+                    let veil = in_ring * mix(0.55, 0.10, inside);
+                    rgb = mix(rgb, vec3<f32>(0.5, 0.55, 0.6) * lit * 1.2, veil);
+                    alpha = max(alpha, veil);
                 }
             }
         }
