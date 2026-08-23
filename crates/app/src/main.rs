@@ -94,6 +94,22 @@ fn slot_of(
         None => ([0.0, 0.0], 0.0),
     }
 }
+/// The hyper drive's limits: seconds of full running before the drive
+/// slips (the slip point itself is drawn between 70% and 100% of this),
+/// how long the strain takes to ease off, and the crawl the field's
+/// collapse leaves the ship at.
+const HYPER_STRAIN_S: f32 = 40.0;
+const HYPER_EASE_S: f32 = 90.0;
+const HYPER_DROP_MPS: f64 = 1_500.0;
+
+/// A unit vector from two uniform draws, evenly over the sphere.
+fn random_unit(u1: f32, u2: f32) -> DVec3 {
+    let z = 1.0 - 2.0 * u1.clamp(0.0, 1.0) as f64;
+    let a = std::f64::consts::TAU * u2.clamp(0.0, 1.0) as f64;
+    let s = (1.0 - z * z).max(0.0).sqrt();
+    DVec3::new(s * a.cos(), s * a.sin(), z)
+}
+
 /// How hard the hull is being driven, 0..1: the speed against the
 /// relativity wall, where the frame has the most to say.
 fn hull_stress(speed_mps: f64) -> f32 {
@@ -860,6 +876,14 @@ struct Game {
     warp: Warp,
     /// The hyper drive's level 0..1, eased — the field takes a moment to form.
     hyper: f32,
+    /// Was the field up last frame (to feel its collapse).
+    hyper_was: bool,
+    /// The drive's strain 0..1 from running the hyper field, and the point
+    /// (drawn fresh each time) at which it slips: the wormhole drive fires
+    /// of its own accord and drops the ship somewhere else entirely.
+    hyper_strain: f32,
+    slip_at: f32,
+    pending_slip: bool,
     /// Felt acceleration over the last sim step, g, and the meter's fade.
     felt_g: f32,
     /// The same, as a vector in the ship's frame: right, up, forward (g).
@@ -942,6 +966,10 @@ impl Game {
             left_down: false,
             warp: Warp::new(),
             hyper: 0.0,
+            hyper_was: false,
+            hyper_strain: 0.0,
+            slip_at: 0.85,
+            pending_slip: false,
             felt_g: 0.0,
             felt_g_body: [0.0; 3],
             g_fade: GForceFade::new(),
@@ -1261,7 +1289,10 @@ impl Game {
     /// The drive's look this frame: the wormhole sequence, with the hyper
     /// drive's half-charge over it.
     fn warp_look(&self) -> warp::Look {
-        self.warp.look().with_hyper(self.hyper)
+        let mut l = self.warp.look().with_hyper(self.hyper);
+        // The strain shows: the drive's glow and hum climb toward the slip.
+        l.charge = l.charge.max(self.hyper * (0.7 + 0.3 * self.hyper_strain));
+        l
     }
 
     /// A dial's effective settings: its own over the cockpit's.
@@ -1441,6 +1472,107 @@ impl Game {
         }
     }
 
+    /// The hyper drive's price. Held, the field strains the drive — faster
+    /// when it is running hard — and past its limit the drive slips: the
+    /// whole wormhole fires uncharged and drops the ship into an unstable
+    /// orbit of some body, any body, going any way. Let go of it and the
+    /// field collapses: whatever space was doing stops, and the ship is
+    /// left at a crawl down its nose. Off, the strain eases.
+    fn run_hyper_strain(&mut self, dt: f32) {
+        let held = self.input.controls(self.assist).hyper && !self.warp.active();
+        if self.hyper_was && !held && !self.warp.active() {
+            let v = self.state.ship.vel_mps;
+            let speed = v.length();
+            if speed > HYPER_DROP_MPS {
+                self.state.ship.vel_mps = v * (HYPER_DROP_MPS / speed);
+                log::info!("hyper: field collapsed at {speed:.3e} m/s, dropped to a crawl");
+            }
+        }
+        self.hyper_was = held;
+        if held {
+            let run = (self.state.ship.vel_mps.length() / self.params.ship.hyper_max_mps) as f32;
+            self.hyper_strain += dt / HYPER_STRAIN_S * (0.3 + 0.7 * run.clamp(0.0, 1.0));
+            if self.hyper_strain >= self.slip_at {
+                self.hyper_strain = 0.0;
+                self.slip_at = 0.7 + 0.3 * self.next_unit();
+                if self.warp.slip() {
+                    self.pending_slip = true;
+                    self.input.release_all();
+                    log::warn!("hyper: the drive slipped");
+                }
+            }
+        } else {
+            self.hyper_strain = (self.hyper_strain - dt / HYPER_EASE_S).max(0.0);
+        }
+    }
+
+    /// The strain line for the readout, once there is any.
+    fn strain_text(&self) -> Option<String> {
+        (self.hyper_strain > 0.02).then(|| {
+            let pct = (self.hyper_strain * 100.0).round();
+            if self.hyper_strain > 0.6 {
+                format!("DRIVE STRAIN {pct:.0}%  !")
+            } else {
+                format!("DRIVE STRAIN {pct:.0}%")
+            }
+        })
+    }
+
+    /// Where a slipped drive drops the ship: some body, at a random
+    /// distance of a few radii, going some way at a speed around circular
+    /// — an orbit, but not one that stays. Attitude kept, spin killed.
+    fn slip_jump(&mut self) {
+        let t = self.state.time_s;
+        let bodies = self.params.bodies(t);
+        let vels = self.params.body_velocities(t);
+        // Weighted: the near bodies more often than the Sun.
+        let pick = self.next_unit();
+        let i = if pick < 0.35 {
+            0
+        } else if pick < 0.62 {
+            1
+        } else if pick < 0.74 {
+            2
+        } else {
+            3
+        };
+        let b = bodies[i];
+        let (u1, u2, u3, u4, u5) = (
+            self.next_unit(),
+            self.next_unit(),
+            self.next_unit(),
+            self.next_unit(),
+            self.next_unit(),
+        );
+        let dir = random_unit(u1, u2);
+        let r = b.radius_m * (1.8 + 4.2 * u3 as f64);
+        let pos = b.centre + dir * r;
+        let v_circ = (b.mu / r).sqrt();
+        let tangent = {
+            let any = random_unit(u4, u5);
+            let tnt = any - dir * any.dot(dir);
+            if tnt.length() > 1e-6 {
+                tnt.normalize()
+            } else {
+                dir.cross(DVec3::Y).normalize_or_zero()
+            }
+        };
+        let lean = (self.next_unit() as f64 - 0.5) * 1.0;
+        let gain = 0.5 + 0.9 * self.next_unit() as f64;
+        let vel = vels[i] + (tangent * lean.cos() + dir * lean.sin()) * v_circ * gain;
+        self.state.ship.pos_m = pos;
+        self.state.ship.vel_mps = vel;
+        self.state.ship.ang_vel_radps = DVec3::ZERO;
+        self.jumps = self.jumps.wrapping_add(1);
+        self.touchdown = None;
+        log::warn!(
+            "hyper: slipped to body {i} at {:.1} radii, {:.0} m/s ({:.2} of circular)",
+            r / b.radius_m,
+            (vel - vels[i]).length(),
+            gain
+        );
+    }
+
     /// The jump itself, at the flip's peak: the ship is placed at the
     /// plan's arrival, attitude kept, and the world carries on from there.
     fn jump(&mut self) {
@@ -1512,8 +1644,14 @@ impl Game {
         }
         self.look.update(frame_dt.min(0.25) as f32);
         if self.warp.update(frame_dt.min(0.25) as f32) {
-            self.jump();
+            if self.pending_slip {
+                self.pending_slip = false;
+                self.slip_jump();
+            } else {
+                self.jump();
+            }
         }
+        self.run_hyper_strain(frame_dt.min(0.25) as f32);
 
         // A pilot reading a panel is not flying: the world waits.
         if self.panel_open() {
@@ -2905,7 +3043,7 @@ impl ApplicationHandler for App {
                         speed_mps: game.state.ship.vel_mps.length(),
                         assist: game.assist,
                         show: game.settings.layout.shown(Instrument::Readout) || game.landing,
-                        landing: game.landing_text(),
+                        landing: game.landing_text().or_else(|| game.strain_text()),
                     },
                 );
                 if game.design {
@@ -3071,6 +3209,65 @@ mod tests {
             mute.roll_for_strikes();
         }
         assert_eq!(mute.strikes, 0);
+    }
+
+    #[test]
+    fn the_hyper_drive_strains_slips_somewhere_else_and_collapses_to_a_crawl() {
+        let mut game = Game::new();
+        let home = game.state.ship.pos_m;
+        // Hold the field at full run: strain climbs, and within a minute
+        // the drive slips — into the flip, then a jump to some body.
+        game.input.set(game.settings.bindings.hyper, true);
+        game.hyper_was = true;
+        game.state.ship.vel_mps = glam::DVec3::new(0.0, 0.0, -game.params.ship.hyper_max_mps);
+        let mut slipped = false;
+        for _ in 0..(60 * 60) {
+            game.run_hyper_strain(1.0 / 60.0);
+            if game.pending_slip {
+                slipped = true;
+                break;
+            }
+        }
+        assert!(slipped, "strain {}", game.hyper_strain);
+        assert!(game.warp.active());
+        assert!(game.strain_text().is_none(), "the strain is spent");
+        // The jump: near some body, at a few radii, at a speed about circular.
+        game.slip_jump();
+        let t = game.state.time_s;
+        let bodies = game.params.bodies(t);
+        let vels = game.params.body_velocities(t);
+        let (i, b) = bodies
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, c)| {
+                let da = (game.state.ship.pos_m - a.centre).length() / a.radius_m;
+                let dc = (game.state.ship.pos_m - c.centre).length() / c.radius_m;
+                da.partial_cmp(&dc).unwrap()
+            })
+            .unwrap();
+        let r = (game.state.ship.pos_m - b.centre).length();
+        assert!(
+            r > b.radius_m * 1.7 && r < b.radius_m * 6.1,
+            "{}",
+            r / b.radius_m
+        );
+        let v = (game.state.ship.vel_mps - vels[i]).length();
+        let vc = (b.mu / r).sqrt();
+        assert!(v > vc * 0.45 && v < vc * 1.45, "{} of circular", v / vc);
+        assert_ne!(game.state.ship.pos_m, home);
+        // Let go of a running field: a crawl, down the nose.
+        let mut g2 = Game::new();
+        g2.state.ship.vel_mps = glam::DVec3::new(0.0, 0.0, -2.0e7);
+        g2.hyper_was = true;
+        g2.run_hyper_strain(0.016);
+        assert!((g2.state.ship.vel_mps.length() - HYPER_DROP_MPS).abs() < 1e-6);
+        // Off, the strain eases.
+        let mut g3 = Game::new();
+        g3.hyper_strain = 0.5;
+        for _ in 0..600 {
+            g3.run_hyper_strain(0.1);
+        }
+        assert_eq!(g3.hyper_strain, 0.0);
     }
 
     #[test]

@@ -272,28 +272,34 @@ fn despin_kills_a_tumble_nothing_else_would() {
     assert!(slow.ship.ang_vel_radps.length() > wild.length() * 0.5);
 }
 
-/// The hyper drive hauls the ship down its nose: held for six seconds
-/// from orbit it is past the relativity wall and pointed where the nose
-/// is, whatever the orbit was doing — and released, it is left alone.
+/// The hyper drive moves space: held for a minute from orbit the ship has
+/// crossed an astronomical unit (the Sun's distance) down its nose —
+/// relativity's wall is for things moving through space, not with it —
+/// and the velocity is on the nose whatever the orbit was doing.
 #[test]
-fn hyper_drive_hauls_the_ship_down_its_nose_to_the_wall() {
+fn hyper_drive_crosses_an_astronomical_unit_in_a_minute() {
     let params = presets::earth_compact();
     let start = spinning(&params, DVec3::ZERO);
     let nose = start.ship.orient * DVec3::NEG_Z;
+    let from = start.ship.pos_m;
     let held = Controls {
         hyper: true,
         ..Default::default()
     };
-    let end = run(&params, start, 720, held);
-    let speed = end.ship.vel_mps.length();
+    let end = run(&params, start, 60 * 120, held);
+    let gone = (end.ship.pos_m - from).length();
     assert!(
-        speed > farfall_sim::RELATIVITY_FROM_MPS,
-        "six seconds of hyper drive reach the wall: {speed} m/s"
+        gone > params.sun.distance_m * 0.9,
+        "a minute of hyper drive covers the Sun's distance: {gone:.3e} of {:.3e}",
+        params.sun.distance_m
     );
-    assert!(speed < farfall_sim::LIGHT_SPEED_MPS, "and never through it");
+    let speed = end.ship.vel_mps.length();
+    assert!(speed > farfall_sim::LIGHT_SPEED_MPS * 0.05, "{speed}");
+    assert!(speed <= params.ship.hyper_max_mps * 1.001, "{speed}");
     let along = end.ship.vel_mps.normalize().dot(nose);
-    assert!(along > 0.995, "the velocity is on the nose: cos {along}");
-    // Let go: the next step is plain Newton — no hidden drag, no snap back.
+    assert!(along > 0.999, "the velocity is on the nose: cos {along}");
+    // Let go: the next step is plain Newton — the field is the app's to
+    // collapse, the sim does not snap anything back.
     let after = step(&params, &end, Controls::default());
     let coast = step(
         &params,

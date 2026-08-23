@@ -230,11 +230,11 @@ features:
     e2e: FARFALL_BENCH_G=-2.5,6.5,-1.0 capture as a tilted DIAL — dot up-left, ×5, 7.04, red rim, brake mark
 
   - id: hyper-drive
-    name: HYPER DRIVE (H, rebindable) — the wormhole drive half-engaged; held, a 2,500 m/s² field hauls the ship down its nose and drags the velocity onto it, up to the relativity wall; released, plain Newton. The view opens partway to the charge, the drive glows and streams, the hum rises
+    name: HYPER DRIVE (H, rebindable) — the wormhole drive half-engaged, a field that moves space (past the relativity wall, it is not the ship moving); held, the velocity runs to 3e7 m/s down the nose on a 6 s constant — the Sun in about a minute. Let go and the field collapses to a 1.5 km/s crawl. The price: DRIVE STRAIN climbs while held (faster at full run), and past a limit drawn fresh each time (28–40 s of full run) the drive SLIPS — the whole wormhole fires uncharged and drops the ship into an unstable orbit of a random body (planet/Moon/Sun/Uranus), at 1.8–6 radii, going a random way at 0.5–1.4× circular. The view opens, the glow and hum climb with the strain
     state: complete
-    tests: [crates/sim/tests/assist.rs::hyper_drive_hauls_the_ship_down_its_nose_to_the_wall, crates/app/src/warp.rs::the_hyper_drive_is_half_a_charge]
+    tests: [crates/sim/tests/assist.rs::hyper_drive_crosses_an_astronomical_unit_in_a_minute, crates/app/src/warp.rs::the_hyper_drive_is_half_a_charge, crates/app/src/warp.rs::a_slip_flips_at_once_and_jumps_at_the_peak, crates/app/src/main.rs::the_hyper_drive_strains_slips_somewhere_else_and_collapses_to_a_crawl]
     settings: [control.hyper]
-    e2e: FARFALL_BENCH_HYPER=1 capture — view opened; flight needed for the feel
+    e2e: FARFALL_BENCH_HYPER=1 capture — view opened; flight needed for the slip
 
   - id: hull-sounds
     name: The hull's own voices (HULL SOUNDS, sound.hull) — structure-borne, never muted by the vacuum. Under speed toward the relativity wall the frame groans (a clean wandering low sine) and knocks (sparse damped low tones — no noise bed, because any noise bed in space reads as wind); micrometeorite strikes are gritty 10–40 ms impacts (a Poisson process with the square of the speed, none in air; a thud under a pebble), never a bell; the hoop womp hushes at speed and moulds into a pulsing 55 Hz drone

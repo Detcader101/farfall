@@ -237,6 +237,19 @@ impl Warp {
         true
     }
 
+    /// The drive slipping of its own accord (the hyper drive overdriven):
+    /// straight into the flip, no charge — the jump comes at its peak as
+    /// ever, the app decides where to. Ignored mid-sequence.
+    pub fn slip(&mut self) -> bool {
+        if self.active() {
+            return false;
+        }
+        self.phase = Phase::Flip;
+        self.t = 0.0;
+        self.jumped = false;
+        true
+    }
+
     /// Advance by `dt`. Returns true on the one frame the jump should be
     /// made — the peak of the flip, when the view is fully inside out and
     /// nobody can see the seam.
@@ -320,6 +333,22 @@ impl Warp {
 #[cfg(test)]
 mod hyper_tests {
     use super::*;
+
+    #[test]
+    fn a_slip_flips_at_once_and_jumps_at_the_peak() {
+        let mut w = Warp::new();
+        assert!(w.slip());
+        assert!(w.active());
+        assert!(!w.slip(), "not twice");
+        let mut jumped = 0;
+        for _ in 0..400 {
+            if w.update(0.01) {
+                jumped += 1;
+            }
+        }
+        assert_eq!(jumped, 1);
+        assert!(!w.active(), "flip and arrive are over in four seconds");
+    }
 
     #[test]
     fn the_hyper_drive_is_half_a_charge() {
