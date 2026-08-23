@@ -41,7 +41,7 @@ and velocity are independent, and orbits are conserved exactly.
 
 **The Sun**: a saturated dot from the planet, a surface up close — limb darkening, granulation, sunspots drifting with its rotation, prominences on the limb and the odd coronal mass ejection — with a lens flare in the glass (starburst, streak, rainbow ghosts; LENS FLARE on the GFX page).
 
-**Asteroid belt**: Uranus' ring is the belt — drive to URANUS and fly on into the ring (1.6 to 2 radii out, in the plane of its tilted spin) and it is simply there, part of the same world. Rocks from five to three hundred metres go round with the ring, drift, knock each other about and knock the ship (the shield ripples, the hull grits); they are ray-traced on the GPU, craggy and Sun-lit.
+**Asteroid belt**: Uranus' ring is the belt — drive to URANUS and fly on into the ring (1.6 to 2 radii out, in the plane of its tilted spin) and it is simply there, part of the same world. Rocks from five to three hundred metres go round with the ring, drift, knock each other about and knock the ship (the shield ripples, the hull grits); they are ray-traced on the GPU, craggy and Sun-lit. Seen from a distance the ring is not a sheet but the same population — the far rocks are drawn as lit specks from the belt's own hash, so what you fly into is what you saw.
 
 **Shield**: the ship has a force field — a shell a few metres out, invisible until high-speed debris hits it; every strike sends a ripple of blue holographic light spreading evenly from the point of impact across the shell, the field's honeycomb showing through around it; nothing at rest, a hit every couple of seconds at a kilometre a second, a patter when fast, and under the hyper drive the whole shell ablates (SHIELD on the CABIN page).
 

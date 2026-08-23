@@ -13,7 +13,9 @@ pub struct BodiesUniforms {
     params: [f32; 4],
     moon: [f32; 4],
     sun: [f32; 4],
-    /// x: tags, y: height px, z: LENS FLARE strength (0 off), w: unused
+    /// x: tags, y: height px, z: LENS FLARE strength (0 off), w: the ring's
+    /// phase (radians: how far it has turned, so the far rocks are the
+    /// same rocks the belt brings live)
     look: [f32; 4],
     /// Uranus: xyz camera-relative centre, w radius.
     uranus: [f32; 4],
@@ -55,6 +57,12 @@ impl BodiesUniforms {
             uranus: [uranus.0.x, uranus.0.y, uranus.0.z, uranus.1],
             planet: [0.0; 4],
         }
+    }
+
+    /// Uranus' ring's phase, radians — the belt's own clock.
+    pub fn with_ring_phase(mut self, phase: f32) -> Self {
+        self.look[3] = if phase.is_finite() { phase } else { 0.0 };
+        self
     }
 
     /// The planet as an occluder of the Sun (for the flare), and how

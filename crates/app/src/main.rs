@@ -1064,6 +1064,10 @@ impl Game {
             ),
             self.settings.flare,
         )
+        .with_ring_phase(
+            (belt::ring_rate_radps(&uranus) * self.state.time_s).rem_euclid(std::f64::consts::TAU)
+                as f32,
+        )
     }
 
     /// The system map, from the plan and the pilot's view of it.

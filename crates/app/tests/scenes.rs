@@ -120,6 +120,8 @@ fn lum(c: [f32; 3]) -> f32 {
 const RING_POS: &str = "16706348420.5,3498037764.1,-24798000172.3";
 const RING_LOOK_ALONG: &str = "0.1371,-0.9902,0.0283";
 const RING_LOOK_AT_URANUS: &str = "0.2019,0,-0.9794";
+const RING_ABOVE_POS: &str = "16706357148.3,3498039023.8,-24797998372.8";
+const RING_ABOVE_LOOK: &str = "0.0206,-0.9998,0.0042";
 const SUN_NEAR_POS: &str = "911880426.7,617725450.3,-970711421.9";
 const SUN_LOOK: &str = "0.6211,0.4208,-0.6612";
 
@@ -165,6 +167,31 @@ fn the_belt_has_rocks_and_the_ring_is_a_haze_not_a_wall() {
     // The sheet above: a haze, well short of grey.
     let haze = f.mean(0.3, 0.02, 0.7, 0.2);
     assert!(lum(haze) < 0.45, "the ring from inside is a haze: {haze:?}");
+}
+
+#[test]
+fn the_far_ring_resolves_into_rocks_and_hides_the_stars() {
+    if !enabled() {
+        return;
+    }
+    // Nine kilometres above the ring plane, looking along it: the sheet
+    // fills the lower half of the view.
+    let f = capture(
+        "ringsheet",
+        &[
+            ("FARFALL_BENCH_POS", RING_ABOVE_POS),
+            ("FARFALL_BENCH_LOOK", RING_ABOVE_LOOK),
+        ],
+    );
+    // Rocks on the sheet: specks of lit grey, well short of star-white.
+    let specks = f.share(0.1, 0.5, 0.9, 0.6, |c| {
+        lum(c) > 0.3 && lum(c) < 0.85 && (c[0] - c[2]).abs() < 0.12
+    });
+    assert!(specks > 0.003, "rocks resolve on the far sheet: {specks}");
+    // And no star-white pinpricks through it: the belt hides the sky
+    // (the box sits under the horizon and clear of the reticle).
+    let stars = f.share(0.1, 0.52, 0.45, 0.6, |c| lum(c) > 0.9);
+    assert!(stars < 0.001, "no stars through the ring: {stars}");
 }
 
 #[test]

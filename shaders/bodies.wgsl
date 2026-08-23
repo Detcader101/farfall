@@ -36,6 +36,86 @@ struct Bodies {
     planet: vec4<f32>,
 }
 
+// ---- the belt, from afar --------------------------------------------------
+// The same rocks crates/app/src/belt.rs brings live near the ship, laid
+// out by the same hash over the same cells of the ring's co-rotating
+// coordinates, so the far sheet resolves into exactly the asteroids the
+// belt pass draws up close. Mirrors belt.rs::hash / unit / cell_rocks.
+const BELT_CELL_M: f32 = 1400.0;
+const BELT_HALF_M: f32 = 900.0;
+const RING_INNER: f32 = 1.62;
+const RING_OUTER: f32 = 1.98;
+
+fn belt_hash(x: i32, y: i32, z: i32, k: u32) -> u32 {
+    var h = u32(x) * 0x8da6b343u ^ u32(y) * 0xd8163841u ^ u32(z) * 0xcb1ab31fu ^ k * 0x9e3779b9u;
+    h ^= h >> 15u;
+    h = h * 0x2c1b3c6du;
+    h ^= h >> 12u;
+    h = h * 0x297a2d39u;
+    h ^= h >> 15u;
+    return h;
+}
+
+fn belt_unit(h: u32) -> f32 {
+    return f32(h >> 8u) / 16777216.0;
+}
+
+// The rocks about a point in the ring (along the ring at the middle
+// radius, radial offset, height — metres): the nearest disc's cover and
+// shading normal, as a speck seen from afar. `px_m`: a pixel's footprint
+// in metres at the hit, so a rock below a pixel still leaves its share.
+struct Speck {
+    cover: f32,
+    n: vec3<f32>,
+}
+
+fn belt_specks(along: f32, r_off: f32, px_m: f32, e_along: vec3<f32>, e_rad: vec3<f32>, axis: vec3<f32>) -> Speck {
+    var out = Speck(0.0, vec3<f32>(0.0, 0.0, 1.0));
+    let ca = floor(along / BELT_CELL_M);
+    let cr = floor(r_off / BELT_CELL_M);
+    // Which neighbours a rock (up to 300 m) could reach here from.
+    let fa = along / BELT_CELL_M - ca;
+    let fr = r_off / BELT_CELL_M - cr;
+    let da = select(1, -1, fa < 0.5);
+    let dr = select(1, -1, fr < 0.5);
+    for (var ia = 0; ia < 2; ia += 1) {
+        for (var ir = 0; ir < 2; ir += 1) {
+            for (var iz = -1; iz <= 0; iz += 1) {
+                let x = i32(ca) + select(0, da, ia == 1);
+                let y = i32(cr) + select(0, dr, ir == 1);
+                let z = iz;
+                let n = belt_hash(x, y, z, 7u) % 4u;
+                for (var k = 0u; k < 3u; k += 1u) {
+                    if (k >= n) { break; }
+                    let salt = 16u * k;
+                    let h1 = belt_unit(belt_hash(x, y, z, 1u + salt));
+                    let h2 = belt_unit(belt_hash(x, y, z, 2u + salt));
+                    let h3 = belt_unit(belt_hash(x, y, z, 3u + salt));
+                    let h7 = belt_unit(belt_hash(x, y, z, 7u + salt));
+                    let ra = (f32(x) + h1) * BELT_CELL_M;
+                    let rr = (f32(y) + h2) * BELT_CELL_M;
+                    let rh = (f32(z) + h3) * BELT_CELL_M;
+                    if (abs(rh) > BELT_HALF_M) { continue; }
+                    let radius = 5.0 * pow(60.0, pow(h7, 1.4));
+                    let d = vec2<f32>(along - ra, r_off - rr);
+                    let dist = length(d);
+                    // A disc of the rock's size, never under a pixel: what
+                    // is smaller than a pixel keeps a pixel's share.
+                    let shown = max(radius, px_m * 0.7);
+                    let cover = (1.0 - smoothstep(shown - px_m, shown + px_m, dist)) * min(1.0, radius / max(px_m, 1e-3));
+                    if (cover > out.cover) {
+                        out.cover = cover;
+                        let u = d / max(shown, 1e-3);
+                        let zz = sqrt(max(1.0 - dot(u, u), 0.0));
+                        out.n = normalize(e_along * u.x + e_rad * u.y + axis * zz);
+                    }
+                }
+            }
+        }
+    }
+    return out;
+}
+
 // Does the line of sight to the Sun pass through this body?
 fn hides_sun(sun_dir: vec3<f32>, body: vec4<f32>) -> bool {
     if (body.w <= 0.0) {
@@ -312,9 +392,59 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                     // plane, against the ring's thickness, says how far in.
                     let h = abs(dot(c, axis));
                     let inside = 1.0 - smoothstep(0.0, 0.006 * rr, h);
-                    let veil = in_ring * mix(0.55, 0.10, inside);
-                    rgb = mix(rgb, vec3<f32>(0.5, 0.55, 0.6) * lit * 1.2, veil);
-                    alpha = max(alpha, veil);
+                    // Not a sheet either: the dust clumps with the rocks,
+                    // so the veil is a coarse grain of the belt's own hash
+                    // (one grain per twenty cells) — from afar the ring
+                    // looks made of something.
+                    let e1 = normalize(cross(axis, vec3<f32>(0.0, 1.0, 0.0)));
+                    let e2 = normalize(cross(axis, e1));
+                    let flat = hit - axis * dot(hit, axis);
+                    let rf = length(flat);
+                    let theta = atan2(dot(flat, e2), dot(flat, e1)) - bd.look.w;
+                    let tau_f = 6.2831853;
+                    let along = (theta - tau_f * floor(theta / tau_f)) * (rr * 1.8);
+                    let r_off = rf - rr * RING_INNER;
+                    let grain_m = BELT_CELL_M * 20.0;
+                    let ga = along / grain_m;
+                    let gr = r_off / grain_m;
+                    let g00 = belt_unit(belt_hash(i32(floor(ga)), i32(floor(gr)), 9, 5u));
+                    let g10 = belt_unit(belt_hash(i32(floor(ga)) + 1, i32(floor(gr)), 9, 5u));
+                    let g01 = belt_unit(belt_hash(i32(floor(ga)), i32(floor(gr)) + 1, 9, 5u));
+                    let g11 = belt_unit(belt_hash(i32(floor(ga)) + 1, i32(floor(gr)) + 1, 9, 5u));
+                    let gf = vec2<f32>(fract(ga), fract(gr));
+                    let gs = gf * gf * (3.0 - 2.0 * gf);
+                    let grain = mix(mix(g00, g10, gs.x), mix(g01, g11, gs.x), gs.y);
+                    let veil = in_ring * mix(0.16, 0.04, inside) * (0.45 + 1.1 * grain);
+                    rgb = mix(rgb, vec3<f32>(0.42, 0.43, 0.45) * lit * 1.1, veil);
+                    // Dim, but not see-through: a belt's worth of rock and
+                    // dust hides the stars behind it — otherwise they read
+                    // as bright rocks. From inside, the sky shows again.
+                    alpha = max(alpha, in_ring * mix(0.92, 0.15, inside));
+                    // The rocks themselves, from here to the horizon of the
+                    // ring: the belt's own population in the ring's
+                    // co-rotating frame. Out to where they are under a
+                    // pixel; fading in where the live rocks take over.
+                    // A pixel's footprint on the plane: the hit's distance
+                    // over the screen's height in pixels, stretched by the
+                    // grazing angle.
+                    let px_m = t * 2.0 * bd.params.x / bd.params.y / max(abs(denom), 0.05);
+                    let tangent = normalize(cross(axis, flat / max(rf, 1.0)));
+                    let radial = flat / max(rf, 1.0);
+                    let near = smoothstep(2500.0, 6000.0, t);
+                    if (px_m < 400.0 && near > 0.001) {
+                        let sp = belt_specks(along, r_off, px_m, tangent, radial, axis);
+                        if (sp.cover > 0.001) {
+                            let light = max(dot(sp.n, sun), 0.0);
+                            // Rock, not star: dull grey-brown, and where a
+                            // rock is well under a pixel it melts into the
+                            // grain rather than staying a bright point.
+                            let rock = vec3<f32>(0.26, 0.24, 0.21) * (light * 1.1 + 0.08);
+                            let far = 1.0 - smoothstep(120.0, 400.0, px_m);
+                            let k = sp.cover * near * far * in_ring;
+                            rgb = mix(rgb, rock, k);
+                            alpha = max(alpha, k);
+                        }
+                    }
                 }
             }
         }
