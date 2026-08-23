@@ -232,7 +232,8 @@ impl Look {
         } else {
             0.0
         };
-        self.fov_scale *= 1.0 + 0.45 * h;
+        // A touch wider, no more: the speed is in the picture, not the lens.
+        self.fov_scale *= 1.0 + 0.12 * h;
         self.charge = self.charge.max(0.7 * h);
         self.particles = self.particles.max(0.6 * h);
         self
@@ -323,7 +324,7 @@ impl Warp {
                 let f = smooth(self.t / CHARGE_S);
                 Look {
                     // 70° opens toward 160°.
-                    fov_scale: 1.0 + 1.25 * f * f,
+                    fov_scale: 1.0 + 0.35 * f * f,
                     fisheye: 0.0,
                     invert: 0.0,
                     particles: 0.0,
@@ -335,7 +336,7 @@ impl Warp {
                 // A bell over the flip: fully inside out at its middle.
                 let bell = (std::f32::consts::PI * f).sin();
                 Look {
-                    fov_scale: 2.25,
+                    fov_scale: 1.35,
                     fisheye: smooth(bell * 1.3),
                     invert: smooth((bell - 0.35) / 0.5),
                     particles: f,
@@ -346,7 +347,7 @@ impl Warp {
                 let f = self.t / ARRIVE_S;
                 Look {
                     // Snap back over the first third, then settle.
-                    fov_scale: 1.0 + 1.25 * (1.0 - smooth(f * 3.0)),
+                    fov_scale: 1.0 + 0.35 * (1.0 - smooth(f * 3.0)),
                     fisheye: 0.0,
                     invert: 0.0,
                     particles: 1.0 - smooth(f),
@@ -381,7 +382,7 @@ mod hyper_tests {
     fn the_hyper_drive_is_half_a_charge() {
         let idle = Warp::new().look();
         let h = idle.with_hyper(1.0);
-        assert!(h.fov_scale > 1.3 && h.fov_scale < 1.6, "{}", h.fov_scale);
+        assert!(h.fov_scale > 1.05 && h.fov_scale < 1.2, "{}", h.fov_scale);
         assert!(h.charge > 0.5 && h.charge < 1.0);
         assert!(h.particles > 0.0);
         let none = idle.with_hyper(0.0);
@@ -484,7 +485,10 @@ mod tests {
             (jump_at - (CHARGE_S + FLIP_S * 0.5)).abs() < 0.02,
             "{jump_at}"
         );
-        assert!(max_fov > 2.0);
+        assert!(
+            max_fov > 1.25 && max_fov < 1.5,
+            "a touch wider, no more: {max_fov}"
+        );
         assert_eq!(w.look().fov_scale, 1.0);
         assert!((t - (CHARGE_S + FLIP_S + ARRIVE_S)).abs() < 0.03, "{t}");
     }

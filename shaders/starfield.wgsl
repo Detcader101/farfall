@@ -68,7 +68,11 @@ fn star_tint(t: f32) -> vec3<f32> {
 fn stars(dir: vec3<f32>) -> vec3<f32> {
     let grid = 192.0 * STAR_DENSITY;
     let p = (oct_encode(dir) * 0.5 + 0.5) * grid;
-    let base = vec2<i32>(floor(p));
+    // The 2×2 cells about this point: a star is kept well inside its cell
+    // (0.15..0.85) and its support ends at 0.65 cells, so the two nearest
+    // cells on each axis are the only ones that can reach here. Cells are
+    // a dozen pixels and more; a star's core is a few.
+    let base = vec2<i32>(floor(p - 0.5));
 
     // Screen-space Jacobian of the grid coords. Star distances are measured in
     // PIXELS by pushing the grid-space offset through the FULL inverse Jacobian:
@@ -88,9 +92,8 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
     let inv_det = 1.0 / select(det_mag, -det_mag, det < 0.0);
 
     var col = vec3<f32>(0.0);
-    // 3×3 neighborhood so stars survive cell boundaries.
-    for (var dy = -1; dy <= 1; dy += 1) {
-        for (var dx = -1; dx <= 1; dx += 1) {
+    for (var dy = 0; dy <= 1; dy += 1) {
+        for (var dx = 0; dx <= 1; dx += 1) {
             let cell = base + vec2<i32>(dx, dy);
             let h = hash4(cell);
             // ~55% of cells host a star.
@@ -98,7 +101,7 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
                 continue;
             }
             // Keep the star inside its cell so the 3×3 search always covers it.
-            let star_pos = vec2<f32>(cell) + h.xy * 0.8 + 0.1;
+            let star_pos = vec2<f32>(cell) + h.xy * 0.7 + 0.15;
             let d = length(p - star_pos);
             // Power-law brightness: many dim, few brilliant.
             let mag = pow(h.w, 14.0) * 60.0 + pow(h.w, 4.0) * 1.2 + 0.02;
@@ -106,7 +109,7 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
             // to zero well inside the search radius. A falloff with an infinite
             // tail (e.g. 1/(1+d²)) clips at the neighborhood edge and turns the
             // sky into a quilt of glowing cells.
-            let window = smoothstep(1.2, 0.6, d);
+            let window = smoothstep(0.65, 0.3, d);
             let v = p - star_pos;
             let offs_px = vec2<f32>(jy.y * v.x - jx.y * v.y, -jy.x * v.x + jx.x * v.y) * inv_det;
             let d_px2 = dot(offs_px, offs_px);

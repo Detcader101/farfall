@@ -13,17 +13,22 @@
 // The wormhole sequence lives here too, because it is a thing done to the
 // picture: the FLIP turns the view inside out through a mirror sphere —
 // every direction reflected through a ball in front of the eye, centre to
-// rim and rim to centre — and inverts its colours; the ARRIVAL sees the new
-// place through gassy, watery particles, a refracting flow with droplets
-// in it, that settle and clear.
+// rim and rim to centre — and inverts its colours; the CHARGE and the
+// ARRIVAL, and the Chaos Drive's field, are the quantum superstate seen
+// through: a liquid, vortical refraction of the view — a few drifting
+// vortices with fine ripples riding them, all analytic (no noise, so it
+// costs a handful of operations a pixel at any resolution) — with
+// chromatic splitting, radial speed streaks and a cool vignette that say
+// "fast" without the field of view having to.
 
 @group(0) @binding(0) var scene_tex: texture_2d<f32>;
 @group(0) @binding(1) var scene_sampler: sampler;
 
 struct Post {
-    // x: fisheye 0..1, y: invert 0..1, z: particles 0..1, w: charge 0..1
+    // x: fisheye 0..1, y: invert 0..1, z: flow 0..1 (the liquid field),
+    // w: charge 0..1
     fx: vec4<f32>,
-    // x: aspect, y: time s, zw: unused
+    // x: aspect, y: time s, z: speed 0..1 (streaks, the cool rim), w: unused
     misc: vec4<f32>,
 }
 @group(0) @binding(2) var<uniform> post: Post;
@@ -60,16 +65,42 @@ fn mirror_sphere(uv: vec2<f32>, aspect: f32, f: f32) -> vec2<f32> {
     return q;
 }
 
+// The liquid: a few vortices drifting about the view, each a swirl that
+// falls off with distance, with a fine ripple running round it. Returns
+// the displacement of the picture, in aspect-corrected view units.
+fn liquid(p: vec2<f32>, t: f32, amount: f32) -> vec2<f32> {
+    var off = vec2<f32>(0.0);
+    for (var i = 0; i < 4; i += 1) {
+        let fi = f32(i);
+        // Each vortex wanders on its own slow ellipse.
+        let c = vec2<f32>(
+            0.30 * cos(t * (0.23 + 0.07 * fi) + fi * 1.9),
+            0.22 * sin(t * (0.19 + 0.05 * fi) + fi * 2.6),
+        );
+        let d = p - c;
+        let r = length(d);
+        let perp = vec2<f32>(-d.y, d.x) / max(r, 0.03);
+        let fall = exp(-r * r / 0.09);
+        // The swirl, turning one way then the other, and the ripple: a
+        // fine wave running out from the eye of it.
+        let swirl = sin(t * 1.3 + fi * 1.1) * 0.045;
+        let ripple = sin(r * 60.0 - t * 7.0 + fi) * 0.004;
+        off += perp * (swirl * fall) + d / max(r, 0.03) * (ripple * fall);
+    }
+    return off * amount;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let fisheye = post.fx.x;
     let invert = post.fx.y;
-    let particles = post.fx.z;
+    let flow = post.fx.z;
     let charge = post.fx.w;
     let aspect = post.misc.x;
     let time = post.misc.y;
+    let speed = post.misc.z;
 
-    if (fisheye + invert + particles + charge < 1e-4) {
+    if (fisheye + invert + flow + charge + speed < 1e-4) {
         return textureSample(scene_tex, scene_sampler, in.uv);
     }
 
@@ -85,38 +116,59 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         uv = fract(uv);
     }
 
-    // Gassy water: a slow refracting flow, and droplets riding it.
-    var droplets = 0.0;
-    if (particles > 1e-4) {
-        let flow = vec3<f32>(uv * 3.5, time * 0.35);
-        let n = vec2<f32>(fbm3(flow) - 0.5, fbm3(flow + vec3<f32>(4.1, 7.3, 0.0)) - 0.5);
-        uv += n * 0.10 * particles;
-        // Droplets: one per cell, drifting up and fading as the gas clears.
-        let cell_uv = (uv + vec2<f32>(0.0, time * 0.06)) * vec2<f32>(aspect * 14.0, 14.0);
-        let cell = vec2<i32>(floor(cell_uv));
-        let h = hash4(cell);
-        let centre = vec2<f32>(cell) + h.xy;
-        let d = length((cell_uv - centre) * vec2<f32>(1.0, 1.0));
-        let radius = 0.08 + 0.25 * h.z * particles;
-        let ring = 1.0 - smoothstep(radius * 0.6, radius, d);
-        let rim = smoothstep(radius * 0.75, radius, d) * ring;
-        droplets = (ring * 0.25 + rim * 0.9) * step(0.4, h.w) * particles;
+    // The liquid field: the charge and the flow both run it, the flow
+    // harder; the speed adds a faint one of its own.
+    let field = max(flow, max(charge * 0.6, speed * 0.35));
+    let p = (uv - 0.5) * vec2<f32>(aspect, 1.0);
+    var off = vec2<f32>(0.0);
+    if (field > 1e-4) {
+        off = liquid(p, time, 1.0);
+        uv += off * field / vec2<f32>(aspect, 1.0);
     }
+    uv = clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999));
 
-    var c = textureSample(scene_tex, scene_sampler, uv).rgb;
-    // Charge: the picture bleeds toward white at the rim as the drive
-    // winds up, chromatic at the edges.
+    // Speed: radial streaks — a few taps out along the line from the
+    // centre, longer at the rim — and a chromatic split of the same.
+    let q = (in.uv - 0.5) * vec2<f32>(aspect, 1.0);
+    let rq = length(q);
+    let radial = select(vec2<f32>(0.0), q / rq, rq > 1e-4) / vec2<f32>(aspect, 1.0);
+    let split = (0.004 * charge + 0.010 * speed) * rq;
+    var c: vec3<f32>;
+    if (speed > 1e-4) {
+        let reach = 0.05 * speed * rq;
+        var acc = vec3<f32>(0.0);
+        for (var k = 0; k < 4; k += 1) {
+            let s = (f32(k) / 3.0 - 0.5) * reach;
+            let u = clamp(uv + radial * s, vec2<f32>(0.001), vec2<f32>(0.999));
+            acc += vec3<f32>(
+                textureSample(scene_tex, scene_sampler, u + radial * split).r,
+                textureSample(scene_tex, scene_sampler, u).g,
+                textureSample(scene_tex, scene_sampler, u - radial * split).b,
+            );
+        }
+        c = acc / 4.0;
+    } else if (charge > 1e-4) {
+        c = vec3<f32>(
+            textureSample(scene_tex, scene_sampler, clamp(uv + radial * split, vec2<f32>(0.001), vec2<f32>(0.999))).r,
+            textureSample(scene_tex, scene_sampler, uv).g,
+            textureSample(scene_tex, scene_sampler, clamp(uv - radial * split, vec2<f32>(0.001), vec2<f32>(0.999))).b,
+        );
+    } else {
+        c = textureSample(scene_tex, scene_sampler, uv).rgb;
+    }
+    // Charge: a cold bloom at the rim, the drive's light in the glass.
     if (charge > 1e-4) {
-        let p = (in.uv - 0.5) * vec2<f32>(aspect, 1.0);
-        let rim = smoothstep(0.25, 0.9, length(p)) * charge;
-        let shift = p * 0.012 * charge;
-        let r = textureSample(scene_tex, scene_sampler, fract(uv + shift)).r;
-        let b = textureSample(scene_tex, scene_sampler, fract(uv - shift)).b;
-        c = vec3<f32>(r, c.g, b);
-        c = mix(c, vec3<f32>(0.85, 0.95, 1.0), rim * 0.35);
+        let rim = smoothstep(0.3, 0.95, rq) * charge;
+        c = mix(c, vec3<f32>(0.80, 0.92, 1.0), rim * 0.22);
+    }
+    // Speed: the view cools and closes in at the edges, and the liquid's
+    // crests catch a thread of light.
+    if (speed > 1e-4) {
+        let vig = smoothstep(0.35, 1.05, rq) * speed;
+        c = mix(c, c * vec3<f32>(0.55, 0.75, 1.0) * 0.35, vig * 0.7);
+        c += vec3<f32>(0.35, 0.6, 1.0) * clamp(length(off) * 6.0 - 0.08, 0.0, 0.35) * speed;
     }
     c = mix(c, vec3<f32>(1.0) - c, invert);
     c = mix(c, vec3<f32>(0.02, 0.03, 0.06), beyond);
-    c += vec3<f32>(0.75, 0.92, 1.0) * droplets;
     return vec4<f32>(c, 1.0);
 }

@@ -229,6 +229,17 @@ features:
     settings: [ui.g-vector, ui.g-vector.size/style/fade/tilt]
     e2e: FARFALL_BENCH_G=-2.5,6.5,-1.0 capture as a tilted DIAL — dot up-left, ×5, 7.04, red rim, brake mark
 
+  - id: drive-look-v2
+    name: The drive effects reworked — the quantum superstate as a liquid: four drifting vortices with fine ripples (analytic, no noise — the old fbm particles cost 18 ms at 2880×1800), chromatic splitting, radial speed streaks, a cold bloom on the charge and a cool vignette at speed; the FOV barely moves now (charge ×1.35, Chaos Drive ×1.12) — the speed is in the picture. The drive's voice is bassy and cinematic: a sub that swells with the charge under a saturated hum an octave and a fifth up, throbbing faster as it charges, a thread of dark noise only at the top. The readout scales with the view like a dial, so it never grows across the screen
+    state: complete
+    tests: [crates/render/tests/shader_validation.rs, crates/app/src/warp.rs, crates/audio/src/synth.rs::warp_swells_with_charge]
+    e2e: FARFALL_BENCH_HYPER=1 capture — streaks, vortex rings, cool rim, the cockpit intact
+
+  - id: perf-60-v2
+    name: 60 fps at 2880×1800 again after the new passes — starfield 2×2 cells (stars kept inside their cell, tighter support), dial quads trimmed, the cabin's FOV quantised so an easing FOV does not re-march it, the post's streaks gated to real speed
+    state: complete
+    e2e: FARFALL_BENCH_FULL uncapped — rest 13.4 ms (74 fps), head spin 12.3 ms (81), Chaos Drive 16.5 ms (60.6)
+
   - id: sun-surface-and-flare
     name: The Sun resolved (after a jump, or close) — limb darkening, granulation, sunspots in two bands turning with the Sun over its month (dark umbra in a grey penumbra), prominences standing off the limb, and a slow coronal mass ejection that swells out and away on a four-minute cycle; the lens flare — starburst, anamorphic streak, a train of rainbow ghosts down the centre line — occluded by the planet, the Moon and Uranus, fading at the screen's edge and with a huge disc; LENS FLARE setting (graphics.flare)
     state: complete

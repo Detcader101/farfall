@@ -50,7 +50,7 @@ struct VsOut {
 // so its screen footprint is the inverse canopy projection of that box —
 // generous by a margin for the sway and the shock ring, and the fragment
 // stage still makes the exact cut. Same output, ~3% of the fragments.
-const QUAD_HALF: f32 = 0.36;
+const QUAD_HALF: f32 = 0.30;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {

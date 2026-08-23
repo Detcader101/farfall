@@ -4,9 +4,9 @@
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PostUniforms {
-    /// x: fisheye, y: invert, z: particles, w: charge — all 0..1
+    /// x: fisheye, y: invert, z: flow (the liquid field), w: charge — all 0..1
     fx: [f32; 4],
-    /// x: aspect, y: time s
+    /// x: aspect, y: time s, z: speed 0..1
     misc: [f32; 4],
 }
 
@@ -30,6 +30,16 @@ impl PostUniforms {
             fx: [c(fisheye), c(invert), c(particles), c(charge)],
             misc: [aspect.max(0.1), time_s, 0.0, 0.0],
         }
+    }
+
+    /// How fast the ship is going, for the streaks and the cool rim, 0..1.
+    pub fn with_speed(mut self, speed: f32) -> Self {
+        self.misc[2] = if speed.is_finite() {
+            speed.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self
     }
 
     pub fn idle(aspect: f32, time_s: f32) -> Self {

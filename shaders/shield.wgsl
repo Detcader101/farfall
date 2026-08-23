@@ -133,8 +133,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let bands = 0.5 + 0.5 * sin(along * 6.0 - now * 40.0);
         let bands2 = 0.5 + 0.5 * sin(along * 13.0 - now * 71.0 + n.x * 9.0);
         stream = hyper * (0.25 + 0.75 * from_front) * (0.35 + 0.4 * bands + 0.25 * bands2);
-        comb += stream * 1.2;
-        glow += stream * 0.45;
+        comb += stream * 0.7;
+        glow += stream * 0.28;
     }
     if (glow + comb < 0.002) {
         discard;

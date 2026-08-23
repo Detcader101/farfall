@@ -230,6 +230,8 @@ pub struct Synth {
     /// The hoop womp: a counter latched from Levels, an envelope, a phase.
     last_hoops: u32,
     warp_phase: f32,
+    warp_sub_phase: f32,
+    warp_lfo: f32,
     warp_lp: f32,
     warp_level: Smooth,
     womp_env: f32,
@@ -307,6 +309,8 @@ impl Synth {
             was_supersonic: false,
             last_hoops: 0,
             warp_phase: 0.0,
+            warp_sub_phase: 0.0,
+            warp_lfo: 0.0,
             warp_lp: 0.0,
             warp_level: Smooth::new(sample_rate, 0.08),
             womp_env: 0.0,
@@ -563,13 +567,27 @@ impl Synth {
         let wl = self.warp_level.next(levels.warp.clamp(0.0, 1.0));
         let mut warp_out = 0.0;
         if wl > 1e-3 {
-            let f = 55.0 * (2.0f32).powf(3.0 * wl);
+            // Cinematic and bassy: a sub foundation that swells with the
+            // charge and climbs a little, a hum an octave and a fifth up
+            // that rises with it, the whole thing saturated softly and
+            // throbbing — faster as it charges — with only a thread of
+            // dark noise underneath at the top of the charge. No hiss.
+            let f = 55.0 * (2.0f32).powf(2.0 * wl);
             self.warp_phase = (self.warp_phase + f / self.rate).fract();
-            let tone = (tau * self.warp_phase).sin() + 0.4 * (tau * 2.0 * self.warp_phase).sin();
+            let sub_f = 32.0 + 14.0 * wl;
+            self.warp_sub_phase = (self.warp_sub_phase + sub_f / self.rate).fract();
+            let sub = (tau * self.warp_sub_phase).sin();
+            let hum = (tau * self.warp_phase).sin() * 0.55
+                + (tau * 1.5 * self.warp_phase).sin() * 0.25
+                + (tau * 2.0 * self.warp_phase).sin() * 0.18;
+            self.warp_lfo = (self.warp_lfo + (1.5 + 4.5 * wl) / self.rate).fract();
+            let throb = 0.7 + 0.3 * (tau * self.warp_lfo).sin();
             let n = self.rng_r.white();
-            let lp = self.lp_coeff(200.0 + 3_000.0 * wl * wl);
+            let lp = self.lp_coeff(80.0 + 300.0 * wl * wl);
             self.warp_lp += (n - self.warp_lp) * lp;
-            warp_out = (tone * 0.18 + self.warp_lp * 0.35) * wl * wl;
+            let bed = self.warp_lp * 0.10 * wl * wl;
+            let body = (sub * 0.55 + hum * 0.35 * wl) * throb;
+            warp_out = ((body * (1.0 + 1.5 * wl)).tanh() * 0.5 + bed) * wl;
         }
 
         // ---- the warp crack -----------------------------------------------

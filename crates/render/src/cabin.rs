@@ -100,7 +100,13 @@ impl CabinUniforms {
         Self {
             right: v4(head * Vec3::X, look.glow.clamp(0.0, 3.0)),
             up: v4(head * Vec3::Y, look.metal.clamp(0.0, 1.0)),
-            fwd: v4(head * Vec3::NEG_Z, (cam.fov_y * 0.5).tan()),
+            // The field of view is quantised: a FOV easing toward its
+            // target (the throttle's flare, the drive) must not re-march
+            // the cabin every frame for a change no eye can see.
+            fwd: v4(
+                head * Vec3::NEG_Z,
+                ((cam.fov_y * 0.5).tan() / 0.004).round() * 0.004,
+            ),
             // No clock in here: the cabin is only re-marched when something
             // about it changes, and time would be change every frame.
             misc: [

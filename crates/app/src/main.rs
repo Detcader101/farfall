@@ -1333,6 +1333,27 @@ impl Game {
         Some((place, ship_inv * up_w, ship_inv * east_w))
     }
 
+    /// A glass text block is a thing on the glass, like a dial: it scales
+    /// with the view the way the dials do (smaller as the field of view
+    /// opens), so it never grows across the screen. The pause panels are
+    /// on the screen and keep their size.
+    fn text_fov_scale(&self, cam: &CameraFrame) -> f32 {
+        if self.menu.open || self.map_open() {
+            return 1.0;
+        }
+        let t = (cam.fov_y * 0.5).tan().max(1e-4);
+        (self.ref_tan() / t).clamp(0.4, 1.25)
+    }
+
+    /// How fast it looks, 0..1, for the picture's streaks and cool rim:
+    /// the Chaos Drive's field first, else the speed against the wall.
+    fn speed_look(&self) -> f32 {
+        // Only real speed shows: from a third of the way to the wall.
+        let wall = (self.state.ship.vel_mps.length() / sim::RELATIVITY_FROM_MPS) as f32;
+        let fast = ((wall - 0.3) / 0.7).clamp(0.0, 1.0) * 0.5;
+        (self.hyper * (0.5 + 0.5 * self.hyper_level() as f32)).max(fast)
+    }
+
     /// The drive's look this frame: the wormhole sequence, with the hyper
     /// drive's half-charge over it.
     fn warp_look(&self) -> warp::Look {
@@ -2960,7 +2981,8 @@ impl ApplicationHandler for App {
                                     // goes to the GPU the same way.
                                     let (_, sh) = gpu.scene.size();
                                     let hud_scale = (sh as f32 / 260.0).clamp(2.0, 8.0).floor();
-                                    let px_canopy = hud_scale * 2.0 / sh as f32;
+                                    let px_canopy =
+                                        hud_scale * 2.0 / sh as f32 * game.text_fov_scale(&cam);
                                     gpu.hud.update(
                                         &gpu.queue,
                                         &gpu.text,
@@ -3150,7 +3172,8 @@ impl ApplicationHandler for App {
                 // apparent size on a retina fullscreen and a small window;
                 // the size is chosen in pixels and expressed in canopy units.
                 let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
-                let px_canopy = hud_scale * 2.0 / gpu.config.height as f32;
+                let px_canopy =
+                    hud_scale * 2.0 / gpu.config.height as f32 * game.text_fov_scale(&cam);
                 {
                     let l = game.warp_look();
                     gpu.blit.update(
@@ -3162,7 +3185,8 @@ impl ApplicationHandler for App {
                             l.charge,
                             aspect,
                             cam.time_s,
-                        ),
+                        )
+                        .with_speed(game.speed_look()),
                     );
                     gpu.map
                         .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
