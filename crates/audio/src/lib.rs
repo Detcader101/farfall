@@ -31,6 +31,9 @@ struct Shared {
     warp: AtomicU32,
     jumps: AtomicU32,
     master: AtomicU32,
+    stress: AtomicU32,
+    strikes: AtomicU32,
+    strike_size: AtomicU32,
 }
 
 impl Shared {
@@ -47,6 +50,10 @@ impl Shared {
         self.warp.store(l.warp.to_bits(), Ordering::Relaxed);
         self.jumps.store(l.jumps.to_bits(), Ordering::Relaxed);
         self.master.store(l.master.to_bits(), Ordering::Relaxed);
+        self.stress.store(l.stress.to_bits(), Ordering::Relaxed);
+        self.strikes.store(l.strikes.to_bits(), Ordering::Relaxed);
+        self.strike_size
+            .store(l.strike_size.to_bits(), Ordering::Relaxed);
     }
     fn load(&self) -> Levels {
         Levels {
@@ -61,6 +68,9 @@ impl Shared {
             warp: f32::from_bits(self.warp.load(Ordering::Relaxed)),
             jumps: f32::from_bits(self.jumps.load(Ordering::Relaxed)),
             master: f32::from_bits(self.master.load(Ordering::Relaxed)),
+            stress: f32::from_bits(self.stress.load(Ordering::Relaxed)),
+            strikes: f32::from_bits(self.strikes.load(Ordering::Relaxed)),
+            strike_size: f32::from_bits(self.strike_size.load(Ordering::Relaxed)),
         }
     }
 }

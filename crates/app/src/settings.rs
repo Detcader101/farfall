@@ -195,6 +195,8 @@ pub struct Settings {
     pub gauges_stay: bool,
     /// The design guide overlay.
     pub guide: bool,
+    /// The hull's own voices: creak and crackle under speed, strikes.
+    pub hull_sound: bool,
     /// Each dial's own settings, by [`Instrument`] index.
     pub dials: [DialTweak; Instrument::ALL.len()],
     /// Spacing of the landing hoops, metres.
@@ -229,6 +231,7 @@ impl Default for Settings {
             gauge_style: GaugeStyle::Tron,
             gauges_stay: true,
             guide: false,
+            hull_sound: true,
             dials: [DialTweak::DEFAULT; Instrument::ALL.len()],
             landing_spacing_m: 250.0,
             map_rings: 4,
@@ -366,6 +369,11 @@ impl Settings {
                 "ui.gauges" => match v {
                     "stay" => s.gauges_stay = true,
                     "fade" => s.gauges_stay = false,
+                    _ => {}
+                },
+                "sound.hull" => match v {
+                    "on" => s.hull_sound = true,
+                    "off" => s.hull_sound = false,
                     _ => {}
                 },
                 "ui.guide" => match v {
@@ -583,6 +591,10 @@ impl Settings {
             if self.guide { "on" } else { "off" }
         ));
         out.push_str(&format!(
+            "sound.hull = {}\n",
+            if self.hull_sound { "on" } else { "off" }
+        ));
+        out.push_str(&format!(
             "ui.landing-hoops = {:.0}\n",
             self.landing_spacing_m
         ));
@@ -660,6 +672,7 @@ mod tests {
         s.layout.set_safe_edge(0.07);
         s.layout.set_free(Instrument::Speed, [0.125, -0.5]);
         s.look_sensitivity = 1.75;
+        s.hull_sound = false;
         s.hoop_size = 2.5;
         s.map_rings = 2;
         s.landing_spacing_m = 500.0;

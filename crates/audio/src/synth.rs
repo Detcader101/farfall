@@ -67,6 +67,18 @@ pub struct Levels {
     pub jumps: f32,
     /// Master gain 0..1.
     pub master: f32,
+    /// How hard the hull is being driven through space, 0..1: the speed
+    /// against the relativity wall. Structure-borne — the frame creaks and
+    /// crackles under it, in vacuum or not — and the hoop womp quietens
+    /// with it and moulds into a drone: at speed the kilometres stop being
+    /// events and become a hum.
+    pub stress: f32,
+    /// Micrometeorite strikes on the hull, as a count: the synth rings a
+    /// metallic tink on every increment, sized by `strike_size`. Through
+    /// the frame, so the vacuum does not mute it.
+    pub strikes: f32,
+    /// The latest strike's size 0..1 (a grain to a pebble).
+    pub strike_size: f32,
 }
 
 impl Default for Levels {
@@ -83,6 +95,9 @@ impl Default for Levels {
             warp: 0.0,
             jumps: 0.0,
             master: 0.8,
+            stress: 0.0,
+            strikes: 0.0,
+            strike_size: 0.0,
         }
     }
 }
@@ -220,6 +235,24 @@ pub struct Synth {
     crack_phase: f32,
     crack_sub_phase: f32,
     crack_lp: f32,
+    // The hull under speed: a creak, a crackle, a drone.
+    stress: Smooth,
+    creak_phase: f32,
+    creak_lfo: f32,
+    creak_lp: f32,
+    tick_gate: f32,
+    tick_lp: f32,
+    drone_phase: f32,
+    drone_lfo: f32,
+    // Strikes: a latched count, a ring with its own pitch, a thud.
+    last_strikes: u32,
+    strike_env: f32,
+    strike_t: f32,
+    strike_phase: f32,
+    strike_phase2: f32,
+    strike_f: f32,
+    strike_size: f32,
+    strike_lp: f32,
     // RCS thrusters.
     rcs: Smooth,
     rcs_phase: f32,
@@ -277,6 +310,22 @@ impl Synth {
             crack_phase: 0.0,
             crack_sub_phase: 0.0,
             crack_lp: 0.0,
+            stress: Smooth::new(sample_rate, 0.25),
+            creak_phase: 0.0,
+            creak_lfo: 0.0,
+            creak_lp: 0.0,
+            tick_gate: 0.0,
+            tick_lp: 0.0,
+            drone_phase: 0.0,
+            drone_lfo: 0.0,
+            last_strikes: 0,
+            strike_env: 0.0,
+            strike_t: 0.0,
+            strike_phase: 0.0,
+            strike_phase2: 0.0,
+            strike_f: 2_000.0,
+            strike_size: 0.0,
+            strike_lp: 0.0,
             rcs: Smooth::new(sample_rate, 0.06),
             rcs_phase: 0.0,
             rcs_lp: 0.0,
@@ -312,6 +361,8 @@ impl Synth {
             // Nor did it just pass a hoop, or jump.
             self.last_hoops = levels.hoops.max(0.0) as u32;
             self.last_jumps = levels.jumps.max(0.0) as u32;
+            self.last_strikes = levels.strikes.max(0.0) as u32;
+            self.stress.value = levels.stress.clamp(0.0, 1.0);
         }
 
         // Vacuum is a MASTER MUTE. Space is silent — all of it, engine
@@ -478,7 +529,10 @@ impl Synth {
             // Attack over 12 ms so it blooms rather than clicks.
             let attack = (self.womp_t / 0.012).min(1.0);
             let body = (tau * self.womp_phase).sin() + 0.25 * (tau * 2.0 * self.womp_phase).sin();
-            womp = body * self.womp_env * attack * 0.16;
+            // At speed the womp is a quieter thing: the hoops come too
+            // fast to be events, and the drone below takes them.
+            let hush = 1.0 - 0.75 * self.stress.value;
+            womp = body * self.womp_env * attack * 0.16 * hush;
             self.womp_env *= (-dt / 0.22).exp();
         }
 
@@ -540,6 +594,87 @@ impl Synth {
             self.crack_env *= (-dt / 1.5).exp();
         }
 
+        // ---- the hull under speed -------------------------------------------
+        // Structure-borne, so the vacuum is no mute. Three things with the
+        // stress: a slow creak — a low tone whose pitch wanders on a
+        // drifting LFO, the frame working; a crackle — sparse, random,
+        // low-passed ticks whose density grows as the square of the
+        // stress, metal relieving itself; and the hoop drone — what the
+        // womp moulds into when the kilometres blur: a 55 Hz hum pulsing
+        // slowly, growing as the womps fade.
+        let stress = self.stress.next(levels.stress.clamp(0.0, 1.0));
+        let mut hull_out = 0.0;
+        if stress > 1e-3 {
+            let dt = 1.0 / self.rate;
+            let s2 = stress * stress;
+            // Creak.
+            self.creak_lfo = (self.creak_lfo + 0.37 * dt).fract();
+            let wander =
+                (tau * self.creak_lfo).sin() * 0.5 + (tau * 2.7 * self.creak_lfo).sin() * 0.5;
+            let f = 42.0 + 18.0 * stress + 9.0 * wander;
+            self.creak_phase = (self.creak_phase + f / self.rate).fract();
+            let saw = 2.0 * self.creak_phase - 1.0;
+            let lp = self.lp_coeff(120.0 + 400.0 * s2);
+            self.creak_lp += (saw - self.creak_lp) * lp;
+            let creak = self.creak_lp * 0.10 * s2 * (0.6 + 0.4 * wander.abs());
+            // Crackle: a gate that opens at random, ticks per second rising
+            // from nothing to a hundred at the wall.
+            let rate_hz = 120.0 * s2 * s2 + 4.0 * s2;
+            let open = self.rng_l.white().abs() < rate_hz / self.rate;
+            if open {
+                self.tick_gate = 1.0;
+            }
+            let tick = self.rng_r.white() * self.tick_gate;
+            self.tick_gate *= (-dt / 0.004).exp();
+            let tlp = self.lp_coeff(900.0 + 2_500.0 * stress);
+            self.tick_lp += (tick - self.tick_lp) * tlp;
+            let crackle = self.tick_lp * (0.25 + 0.55 * stress);
+            // Drone.
+            self.drone_lfo = (self.drone_lfo + 0.8 * dt).fract();
+            self.drone_phase = (self.drone_phase + 55.0 / self.rate).fract();
+            let pulse = 0.55 + 0.45 * (tau * self.drone_lfo).sin();
+            let drone = ((tau * self.drone_phase).sin()
+                + 0.3 * (tau * 2.0 * self.drone_phase).sin())
+                * pulse
+                * 0.07
+                * s2;
+            hull_out = creak + crackle + drone;
+        }
+
+        // ---- strikes --------------------------------------------------------
+        // A grain of rock on the hull: a bright metallic tink — two
+        // inharmonic partials at a pitch of their own per strike, over in
+        // a tenth of a second — and, for the bigger ones, a dull thud of
+        // low-passed noise under it. Rung through the frame, never muted.
+        let strikes = levels.strikes.max(0.0) as u32;
+        if strikes != self.last_strikes {
+            self.last_strikes = strikes;
+            self.strike_env = 1.0;
+            self.strike_t = 0.0;
+            self.strike_phase = 0.0;
+            self.strike_phase2 = 0.0;
+            self.strike_size = levels.strike_size.clamp(0.0, 1.0);
+            // A pitch of its own: small grains ring high, pebbles lower.
+            self.strike_f = 3_400.0 - 2_200.0 * self.strike_size + 600.0 * self.rng_l.white();
+        }
+        let mut strike_out = 0.0;
+        if self.strike_env > 1e-3 {
+            let dt = 1.0 / self.rate;
+            self.strike_t += dt;
+            let size = self.strike_size;
+            self.strike_phase = (self.strike_phase + self.strike_f / self.rate).fract();
+            self.strike_phase2 = (self.strike_phase2 + self.strike_f * 2.76 / self.rate).fract();
+            let ring = (tau * self.strike_phase).sin() + 0.5 * (tau * self.strike_phase2).sin();
+            let ring_env = (-self.strike_t * (40.0 - 25.0 * size)).exp();
+            let n = self.rng_r.white();
+            let lp = self.lp_coeff(150.0 + 250.0 * size);
+            self.strike_lp += (n - self.strike_lp) * lp;
+            let thud = self.strike_lp * (-self.strike_t * 12.0).exp() * size * size * 2.2;
+            let attack = (self.strike_t / 0.0015).min(1.0);
+            strike_out = (ring * ring_env * (0.12 + 0.3 * size) + thud) * attack;
+            self.strike_env = ring_env.max((-self.strike_t * 12.0).exp() * size);
+        }
+
         // ---- mix --------------------------------------------------------
         let master = self.master.next(levels.master.clamp(0.0, 1.0));
         // Silence multiplies everything the SHIP makes: past the atmosphere
@@ -550,10 +685,9 @@ impl Synth {
         // would silence the build-up at exactly the altitudes where it
         // happens (which is why the old mix was barely audible on entry).
         let mono = engine + hiss + rcs_out;
-        let l =
-            (((mono + wind.0) * silence + entry_out + womp + warp_out + crack_out) * master).tanh();
-        let r =
-            (((mono + wind.1) * silence + entry_out + womp + warp_out + crack_out) * master).tanh();
+        let frame_borne = womp + warp_out + crack_out + hull_out + strike_out;
+        let l = (((mono + wind.0) * silence + entry_out + frame_borne) * master).tanh();
+        let r = (((mono + wind.1) * silence + entry_out + frame_borne) * master).tanh();
 
         // DC block: the asymmetric pulse and the clipped boom both bias the
         // mean, and a DC offset is inaudible right up until it thumps on
@@ -621,6 +755,9 @@ mod tests {
                 warp: 0.0,
                 jumps: 0.0,
                 master: 1.0,
+                stress: 1.0,
+                strikes: 0.0,
+                strike_size: 1.0,
             },
             Levels {
                 effort: 55.0,
@@ -634,6 +771,9 @@ mod tests {
                 warp: 0.0,
                 jumps: 0.0,
                 master: 5.0,
+                stress: 9.0,
+                strikes: 3.0,
+                strike_size: -2.0,
             },
         ];
         for levels in cases {
@@ -1056,6 +1196,113 @@ mod tests {
         assert!(rms(&buf) < 1e-3, "womp rang on: {}", rms(&buf));
     }
 
+    /// The hull speaks under speed, in vacuum: nothing at rest, a creak
+    /// and crackle that grow with the stress — and the hoop womp goes
+    /// quiet with it.
+    #[test]
+    fn the_hull_creaks_and_crackles_with_speed_and_the_womp_hushes() {
+        let mut synth = Synth::new(48_000.0, 0xBEEF);
+        let mut buf = vec![0.0f32; 48_000 * 2];
+        let rest = Levels::default();
+        synth.render(&rest, &mut buf);
+        synth.render(&rest, &mut buf);
+        assert!(rms(&buf) < 1e-4, "a resting hull is silent: {}", rms(&buf));
+        let mut half = Synth::new(48_000.0, 0xBEEF);
+        let cruise = Levels {
+            stress: 0.5,
+            ..Default::default()
+        };
+        half.render(&cruise, &mut buf);
+        half.render(&cruise, &mut buf);
+        let at_half = rms(&buf);
+        let mut full = Synth::new(48_000.0, 0xBEEF);
+        let wall = Levels {
+            stress: 1.0,
+            ..Default::default()
+        };
+        full.render(&wall, &mut buf);
+        full.render(&wall, &mut buf);
+        let at_wall = rms(&buf);
+        assert!(at_half > 0.003, "half stress is audible: {at_half}");
+        assert!(
+            at_wall > at_half * 2.0,
+            "the wall is louder: {at_wall} vs {at_half}"
+        );
+        assert!(at_wall < 0.3, "and not a roar: {at_wall}");
+        // The womp at speed is hushed against the same womp at rest.
+        let womp_at = |stress: f32| {
+            // Two identical synths: one hears the hoop, one does not. Their
+            // difference is the womp alone, whatever the bed is doing.
+            let render = |hoop: bool| {
+                let mut s = Synth::new(48_000.0, 0xBEEF);
+                let mut b = vec![0.0f32; 48_000 / 4 * 2];
+                let before = Levels {
+                    stress,
+                    hoops: 1.0,
+                    ..Default::default()
+                };
+                for _ in 0..4 {
+                    s.render(&before, &mut b);
+                }
+                let after = Levels {
+                    hoops: if hoop { 2.0 } else { 1.0 },
+                    ..before
+                };
+                s.render(&after, &mut b);
+                b
+            };
+            let with = render(true);
+            let without = render(false);
+            let diff: Vec<f32> = with.iter().zip(&without).map(|(a, b)| a - b).collect();
+            rms(&diff)
+        };
+        let calm = womp_at(0.0);
+        let fast = womp_at(1.0);
+        assert!(calm > 0.01, "{calm}");
+        assert!(
+            fast < calm * 0.6,
+            "the womp hushes at speed: {fast} vs {calm}"
+        );
+    }
+
+    /// A strike rings once, in vacuum, bright for a grain and with a thud
+    /// for a pebble; the count alone stays quiet.
+    #[test]
+    fn strikes_ring_once_and_pebbles_thud() {
+        let ring = |size: f32| {
+            let mut s = Synth::new(48_000.0, 0xACE);
+            let mut b = vec![0.0f32; 48_000 / 5 * 2];
+            let before = Levels {
+                strikes: 1.0,
+                strike_size: size,
+                ..Default::default()
+            };
+            s.render(&before, &mut b);
+            assert!(rms(&b) < 1e-4, "a latched count is no strike");
+            let after = Levels {
+                strikes: 2.0,
+                ..before
+            };
+            s.render(&after, &mut b);
+            let hit = rms(&b);
+            let low = low_band_rms(&b, 48_000.0, 400.0);
+            s.render(&after, &mut b);
+            s.render(&after, &mut b);
+            s.render(&after, &mut b);
+            let later = rms(&b);
+            (hit, low, later)
+        };
+        let (grain, grain_low, grain_later) = ring(0.1);
+        let (pebble, pebble_low, _) = ring(1.0);
+        assert!(grain > 0.003, "a grain is heard: {grain}");
+        assert!(grain_later < grain * 0.05, "and is gone: {grain_later}");
+        assert!(pebble > grain, "a pebble is louder: {pebble} vs {grain}");
+        assert!(
+            pebble_low / pebble > grain_low / grain * 2.0,
+            "and thuds: {pebble_low}/{pebble} vs {grain_low}/{grain}"
+        );
+    }
+
     /// The warp crack fires once per jump, in vacuum, and is heavier and
     /// deeper than the hoop womp — and than the sonic boom.
     #[test]
@@ -1160,6 +1407,9 @@ mod tests {
             warp: 0.0,
             jumps: 0.0,
             master: 0.9,
+            stress: 0.4,
+            strikes: 0.0,
+            strike_size: 0.0,
         };
         let a = render_secs(levels, 0.25);
         let b = render_secs(levels, 0.25);

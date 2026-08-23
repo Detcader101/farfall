@@ -94,6 +94,33 @@ fn slot_of(
         None => ([0.0, 0.0], 0.0),
     }
 }
+/// How hard the hull is being driven, 0..1: the speed against the
+/// relativity wall, where the frame has the most to say.
+fn hull_stress(speed_mps: f64) -> f32 {
+    ((speed_mps / sim::RELATIVITY_FROM_MPS).clamp(0.0, 1.0)) as f32
+}
+
+/// Strikes per second: a grain now and then at rest, rising with the
+/// square of the speed (the ship sweeps a longer column per second and
+/// meets what is in it), capped so the wall is a patter, not a hail; in
+/// air, nothing — dust does not fly.
+fn strike_rate_hz(speed_mps: f32, air: f32) -> f32 {
+    let v = speed_mps.max(0.0) / 3_000.0;
+    ((0.03 + 1.2 * v * v).min(5.0)) * (1.0 - air.clamp(0.0, 1.0))
+}
+
+/// A strike's size from one uniform draw: mostly grains, a few pebbles.
+fn strike_size_from(u: f32) -> f32 {
+    let u = u.clamp(0.0, 1.0);
+    if u < 0.85 {
+        0.05 + 0.25 * (u / 0.85)
+    } else if u < 0.97 {
+        0.3 + 0.4 * ((u - 0.85) / 0.12)
+    } else {
+        0.7 + 0.3 * ((u - 0.97) / 0.03)
+    }
+}
+
 /// How far ahead the path predictor looks, seconds. A little over one
 /// orbit at the spawn altitude (~8.5 min), so a closed orbit draws closed.
 const TRAJECTORY_HORIZON_S: f32 = 560.0;
@@ -843,6 +870,10 @@ struct Game {
     /// Hoops that have passed the ship while the path was showing: the
     /// audio womps on every increment.
     hoops_passed: u32,
+    /// Micrometeorite strikes so far, the latest one's size, and the dice.
+    strikes: u32,
+    strike_size: f32,
+    strike_rng: u32,
     /// Which world we are looking at. Cycled with the number keys until there
     /// is a real settings panel.
     appearance: PlanetAppearance,
@@ -915,6 +946,9 @@ impl Game {
             g_fade: GForceFade::new(),
             odometer_m: 0.0,
             hoops_passed: 0,
+            strikes: 0,
+            strike_size: 0.0,
+            strike_rng: 0x9E37_79B9,
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
         }
@@ -1484,6 +1518,7 @@ impl Game {
             if after > before && audible {
                 self.hoops_passed = self.hoops_passed.wrapping_add(1);
             }
+            self.roll_for_strikes();
             let before = self.state.ship;
             let before_t = self.state.time_s;
             self.state = sim::step(&self.params, &self.state, controls);
@@ -1678,7 +1713,44 @@ impl Game {
             warp: self.warp_look().charge,
             jumps: self.jumps as f32,
             master: 0.8,
+            stress: if self.settings.hull_sound {
+                hull_stress(speed)
+            } else {
+                0.0
+            },
+            strikes: if self.settings.hull_sound {
+                self.strikes as f32
+            } else {
+                0.0
+            },
+            strike_size: self.strike_size,
         }
+    }
+
+    /// One sim step's chance of a grain of rock on the hull: space is not
+    /// empty, and the faster the ship sweeps through it the more it meets —
+    /// a Poisson process at the rate [`strike_rate_hz`] gives. The dice are
+    /// the app's, not the sim's: a strike is a sound, not a force.
+    fn roll_for_strikes(&mut self) {
+        if !self.settings.hull_sound {
+            return;
+        }
+        let speed = self.state.ship.vel_mps.length() as f32;
+        let rate = strike_rate_hz(speed, self.air_ratio() as f32);
+        let (u1, u2) = (self.next_unit(), self.next_unit());
+        if u1 < rate * sim::DT as f32 {
+            self.strikes = self.strikes.wrapping_add(1);
+            self.strike_size = strike_size_from(u2);
+        }
+    }
+
+    fn next_unit(&mut self) -> f32 {
+        let mut x = self.strike_rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.strike_rng = x;
+        (x >> 8) as f32 / (1u32 << 24) as f32
     }
 
     /// Log why and where the session ended. Every exit path goes through this:
@@ -2921,6 +2993,47 @@ mod tests {
         game.update_drag(&cam);
         assert!(game.settings.readout_anchor[1] < 0.2);
         assert!((game.settings.readout_anchor[0] - 0.3).abs() < 0.05);
+    }
+
+    #[test]
+    fn the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air() {
+        assert!(strike_rate_hz(0.0, 0.0) > 0.0 && strike_rate_hz(0.0, 0.0) < 0.1);
+        assert!(strike_rate_hz(3_000.0, 0.0) > strike_rate_hz(1_000.0, 0.0) * 4.0);
+        assert_eq!(strike_rate_hz(9_000.0, 0.0), 5.0, "capped at a patter");
+        assert_eq!(strike_rate_hz(3_000.0, 1.0), 0.0, "no dust in air");
+        assert_eq!(hull_stress(0.0), 0.0);
+        assert_eq!(hull_stress(sim::RELATIVITY_FROM_MPS * 3.0), 1.0);
+        assert!(strike_size_from(0.5) < 0.3 && strike_size_from(0.999) > 0.9);
+        // The dice are fair enough and the process runs: a fast ship in
+        // space collects strikes over a minute, a slow one far fewer.
+        let mut fast = Game::new();
+        fast.state.ship.vel_mps = glam::DVec3::new(0.0, 0.0, -6_000.0);
+        fast.state.ship.pos_m = glam::DVec3::new(0.0, 0.0, fast.params.planet.radius_m * 4.0);
+        for _ in 0..(60 * 120) {
+            fast.roll_for_strikes();
+        }
+        assert!(fast.strikes > 60 && fast.strikes < 400, "{}", fast.strikes);
+        assert!(fast.strike_size > 0.0 && fast.strike_size <= 1.0);
+        let mut slow = Game::new();
+        slow.state.ship.vel_mps = glam::DVec3::ZERO;
+        slow.state.ship.pos_m = fast.state.ship.pos_m;
+        for _ in 0..(60 * 120) {
+            slow.roll_for_strikes();
+        }
+        assert!(
+            slow.strikes < fast.strikes / 10,
+            "{} vs {}",
+            slow.strikes,
+            fast.strikes
+        );
+        // Off: no rock at all.
+        let mut mute = Game::new();
+        mute.settings.hull_sound = false;
+        mute.state.ship.vel_mps = glam::DVec3::new(0.0, 0.0, -6_000.0);
+        for _ in 0..(60 * 120) {
+            mute.roll_for_strikes();
+        }
+        assert_eq!(mute.strikes, 0);
     }
 
     #[test]

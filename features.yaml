@@ -236,6 +236,13 @@ features:
     settings: [control.hyper]
     e2e: FARFALL_BENCH_HYPER=1 capture — view opened; flight needed for the feel
 
+  - id: hull-sounds
+    name: The hull's own voices (HULL SOUNDS, sound.hull) — structure-borne, never muted by the vacuum. Under speed toward the relativity wall the frame creaks (a wandering low tone) and crackles (random ticks, density with the square of the stress); micrometeorite strikes ring the hull (a Poisson process with the square of the speed, none in air — a bright metallic tink per grain, a thud under a pebble); the hoop womp hushes at speed and moulds into a pulsing 55 Hz drone
+    state: complete
+    tests: [crates/audio/src/synth.rs::the_hull_creaks_and_crackles_with_speed_and_the_womp_hushes, crates/audio/src/synth.rs::strikes_ring_once_and_pebbles_thud, crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air]
+    settings: [sound.hull]
+    e2e: needs a flight — listen at 3,000+ m/s in space
+
   - id: fps-floor
     name: FPS FLOOR (graphics.fps-floor, default 60) — a governor on the cabin's moving size; while turning the head costs more than the floor allows, the moving march shrinks (to 0.3 of the still size) and grows back when there is room; the sharp cabin is untouched
     state: complete

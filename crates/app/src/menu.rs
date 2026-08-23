@@ -96,6 +96,7 @@ enum Item {
     GaugeStyle,
     GaugesStay,
     Guide,
+    HullSound,
     /// The GAUGES page's per-dial block: which dial, and its own numbers.
     DialSelect,
     DialSize,
@@ -134,6 +135,7 @@ impl Item {
             Item::GaugeStyle => "GAUGE STYLE",
             Item::GaugesStay => "GAUGES",
             Item::Guide => "GUIDE",
+            Item::HullSound => "HULL SOUNDS",
             Item::DialSelect => "DIAL",
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
@@ -180,6 +182,7 @@ impl Item {
             Item::GaugeStyle => s.gauge_style.name().to_string(),
             Item::GaugesStay => if s.gauges_stay { "STAY" } else { "FADE" }.to_string(),
             Item::Guide => if s.guide { "ON" } else { "OFF" }.to_string(),
+            Item::HullSound => if s.hull_sound { "ON" } else { "OFF" }.to_string(),
             Item::DialSelect => String::new(),
             Item::DialSize => String::new(),
             Item::DialStyle => String::new(),
@@ -274,6 +277,7 @@ impl Menu {
                 Item::CockpitHull,
                 Item::HoopSize,
                 Item::LandingHoops,
+                Item::HullSound,
             ],
             // The gauges: the cockpit-wide look, then one dial's own
             // numbers, then where each instrument sits (or OFF).
@@ -517,6 +521,10 @@ impl Menu {
             }
             Item::Guide => {
                 s.guide = !s.guide;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::HullSound => {
+                s.hull_sound = !s.hull_sound;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::DialSelect => {
