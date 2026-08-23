@@ -118,6 +118,30 @@ pub struct PlanetUniforms {
     occluder1: [f32; 4],
 }
 
+/// The pilot's eye is never in the ground: a ship set down on a body sits
+/// at its surface (the sim's contact puts it there and gravity pulls it a
+/// few centimetres in before the next contact), but the eye is in a cockpit
+/// above the hull's belly. Any body closer than this to the camera is held
+/// off to it, so the surface shaders never see the camera inside a sphere —
+/// which painted murk on alternate frames and strobed the landing.
+pub const EYE_HEIGHT_M: f32 = 1.6;
+
+/// A body's camera-relative centre, held off so the eye is at least
+/// [`EYE_HEIGHT_M`] above its surface.
+pub fn eye_clear(centre_rel: Vec3, radius_m: f32) -> Vec3 {
+    let d = centre_rel.length();
+    let least = radius_m + EYE_HEIGHT_M;
+    if radius_m > 0.0 && d < least {
+        if d > 1e-6 {
+            centre_rel * (least / d)
+        } else {
+            Vec3::new(0.0, -least, 0.0)
+        }
+    } else {
+        centre_rel
+    }
+}
+
 impl PlanetUniforms {
     /// `centre_rel` must already be camera-relative: the world-space
     /// subtraction happens in f64 on the caller's side, so this f32 only ever
@@ -132,6 +156,7 @@ impl PlanetUniforms {
     ) -> Self {
         let (right, up, forward) = cam.basis();
         let sun = sun_dir.normalize_or_zero();
+        let centre_rel = eye_clear(centre_rel, radius_m);
         Self {
             right: [right.x, right.y, right.z, 0.0],
             up: [up.x, up.y, up.z, 0.0],
@@ -170,7 +195,10 @@ impl PlanetUniforms {
     /// Bodies that stand between the camera and the planet: each as its
     /// camera-relative centre (f64 subtraction upstream — P3) and radius.
     pub fn with_occluders(mut self, bodies: [(Vec3, f32); 2]) -> Self {
-        let pack = |(c, r): (Vec3, f32)| [c.x, c.y, c.z, r.max(0.0)];
+        let pack = |(c, r): (Vec3, f32)| {
+            let c = eye_clear(c, r.max(0.0));
+            [c.x, c.y, c.z, r.max(0.0)]
+        };
         self.occluder0 = pack(bodies[0]);
         self.occluder1 = pack(bodies[1]);
         self
@@ -327,6 +355,22 @@ impl PlanetPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_eye_is_never_in_the_ground() {
+        let r = 637_000.0;
+        // Sitting on the surface, or a hair inside it: held off to eye height.
+        for d in [r, r - 0.03, r + 0.2] {
+            let c = eye_clear(Vec3::new(0.0, -d, 0.0), r);
+            assert!((c.length() - (r + EYE_HEIGHT_M)).abs() < 0.01, "{c:?}");
+            assert!(c.y < 0.0);
+        }
+        // Flying: untouched.
+        let far = Vec3::new(0.0, -(r + 5_000.0), 0.0);
+        assert_eq!(eye_clear(far, r), far);
+        // No body: untouched.
+        assert_eq!(eye_clear(Vec3::ZERO, 0.0), Vec3::ZERO);
+    }
     use glam::Quat;
 
     fn uniforms(centre: Vec3, radius: f32) -> PlanetUniforms {
@@ -386,9 +430,15 @@ mod tests {
     }
 
     #[test]
-    fn inside_the_planet_reports_zero_rather_than_nan() {
+    fn inside_the_planet_is_held_to_the_surface_and_never_nan() {
+        // A camera handed over inside the sphere is set at eye height on
+        // its surface: the planet fills half the sky, no NaN anywhere.
         let u = uniforms(Vec3::new(0.0, 0.0, -100.0), 63_710.0);
-        assert_eq!(u.angular_radius(), 0.0);
+        let a = u.angular_radius();
+        assert!(
+            a.is_finite() && a > 1.5 && a <= std::f32::consts::FRAC_PI_2,
+            "{a}"
+        );
     }
 
     /// Out-of-range appearance values must be clamped at the boundary rather

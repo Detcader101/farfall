@@ -267,6 +267,12 @@ features:
     state: complete
     e2e: 8 frames inspected
 
+  - id: landed-no-strobe
+    name: Sitting on a body no longer strobes — the eye is held at least 1.6 m above every body's surface in the planet and body shaders (the sim parks the hull at the surface and gravity dips it a few cm in before the next contact)
+    state: complete
+    tests: [crates/render/src/planet.rs::the_eye_is_never_in_the_ground]
+    e2e: FARFALL_BENCH_POS 2 cm inside the surface — a clean horizon, no murk frame
+
   - id: crash
     name: Ship loss on hard impact / Sun contact
     state: deferred

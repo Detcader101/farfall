@@ -31,8 +31,9 @@ impl BodiesUniforms {
         height_px: f32,
     ) -> Self {
         let (right, up, forward) = cam.basis();
-        let (moon_rel, moon_r) = moon;
-        let (s, sun_r) = sun;
+        let (moon_rel, moon_r) = (crate::planet::eye_clear(moon.0, moon.1), moon.1);
+        let (s, sun_r) = (crate::planet::eye_clear(sun.0, sun.1), sun.1);
+        let uranus = (crate::planet::eye_clear(uranus.0, uranus.1), uranus.1);
         Self {
             right: [right.x, right.y, right.z, 0.0],
             up: [up.x, up.y, up.z, 0.0],
