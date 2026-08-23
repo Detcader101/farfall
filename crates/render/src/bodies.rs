@@ -13,7 +13,11 @@ pub struct BodiesUniforms {
     params: [f32; 4],
     moon: [f32; 4],
     sun: [f32; 4],
+    /// x: tags, y: height px, z: LENS FLARE strength (0 off), w: unused
     look: [f32; 4],
+    /// xyz: the planet's centre relative to the camera, w: its radius —
+    /// the thing most likely to stand in front of the Sun
+    planet: [f32; 4],
     /// Uranus: xyz camera-relative centre, w radius.
     uranus: [f32; 4],
 }
@@ -46,9 +50,23 @@ impl BodiesUniforms {
             ],
             moon: [moon_rel.x, moon_rel.y, moon_rel.z, moon_r],
             sun: [s.x, s.y, s.z, sun_r],
-            look: [tags.clamp(0.0, 1.0), height_px.max(1.0), 0.0, 0.0],
+            look: [tags.clamp(0.0, 1.0), height_px.max(1.0), 1.0, 0.0],
             uranus: [uranus.0.x, uranus.0.y, uranus.0.z, uranus.1],
+            planet: [0.0; 4],
         }
+    }
+
+    /// The planet as an occluder of the Sun (for the flare), and how
+    /// strong the lens flare is (graphics.flare, 1 stock, 0 none).
+    pub fn with_planet_and_flare(mut self, planet: (Vec3, f32), flare: f32) -> Self {
+        let c = crate::planet::eye_clear(planet.0, planet.1);
+        self.planet = [c.x, c.y, c.z, planet.1.max(0.0)];
+        self.look[2] = if flare.is_finite() {
+            flare.clamp(0.0, 2.0)
+        } else {
+            1.0
+        };
+        self
     }
 }
 

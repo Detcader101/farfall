@@ -188,6 +188,8 @@ pub struct Settings {
     pub fps_floor: f32,
     /// The daytime sky's strength low down, 1 = stock.
     pub sky: f32,
+    /// The lens flare's strength, 1 = stock, 0 none.
+    pub flare: f32,
     /// Base field of view, degrees (vertical).
     pub fov: f32,
     /// Gauge style: TRON holograms on the glass; JET bowls hollowed into
@@ -232,6 +234,7 @@ impl Default for Settings {
             cockpit_res: 0.5,
             fps_floor: 60.0,
             sky: 1.0,
+            flare: 1.0,
             fov: 70.0,
             gauge_style: GaugeStyle::Tron,
             gauges_stay: true,
@@ -394,6 +397,13 @@ impl Settings {
                     "off" => s.guide = false,
                     _ => {}
                 },
+                "graphics.flare" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.flare = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
                 "graphics.sky" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -610,6 +620,7 @@ impl Settings {
         out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
+        out.push_str(&format!("graphics.flare = {:.2}\n", self.flare));
         out.push_str(&format!("graphics.fov = {:.0}\n", self.fov));
         out.push_str(&format!("ui.gauge-style = {}\n", self.gauge_style.key()));
         out.push_str(&format!(
@@ -714,6 +725,7 @@ mod tests {
         s.cockpit_res = 1.0;
         s.fps_floor = 90.0;
         s.sky = 1.5;
+        s.flare = 0.5;
         s.fov = 85.0;
         s.gauge_style = GaugeStyle::Dial;
         s.gauges_stay = false;

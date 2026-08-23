@@ -1057,6 +1057,13 @@ impl Game {
             tags,
             height_px,
         )
+        .with_planet_and_flare(
+            (
+                (DVec3::ZERO - self.state.ship.pos_m).as_vec3(),
+                self.params.planet.radius_m as f32,
+            ),
+            self.settings.flare,
+        )
     }
 
     /// The system map, from the plan and the pilot's view of it.

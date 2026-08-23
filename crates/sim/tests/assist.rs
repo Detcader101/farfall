@@ -325,3 +325,36 @@ fn the_charged_drive_crosses_an_astronomical_unit_in_seconds() {
     );
     assert_eq!(after.ship.vel_mps, coast.ship.vel_mps);
 }
+
+/// The air brake brakes everything: a tumble dies under it faster than
+/// under the gyro alone.
+#[test]
+fn the_brake_kills_spin_harder_than_the_gyro() {
+    let params = presets::earth_compact();
+    let w = DVec3::new(1.5, -1.0, 0.7);
+    let gyro = run(
+        &params,
+        spinning(&params, w),
+        60,
+        Controls {
+            despin: true,
+            ..Default::default()
+        },
+    );
+    let brake = run(
+        &params,
+        spinning(&params, w),
+        60,
+        Controls {
+            brake: true,
+            ..Default::default()
+        },
+    );
+    let g = gyro.ship.ang_vel_radps.length();
+    let b = brake.ship.ang_vel_radps.length();
+    assert!(b < g * 0.3, "brake {b} vs gyro {g}");
+    assert!(
+        b < 0.4,
+        "half a second of brake and the tumble is gone: {b}"
+    );
+}

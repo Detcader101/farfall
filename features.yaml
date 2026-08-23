@@ -229,6 +229,18 @@ features:
     settings: [ui.g-vector, ui.g-vector.size/style/fade/tilt]
     e2e: FARFALL_BENCH_G=-2.5,6.5,-1.0 capture as a tilted DIAL — dot up-left, ×5, 7.04, red rim, brake mark
 
+  - id: sun-surface-and-flare
+    name: The Sun resolved (after a jump, or close) — limb darkening, granulation, sunspots in two bands turning with the Sun over its month (dark umbra in a grey penumbra), prominences standing off the limb, and a slow coronal mass ejection that swells out and away on a four-minute cycle; the lens flare — starburst, anamorphic streak, a train of rainbow ghosts down the centre line — occluded by the planet, the Moon and Uranus, fading at the screen's edge and with a huge disc; LENS FLARE setting (graphics.flare)
+    state: complete
+    tests: [crates/render/tests/shader_validation.rs, crates/app/src/menu.rs, crates/app/src/settings.rs]
+    settings: [graphics.flare]
+    e2e: captures at 4 Sun radii (spots, limb, prominence) and from orbit (starburst, streak, ghosts)
+
+  - id: brake-despin
+    name: The air brake kills spin too, three times harder than the gyro
+    state: complete
+    tests: [crates/sim/tests/assist.rs::the_brake_kills_spin_harder_than_the_gyro]
+
   - id: asteroid-belt
     name: The asteroid belt is Uranus' ring — URANUS RING on the DRIVE panel (arrival in the ring's plane at 1.8 radii, going round with it). A procedural population through the ring's volume (hashed cells of 1.4 km, 0–3 rocks each, 5–300 m, rigid ring rotation plus a drift of a few m/s so they meet); the nearest 48 are live on the CPU — rock on rock (mass by volume, restitution 0.4) and rock on ship (an impulse on the ship, a shield ripple, grit in the sound); belt.wgsl ray-traces them with noise-bumped silhouettes and normals, Sun-lit with the ring's dust-light for fill, each turning on its axis. From inside the ring the dust sheet is a faint haze
     state: complete

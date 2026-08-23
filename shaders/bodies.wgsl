@@ -26,10 +26,62 @@ struct Bodies {
     // after a jump it is a wall of fire.
     sun: vec4<f32>,
     // x: tags 0..1 — a thin ring around each body so a half-degree disc
-    // can be found on a big sky. y: screen height, px. zw: unused.
+    // can be found on a big sky. y: screen height, px. z: lens flare
+    // strength (0 none). w: unused.
     look: vec4<f32>,
     // xyz: Uranus' centre relative to the camera, metres. w: radius, m.
     uranus: vec4<f32>,
+    // xyz: the planet's centre relative to the camera, w: radius — what
+    // stands in front of the Sun, for the flare.
+    planet: vec4<f32>,
+}
+
+// Does the line of sight to the Sun pass through this body?
+fn hides_sun(sun_dir: vec3<f32>, body: vec4<f32>) -> bool {
+    if (body.w <= 0.0) {
+        return false;
+    }
+    let along = dot(sun_dir, body.xyz);
+    if (along <= 0.0) {
+        return false;
+    }
+    let perp2 = dot(body.xyz, body.xyz) - along * along;
+    return perp2 < body.w * body.w;
+}
+
+// The lens flare: the canopy's and the eye's own artefacts of the Sun on
+// the screen — a starburst on the Sun, an anamorphic streak across it,
+// and a train of rainbow ghosts down the line through the screen's
+// centre. Screen-space, in NDC corrected for the aspect.
+fn lens_flare(ndc: vec2<f32>, sun_ndc: vec2<f32>, aspect: f32, strength: f32, t: f32) -> vec3<f32> {
+    let p = (ndc - sun_ndc) * vec2<f32>(aspect, 1.0);
+    let r = length(p);
+    var out = vec3<f32>(0.0);
+    // Starburst: six soft rays, turning very slowly, over a warm core.
+    let ang = atan2(p.y, p.x);
+    let rays = pow(abs(cos(ang * 3.0 + t * 0.05)), 24.0) * exp(-r / 0.45) * 0.9
+        + pow(abs(cos(ang * 3.0 + 0.5236)), 60.0) * exp(-r / 0.7) * 0.35;
+    out += vec3<f32>(1.0, 0.92, 0.80) * (rays + exp(-r / 0.06) * 0.6);
+    // Anamorphic streak: a thin blue line across the width.
+    let streak = exp(-abs(p.y) / 0.006) * exp(-abs(p.x) / 0.9) * 0.55;
+    out += vec3<f32>(0.45, 0.65, 1.0) * streak;
+    // Ghosts: along the line from the Sun through the centre, at set
+    // fractions, each a soft ring of its own tint and size.
+    let to_centre = -sun_ndc * vec2<f32>(aspect, 1.0);
+    let ks = array<f32, 6>(0.35, 0.6, 0.95, 1.25, 1.6, 2.1);
+    let rs = array<f32, 6>(0.05, 0.11, 0.035, 0.16, 0.07, 0.22);
+    let tints = array<vec3<f32>, 6>(
+        vec3<f32>(1.0, 0.55, 0.35), vec3<f32>(0.5, 0.9, 0.6), vec3<f32>(0.6, 0.7, 1.0),
+        vec3<f32>(1.0, 0.8, 0.4), vec3<f32>(0.9, 0.5, 0.9), vec3<f32>(0.45, 0.75, 1.0),
+    );
+    for (var i = 0; i < 6; i += 1) {
+        let g = to_centre * ks[i];
+        let d = length(p - g) / rs[i];
+        // A ring with a dim fill, fading at the rim.
+        let ring = (1.0 - smoothstep(0.85, 1.0, d)) * (0.25 + 0.75 * smoothstep(0.55, 0.95, d));
+        out += tints[i] * ring * 0.16;
+    }
+    return out * strength;
 }
 
 // A body's disc coverage and surface normal along `ray`, or cover 0.
@@ -91,6 +143,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var alpha = 0.0;
 
     // ---- the Sun ---------------------------------------------------------
+    // The flare, first: behind everything, it is light in the glass. Only
+    // with the Sun in front of the camera and nothing in front of the Sun,
+    // fading as it leaves the screen.
+    let flare_k = bd.look.z;
+    let sun_fwd = dot(sun, bd.forward.xyz);
+    if (flare_k > 0.0 && sun_fwd > 0.05
+        && !hides_sun(sun, bd.planet) && !hides_sun(sun, bd.moon) && !hides_sun(sun, bd.uranus)) {
+        let sx = dot(sun, bd.right.xyz) / sun_fwd / (bd.params.x * bd.params.y);
+        let sy = dot(sun, bd.up.xyz) / sun_fwd / bd.params.x;
+        let sun_ndc = vec2<f32>(sx, sy);
+        let on_screen = (1.0 - smoothstep(0.9, 1.4, abs(sx))) * (1.0 - smoothstep(0.9, 1.4, abs(sy)));
+        if (on_screen > 0.001) {
+            // A wall of fire needs no starburst: the flare thins as the
+            // disc grows.
+            let big = smoothstep(0.004, 0.06, sun_limb);
+            rgb += lens_flare(in.ndc, sun_ndc, bd.params.y, flare_k * on_screen * (1.0 - 0.85 * big), bd.params.z);
+        }
+    }
     let cos_sun = dot(ray, sun);
     let ang = acos(clamp(cos_sun, -1.0, 1.0));
     let grad = vec2<f32>(dpdx(ang), dpdy(ang));
@@ -102,7 +172,74 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let past = max(ang - sun_limb, 0.0);
     let glare = exp(-past / 0.02) * 0.9 + exp(-past / 0.10) * 0.12;
     let sun_rgb = vec3<f32>(1.0, 0.96, 0.90);
-    rgb += sun_rgb * (disc * 60.0 + glare * 3.0);
+    // The disc itself. From the planet it is a half-degree dot and
+    // saturates, as it should; resolved (after a jump, or close), it is a
+    // surface: limb-darkened, granulated, with sunspots in two bands that
+    // turn with the Sun over its month, and prominences on the limb —
+    // loops of plasma standing off it — with, now and then, a coronal
+    // mass ejection swelling out and away.
+    var face = 1.0;
+    let t = bd.params.z;
+    let resolved = smoothstep(0.004, 0.02, sun_limb);
+    if (disc > 0.001 && resolved > 0.001) {
+        let along = dot(ray, bd.sun.xyz);
+        let disc_s = along * along - (sun_d * sun_d - bd.sun.w * bd.sun.w);
+        let ts = along - sqrt(max(disc_s, 0.0));
+        let n = normalize(ray * ts - bd.sun.xyz);
+        // The Sun turns once in 25 days (1:100 time is not scaled: a
+        // slow drift you can watch over a long sit).
+        let spin = t * 0.0025;
+        let cs = cos(spin);
+        let ss = sin(spin);
+        let nl = vec3<f32>(cs * n.x - ss * n.z, n.y, ss * n.x + cs * n.z);
+        // Limb darkening: the edge is cooler, deeper gas.
+        let mu = max(dot(n, -ray), 0.0);
+        let limb_dark = 0.45 + 0.55 * sqrt(mu);
+        // Granulation: a fine cellular grain.
+        let gran = 0.92 + 0.16 * (vnoise(nl * 90.0) - 0.5) + 0.08 * (fbm3(nl * 30.0) - 0.5);
+        // Sunspots: in the bands about ±15°–30° latitude, where the noise
+        // peaks: a dark umbra in a grey penumbra, a few, drifting.
+        let lat = abs(nl.y);
+        let band = smoothstep(0.15, 0.3, lat) * (1.0 - smoothstep(0.45, 0.6, lat));
+        let sp = fbm3(nl * 6.0 + vec3<f32>(3.0, 0.0, t * 0.0004));
+        let penumbra = smoothstep(0.60, 0.68, sp) * band;
+        let umbra = smoothstep(0.66, 0.72, sp) * band;
+        let spot = 1.0 - 0.55 * penumbra - 0.38 * umbra;
+        face = limb_dark * gran * spot;
+    }
+    // What the disc is worth: saturating from afar, a surface when resolved.
+    let disc_k = mix(60.0, 1.35, resolved);
+    // Resolved, the glare stays outside the disc: the surface is the thing.
+    let glare_k = 3.0 * (1.0 - disc * resolved);
+    // Resolved, the surface is warmer than the saturated dot: a yellow-white.
+    let face_rgb = mix(sun_rgb, vec3<f32>(1.0, 0.88, 0.66), resolved);
+    var sun_out = face_rgb * disc * disc_k * face + sun_rgb * glare * glare_k;
+    // Prominences and a CME, just past the limb, when resolved.
+    if (resolved > 0.001 && past > 0.0 && past < sun_limb * 0.9) {
+        // Where on the limb this is: the angle round the disc.
+        let to_c = bd.sun.xyz / max(sun_d, 1.0);
+        let side = normalize(cross(to_c, bd.up.xyz));
+        let upv = cross(side, to_c);
+        let off = ray - to_c * dot(ray, to_c);
+        let theta = atan2(dot(off, upv), dot(off, side));
+        let h = past / sun_limb; // 0 at the limb, 1 a radius out
+        // Loops: a few arcs standing off the limb, slowly changing.
+        let loops = fbm3(vec3<f32>(theta * 2.0, h * 6.0, t * 0.02)) ;
+        let prom = smoothstep(0.55, 0.7, loops) * (1.0 - smoothstep(0.0, 0.22, h));
+        // The CME: once in a while a bubble grows from one side, out to
+        // half a radius and beyond, thinning as it goes. A slow cycle.
+        let cycle = fract(t / 240.0);
+        let grow = smoothstep(0.0, 0.6, cycle) * (1.0 - smoothstep(0.6, 1.0, cycle));
+        let where_ = cos(theta - floor(t / 240.0) * 2.4);
+        let front = 0.05 + 0.7 * smoothstep(0.0, 0.6, cycle);
+        let bubble = smoothstep(0.2, 0.9, where_) * (1.0 - smoothstep(front - 0.25, front, h))
+            * smoothstep(front - 0.6, front - 0.2, h) * grow;
+        let wisps = 0.6 + 0.4 * fbm3(vec3<f32>(theta * 4.0, h * 9.0, t * 0.05));
+        let plasma = vec3<f32>(1.0, 0.45, 0.18);
+        sun_out += plasma * (prom * 2.2 + bubble * wisps * 1.6) * resolved;
+        alpha = max(alpha, min(prom * 0.8 + bubble * wisps * 0.6, 1.0));
+    }
+    rgb += sun_out;
     alpha = max(alpha, disc);
 
     // ---- the Moon --------------------------------------------------------

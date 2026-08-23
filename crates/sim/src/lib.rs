@@ -740,7 +740,11 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     };
     // The emergency gyro: an exponential bleed of the spin, whatever the
     // torque limits say — deterministic, and it cannot overshoot.
-    let ang_vel = if c.despin {
+    // The emergency gyro kills spin on its time constant; the air brake
+    // kills it harder still — a brake is a brake on everything.
+    let ang_vel = if c.brake {
+        ang_vel * libm::exp(-DT / (params.ship.despin_tau_s * 0.3))
+    } else if c.despin {
         ang_vel * libm::exp(-DT / params.ship.despin_tau_s)
     } else {
         ang_vel
