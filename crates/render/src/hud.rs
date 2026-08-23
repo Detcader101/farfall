@@ -18,7 +18,9 @@ struct HudUniforms {
     extent: [f32; 4],
     color: [f32; 4],
     backdrop: [f32; 4],
-    /// xy: hologram sway (canopy units), zw: unused.
+    /// xy: hologram sway (canopy units), z: 1 for a FLAT block on the
+    /// screen (the pause panels), 0 for one on the glass (the readout),
+    /// w: unused.
     sway: [f32; 4],
     rows: [[u32; ROW_WORDS]; ROWS],
 }
@@ -118,16 +120,24 @@ impl HudPass {
         aspect: f32,
         height_px: f32,
         sway: [f32; 2],
+        flat: bool,
+        highlight_row: Option<(f32, f32)>,
     ) {
         let (w, h) = bitmap.used_extent();
+        let (hl_y, hl_h) = highlight_row.unwrap_or((-1.0, 0.0));
         let u = HudUniforms {
             a: [anchor_ndc[0], anchor_ndc[1], px_canopy, aspect],
-            extent: [w as f32, h as f32, height_px, 0.0],
+            extent: [w as f32, h as f32, height_px, hl_y],
             // Hologram cyan, matching the instrument cluster.
             color: [0.45, 0.92, 1.0, 0.96],
-            // Smoked glass behind the text, not a debug box.
-            backdrop: [0.01, 0.03, 0.05, 0.30],
-            sway: [sway[0], sway[1], 0.0, 0.0],
+            // Smoked glass behind the text on the glass; a flat pause
+            // panel is a darker card, read over anything.
+            backdrop: if flat {
+                [0.008, 0.018, 0.03, 0.82]
+            } else {
+                [0.01, 0.03, 0.05, 0.30]
+            },
+            sway: [sway[0], sway[1], if flat { 1.0 } else { 0.0 }, hl_h],
             rows: bitmap.rows,
         };
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&u));

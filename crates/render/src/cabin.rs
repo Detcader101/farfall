@@ -37,6 +37,18 @@ pub struct Socket {
     /// 0 TRON, 1 JET, 2 DIAL.
     pub style: u32,
     pub size: f32,
+    /// Tilted toward the pilot (positive) about its own horizontal axis,
+    /// radians.
+    pub tilt: f32,
+}
+
+/// The most a dial may tilt, radians (±60°).
+pub const TILT_MAX: f32 = std::f32::consts::FRAC_PI_3;
+
+/// The socket's tilt packed as whole degrees from 0 (−60°) to 120 (+60°).
+pub fn tilt_code(tilt: f32) -> f32 {
+    let t = if tilt.is_finite() { tilt } else { 0.0 };
+    (t.clamp(-TILT_MAX, TILT_MAX).to_degrees() + 60.0).round()
 }
 
 /// The cabin as the pilot has it set.
@@ -73,12 +85,15 @@ impl CabinUniforms {
         let mut pads = [[0.0; 4]; 4];
         for (slot, sk) in pads.iter_mut().zip(sockets.iter()) {
             let d = sk.dir.normalize_or_zero();
-            // w packs "in use", the style and the size as exact integers:
-            // (style + 1) + 10 × round(size × 100).
+            // w packs "in use", the style, the size and the tilt as exact
+            // integers: (style + 1) + 10 × round(size × 100) + 10000 × tilt
+            // code (whole degrees from −60).
             let w = if d == Vec3::ZERO {
                 0.0
             } else {
-                (sk.style.min(2) + 1) as f32 + 10.0 * (sk.size.clamp(0.25, 4.0) * 100.0).round()
+                (sk.style.min(2) + 1) as f32
+                    + 10.0 * (sk.size.clamp(0.25, 4.0) * 100.0).round()
+                    + 10000.0 * tilt_code(sk.tilt)
             };
             *slot = [d.x, d.y, d.z, w];
         }
@@ -194,23 +209,46 @@ impl Placement {
         p
     }
 
-    /// Turned about its own axis, radians (up.w).
-    pub fn rotated(mut self, rot: f32) -> Placement {
-        self.up[3] = if rot.is_finite() { rot } else { 0.0 };
+    /// Tilted toward the pilot about its own horizontal axis, radians
+    /// (up.w). On the glass the face only foreshortens; in the dash the
+    /// face plane itself turns.
+    pub fn tilted(mut self, tilt: f32) -> Placement {
+        self.up[3] = if tilt.is_finite() {
+            tilt.clamp(-TILT_MAX, TILT_MAX)
+        } else {
+            0.0
+        };
         self
+    }
+
+    /// The dash normal turned toward the pilot by `tilt` (about +X).
+    pub fn tilted_normal(tilt: f32) -> Vec3 {
+        let (s, c) = tilt.sin_cos();
+        (DASH_N * c + Vec3::X.cross(DASH_N) * s).normalize()
     }
 
     /// In the dash under the hologram's direction `dir` (ship frame), for
     /// a head turned by `head` and a camera of this tan(fov/2).
-    pub fn in_dash(head: Quat, tan_half_fov: f32, dir: Vec3, size: f32) -> Option<Placement> {
+    pub fn in_dash(
+        head: Quat,
+        tan_half_fov: f32,
+        dir: Vec3,
+        size: f32,
+        tilt: f32,
+    ) -> Option<Placement> {
         if !on_dash(dir) {
             return None;
         }
+        let tilt = if tilt.is_finite() {
+            tilt.clamp(-TILT_MAX, TILT_MAX)
+        } else {
+            0.0
+        };
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
-        let centre = socket_centre(dir) - DASH_N * 0.012;
+        let centre = socket_centre(dir) - Placement::tilted_normal(tilt) * 0.012;
         Some(Placement {
             right: v4(head * Vec3::X, 1.0),
-            up: v4(head * Vec3::Y, 0.0),
+            up: v4(head * Vec3::Y, tilt),
             fwd: v4(head * Vec3::NEG_Z, tan_half_fov),
             centre: v4(centre, DIAL_SCALE_M * size.clamp(0.25, 4.0)),
         })
@@ -591,20 +629,27 @@ mod tests {
                 dir: anchor_direction([0.7, -0.6], 0.55, 1.5),
                 style: 1,
                 size: 1.0,
+                tilt: 0.0,
             },
             Socket {
                 dir: Vec3::ZERO,
                 style: 0,
                 size: 1.0,
+                tilt: 0.0,
             },
         ];
         let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
         assert_eq!(&still.fwd[..3], &[0.0, 0.0, -1.0]);
         assert_eq!(still.misc[3], 2.0);
         assert_eq!(
-            still.pads[0][3], 1002.0,
-            "a placed dial gets a socket: (JET + 1) + 10 × 100"
+            still.pads[0][3],
+            1002.0 + 600_000.0,
+            "a placed dial gets a socket: (JET + 1) + 10 × 100 + 10000 × (0° + 60)"
         );
+        assert_eq!(tilt_code(0.0), 60.0);
+        assert_eq!(tilt_code(30f32.to_radians()), 90.0);
+        assert_eq!(tilt_code(-5.0), 0.0, "tilt is clamped to ±60°");
+        assert_eq!(tilt_code(f32::NAN), 60.0);
         assert_eq!(still.pads[1][3], 0.0, "an empty slot does not");
         assert!(still.pads[0][0] > 0.0 && still.pads[0][1] < 0.0 && still.pads[0][2] < 0.0);
         // Looking right: the forward ray swings toward +X in the ship's
@@ -628,7 +673,7 @@ mod tests {
         // A dial straight down-ahead sits in the dash; one up and away does not.
         let down = anchor_direction([0.0, -0.6], 0.55, 1.5);
         assert!(on_dash(down));
-        let place = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0).unwrap();
+        let place = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0).unwrap();
         assert!(
             place.centre[1] < -0.4 && place.centre[2] < -0.6,
             "{:?}",
@@ -636,14 +681,25 @@ mod tests {
         );
         assert_eq!(place.centre[3], DIAL_SCALE_M);
         assert_eq!(
-            Placement::in_dash(Quat::IDENTITY, 0.55, down, 2.0)
+            Placement::in_dash(Quat::IDENTITY, 0.55, down, 2.0, 0.0)
                 .unwrap()
                 .centre[3],
             DIAL_SCALE_M * 2.0
         );
-        assert!(Placement::in_dash(Quat::IDENTITY, 0.55, Vec3::new(0.0, 0.8, -0.6), 1.0).is_none());
+        assert!(
+            Placement::in_dash(Quat::IDENTITY, 0.55, Vec3::new(0.0, 0.8, -0.6), 1.0, 0.0).is_none()
+        );
+        // Tilted toward the pilot: the face normal leans aft (+Z) and the
+        // placement carries the angle for the shader.
+        let leaned = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.5).unwrap();
+        assert_eq!(leaned.up[3], 0.5);
+        let n = Placement::tilted_normal(0.5);
+        assert!(n.z > DASH_N.z && n.y < DASH_N.y, "{n:?}");
+        assert!((n.length() - 1.0).abs() < 1e-5);
+        assert!((Placement::tilted_normal(0.0) - DASH_N).length() < 1e-4);
         assert_eq!(Placement::glass_sized(1.5).right[3], 1.5);
-        assert_eq!(Placement::glass_sized(1.0).rotated(0.5).up[3], 0.5);
+        assert_eq!(Placement::glass_sized(1.0).tilted(0.5).up[3], 0.5);
+        assert_eq!(Placement::glass_sized(1.0).tilted(9.0).up[3], TILT_MAX);
         assert_eq!(UNIFORM_BYTES, 9 * 16);
         // Unchanged inputs compare equal (no clock inside), a turned head
         // is a moved view, a changed socket is not.
@@ -654,6 +710,7 @@ mod tests {
             dir: anchor_direction([-0.7, -0.6], 0.55, 1.5),
             style: 1,
             size: 1.0,
+            tilt: 0.0,
         }];
         let resocketed = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &other_sockets);
         assert!(!still.view_moved(&resocketed));

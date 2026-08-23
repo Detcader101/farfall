@@ -113,7 +113,8 @@ struct DialEffective {
     size: f32,
     style: settings::GaugeStyle,
     stay: bool,
-    rot: f32,
+    /// Leaned toward the pilot, radians.
+    tilt: f32,
 }
 
 /// Something on the glass the gaze can pick up.
@@ -185,6 +186,7 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
+///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times)
 ///   FARFALL_BENCH_THRUST=m,p,y,r (benchmark only: force main thrust 0..1 and
 ///                           pitch/yaw/roll demands -1..1, for the plumes)
 ///   FARFALL_BENCH_FULL=1   (benchmark only: borderless fullscreen, the real
@@ -425,13 +427,13 @@ impl Gpu {
             if tw.style == settings::GaugeStyle::Dial {
                 let a = layout.anchor(i)?;
                 let dir = farfall_render::cabin::anchor_direction(a, ref_tan, cam.aspect);
-                if let Some(p) = farfall_render::cabin::Placement::in_dash(head, t, dir, tw.size) {
+                if let Some(p) =
+                    farfall_render::cabin::Placement::in_dash(head, t, dir, tw.size, tw.tilt)
+                {
                     return Some(p);
                 }
             }
-            Some(farfall_render::cabin::Placement::glass_sized(
-                tw.size * fov_scale,
-            ))
+            Some(farfall_render::cabin::Placement::glass_sized(tw.size * fov_scale).tilted(tw.tilt))
         };
         let (speed_anchor, speed_on) = slot_of(layout, look, cam, ref_tan, Instrument::Speed);
         self.passes.gauge.update(
@@ -1055,6 +1057,7 @@ impl Game {
                     dir: anchor_direction(a, ref_tan, cam.aspect),
                     style: tw.style.index(),
                     size: tw.size,
+                    tilt: tw.tilt,
                 }
             })
             .take(4)
@@ -1136,6 +1139,18 @@ impl Game {
         }
     }
 
+    /// The pause panel's chosen row, for the card's band: (top, height)
+    /// in font pixels.
+    fn highlight_row(&self) -> Option<(f32, f32)> {
+        if self.menu.open {
+            Some(self.menu.cursor_row_px())
+        } else if self.map_panel.open {
+            Some(self.map_panel.cursor_row_px())
+        } else {
+            None
+        }
+    }
+
     /// A dial's effective settings: its own over the cockpit's.
     fn dial_tweak(&self, i: Instrument) -> DialEffective {
         let tw = self.settings.dials[i as usize];
@@ -1143,7 +1158,7 @@ impl Game {
             size: tw.size,
             style: settings::style_for(tw.style.unwrap_or(self.settings.gauge_style), i),
             stay: tw.stay.unwrap_or(self.settings.gauges_stay),
-            rot: tw.rot_deg.to_radians(),
+            tilt: tw.tilt_deg.to_radians(),
         }
     }
 
@@ -1199,8 +1214,12 @@ impl Game {
                 d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
             }
             KeyCode::Tab => d.style = settings::next_dial_style(d.style, i, true),
-            KeyCode::Comma => d.rot_deg = (d.rot_deg - 15.0).rem_euclid(360.0),
-            KeyCode::Period => d.rot_deg = (d.rot_deg + 15.0).rem_euclid(360.0),
+            KeyCode::Comma => {
+                d.tilt_deg = (d.tilt_deg - 5.0).max(settings::TILT_MIN);
+            }
+            KeyCode::Period => {
+                d.tilt_deg = (d.tilt_deg + 5.0).min(settings::TILT_MAX);
+            }
             KeyCode::KeyF => {
                 d.stay = match d.stay {
                     None => Some(true),
@@ -1229,13 +1248,13 @@ impl Game {
                         if d.style.is_none() { " (AUTO)" } else { "" }
                     ),
                     format!(
-                        "{}{}  ROT {:.0}",
+                        "{}{}  TILT {:+.0}",
                         if eff.stay { "STAY" } else { "FADE" },
                         if d.stay.is_none() { " (AUTO)" } else { "" },
-                        d.rot_deg
+                        d.tilt_deg
                     ),
                     "- = SIZE  TAB STYLE  F FADE".to_string(),
-                    ", . ROTATE  BKSP RESET  K DONE".to_string(),
+                    ", . TILT  BKSP RESET  K DONE".to_string(),
                 ]
             }
             None => vec![
@@ -2004,6 +2023,16 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_DESIGN").is_ok() {
             game.toggle_design();
         }
+        if let Some(pages) = std::env::var("FARFALL_BENCH_MENU")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            game.menu.toggle();
+            for _ in 0..pages {
+                game.menu.key(KeyCode::Tab, &mut game.settings);
+            }
+        }
         if game.frozen && std::env::var("FARFALL_BENCH_LAND").is_ok() {
             game.toggle_landing();
             game.touchdown = landing::predict(&game.params, &game.state.ship, game.state.time_s);
@@ -2334,6 +2363,11 @@ impl ApplicationHandler for App {
                                         12,
                                         &format!("VEL {:.0}M/S", game.state.ship.vel_mps.length()),
                                     );
+                                }
+                                if capture_text {
+                                    // Whatever text this frame has — a panel,
+                                    // the design card or the bench readout —
+                                    // goes to the GPU the same way.
                                     let (_, sh) = gpu.scene.size();
                                     let hud_scale = (sh as f32 / 260.0).clamp(2.0, 8.0).floor();
                                     let px_canopy = hud_scale * 2.0 / sh as f32;
@@ -2345,6 +2379,8 @@ impl ApplicationHandler for App {
                                         aspect,
                                         sh as f32,
                                         game.holo_sway.sway(),
+                                        game.menu.open || game.map_open(),
+                                        game.highlight_row(),
                                     );
                                 }
                                 let mut encoder = gpu.device.create_command_encoder(
@@ -2530,6 +2566,8 @@ impl ApplicationHandler for App {
                     aspect,
                     gpu.config.height as f32,
                     game.holo_sway.sway(),
+                    game.menu.open || game.map_open(),
+                    game.highlight_row(),
                 );
 
                 let mut encoder = gpu

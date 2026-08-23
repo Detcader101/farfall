@@ -24,12 +24,14 @@ struct Hud {
     // z: font-pixel size in canopy units, w: aspect (w/h)
     a: vec4<f32>,
     // xy: occupied extent in font pixels; the panel hugs this, not the buffer.
-    // z: surface height in px (scanline frequency), w: unused
+    // z: surface height in px (scanline frequency), w: the highlighted
+    // row's top in font px (negative: none; its height is sway.w)
     extent: vec4<f32>,
     color: vec4<f32>,
     // Background glass tint; alpha 0 disables the panel.
     backdrop: vec4<f32>,
-    // xy: hologram sway in canopy units (see HoloSway); zw: unused.
+    // xy: hologram sway in canopy units (see HoloSway); z: flat (screen)
+    // block; w: the highlighted row's height in font px.
     sway: vec4<f32>,
     // COLS bits per row, four u32 per row.
     rows: array<vec4<u32>, 64>,
@@ -65,7 +67,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let px = max(hud.a.z, 1e-6);
 
     // Same warp as every instrument: pixel and anchor both live on the shell.
-    let p = canopy(in.ndc, aspect) - canopy(hud.a.xy, aspect);
+    // A flat block sits on the screen (the pause panels, which follow the
+    // head); a glass block takes the shell's warp like every instrument.
+    let flat = hud.sway.z > 0.5;
+    let p = select(
+        canopy(in.ndc, aspect) - canopy(hud.a.xy, aspect),
+        (in.ndc - hud.a.xy) * vec2<f32>(aspect, 1.0),
+        flat,
+    );
     // Two depth layers: the glyphs float in front of the smoked panel, so
     // under rotation they parallax apart — same inertia vector as the
     // instrument cluster, same one piece of glass.
@@ -96,5 +105,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     // The panel is smoked glass, not a debug box: it dims with the canopy too.
-    return vec4<f32>(hud.backdrop.rgb * glass, hud.backdrop.a);
+    var back = vec4<f32>(hud.backdrop.rgb * glass, hud.backdrop.a);
+    if (flat) {
+        // A card: a hairline of the hologram's light at its edge, a
+        // dimmer rule under the header, and a soft band on the chosen row.
+        let edge = min(min(panel.x + pad, hud.extent.x + pad - panel.x),
+                       min(panel.y + pad, hud.extent.y + pad - panel.y));
+        let frame = 1.0 - smoothstep(0.35, 0.85, edge);
+        let rule = 1.0 - smoothstep(0.1, 0.5, abs(panel.y - 5.6)) * 1.0;
+        var band = 0.0;
+        if (hud.extent.w >= 0.0) {
+            band = step(hud.extent.w - 0.5, panel.y) * step(panel.y, hud.extent.w + hud.sway.w - 0.5);
+        }
+        back = vec4<f32>(
+            back.rgb + hud.color.rgb * (frame * 0.55 + rule * 0.18 + band * 0.07) * scan,
+            min(back.a + frame * 0.15 + band * 0.08, 1.0),
+        );
+    }
+    return back;
 }

@@ -146,11 +146,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         p = duv.xy;
     }
-    // Turned about its own axis (p1.w, radians).
-    let rot = gauge.p1.w;
-    let cr = cos(rot);
-    let sr = sin(rot);
-    p = vec2<f32>(cr * p.x - sr * p.y, sr * p.x + cr * p.y);
+    // Tilted (p1.w, radians): in the dash the face plane itself leans,
+    // handled above; on the glass a hologram leaned off the pilot's line
+    // of sight foreshortens, top edge nearer.
+    if (!in_dash) {
+        let tilt = gauge.p1.w;
+        let lean = max(cos(tilt), 0.35);
+        let persp = 1.0 - 0.35 * sin(tilt) * p.y / 0.2;
+        p = vec2<f32>(p.x * persp, p.y / lean * persp);
+    }
     let radius = 0.155;
 
     // Early out: everything (shock ring included) lives inside this.

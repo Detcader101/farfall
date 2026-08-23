@@ -29,7 +29,8 @@ struct Cockpit {
     // xyz: the Sun's direction in ship frame. w: exposure
     sun: vec4<f32>,
     // Sockets: xyz the hologram's direction from the head (ship frame), w
-    // 0 if unused, else 1 + style (0 TRON, 1 JET, 2 DIAL) + 10 × size.
+    // 0 if unused, else 1 + style (0 TRON, 1 JET, 2 DIAL) + 10 × round(size
+    // × 100) + 10000 × (tilt in whole degrees + 60).
     pad0: vec4<f32>,
     pad1: vec4<f32>,
     pad2: vec4<f32>,
@@ -67,7 +68,8 @@ const DASH_N: vec3<f32> = vec3<f32>(0.0, 0.9563, 0.2924); // 17 degrees back
 
 struct Hit {
     d: f32,
-    // 0 hull metal, 1 dash/console metal, 2 arch/rail, 3 socket rim
+    // 0 hull metal, 1 dash/console metal, 2 arch/rail, 3 socket rim,
+    // 4 a dial's face plate
     kind: f32,
 }
 
@@ -134,15 +136,20 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
     // a raised rim.
     let n = i32(ck.misc.w);
     var rim = 1e9;
+    var face = 1e9;
     // Only near the dash and consoles are there sockets to cut.
     let near_dash = furniture < 0.2;
     for (var i = 0; i < 4; i += 1) {
         if (i >= n || !near_dash) { break; }
         let pd = pad_dir(i);
         if (pd.w < 0.5) { continue; }
-        // w = (style + 1) + 10 × round(size × 100): exact integers.
+        // w = (style + 1) + 10 × round(size × 100) + 10000 × (tilt° + 60):
+        // exact integers.
         let style = pd.w - 10.0 * floor(pd.w / 10.0) - 1.0;
-        let size = max(floor(pd.w / 10.0) / 100.0, 0.25);
+        let hundredths = floor(pd.w / 10.0);
+        let tilt_code = floor(hundredths / 1000.0);
+        let size = max((hundredths - 1000.0 * tilt_code) / 100.0, 0.25);
+        let tilt = radians(tilt_code - 60.0);
         let c = socket_centre(pd.xyz);
         // The socket's geometry in its own scaled space: distances come
         // back multiplied by the size, so the march stays honest.
@@ -150,14 +157,27 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
         let along = dot(q, DASH_N);
         let radial = length(q - DASH_N * along);
         if (style > 1.5) {
-            // DIAL: a shallow flush well, the instrument's face set into
-            // the dash a finger deep behind a raised bezel — the face
-            // itself is drawn in this plane by the gauge pass. The cut
-            // reaches above the surface too, or it is flush and cuts
-            // nothing.
-            let well = max(radial - 0.205, abs(along - 0.01) - 0.06) * size;
+            // DIAL: a flush well behind a raised bezel, the instrument's
+            // face a black plate at its floor — opaque, nothing of the
+            // dash's insides shows — drawn over by the gauge pass in the
+            // same plane. Tilted toward the pilot, the whole instrument
+            // leans on its axis: a housing rises out of the dash on the
+            // far side to carry it. The cut reaches above the surface
+            // too, or it is flush and cuts nothing.
+            let tn = dial_tilted_normal(DASH_N, tilt);
+            let ta = dot(q, tn);
+            let tr = length(q - tn * ta);
+            let housing = max(tr - 0.252, abs(ta + 0.05) - 0.06) * size;
+            furniture = min(furniture, housing);
+            // The well is cut clear through whatever dash rises over the
+            // leaned face (a 60° lean buries its near edge 18 cm deep),
+            // wide enough that the markings stay on the plate, inside
+            // the bezel.
+            let well = max(tr - 0.225, abs(ta - 0.11) - 0.125) * size;
             furniture = max(furniture, -well);
-            let bezel = (length(vec2<f32>(radial - 0.215, along - 0.012)) - 0.016) * size;
+            let plate = max(tr - 0.226, abs(ta + 0.017) - 0.003) * size;
+            face = min(face, plate);
+            let bezel = (length(vec2<f32>(tr - 0.237, ta - 0.012)) - 0.016) * size;
             rim = min(rim, bezel);
         } else if (style > 0.5) {
             // JET: a spherical bowl hollowed into the dash, the classic
@@ -179,6 +199,7 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
     }
     if (furniture < h.d) { h = Hit(furniture, 1.0); }
     if (rim < h.d) { h = Hit(rim, 3.0); }
+    if (face < h.d) { h = Hit(face, 4.0); }
     // The frame is all above y = -0.35: below -0.4 the gap to that height
     // is a safe lower bound — and one that never reaches zero, so the
     // march cannot mistake the bound's plane for a surface.
@@ -385,9 +406,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         var lit = (base * (0.22 + 0.9 * ndl) + env * (0.15 + 0.55 * fresnel)) * ao
             + vec3<f32>(0.9, 0.95, 1.0) * spec * 0.35;
+        if (hit.kind > 3.5) {
+            // A dial's face plate: matte black, no mirror, barely lit —
+            // the markings the gauge pass draws are what shows.
+            lit = vec3<f32>(0.004, 0.004, 0.0045) * (0.3 + 0.7 * ndl) * ao;
+        }
         // The socket rims are lit from within (TRON); a JET bezel is a
         // brushed ring with a thread of light at its inner edge.
-        if (hit.kind > 2.5) {
+        if (hit.kind > 2.5 && hit.kind < 3.5) {
             lit = select(cyan * 1.0 * glow_k, lit * 1.6 + cyan * 0.12 * glow_k, ck.misc.y > 0.5);
         }
         // Emissive lines where the surface runs near one of the light

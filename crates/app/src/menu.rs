@@ -1,17 +1,17 @@
-//! The in-game menu: graphics, controls, cockpit — on the same glass as
-//! everything else.
+//! The in-game menu — GFX / KEYS / CABIN / GAUGES — a flat panel on the
+//! screen while the sim is paused.
 //!
 //! Rendered through the HUD text pass (a bit mask the GPU draws on the
 //! canopy), driven by the keyboard, editing [`Settings`] in place. Esc
 //! opens it and closes it; while it is open the sim is paused and the
 //! flight keys are released, because a pilot reading a menu is not flying.
 //!
-//! Three pages, Tab between them. Up/Down moves, Left/Right changes a
+//! Four pages, Tab between them. Up/Down moves, Left/Right changes a
 //! value, Enter starts a key rebind (the next key pressed takes it; Esc
 //! cancels). Every change is applied at once and written to the settings
 //! file; there is no "save" — the file is the state.
 
-use crate::cockpit::{Instrument, SAFE_EDGE_MAX};
+use crate::cockpit::Instrument;
 use crate::input::{is_reserved, key_name, Action};
 use crate::settings::{
     Settings, COCKPIT_RES_CHOICES, FOV_MAX, FOV_MIN, HOOP_SIZE_MAX, HOOP_SIZE_MIN,
@@ -84,7 +84,6 @@ enum Item {
     BindBrake,
     BindDespin,
     Slot(Instrument),
-    SafeEdge,
     HoopSize,
     LandingHoops,
     CockpitFrame,
@@ -100,7 +99,7 @@ enum Item {
     DialSize,
     DialStyle,
     DialFade,
-    DialRot,
+    DialTilt,
     MapRings,
     MapGrid,
     LookSens,
@@ -121,7 +120,6 @@ impl Item {
             Item::BindBrake => "AIR BRAKE",
             Item::BindDespin => "DESPIN",
             Item::Slot(i) => i.name(),
-            Item::SafeEdge => "SAFE EDGE",
             Item::HoopSize => "HOOP SIZE",
             Item::LandingHoops => "LANDING HOOPS",
             Item::CockpitFrame => "CABIN FRAME",
@@ -136,7 +134,7 @@ impl Item {
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
             Item::DialFade => "  FADE",
-            Item::DialRot => "  ROTATE",
+            Item::DialTilt => "  TILT",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
@@ -160,7 +158,6 @@ impl Item {
                 Some(_) => "DRAGGED".to_string(),
                 None => s.layout.get(i).name().to_string(),
             },
-            Item::SafeEdge => format!("{:.0}%", s.layout.safe_edge * 100.0),
             Item::HoopSize => format!("{:.2}x", s.hoop_size),
             Item::LandingHoops => format!("{:.0}M", s.landing_spacing_m),
             Item::CockpitFrame => if s.cockpit_frame { "ON" } else { "OFF" }.to_string(),
@@ -175,7 +172,7 @@ impl Item {
             Item::DialSize => String::new(),
             Item::DialStyle => String::new(),
             Item::DialFade => String::new(),
-            Item::DialRot => String::new(),
+            Item::DialTilt => String::new(),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
@@ -255,23 +252,29 @@ impl Menu {
                 v.push(Item::LookSens);
                 v
             }
+            // The cabin: the ship around the pilot and what hangs outside
+            // it (the path's hoops). No safe edge: the glass has no margin.
             Page::Cockpit => vec![
                 Item::CockpitFrame,
                 Item::CockpitGlow,
                 Item::CockpitHull,
-                Item::SafeEdge,
                 Item::HoopSize,
                 Item::LandingHoops,
-                Item::Guide,
             ],
+            // The gauges: the cockpit-wide look, then one dial's own
+            // numbers, then where each instrument sits (or OFF).
             Page::Gauges => {
-                let mut v: Vec<Item> = vec![Item::GaugeStyle, Item::GaugesStay];
+                let mut v: Vec<Item> = vec![
+                    Item::GaugeStyle,
+                    Item::GaugesStay,
+                    Item::Guide,
+                    Item::DialSelect,
+                    Item::DialSize,
+                    Item::DialStyle,
+                    Item::DialFade,
+                    Item::DialTilt,
+                ];
                 v.extend(Instrument::ALL.iter().map(|&i| Item::Slot(i)));
-                v.push(Item::DialSelect);
-                v.push(Item::DialSize);
-                v.push(Item::DialStyle);
-                v.push(Item::DialFade);
-                v.push(Item::DialRot);
                 v
             }
             Page::Map => vec![
@@ -531,29 +534,17 @@ impl Menu {
             }
             Item::DialStyle => {
                 let d = &mut s.dials[self.dial as usize];
-                d.style = match (d.style, forward) {
-                    (None, true) => Some(crate::settings::GaugeStyle::Tron),
-                    (Some(crate::settings::GaugeStyle::Tron), true) => {
-                        Some(crate::settings::GaugeStyle::Jet)
-                    }
-                    (Some(crate::settings::GaugeStyle::Jet), true) => {
-                        Some(crate::settings::GaugeStyle::Dial)
-                    }
-                    (Some(crate::settings::GaugeStyle::Dial), true) => None,
-                    (None, false) => Some(crate::settings::GaugeStyle::Dial),
-                    (Some(crate::settings::GaugeStyle::Dial), false) => {
-                        Some(crate::settings::GaugeStyle::Jet)
-                    }
-                    (Some(crate::settings::GaugeStyle::Jet), false) => {
-                        Some(crate::settings::GaugeStyle::Tron)
-                    }
-                    (Some(crate::settings::GaugeStyle::Tron), false) => None,
-                };
+                d.style = crate::settings::next_dial_style(d.style, self.dial, forward);
                 MenuEvent::Changed(Change::Layout)
             }
-            Item::DialRot => {
+            Item::DialTilt => {
                 let d = &mut s.dials[self.dial as usize];
-                d.rot_deg = (d.rot_deg + if forward { 15.0 } else { -15.0 }).rem_euclid(360.0);
+                let next = (d.tilt_deg + if forward { 5.0 } else { -5.0 })
+                    .clamp(crate::settings::TILT_MIN, crate::settings::TILT_MAX);
+                if (next - d.tilt_deg).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                d.tilt_deg = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::DialFade => {
@@ -601,15 +592,6 @@ impl Menu {
                 s.hoop_size = next;
                 MenuEvent::Changed(Change::Layout)
             }
-            Item::SafeEdge => {
-                let step = if forward { 0.01 } else { -0.01 };
-                let next = (s.layout.safe_edge + step).clamp(0.0, SAFE_EDGE_MAX);
-                if (next - s.layout.safe_edge).abs() < 1e-6 {
-                    return MenuEvent::Nothing;
-                }
-                s.layout.set_safe_edge(next);
-                MenuEvent::Changed(Change::Layout)
-            }
             Item::Quit | Item::Bind(_) | Item::BindBoost | Item::BindBrake | Item::BindDespin => {
                 MenuEvent::Nothing
             }
@@ -639,16 +621,14 @@ impl Menu {
                 Some(false) => "FADE",
             }
             .to_string(),
-            Item::DialRot => format!("{:.0} DEG", d.rot_deg),
+            Item::DialTilt => format!("{:+.0} DEG", d.tilt_deg),
             other => other.value(s),
         }
     }
 
-    /// Draw the menu into the text bitmap.
-    pub fn render(&self, text: &mut TextBitmap, s: &Settings) {
-        text.clear();
-        // Header: the pages, the current one bracketed — or, for a panel
-        // of its own, just its name.
+    /// The header row: the pages, the current one bracketed — or, for a
+    /// panel of its own, just its name.
+    fn header(&self) -> String {
         let mut header = String::new();
         if self.standalone {
             header.push_str(&format!("[{}]  WORMHOLE DRIVE", self.page.name()));
@@ -662,25 +642,51 @@ impl Menu {
                 }
             }
         }
-        text.draw(0, 0, &header);
+        header
+    }
+
+    /// One item's row: the cursor mark, the label, the value right-aligned
+    /// — always exactly COLS wide.
+    fn line(&self, item: Item, selected: bool, s: &Settings) -> String {
+        let value = if selected && self.rebinding {
+            "PRESS KEY".to_string()
+        } else {
+            self.value_of(item, s)
+        };
+        let mark = if selected { ">" } else { " " };
+        let label = item.label();
+        let pad = COLS.saturating_sub(1 + label.len() + value.len()).max(1);
+        format!("{mark}{label}{}{value}", " ".repeat(pad))
+    }
+
+    fn footer(&self) -> &'static str {
+        if self.rebinding {
+            "ESC CANCEL"
+        } else {
+            match self.page {
+                Page::Controls => "TAB PAGE  ENTER BIND  ESC BACK",
+                Page::Map => "< > SET  ENTER ENGAGE  M CLOSE",
+                _ => "TAB PAGE  < > ADJUST  ESC BACK",
+            }
+        }
+    }
+
+    /// The chosen row's top and height in font pixels, for the card's band.
+    pub fn cursor_row_px(&self) -> (f32, f32) {
+        let row = self.cursor.saturating_sub(self.scroll) + 1;
+        ((row * ROW_PX) as f32, ROW_PX as f32)
+    }
+
+    /// Draw the menu into the text bitmap.
+    pub fn render(&self, text: &mut TextBitmap, s: &Settings) {
+        text.clear();
+        text.draw(0, 0, &self.header());
 
         let items = self.items();
         let end = (self.scroll + VISIBLE_ITEMS).min(items.len());
         for (row, idx) in (self.scroll..end).enumerate() {
-            let item = items[idx];
             let y = (row + 1) * ROW_PX;
-            let selected = idx == self.cursor;
-            let value = if selected && self.rebinding {
-                "PRESS KEY".to_string()
-            } else {
-                self.value_of(item, s)
-            };
-            let mark = if selected { ">" } else { " " };
-            let label = item.label();
-            // Value right-aligned to the row.
-            let pad = COLS.saturating_sub(1 + label.len() + value.len());
-            let line = format!("{mark}{label}{}{value}", " ".repeat(pad));
-            text.draw(0, y, &line);
+            text.draw(0, y, &self.line(items[idx], idx == self.cursor, s));
         }
         // Scroll marks.
         if self.scroll > 0 {
@@ -689,17 +695,7 @@ impl Menu {
         if end < items.len() {
             text.draw(124, VISIBLE_ITEMS * ROW_PX, "V");
         }
-
-        let footer = if self.rebinding {
-            "ESC CANCEL"
-        } else {
-            match self.page {
-                Page::Controls => "TAB PAGE  ENTER BIND  ESC BACK",
-                Page::Map => "< > SET  ENTER ENGAGE  M CLOSE",
-                _ => "TAB PAGE  < > ADJUST  ESC BACK",
-            }
-        };
-        text.draw(0, (VISIBLE_ITEMS + 1) * ROW_PX, footer);
+        text.draw(0, (VISIBLE_ITEMS + 1) * ROW_PX, self.footer());
     }
 }
 
@@ -782,18 +778,13 @@ mod tests {
         m.toggle();
         m.key(KeyCode::Tab, &mut s);
         m.key(KeyCode::Tab, &mut s);
-        m.key(KeyCode::Tab, &mut s); // gauges: style, stay, then the slots
-        for _ in 0..2 {
-            m.key(KeyCode::ArrowDown, &mut s);
-        }
-        assert_eq!(
-            m.key(KeyCode::ArrowRight, &mut s),
-            MenuEvent::Changed(Change::Layout)
-        );
-        assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
-        // The per-dial block at the page's end: select the gyro, size it.
-        let items = m.items().len();
-        for _ in 0..(items - 2 - 5) {
+        m.key(KeyCode::Tab, &mut s); // gauges: style, stay, guide, the dial block, the slots
+        assert_eq!(m.page, Page::Gauges);
+        let items = m.items();
+        let at = |it: Item| items.iter().position(|&x| x == it).unwrap();
+        // The per-dial block comes before the long list of slots.
+        assert!(at(Item::DialSelect) < at(Item::Slot(Instrument::Speed)));
+        for _ in 0..at(Item::DialSelect) {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         m.key(KeyCode::ArrowRight, &mut s); // DIAL: speed -> altitude
@@ -801,11 +792,134 @@ mod tests {
         m.key(KeyCode::ArrowDown, &mut s);
         m.key(KeyCode::ArrowRight, &mut s); // SIZE
         assert_eq!(s.dials[Instrument::Altitude as usize].size, 1.125);
+        for _ in 0..3 {
+            m.key(KeyCode::ArrowDown, &mut s);
+        }
+        assert_eq!(items[m.cursor], Item::DialTilt);
+        assert_eq!(
+            m.key(KeyCode::ArrowLeft, &mut s),
+            MenuEvent::Changed(Change::Layout)
+        );
+        assert_eq!(s.dials[Instrument::Altitude as usize].tilt_deg, -5.0);
+        assert_eq!(m.value_of(Item::DialTilt, &s), "-5 DEG");
+        for _ in 0..30 {
+            m.key(KeyCode::ArrowRight, &mut s);
+        }
+        assert_eq!(
+            s.dials[Instrument::Altitude as usize].tilt_deg,
+            crate::settings::TILT_MAX,
+            "tilt stops at the limit"
+        );
+        assert_eq!(m.key(KeyCode::ArrowRight, &mut s), MenuEvent::Nothing);
+        for _ in 0..(at(Item::Slot(Instrument::Speed)) - at(Item::DialTilt)) {
+            m.key(KeyCode::ArrowDown, &mut s);
+        }
+        assert_eq!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::Changed(Change::Layout)
+        );
+        assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
         m.key(KeyCode::Tab, &mut s); // back to graphics
         for _ in 0..5 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Quit);
+    }
+
+    /// Settings at their longest values, to try the rows' width.
+    fn widest_settings() -> Settings {
+        let mut s = Settings {
+            scale: 1.0,
+            fov: FOV_MAX,
+            landing_spacing_m: *LANDING_SPACINGS.last().unwrap(),
+            hoop_size: HOOP_SIZE_MAX,
+            cockpit_glow: 10.0,
+            look_sensitivity: 10.0,
+            ..Default::default()
+        };
+        s.layout.set_free(Instrument::Speed, [0.0, 0.0]);
+        for d in s.dials.iter_mut() {
+            d.size = crate::settings::DIAL_SIZE_MAX;
+            d.tilt_deg = crate::settings::TILT_MIN;
+            d.style = Some(crate::settings::GaugeStyle::Dial);
+            d.stay = Some(false);
+        }
+        s
+    }
+
+    #[test]
+    fn every_row_of_every_page_fits_the_panel() {
+        for s in [Settings::default(), widest_settings()] {
+            for mut m in [Menu::new(), Menu::map_panel()] {
+                m.toggle();
+                for _ in 0..Page::ALL.len() {
+                    assert!(
+                        m.header().len() <= COLS,
+                        "{} page header is too wide: {:?}",
+                        m.page.name(),
+                        m.header()
+                    );
+                    assert!(m.footer().len() <= COLS, "{:?}", m.footer());
+                    for item in m.items() {
+                        for selected in [false, true] {
+                            let line = m.line(item, selected, &s);
+                            assert_eq!(
+                                line.len(),
+                                COLS,
+                                "{} page, {:?}: {line:?}",
+                                m.page.name(),
+                                item
+                            );
+                            // Label and value never run into each other.
+                            assert!(line[1 + item.label().len()..].starts_with(' '), "{line:?}");
+                        }
+                    }
+                    m.key(KeyCode::Tab, &mut s.clone());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_pages_are_categories_that_make_sense() {
+        let mut m = Menu::new();
+        m.toggle();
+        let mut seen: Vec<Item> = Vec::new();
+        for page in Page::ALL {
+            m.set_page(page);
+            let items = m.items();
+            assert!(!items.is_empty());
+            for it in &items {
+                assert!(!seen.contains(it), "{it:?} is on two pages");
+            }
+            seen.extend(items.iter().copied());
+            let on = |it: Item| items.contains(&it);
+            match page {
+                Page::Graphics => {
+                    assert!(on(Item::Msaa) && on(Item::Fov) && on(Item::CockpitRes));
+                    assert_eq!(*items.last().unwrap(), Item::Quit, "QUIT is the last thing");
+                }
+                Page::Controls => {
+                    assert!(items.iter().all(|i| i.rebindable() || *i == Item::LookSens));
+                    assert!(on(Item::BindDespin));
+                }
+                Page::Cockpit => {
+                    assert!(on(Item::CockpitFrame) && on(Item::HoopSize));
+                    assert!(!on(Item::GaugeStyle) && !on(Item::Guide));
+                }
+                Page::Gauges => {
+                    assert!(on(Item::GaugeStyle) && on(Item::GaugesStay) && on(Item::Guide));
+                    assert!(on(Item::DialTilt) && on(Item::Slot(Instrument::Gyro)));
+                }
+                Page::Map => unreachable!(),
+            }
+        }
+        // The map's own page has the drive and its look, nothing else.
+        m.set_page(Page::Map);
+        assert!(m.items().iter().all(|i| matches!(
+            i,
+            Item::Destination | Item::SafeDist | Item::Engage | Item::MapRings | Item::MapGrid
+        )));
     }
 
     #[test]

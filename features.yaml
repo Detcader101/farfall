@@ -51,10 +51,10 @@ features:
     e2e: captures
 
   - id: menu-settings
-    name: In-game menu (GRAPHICS / CONTROLS / COCKPIT / MAP) and settings file
+    name: In-game menu — GFX / KEYS / CABIN / GAUGES pages, a flat framed card on the screen with the chosen row banded; every row proven to fit; settings file
     state: complete
-    tests: [crates/app/src/menu.rs, crates/app/src/settings.rs]
-    e2e: captures with the menu open
+    tests: [crates/app/src/menu.rs::every_row_of_every_page_fits_the_panel, crates/app/src/menu.rs::the_pages_are_categories_that_make_sense, crates/app/src/settings.rs]
+    e2e: FARFALL_BENCH_MENU=3 capture — GAUGES page, rows aligned, card framed
 
   - id: relativity
     name: Light limit above 9,500 m/s; mouldable speed units
@@ -187,11 +187,18 @@ features:
     e2e: needs a flight under throttle / an FOV change (bench cannot flare the FOV)
 
   - id: design-mode
-    name: DESIGN mode (K) — guide on, the mouse cursor as pointer (hover, click-drag, the readout too), a card of the hovered dial's own settings; per-dial SIZE / STYLE / FADE / ROTATE saved individually (ui.<dial>.size/style/fade/rot); the same block on the menu's GAUGES page; JET (solid shaded ball) offered for the gyro only; DIAL in a period palette
+    name: DESIGN mode (K) — guide on, the mouse cursor as pointer (hover, click-drag, the readout too), a card of the hovered dial's own settings; per-dial SIZE / STYLE / FADE / TILT saved individually (ui.<dial>.size/style/fade/tilt); the same block on the menu's GAUGES page; every style open to every dial; DIAL in a period palette
     state: complete
-    tests: [crates/app/src/settings.rs::edits_round_trip, crates/render/src/cabin.rs]
-    settings: [ui.<dial>.size, ui.<dial>.style, ui.<dial>.fade]
+    tests: [crates/app/src/settings.rs::edits_round_trip, crates/app/src/settings.rs::dials_stay_lit_by_default_and_every_style_is_open_to_every_dial, crates/render/src/cabin.rs]
+    settings: [ui.<dial>.size, ui.<dial>.style, ui.<dial>.fade, ui.<dial>.tilt]
     e2e: FARFALL_BENCH_DESIGN=1 capture — per-dial bowls/wells at their own sizes, reach rings, gaze reticle
+
+  - id: dial-tilt
+    name: Dials lean toward the pilot (±60°) — a DIAL's face plane turns on its horizontal axis in a housing that rises from the dash, the well cut clear through; a hologram foreshortens; the face plate is opaque matte black so the well shows nothing of the dash's inside
+    state: complete
+    tests: [crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin, crates/app/src/settings.rs::a_tilt_is_held_within_reach, crates/app/src/menu.rs::cockpit_page_cycles_slots_and_quit_quits]
+    settings: [ui.<dial>.tilt]
+    e2e: FARFALL_BENCH_HEAD=20,-26 capture — speedo at +40° in its pod, black face, readable; altimeter at -30° in the left console
 
   - id: despin
     name: Emergency gyro (Z, rebindable DESPIN) — kills any spin on a fixed time constant in the sim
@@ -200,15 +207,20 @@ features:
     e2e: deterministic sim; key wired like boost/brake
 
   - id: panels-screen-fixed
-    name: Pause panels (settings, map/DRIVE) fixed to the screen and dragged with the cursor; the readout a glass element with no safe area
-    state: tests-pass
-    e2e: needs a flight
+    name: Pause panels (settings, map/DRIVE) fixed to the screen, flat (no canopy warp), dragged with the cursor; the readout a glass element with no safe area
+    state: complete
+    e2e: FARFALL_BENCH_MENU=3 capture — values on their own rows, card flat over the arch
 
   - id: cabin-cached
     name: The cabin is re-marched only when the head, the light or a socket changes — small while moving, sharpened in four strips once still; thruster light drawn by the composite
     state: complete
     tests: [crates/render/src/cabin.rs]
     e2e: FARFALL_BENCH_FULL at 2880x1800 — 11 ms flying, 17 ms turning the head (was 31 ms)
+
+  - id: bench-menu
+    name: FARFALL_BENCH_MENU=n — the settings menu open on page n in a capture (headless captures now carry any panel's text at 1x MSAA)
+    state: complete
+    e2e: the menu captures above
 
   - id: bench-spin
     name: FARFALL_BENCH_SPIN=n — the head turns a full circle over the bench, n captures on the way

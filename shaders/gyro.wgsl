@@ -89,10 +89,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         p = duv.xy;
     }
-    let rot = gyro.p1.w;
-    let cr0 = cos(rot);
-    let sr0 = sin(rot);
-    p = vec2<f32>(cr0 * p.x - sr0 * p.y, sr0 * p.x + cr0 * p.y);
+    // Tilted (p1.w, radians): in the dash the face plane itself leans,
+    // handled above; on the glass a hologram leaned off the pilot's line
+    // of sight foreshortens, top edge nearer.
+    if (!in_dash) {
+        let tilt = gyro.p1.w;
+        let lean = max(cos(tilt), 0.35);
+        let persp = 1.0 - 0.35 * sin(tilt) * p.y / 0.2;
+        p = vec2<f32>(p.x * persp, p.y / lean * persp);
+    }
     if (length(p) > RADIUS * 1.35) {
         discard;
     }

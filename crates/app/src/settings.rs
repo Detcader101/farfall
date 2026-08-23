@@ -38,36 +38,37 @@ pub struct DialTweak {
     pub style: Option<GaugeStyle>,
     /// Stay lit / fade by relevance, or the cockpit's.
     pub stay: Option<bool>,
-    /// Turned about its own axis, degrees.
-    pub rot_deg: f32,
+    /// Leaned toward the pilot about its own horizontal axis, degrees
+    /// (−60..60): angles the face to read from where the pilot sits.
+    pub tilt_deg: f32,
 }
+
+pub const TILT_MIN: f32 = -60.0;
+pub const TILT_MAX: f32 = 60.0;
 
 impl DialTweak {
     pub const DEFAULT: DialTweak = DialTweak {
         size: 1.0,
         style: None,
         stay: None,
-        rot_deg: 0.0,
+        tilt_deg: 0.0,
     };
 }
 
-/// The next style a dial may take: the sphere (JET) is only for the gyro
-/// — the one instrument that is a ball; the rest are a hologram or a dial.
+/// The next style a dial may take: the cockpit's (auto), a hologram, a
+/// JET sphere or a flush DIAL. JET is offered to every instrument for
+/// now; the gyro is the one that is truly a ball.
 pub fn next_dial_style(
     cur: Option<GaugeStyle>,
-    dial: Instrument,
+    _dial: Instrument,
     forward: bool,
 ) -> Option<GaugeStyle> {
-    let ring: &[Option<GaugeStyle>] = if dial == Instrument::Gyro {
-        &[
-            None,
-            Some(GaugeStyle::Tron),
-            Some(GaugeStyle::Jet),
-            Some(GaugeStyle::Dial),
-        ]
-    } else {
-        &[None, Some(GaugeStyle::Tron), Some(GaugeStyle::Dial)]
-    };
+    let ring: &[Option<GaugeStyle>] = &[
+        None,
+        Some(GaugeStyle::Tron),
+        Some(GaugeStyle::Jet),
+        Some(GaugeStyle::Dial),
+    ];
     let i = ring.iter().position(|&s| s == cur).unwrap_or(0);
     let n = ring.len();
     ring[if forward {
@@ -77,14 +78,10 @@ pub fn next_dial_style(
     }]
 }
 
-/// A style as a given dial can actually take it: JET is the gyro's alone;
-/// for any other dial it means DIAL.
-pub fn style_for(style: GaugeStyle, dial: Instrument) -> GaugeStyle {
-    if style == GaugeStyle::Jet && dial != Instrument::Gyro {
-        GaugeStyle::Dial
-    } else {
-        style
-    }
+/// The style a dial actually takes for a chosen one: every style is
+/// open to every instrument for now.
+pub fn style_for(style: GaugeStyle, _dial: Instrument) -> GaugeStyle {
+    style
 }
 
 pub const DIAL_SIZE_MIN: f32 = 0.5;
@@ -223,7 +220,7 @@ impl Default for Settings {
             cockpit_res: 0.5,
             fov: 70.0,
             gauge_style: GaugeStyle::Tron,
-            gauges_stay: false,
+            gauges_stay: true,
             guide: false,
             dials: [DialTweak::DEFAULT; Instrument::ALL.len()],
             landing_spacing_m: 250.0,
@@ -453,10 +450,10 @@ impl Settings {
                                         GaugeStyle::from_key(v).or(d.style)
                                     }
                                 }
-                                "rot" => {
+                                "tilt" => {
                                     if let Ok(f) = v.parse::<f32>() {
                                         if f.is_finite() {
-                                            d.rot_deg = f.rem_euclid(360.0);
+                                            d.tilt_deg = f.clamp(TILT_MIN, TILT_MAX);
                                         }
                                     }
                                 }
@@ -602,7 +599,7 @@ impl Settings {
                         Some(false) => "fade",
                     }
                 ));
-                out.push_str(&format!("ui.{}.rot = {:.0}\n", i.key(), d.rot_deg));
+                out.push_str(&format!("ui.{}.tilt = {:.0}\n", i.key(), d.tilt_deg));
             }
         }
         out.push_str(&format!(
@@ -648,13 +645,13 @@ mod tests {
         s.cockpit_res = 1.0;
         s.fov = 85.0;
         s.gauge_style = GaugeStyle::Dial;
-        s.gauges_stay = true;
+        s.gauges_stay = false;
         s.guide = true;
         s.dials[Instrument::Speed as usize] = DialTweak {
             size: 1.5,
             style: Some(GaugeStyle::Dial),
             stay: Some(true),
-            rot_deg: 45.0,
+            tilt_deg: 45.0,
         };
         s.dials[Instrument::Gyro as usize].stay = Some(false);
         s.menu_anchor = [-0.25, 0.5];
@@ -664,6 +661,44 @@ mod tests {
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);
         assert_eq!(Settings::parse(&s.render()), s);
+    }
+
+    #[test]
+    fn dials_stay_lit_by_default_and_every_style_is_open_to_every_dial() {
+        assert!(
+            Settings::default().gauges_stay,
+            "gauges do not fade unless asked"
+        );
+        for i in Instrument::ALL {
+            let mut cur = None;
+            let mut seen = vec![cur];
+            for _ in 0..3 {
+                cur = next_dial_style(cur, i, true);
+                seen.push(cur);
+            }
+            assert_eq!(
+                seen,
+                vec![
+                    None,
+                    Some(GaugeStyle::Tron),
+                    Some(GaugeStyle::Jet),
+                    Some(GaugeStyle::Dial)
+                ],
+                "{i:?}"
+            );
+            assert_eq!(next_dial_style(cur, i, true), None, "and round");
+            assert_eq!(next_dial_style(None, i, false), Some(GaugeStyle::Dial));
+            assert_eq!(style_for(GaugeStyle::Jet, i), GaugeStyle::Jet);
+        }
+    }
+
+    #[test]
+    fn a_tilt_is_held_within_reach() {
+        let s = Settings::parse("ui.speed.tilt = 95\nui.gyro.tilt = -12\nui.g-meter.tilt = nan\n");
+        assert_eq!(s.dials[Instrument::Speed as usize].tilt_deg, TILT_MAX);
+        assert_eq!(s.dials[Instrument::Gyro as usize].tilt_deg, -12.0);
+        assert_eq!(s.dials[Instrument::GForce as usize].tilt_deg, 0.0);
+        assert!(s.render().contains("ui.gyro.tilt = -12\n"));
     }
 
     #[test]

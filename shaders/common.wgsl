@@ -328,9 +328,12 @@ fn sd_fighter_hull(q: vec3<f32>) -> f32 {
 // half the fov), and the dial's centre (w: metres per drawing unit).
 // The dial's basis: U along the ship's x, V = N x U on the dash plane.
 fn dial_plane_uv(ndc: vec2<f32>, aspect: f32, right: vec4<f32>, up: vec4<f32>,
-                 fwd: vec4<f32>, centre: vec4<f32>, normal: vec3<f32>) -> vec3<f32> {
+                 fwd: vec4<f32>, centre: vec4<f32>, dash_n: vec3<f32>) -> vec3<f32> {
     let tan_half = fwd.w;
     let ray = normalize(fwd.xyz + right.xyz * (ndc.x * tan_half * aspect) + up.xyz * (ndc.y * tan_half));
+    // The face's plane: the dash's, leaned toward the pilot by the tilt
+    // (up.w, radians) about the dial's own horizontal axis.
+    let normal = dial_tilted_normal(dash_n, up.w);
     let denom = dot(ray, normal);
     if (denom > -1e-4) {
         return vec3<f32>(0.0, 0.0, 0.0);
@@ -344,6 +347,14 @@ fn dial_plane_uv(ndc: vec2<f32>, aspect: f32, right: vec4<f32>, up: vec4<f32>,
     let v_axis = normalize(cross(normal, u_axis));
     let scale = max(centre.w, 1e-4);
     return vec3<f32>(dot(hit, u_axis) / scale, dot(hit, v_axis) / scale, 1.0);
+}
+
+// The dash normal leaned toward the pilot by `tilt` radians about +X —
+// the mirror of Placement::tilted_normal in cabin.rs.
+fn dial_tilted_normal(dash_n: vec3<f32>, tilt: f32) -> vec3<f32> {
+    let c = cos(tilt);
+    let s = sin(tilt);
+    return normalize(dash_n * c + cross(vec3<f32>(1.0, 0.0, 0.0), dash_n) * s);
 }
 
 // The dash's plane, shared with the cockpit: a point on it and its normal.
