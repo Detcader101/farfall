@@ -14,8 +14,8 @@
 use crate::cockpit::Instrument;
 use crate::input::{is_reserved, key_name, Action};
 use crate::settings::{
-    Settings, COCKPIT_RES_CHOICES, FOV_MAX, FOV_MIN, HOOP_SIZE_MAX, HOOP_SIZE_MIN,
-    LANDING_SPACINGS, MSAA_CHOICES,
+    Settings, COCKPIT_RES_CHOICES, FOV_MAX, FOV_MIN, FPS_FLOOR_CHOICES, HOOP_SIZE_MAX,
+    HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
 };
 use farfall_render::text::TextBitmap;
 use winit::keyboard::KeyCode;
@@ -90,6 +90,7 @@ enum Item {
     CockpitGlow,
     CockpitHull,
     CockpitRes,
+    FpsFloor,
     Fov,
     GaugeStyle,
     GaugesStay,
@@ -126,6 +127,7 @@ impl Item {
             Item::CockpitGlow => "CABIN GLOW",
             Item::CockpitHull => "CABIN METAL",
             Item::CockpitRes => "CABIN DETAIL",
+            Item::FpsFloor => "FPS FLOOR",
             Item::Fov => "FOV",
             Item::GaugeStyle => "GAUGE STYLE",
             Item::GaugesStay => "GAUGES",
@@ -164,6 +166,13 @@ impl Item {
             Item::CockpitGlow => format!("{:.2}x", s.cockpit_glow),
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
+            Item::FpsFloor => {
+                if s.fps_floor > 0.0 {
+                    format!("{:.0}", s.fps_floor)
+                } else {
+                    "OFF".to_string()
+                }
+            }
             Item::Fov => format!("{:.0} DEG", s.fov),
             Item::GaugeStyle => s.gauge_style.name().to_string(),
             Item::GaugesStay => if s.gauges_stay { "STAY" } else { "FADE" }.to_string(),
@@ -242,6 +251,7 @@ impl Menu {
                 Item::Vsync,
                 Item::Fov,
                 Item::CockpitRes,
+                Item::FpsFloor,
                 Item::Quit,
             ],
             Page::Controls => {
@@ -570,6 +580,20 @@ impl Menu {
                 s.cockpit_res = COCKPIT_RES_CHOICES[j];
                 MenuEvent::Changed(Change::Graphics)
             }
+            Item::FpsFloor => {
+                let n = FPS_FLOOR_CHOICES.len();
+                let i = FPS_FLOOR_CHOICES
+                    .iter()
+                    .position(|&x| (x - s.fps_floor).abs() < 1e-6)
+                    .unwrap_or(2);
+                let j = if forward {
+                    (i + 1) % n
+                } else {
+                    (i + n - 1) % n
+                };
+                s.fps_floor = FPS_FLOOR_CHOICES[j];
+                MenuEvent::Changed(Change::Graphics)
+            }
             Item::MapRings => {
                 let n = crate::map::RINGS_MAX + 1;
                 s.map_rings = if forward {
@@ -820,7 +844,7 @@ mod tests {
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
         m.key(KeyCode::Tab, &mut s); // back to graphics
-        for _ in 0..5 {
+        for _ in 0..6 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Quit);
@@ -897,6 +921,7 @@ mod tests {
             match page {
                 Page::Graphics => {
                     assert!(on(Item::Msaa) && on(Item::Fov) && on(Item::CockpitRes));
+                    assert!(on(Item::FpsFloor));
                     assert_eq!(*items.last().unwrap(), Item::Quit, "QUIT is the last thing");
                 }
                 Page::Controls => {

@@ -148,6 +148,10 @@ pub const FOV_MAX: f32 = 110.0;
 /// The cabin's render sizes on offer, as fractions of the scene.
 pub const COCKPIT_RES_CHOICES: [f32; 3] = [0.5, 0.75, 1.0];
 
+/// Frame-rate floors on offer (0: none). The cabin's moving detail gives
+/// way while turning the head would cost more than the floor allows.
+pub const FPS_FLOOR_CHOICES: [f32; 5] = [0.0, 30.0, 60.0, 90.0, 120.0];
+
 /// The landing hoops' spacings on offer, metres.
 pub const LANDING_SPACINGS: [f32; 4] = [100.0, 250.0, 500.0, 1000.0];
 
@@ -180,6 +184,8 @@ pub struct Settings {
     pub cockpit_hull: f32,
     /// The cabin is drawn at this fraction of the scene's size.
     pub cockpit_res: f32,
+    /// The least frame rate the pilot will have, or 0 for no floor.
+    pub fps_floor: f32,
     /// Base field of view, degrees (vertical).
     pub fov: f32,
     /// Gauge style: TRON holograms on the glass; JET bowls hollowed into
@@ -218,6 +224,7 @@ impl Default for Settings {
             cockpit_glow: 1.0,
             cockpit_hull: 0.92,
             cockpit_res: 0.5,
+            fps_floor: 60.0,
             fov: 70.0,
             gauge_style: GaugeStyle::Tron,
             gauges_stay: true,
@@ -366,6 +373,13 @@ impl Settings {
                     "off" => s.guide = false,
                     _ => {}
                 },
+                "graphics.fps-floor" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if FPS_FLOOR_CHOICES.contains(&f) {
+                            s.fps_floor = f;
+                        }
+                    }
+                }
                 "cockpit.res" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if COCKPIT_RES_CHOICES.contains(&f) {
@@ -548,6 +562,7 @@ impl Settings {
         out.push_str(&format!("cockpit.glow = {:.2}\n", self.cockpit_glow));
         out.push_str(&format!("cockpit.hull = {:.2}\n", self.cockpit_hull));
         out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
+        out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.fov = {:.0}\n", self.fov));
         out.push_str(&format!("ui.gauge-style = {}\n", self.gauge_style.key()));
         out.push_str(&format!(
@@ -643,6 +658,7 @@ mod tests {
         s.cockpit_glow = 1.5;
         s.cockpit_hull = 0.25;
         s.cockpit_res = 1.0;
+        s.fps_floor = 90.0;
         s.fov = 85.0;
         s.gauge_style = GaugeStyle::Dial;
         s.gauges_stay = false;

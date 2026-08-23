@@ -222,6 +222,19 @@ features:
     state: complete
     e2e: the menu captures above
 
+  - id: fps-floor
+    name: FPS FLOOR (graphics.fps-floor, default 60) — a governor on the cabin's moving size; while turning the head costs more than the floor allows, the moving march shrinks (to 0.3 of the still size) and grows back when there is room; the sharp cabin is untouched
+    state: complete
+    tests: [crates/render/src/cabin.rs::the_governor_trades_moving_detail_for_the_floor_and_gives_it_back]
+    settings: [graphics.fps-floor]
+    e2e: FARFALL_BENCH_SPIN=4 FARFALL_BENCH_FULL=1 at 2880x1800, cabin detail 100% — was 49 fps avg uncapped, now 76.6 avg / 60.8 1% low; 59.1 avg under vsync
+
+  - id: readout-drag-freelook
+    name: The readout block is picked up by the gaze under freelook (not only in DESIGN)
+    state: complete
+    tests: [crates/app/src/main.rs::the_readout_block_is_picked_up_by_the_gaze_while_looking]
+    e2e: needs a flight — look at the readout, left button, turn the head
+
   - id: bench-spin
     name: FARFALL_BENCH_SPIN=n — the head turns a full circle over the bench, n captures on the way
     state: complete

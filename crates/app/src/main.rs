@@ -621,7 +621,13 @@ impl Gpu {
 
     /// Close out the frame: record its duration, refresh the live readout in
     /// the title bar, and periodically summarise the window to the log.
-    fn frame_timing(&mut self, cpu_seconds: f64, wait_seconds: f64, readout: &Readout) {
+    fn frame_timing(
+        &mut self,
+        cpu_seconds: f64,
+        wait_seconds: f64,
+        fps_floor: f32,
+        readout: &Readout,
+    ) {
         let Readout {
             altitude_m,
             speed_mps,
@@ -637,6 +643,11 @@ impl Gpu {
         let dt = now.duration_since(self.perf.last_frame).as_secs_f64();
         self.perf.last_frame = now;
         self.perf.stats.record(dt);
+        // The floor: the cabin's moving detail answers for a slow frame
+        // spent re-marching it.
+        self.passes
+            .cabin
+            .govern(&self.device, (dt * 1000.0) as f32, fps_floor);
 
         // 4 Hz is fast enough to feel live and slow enough to stay readable.
         if now.duration_since(self.perf.last_title) >= Duration::from_millis(250) {
@@ -1685,8 +1696,9 @@ impl Game {
             }
             return false;
         }
-        // In design mode the readout's block can be taken too.
-        if self.design {
+        // The readout's block is a glass element like a dial: the gaze
+        // while looking, or the cursor in design mode, takes it too.
+        {
             let a = self.settings.readout_anchor;
             let on_text = gaze[0] >= a[0] - 0.02
                 && gaze[0] <= a[0] + text_w + 0.02
@@ -2716,6 +2728,7 @@ impl ApplicationHandler for App {
                 gpu.frame_timing(
                     cpu_seconds,
                     wait_seconds,
+                    game.settings.fps_floor,
                     &Readout {
                         altitude_m: game.altitude_vspeed().0,
                         speed_mps: game.state.ship.vel_mps.length(),
@@ -2821,6 +2834,33 @@ mod tests {
     /// pilot's point of view. Comments lie; this is what caught the frame being
     /// declared left-handed while the rotation math was right-handed, which
     /// silently mirrored yaw, roll, and strafe.
+    #[test]
+    fn the_readout_block_is_picked_up_by_the_gaze_while_looking() {
+        let mut game = Game::new();
+        let cam = game.camera(1.5);
+        let text_w = 0.4;
+        // Not looking: no pointer, nothing to pick up.
+        assert!(!game.begin_drag(&cam, text_w));
+        // Put the readout somewhere and aim the head at its block.
+        game.settings.readout_anchor = [0.3, 0.2];
+        let t = game.ref_tan();
+        let yaw = (0.4 * t * 1.5_f32).atan();
+        let pitch = (0.1 * t).atan();
+        game.look.aim(yaw, pitch);
+        let gaze = game.look.gaze(t, 1.5);
+        assert!(
+            (gaze[0] - 0.4).abs() < 0.05 && (gaze[1] - 0.1).abs() < 0.05,
+            "{gaze:?}"
+        );
+        assert!(game.begin_drag(&cam, text_w));
+        assert!(matches!(game.drag, Some((Dragged::Readout, _))));
+        // Turn the head: the block follows, keeping its offset.
+        game.look.aim(yaw, pitch - 0.2);
+        game.update_drag(&cam);
+        assert!(game.settings.readout_anchor[1] < 0.2);
+        assert!((game.settings.readout_anchor[0] - 0.3).abs() < 0.05);
+    }
+
     #[test]
     fn sim_directions() {
         // Translation: compare against an unthrusted control run so gravity —

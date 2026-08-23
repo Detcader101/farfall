@@ -292,6 +292,77 @@ pub struct CabinPass {
     fraction: f32,
     format: wgpu::TextureFormat,
     scene_size: (u32, u32),
+    /// The moving size this frame, as a fraction of the still size: the
+    /// governor lowers it while turning the head costs more than the
+    /// frame-rate floor allows, and raises it back when there is room.
+    governor: Governor,
+    last_work: CabinWork,
+}
+
+/// The frame-rate governor's state: a pure thing, so it can be tested.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Governor {
+    pub scale: f32,
+    /// A running mean of the moving frames' cost, ms — vsync quantises
+    /// single frames (16.7 or 33.4, nothing between), so the mean is what
+    /// can be judged.
+    ema_ms: f32,
+    /// Frames since the last step, so a step has time to show.
+    since: u32,
+}
+
+/// The least the moving cabin is marched at (of the still size).
+pub const MOVING_SCALE_MIN: f32 = 0.3;
+
+impl Governor {
+    pub const fn new() -> Self {
+        Governor {
+            scale: MOVING_SCALE,
+            ema_ms: 0.0,
+            since: 0,
+        }
+    }
+
+    /// One frame in which the cabin was re-marched at the moving size took
+    /// `frame_ms`; the floor allows `budget_ms`. Returns the scale to use
+    /// next: stepped down when the running mean is over budget, back up
+    /// slowly when it is well under, never past the stock moving size. A
+    /// budget of zero (floor off) keeps the stock size.
+    pub fn step(&mut self, frame_ms: f32, budget_ms: f32) -> f32 {
+        if budget_ms <= 0.0 || !frame_ms.is_finite() {
+            self.scale = MOVING_SCALE;
+            self.ema_ms = 0.0;
+            self.since = 0;
+            return self.scale;
+        }
+        // Spikes (a shader compile, a capture) are not the renderer.
+        let frame_ms = frame_ms.min(budget_ms * 4.0);
+        self.ema_ms = if self.ema_ms <= 0.0 {
+            frame_ms
+        } else {
+            self.ema_ms * 0.85 + frame_ms * 0.15
+        };
+        self.since += 1;
+        if self.since < 12 {
+            return self.scale;
+        }
+        if self.ema_ms > budget_ms * 1.06 {
+            self.scale = (self.scale - 0.05).max(MOVING_SCALE_MIN);
+            self.since = 0;
+            self.ema_ms = budget_ms; // judge the new size afresh
+        } else if self.ema_ms < budget_ms * 0.7 && self.since >= 90 && self.scale < MOVING_SCALE {
+            self.scale = (self.scale + 0.05).min(MOVING_SCALE);
+            self.since = 0;
+            self.ema_ms = budget_ms;
+        }
+        self.scale
+    }
+}
+
+impl Default for Governor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// A cabin texture with its composite bind group.
@@ -413,6 +484,8 @@ impl CabinPass {
             sampler,
             blit_uniforms,
             moving: empty(),
+            governor: Governor::new(),
+            last_work: CabinWork::Nothing,
             still: empty(),
             showing_still: false,
             strip_cursor: 0,
@@ -446,7 +519,7 @@ impl CabinPass {
             )
         };
         let still = size(self.fraction);
-        let moving = size(self.fraction * MOVING_SCALE);
+        let moving = size(self.fraction * self.governor.scale);
         self.still = self.make_target(device, still);
         self.moving = self.make_target(device, moving);
         // Everything is stale: the next frame re-marches.
@@ -497,11 +570,61 @@ impl CabinPass {
         }
     }
 
+    /// The frame just drawn took `frame_ms`; the pilot wants at least
+    /// `floor_fps` (0: no floor). If the cabin was re-marched at the
+    /// moving size this frame, that is what the frame cost, and the moving
+    /// size answers for it. Returns true when the size changed.
+    pub fn govern(&mut self, device: &wgpu::Device, frame_ms: f32, floor_fps: f32) -> bool {
+        if self.last_work != CabinWork::Moving {
+            return false;
+        }
+        let budget = if floor_fps > 0.0 {
+            1000.0 / floor_fps
+        } else {
+            0.0
+        };
+        let before = self.governor.scale;
+        let after = self.governor.step(frame_ms, budget);
+        if (after - before).abs() < 1e-6 || self.scene_size == (0, 0) {
+            return false;
+        }
+        let (w, h) = self.scene_size;
+        let f = self.fraction * after;
+        let size = (
+            ((w as f32 * f).round() as u32).max(1),
+            ((h as f32 * f).round() as u32).max(1),
+        );
+        self.moving = self.make_target(device, size);
+        log::info!("cabin governor: moving size {after:.2} of still ({frame_ms:.1} ms frame)");
+        // The moving texture is blank now: re-march before showing it.
+        if !self.showing_still {
+            self.last = None;
+        }
+        true
+    }
+
+    /// The governor's moving scale, for the record (and the readout).
+    pub fn moving_scale(&self) -> f32 {
+        self.governor.scale
+    }
+
     /// Bring the cabin up to date for this frame's inputs: nothing if they
     /// are unchanged and the sharp render is done; a strip of the sharp
     /// render if the view is resting; the whole cabin at the moving size if
     /// it has moved. Returns what it did, for the record.
     pub fn update(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        uniforms: &CabinUniforms,
+        blit: &BlitUniforms,
+    ) -> CabinWork {
+        let work = self.update_inner(queue, encoder, uniforms, blit);
+        self.last_work = work;
+        work
+    }
+
+    fn update_inner(
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
@@ -607,6 +730,42 @@ pub enum CabinWork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_governor_trades_moving_detail_for_the_floor_and_gives_it_back() {
+        let mut g = Governor::new();
+        let budget = 1000.0 / 60.0;
+        assert_eq!(g.scale, MOVING_SCALE);
+        // Vsync's alternation of 16.7 and 33.4 ms frames: the mean is over
+        // budget, so after a dozen frames it steps down once.
+        for i in 0..12 {
+            g.step(if i % 3 == 0 { 33.4 } else { 16.7 }, budget);
+        }
+        assert!((g.scale - (MOVING_SCALE - 0.05)).abs() < 1e-6, "{g:?}");
+        // Frames at the floor exactly: it holds.
+        for _ in 0..200 {
+            g.step(16.7, budget);
+        }
+        assert!((g.scale - (MOVING_SCALE - 0.05)).abs() < 1e-6, "{g:?}");
+        // Far over: it goes down to its own floor and no further.
+        for _ in 0..400 {
+            g.step(40.0, budget);
+        }
+        assert!((g.scale - MOVING_SCALE_MIN).abs() < 1e-6);
+        // Well under budget for a good while: back up a step at a time,
+        // never past the stock size.
+        for _ in 0..90 {
+            g.step(5.0, budget);
+        }
+        assert!((g.scale - (MOVING_SCALE_MIN + 0.05)).abs() < 1e-6, "{g:?}");
+        for _ in 0..90 * 20 {
+            g.step(5.0, budget);
+        }
+        assert!((g.scale - MOVING_SCALE).abs() < 1e-6);
+        // No floor: stock size, whatever the frame costs.
+        g.step(100.0, 0.0);
+        assert_eq!(g.scale, MOVING_SCALE);
+    }
 
     #[test]
     fn the_head_turns_the_rays_not_the_cabin() {
