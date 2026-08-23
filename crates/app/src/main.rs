@@ -1648,6 +1648,7 @@ impl Game {
             self.state.time_s as f32 * 0.05,
         )
         .with_occluders([rel(&moon), rel(&sun)])
+        .with_sky(self.settings.sky)
     }
 
     /// What the hull feels this frame: the wind in its own frame and the air

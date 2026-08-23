@@ -320,7 +320,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     } else {
         // Through the shell and out: steep rays cross the column above the
         // camera once; grazing rays run the tangent chord at their lowest dip.
-        let up_od = density * rho_cam / max(cos_up, 0.10);
+        // The daytime dome: low down, the whole sky is the air's colour
+        // and the stars are gone; it thins on its own, longer scale height
+        // (the sky stays blue well above the weather) and is black by the
+        // top of the air. sun_dir.w is the pilot's SKY setting, 1 = stock.
+        let h_sky = radius * 0.10;
+        let dome = planet.sun_dir.w * 4.0 * exp(-h_cam / h_sky);
+        let up_od = density * (rho_cam + dome) / max(cos_up, 0.10);
         let chord_od = density * exp(-h_min / h_air) * chord_boost;
         od_total = mix(chord_od, up_od, smoothstep(0.03, 0.25, cos_up));
     }

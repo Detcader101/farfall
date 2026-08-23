@@ -92,6 +92,7 @@ enum Item {
     CockpitHull,
     CockpitRes,
     FpsFloor,
+    Sky,
     Fov,
     GaugeStyle,
     GaugesStay,
@@ -131,6 +132,7 @@ impl Item {
             Item::CockpitHull => "CABIN METAL",
             Item::CockpitRes => "CABIN DETAIL",
             Item::FpsFloor => "FPS FLOOR",
+            Item::Sky => "SKY",
             Item::Fov => "FOV",
             Item::GaugeStyle => "GAUGE STYLE",
             Item::GaugesStay => "GAUGES",
@@ -171,6 +173,7 @@ impl Item {
             Item::CockpitGlow => format!("{:.2}x", s.cockpit_glow),
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
+            Item::Sky => format!("{:.0}%", s.sky * 100.0),
             Item::FpsFloor => {
                 if s.fps_floor > 0.0 {
                     format!("{:.0}", s.fps_floor)
@@ -258,6 +261,7 @@ impl Menu {
                 Item::Fov,
                 Item::CockpitRes,
                 Item::FpsFloor,
+                Item::Sky,
                 Item::Quit,
             ],
             Page::Controls => {
@@ -593,6 +597,15 @@ impl Menu {
                 s.cockpit_res = COCKPIT_RES_CHOICES[j];
                 MenuEvent::Changed(Change::Graphics)
             }
+            Item::Sky => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.sky + step).clamp(0.0, 2.0);
+                if (next - s.sky).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.sky = next;
+                MenuEvent::Changed(Change::Layout)
+            }
             Item::FpsFloor => {
                 let n = FPS_FLOOR_CHOICES.len();
                 let i = FPS_FLOOR_CHOICES
@@ -860,7 +873,7 @@ mod tests {
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
         m.key(KeyCode::Tab, &mut s); // back to graphics
-        for _ in 0..6 {
+        for _ in 0..7 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Quit);

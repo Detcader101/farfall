@@ -273,6 +273,13 @@ features:
     tests: [crates/render/src/planet.rs::the_eye_is_never_in_the_ground]
     e2e: FARFALL_BENCH_POS 2 cm inside the surface — a clean horizon, no murk frame
 
+  - id: sky-dome
+    name: The daytime sky — low down the whole dome is the air's colour (blue on Earth, amber/green on the other presets) and hides the stars; it thins on a longer scale height than the weather and is black by the top of the air. SKY setting (graphics.sky, 0..200%)
+    state: complete
+    tests: [crates/app/src/settings.rs::edits_round_trip, crates/app/src/menu.rs]
+    settings: [graphics.sky]
+    e2e: captures looking up at 0/3/8/15/25 km — full blue at 3, pale at 8, stars through a dim blue at 15, black at 25
+
   - id: crash
     name: Ship loss on hard impact / Sun contact
     state: deferred

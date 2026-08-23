@@ -186,6 +186,8 @@ pub struct Settings {
     pub cockpit_res: f32,
     /// The least frame rate the pilot will have, or 0 for no floor.
     pub fps_floor: f32,
+    /// The daytime sky's strength low down, 1 = stock.
+    pub sky: f32,
     /// Base field of view, degrees (vertical).
     pub fov: f32,
     /// Gauge style: TRON holograms on the glass; JET bowls hollowed into
@@ -227,6 +229,7 @@ impl Default for Settings {
             cockpit_hull: 0.92,
             cockpit_res: 0.5,
             fps_floor: 60.0,
+            sky: 1.0,
             fov: 70.0,
             gauge_style: GaugeStyle::Tron,
             gauges_stay: true,
@@ -381,6 +384,13 @@ impl Settings {
                     "off" => s.guide = false,
                     _ => {}
                 },
+                "graphics.sky" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.sky = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
                 "graphics.fps-floor" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if FPS_FLOOR_CHOICES.contains(&f) {
@@ -580,6 +590,7 @@ impl Settings {
         out.push_str(&format!("cockpit.hull = {:.2}\n", self.cockpit_hull));
         out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
+        out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
         out.push_str(&format!("graphics.fov = {:.0}\n", self.fov));
         out.push_str(&format!("ui.gauge-style = {}\n", self.gauge_style.key()));
         out.push_str(&format!(
@@ -681,6 +692,7 @@ mod tests {
         s.cockpit_hull = 0.25;
         s.cockpit_res = 1.0;
         s.fps_floor = 90.0;
+        s.sky = 1.5;
         s.fov = 85.0;
         s.gauge_style = GaugeStyle::Dial;
         s.gauges_stay = false;

@@ -104,7 +104,8 @@ pub struct PlanetUniforms {
     params: [f32; 4],
     /// xyz: planet centre relative to the camera (m), w: radius (m)
     centre_radius: [f32; 4],
-    /// xyz: unit vector toward the sun
+    /// xyz: unit vector toward the sun; w: the SKY setting — how bright
+    /// the daytime dome is low down (1 = stock, 0 = none)
     sun_dir: [f32; 4],
     /// rgb: atmosphere colour, w: optical density
     atmosphere: [f32; 4],
@@ -168,7 +169,7 @@ impl PlanetUniforms {
                 cam.exposure,
             ],
             centre_radius: [centre_rel.x, centre_rel.y, centre_rel.z, radius_m],
-            sun_dir: [sun.x, sun.y, sun.z, 0.0],
+            sun_dir: [sun.x, sun.y, sun.z, 1.0],
             atmosphere: [
                 look.atmosphere_colour.x,
                 look.atmosphere_colour.y,
@@ -201,6 +202,16 @@ impl PlanetUniforms {
         };
         self.occluder0 = pack(bodies[0]);
         self.occluder1 = pack(bodies[1]);
+        self
+    }
+
+    /// The daytime dome's strength (graphics.sky): 0 no sky at all, 1 stock.
+    pub fn with_sky(mut self, sky: f32) -> Self {
+        self.sun_dir[3] = if sky.is_finite() {
+            sky.clamp(0.0, 3.0)
+        } else {
+            1.0
+        };
         self
     }
 
