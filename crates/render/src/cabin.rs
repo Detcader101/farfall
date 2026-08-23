@@ -13,7 +13,7 @@ pub struct CabinUniforms {
     fwd: [f32; 4],
     misc: [f32; 4],
     sun: [f32; 4],
-    pads: [[f32; 4]; 4],
+    pads: [[f32; 4]; 6],
 }
 
 /// What the composite needs each frame: the head's basis for the thruster
@@ -82,7 +82,7 @@ impl CabinUniforms {
         sockets: &[Socket],
     ) -> Self {
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
-        let mut pads = [[0.0; 4]; 4];
+        let mut pads = [[0.0; 4]; 6];
         for (slot, sk) in pads.iter_mut().zip(sockets.iter()) {
             let d = sk.dir.normalize_or_zero();
             // w packs "in use", the style, the size and the tilt as exact
@@ -859,7 +859,7 @@ mod tests {
         assert_eq!(Placement::glass_sized(1.5).right[3], 1.5);
         assert_eq!(Placement::glass_sized(1.0).tilted(0.5).up[3], 0.5);
         assert_eq!(Placement::glass_sized(1.0).tilted(9.0).up[3], TILT_MAX);
-        assert_eq!(UNIFORM_BYTES, 9 * 16);
+        assert_eq!(UNIFORM_BYTES, 11 * 16);
         // Unchanged inputs compare equal (no clock inside), a turned head
         // is a moved view, a changed socket is not.
         let again = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);

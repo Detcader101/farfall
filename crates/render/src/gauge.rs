@@ -465,6 +465,39 @@ impl GaugeUniforms {
         }
     }
 
+    /// The G vector: the felt acceleration in the ship's frame, g, as
+    /// `[right, up, forward]`. The outer ring is the range — 2 g stock,
+    /// climbing the 1-2-5 ladder with the load so the dot never pins —
+    /// and the readout is the total.
+    pub fn g_vector(
+        body_g: [f32; 3],
+        visibility: f32,
+        time_s: f32,
+        aspect: f32,
+        height_px: f32,
+        anchor_ndc: [f32; 2],
+        sway: [f32; 2],
+    ) -> Self {
+        let clean = |v: f32| if v.is_finite() { v } else { 0.0 };
+        let [gx, gy, gz] = [clean(body_g[0]), clean(body_g[1]), clean(body_g[2])];
+        let total = (gx * gx + gy * gy + gz * gz).sqrt();
+        let plane = (gx * gx + gy * gy).sqrt().max(gz.abs());
+        let (digits, dot, exp) = sci_readout(total);
+        let range = Range::for_value(plane, 2.0);
+        Self {
+            a: [gx, visibility, time_s, aspect],
+            b: [
+                2.0 * range.factor(),
+                height_px,
+                anchor_ndc[0],
+                anchor_ndc[1],
+            ],
+            c: [gy, gz, 0.0, range.packed()],
+            d: [sway[0], sway[1], (digits + 1000 * exp) as f32, dot as f32],
+            place: crate::cabin::Placement::GLASS,
+        }
+    }
+
     /// The altimeter: same instrument, different numbers. The arc spans the
     /// atmosphere-relevant band (0..15 km) and re-ranges beyond it; the
     /// readout is km to 999, then km with an exponent — Uranus is 2.87E7
@@ -541,9 +574,54 @@ pub fn gauge_pass(
     )
 }
 
+/// The G vector runs `gvec.wgsl` on the same uniforms.
+pub fn gvec_pass(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> GaugePass {
+    GaugePass::new_sized(
+        device,
+        target_format,
+        sample_count,
+        "gvec",
+        crate::shaders::GVEC,
+        std::mem::size_of::<GaugeUniforms>() as u64,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_g_vector_ranges_on_the_plane_and_reads_the_total() {
+        let u =
+            GaugeUniforms::g_vector([0.6, -0.8, 0.0], 1.0, 0.0, 1.5, 900.0, [0.0, 0.0], [0.0; 2]);
+        assert_eq!(u.a[0], 0.6);
+        assert_eq!(u.c[0], -0.8);
+        assert_eq!(u.b[0], 2.0, "a 1 g load sits inside the stock 2 g ring");
+        assert_eq!(u.c[3], 0.0, "no multiplier shown at stock range");
+        // 1.00 total: digits 100 with the dot after the first.
+        assert_eq!(u.d[2], 100.0);
+        assert_eq!(u.d[3], 1.0);
+        // A 7 g pull climbs the ladder: the ring becomes 10 g (×5).
+        let hard =
+            GaugeUniforms::g_vector([0.0, 7.0, 1.0], 1.0, 0.0, 1.5, 900.0, [0.0, 0.0], [0.0; 2]);
+        assert_eq!(hard.b[0], 10.0);
+        assert!(hard.c[3] > 0.0);
+        // Garbage in: zeros, not NaN on the glass.
+        let nan = GaugeUniforms::g_vector(
+            [f32::NAN, 0.0, 0.0],
+            1.0,
+            0.0,
+            1.5,
+            900.0,
+            [0.0, 0.0],
+            [0.0; 2],
+        );
+        assert_eq!(nan.a[0], 0.0);
+    }
 
     fn settle(fade: &mut GaugeFade, secs: f32, speed: f32) -> f32 {
         let mut level = 0.0;

@@ -17,6 +17,8 @@ struct Guide {
     c: vec4<f32>,
     // anchors of dials 3..4
     d: vec4<f32>,
+    // anchors of dials 5..6
+    e: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> gd: Guide;
@@ -71,8 +73,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     warn += 0.6 * (1.0 - smoothstep(0.0, aa_n, abs(box_d) - 0.002)) * step(0.01, gd.a.z);
 
     // Each dial: a ring at its anchor and a dashed circle of its reach.
-    let anchors = array<vec2<f32>, 4>(gd.c.xy, gd.c.zw, gd.d.xy, gd.d.zw);
-    for (var i = 0; i < 4; i += 1) {
+    let anchors = array<vec2<f32>, 6>(gd.c.xy, gd.c.zw, gd.d.xy, gd.d.zw, gd.e.xy, gd.e.zw);
+    for (var i = 0; i < 6; i += 1) {
         let a = anchors[i];
         if (a.x < -9.0) { continue; }
         let ca = canopy(a, aspect);

@@ -40,8 +40,8 @@ use farfall_render::{
     blit::{BlitPass, PostUniforms},
     bodies::{BodiesPass, BodiesUniforms},
     gauge::{
-        gauge_pass, AltitudeFade, GForceFade, GaugeFade, GaugePass, GaugeUniforms, HoloSway,
-        MachAlert,
+        gauge_pass, gvec_pass, AltitudeFade, GForceFade, GaugeFade, GaugePass, GaugeUniforms,
+        HoloSway, MachAlert,
     },
     hud::HudPass,
     instrument::InstrumentPass,
@@ -187,6 +187,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
 ///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times)
+///   FARFALL_BENCH_G=x,y,z  (benchmark only: a felt load in g — right, up,
+///                           forward — for the G instruments)
 ///   FARFALL_BENCH_THRUST=m,p,y,r (benchmark only: force main thrust 0..1 and
 ///                           pitch/yaw/roll demands -1..1, for the plumes)
 ///   FARFALL_BENCH_FULL=1   (benchmark only: borderless fullscreen, the real
@@ -337,6 +339,7 @@ struct Passes {
     gauge: GaugePass,
     alt_gauge: GaugePass,
     g_gauge: GaugePass,
+    gvec: GaugePass,
     gyro: InstrumentPass,
     horizon: InstrumentPass,
     /// The design guide overlay.
@@ -367,6 +370,7 @@ impl Passes {
             gauge: gauge_pass(device, format, msaa),
             alt_gauge: gauge_pass(device, format, msaa),
             g_gauge: gauge_pass(device, format, msaa),
+            gvec: gvec_pass(device, format, msaa),
             gyro: gyro_pass(device, format, msaa),
             horizon: horizon_pass(device, format, msaa),
             guide: guide_pass(device, format, msaa),
@@ -482,6 +486,21 @@ impl Gpu {
             .jet(jet(Instrument::GForce))
             .placed(placed(Instrument::GForce)),
         );
+        let (gv_anchor, gv_on) = slot_of(layout, look, cam, ref_tan, Instrument::GVector);
+        self.passes.gvec.update(
+            &self.queue,
+            &GaugeUniforms::g_vector(
+                game.felt_g_body,
+                fade(Instrument::GVector, game.g_fade.level()) * gv_on,
+                cam.time_s,
+                aspect,
+                h,
+                gv_anchor,
+                sway,
+            )
+            .jet(jet(Instrument::GVector))
+            .placed(placed(Instrument::GVector)),
+        );
         let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, ref_tan, Instrument::Gyro);
         self.passes.gyro.update(
             &self.queue,
@@ -512,7 +531,7 @@ impl Gpu {
                 .filter(|i| i.slotted())
                 .filter_map(|i| layout.anchor(i))
                 .map(|a| on_glass(look, cam, ref_tan, a))
-                .take(4)
+                .take(6)
                 .collect();
             self.passes.guide.update(
                 &self.queue,
@@ -812,6 +831,8 @@ struct Game {
     warp: Warp,
     /// Felt acceleration over the last sim step, g, and the meter's fade.
     felt_g: f32,
+    /// The same, as a vector in the ship's frame: right, up, forward (g).
+    felt_g_body: [f32; 3],
     g_fade: GForceFade,
     /// Metres of path flown, so the path's marks can stay fixed to the
     /// world. Presentation only: a wrapped f32 is fine for a phase.
@@ -886,6 +907,7 @@ impl Game {
             left_down: false,
             warp: Warp::new(),
             felt_g: 0.0,
+            felt_g_body: [0.0; 3],
             g_fade: GForceFade::new(),
             odometer_m: 0.0,
             hoops_passed: 0,
@@ -1071,7 +1093,7 @@ impl Game {
                     tilt: tw.tilt,
                 }
             })
-            .take(4)
+            .take(6)
             .collect();
         let look = CabinLook {
             glow: self.settings.cockpit_glow,
@@ -1444,9 +1466,12 @@ impl Game {
             let before = self.state.ship;
             let before_t = self.state.time_s;
             self.state = sim::step(&self.params, &self.state, controls);
-            self.felt_g =
-                (sim::felt_acceleration(&self.params, before_t, &before, &self.state.ship).length()
-                    / 9.81) as f32;
+            let felt = sim::felt_acceleration(&self.params, before_t, &before, &self.state.ship);
+            self.felt_g = (felt.length() / 9.81) as f32;
+            // In the ship's frame: x right, y up, -z the nose — shown as
+            // right, up, forward.
+            let body = self.state.ship.orient.inverse() * felt / 9.81;
+            self.felt_g_body = [body.x as f32, body.y as f32, -body.z as f32];
             self.accumulator -= sim::DT;
         }
 
@@ -2035,6 +2060,17 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_DESIGN").is_ok() {
             game.toggle_design();
         }
+        if let Some(g) = std::env::var("FARFALL_BENCH_G")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| {
+                let p: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                (p.len() == 3).then(|| [p[0], p[1], p[2]])
+            })
+        {
+            game.felt_g_body = g;
+            game.felt_g = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+        }
         if let Some(pages) = std::env::var("FARFALL_BENCH_MENU")
             .ok()
             .filter(|_| game.frozen)
@@ -2451,6 +2487,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.gauge.draw(&mut pass);
                                     gpu.passes.alt_gauge.draw(&mut pass);
                                     gpu.passes.g_gauge.draw(&mut pass);
+                                    gpu.passes.gvec.draw(&mut pass);
                                     gpu.passes.gyro.draw(&mut pass);
                                     gpu.passes.guide.draw(&mut pass);
                                     gpu.passes.guide.draw(&mut pass);
@@ -2629,6 +2666,7 @@ impl ApplicationHandler for App {
                         gpu.passes.gauge.draw(&mut pass);
                         gpu.passes.alt_gauge.draw(&mut pass);
                         gpu.passes.g_gauge.draw(&mut pass);
+                        gpu.passes.gvec.draw(&mut pass);
                         gpu.passes.gyro.draw(&mut pass);
                         gpu.passes.guide.draw(&mut pass);
                     }

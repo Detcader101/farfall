@@ -275,10 +275,11 @@ pub struct GuideUniforms {
     b: [f32; 4],
     c: [f32; 4],
     d: [f32; 4],
+    e: [f32; 4],
 }
 
 impl GuideUniforms {
-    /// `anchors`: up to four dial anchors (NDC); `gaze`: where the head
+    /// `anchors`: up to six dial anchors (NDC); `gaze`: where the head
     /// points on the glass; `reach`: the pick-up distance (NDC).
     pub fn new(
         aspect: f32,
@@ -289,7 +290,7 @@ impl GuideUniforms {
         looking: bool,
         anchors: &[[f32; 2]],
     ) -> Self {
-        let mut slots = [[-10.0f32, -10.0]; 4];
+        let mut slots = [[-10.0f32, -10.0]; 6];
         for (slot, a) in slots.iter_mut().zip(anchors.iter()) {
             *slot = *a;
         }
@@ -298,6 +299,7 @@ impl GuideUniforms {
             b: [gaze[0], gaze[1], reach, if looking { 1.0 } else { 0.0 }],
             c: [slots[0][0], slots[0][1], slots[1][0], slots[1][1]],
             d: [slots[2][0], slots[2][1], slots[3][0], slots[3][1]],
+            e: [slots[4][0], slots[4][1], slots[5][0], slots[5][1]],
         }
     }
 }
@@ -307,11 +309,12 @@ pub fn guide_pass(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> InstrumentPass {
-    InstrumentPass::new(
+    InstrumentPass::new_sized(
         device,
         target_format,
         sample_count,
         "guide",
         crate::shaders::GUIDE,
+        std::mem::size_of::<GuideUniforms>() as u64,
     )
 }

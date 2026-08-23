@@ -79,47 +79,11 @@ const TAU_G: f32 = 6.28318531;
 // 12 o'clock, clockwise positive.
 const SWEEP_HALF: f32 = 2.0943951; // 120 degrees
 
-// Capsule SDF: distance to segment ab, for needle and digit segments.
-fn seg_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
-    let pa = p - a;
-    let ba = b - a;
-    let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-    return length(pa - ba * h);
-}
-
-// Seven-segment digit: bit i of `mask` lights segment i.
-// Segments: 0 top, 1 top-right, 2 bottom-right, 3 bottom, 4 bottom-left,
-// 5 top-left, 6 middle. Cell is 2w wide, 2h tall, centred on origin.
-fn digit_dist(p: vec2<f32>, mask: u32, w: f32, h: f32) -> f32 {
-    var d = 1e9;
-    let ends: array<vec4<f32>, 7> = array<vec4<f32>, 7>(
-        vec4<f32>(-w, h, w, h),    // top
-        vec4<f32>(w, h, w, 0.0),   // top-right
-        vec4<f32>(w, 0.0, w, -h),  // bottom-right
-        vec4<f32>(-w, -h, w, -h),  // bottom
-        vec4<f32>(-w, 0.0, -w, -h),// bottom-left
-        vec4<f32>(-w, h, -w, 0.0), // top-left
-        vec4<f32>(-w, 0.0, w, 0.0),// middle
-    );
-    for (var i = 0u; i < 7u; i += 1u) {
-        if ((mask & (1u << i)) != 0u) {
-            let e = ends[i];
-            d = min(d, seg_dist(p, e.xy, e.zw));
-        }
-    }
-    return d;
-}
-
 // c.z carries the warning sense (0 high, 1 low) plus 2 for the JET style.
 fn sense_of(cz: f32) -> f32 {
     return cz - 2.0 * floor(cz / 2.0);
 }
 
-fn digit_mask(n: u32) -> u32 {
-    // 0..9 in the segment numbering above.
-    let masks = array<u32, 10>(63u, 6u, 91u, 79u, 102u, 109u, 125u, 7u, 127u, 111u);
-    return masks[min(n, 9u)];
-}
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {

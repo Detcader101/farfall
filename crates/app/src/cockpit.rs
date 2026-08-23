@@ -18,6 +18,8 @@ pub enum Instrument {
     Trajectory,
     Readout,
     GForce,
+    /// The G vector: the load's direction on a cross-plot.
+    GVector,
     /// The hoops on the path (the ribbon stays).
     Hoops,
     /// The womp a passing hoop makes.
@@ -29,11 +31,12 @@ pub enum Instrument {
 }
 
 impl Instrument {
-    pub const ALL: [Instrument; 11] = [
+    pub const ALL: [Instrument; 12] = [
         Instrument::Speed,
         Instrument::Altitude,
         Instrument::Gyro,
         Instrument::GForce,
+        Instrument::GVector,
         Instrument::Horizon,
         Instrument::Ladder,
         Instrument::Trajectory,
@@ -52,6 +55,7 @@ impl Instrument {
             Instrument::Trajectory => "PATH",
             Instrument::Readout => "READOUT",
             Instrument::GForce => "G METER",
+            Instrument::GVector => "G VECTOR",
             Instrument::Hoops => "PATH HOOPS",
             Instrument::HoopSound => "HOOP SOUND",
             Instrument::Ladder => "PITCH LADDER",
@@ -69,6 +73,7 @@ impl Instrument {
             Instrument::Trajectory => "path",
             Instrument::Readout => "readout",
             Instrument::GForce => "g-meter",
+            Instrument::GVector => "g-vector",
             Instrument::Hoops => "hoops",
             Instrument::HoopSound => "hoop-sound",
             Instrument::Ladder => "ladder",
@@ -81,7 +86,11 @@ impl Instrument {
     pub fn slotted(self) -> bool {
         matches!(
             self,
-            Instrument::Speed | Instrument::Altitude | Instrument::Gyro | Instrument::GForce
+            Instrument::Speed
+                | Instrument::Altitude
+                | Instrument::Gyro
+                | Instrument::GForce
+                | Instrument::GVector
         )
     }
 }
@@ -199,6 +208,7 @@ impl Default for Layout {
         l.set(Instrument::Altitude, Slot::BottomLeft);
         l.set(Instrument::Gyro, Slot::BottomCentre);
         l.set(Instrument::GForce, Slot::MidRight);
+        l.set(Instrument::GVector, Slot::MidLeft);
         l.set(Instrument::Horizon, Slot::On);
         l.set(Instrument::Trajectory, Slot::On);
         l.set(Instrument::Readout, Slot::On);

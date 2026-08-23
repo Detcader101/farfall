@@ -35,6 +35,8 @@ struct Cockpit {
     pad1: vec4<f32>,
     pad2: vec4<f32>,
     pad3: vec4<f32>,
+    pad4: vec4<f32>,
+    pad5: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> ck: Cockpit;
@@ -77,7 +79,9 @@ fn pad_dir(i: i32) -> vec4<f32> {
     if (i == 0) { return ck.pad0; }
     if (i == 1) { return ck.pad1; }
     if (i == 2) { return ck.pad2; }
-    return ck.pad3;
+    if (i == 3) { return ck.pad3; }
+    if (i == 4) { return ck.pad4; }
+    return ck.pad5;
 }
 
 // A socket's centre: where the hologram's direction meets the dash plane
@@ -139,7 +143,7 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
     var face = 1e9;
     // Only near the dash and consoles are there sockets to cut.
     let near_dash = furniture < 0.2;
-    for (var i = 0; i < 4; i += 1) {
+    for (var i = 0; i < 6; i += 1) {
         if (i >= n || !near_dash) { break; }
         let pd = pad_dir(i);
         if (pd.w < 0.5) { continue; }
@@ -268,7 +272,7 @@ fn sd_lines(p: vec3<f32>) -> f32 {
 fn beam_light(ray: vec3<f32>, reach: f32) -> f32 {
     let n = i32(ck.misc.w);
     var g = 0.0;
-    for (var i = 0; i < 4; i += 1) {
+    for (var i = 0; i < 6; i += 1) {
         if (i >= n) { break; }
         let pd = pad_dir(i);
         if (pd.w < 0.5) { continue; }

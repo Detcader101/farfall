@@ -222,6 +222,13 @@ features:
     state: complete
     e2e: the menu captures above
 
+  - id: g-vector
+    name: G VECTOR instrument (gvec.wgsl) — the felt load in the ship's frame on a cross-plot, hub-to-dot line and dot, quarter rings, 1-2-5 ranging from 2 g with the ×mEk multiplier, |G| readout, longitudinal bar, red past 6 g; its own slot (MID LEFT stock) and every per-dial setting; six sockets and guide anchors now
+    state: complete
+    tests: [crates/render/src/gauge.rs::the_g_vector_ranges_on_the_plane_and_reads_the_total, crates/render/tests/shader_validation.rs]
+    settings: [ui.g-vector, ui.g-vector.size/style/fade/tilt]
+    e2e: FARFALL_BENCH_G=-2.5,6.5,-1.0 capture as a tilted DIAL — dot up-left, ×5, 7.04, red rim, brake mark
+
   - id: fps-floor
     name: FPS FLOOR (graphics.fps-floor, default 60) — a governor on the cabin's moving size; while turning the head costs more than the floor allows, the moving march shrinks (to 0.3 of the still size) and grows back when there is room; the sharp cabin is untouched
     state: complete
