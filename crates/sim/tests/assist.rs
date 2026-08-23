@@ -277,22 +277,36 @@ fn despin_kills_a_tumble_nothing_else_would() {
 /// relativity's wall is for things moving through space, not with it —
 /// and the velocity is on the nose whatever the orbit was doing.
 #[test]
-fn hyper_drive_crosses_an_astronomical_unit_in_a_minute() {
+fn the_charged_drive_crosses_an_astronomical_unit_in_seconds() {
     let params = presets::earth_compact();
     let start = spinning(&params, DVec3::ZERO);
     let nose = start.ship.orient * DVec3::NEG_Z;
     let from = start.ship.pos_m;
     let held = Controls {
         hyper: true,
+        hyper_level: 1.0,
         ..Default::default()
     };
-    let end = run(&params, start, 60 * 120, held);
+    let end = run(&params, start, 20 * 120, held);
     let gone = (end.ship.pos_m - from).length();
     assert!(
         gone > params.sun.distance_m * 0.9,
-        "a minute of hyper drive covers the Sun's distance: {gone:.3e} of {:.3e}",
+        "twenty seconds of a charged drive cover the Sun's distance: {gone:.3e} of {:.3e}",
         params.sun.distance_m
     );
+    // A fresh field is a fraction of that: the charge is the speed.
+    let fresh = run(
+        &params,
+        spinning(&params, DVec3::ZERO),
+        20 * 120,
+        Controls {
+            hyper: true,
+            hyper_level: 0.0,
+            ..Default::default()
+        },
+    );
+    let gone_fresh = (fresh.ship.pos_m - from).length();
+    assert!(gone_fresh < gone * 0.15, "{gone_fresh:.3e} vs {gone:.3e}");
     let speed = end.ship.vel_mps.length();
     assert!(speed > farfall_sim::LIGHT_SPEED_MPS * 0.05, "{speed}");
     assert!(speed <= params.ship.hyper_max_mps * 1.001, "{speed}");

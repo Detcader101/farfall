@@ -117,6 +117,7 @@ const BRAKE_KEY: KeyCode = KeyCode::Space;
 /// The emergency gyro, likewise a state: hold to kill the spin.
 const DESPIN_KEY: KeyCode = KeyCode::KeyZ;
 const HYPER_KEY: KeyCode = KeyCode::KeyH;
+const WARP_STOP_KEY: KeyCode = KeyCode::KeyV;
 
 /// Physical-key bindings. Physical (not logical) keys so the layout is the same
 /// shape on QWERTY, AZERTY, and Dvorak.
@@ -144,6 +145,7 @@ pub struct Bindings {
     pub brake: KeyCode,
     pub despin: KeyCode,
     pub hyper: KeyCode,
+    pub warp_stop: KeyCode,
 }
 
 impl Default for Bindings {
@@ -158,6 +160,7 @@ impl Default for Bindings {
             brake: BRAKE_KEY,
             despin: DESPIN_KEY,
             hyper: HYPER_KEY,
+            warp_stop: WARP_STOP_KEY,
         }
     }
 }
@@ -248,6 +251,29 @@ impl Bindings {
             self.despin = self.hyper;
         }
         self.hyper = key;
+        true
+    }
+
+    pub fn bind_warp_stop(&mut self, key: KeyCode) -> bool {
+        if is_reserved(key) {
+            return false;
+        }
+        if let Some(old) = self.action_for(key) {
+            self.keys[old as usize] = self.warp_stop;
+        }
+        if self.boost == key {
+            self.boost = self.warp_stop;
+        }
+        if self.brake == key {
+            self.brake = self.warp_stop;
+        }
+        if self.despin == key {
+            self.despin = self.warp_stop;
+        }
+        if self.hyper == key {
+            self.hyper = self.warp_stop;
+        }
+        self.warp_stop = key;
         true
     }
 
@@ -495,6 +521,7 @@ impl InputState {
             brake: self.brake,
             despin: self.despin,
             hyper: self.hyper,
+            hyper_level: 0.0,
         }
     }
 
@@ -513,6 +540,7 @@ impl InputState {
             brake: self.brake,
             despin: self.despin,
             hyper: self.hyper,
+            hyper_level: 0.0,
         }
     }
 }

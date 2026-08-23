@@ -461,6 +461,11 @@ impl Settings {
                         s.bindings.bind_hyper(key);
                     }
                 }
+                "control.warp-stop" => {
+                    if let Some(key) = key_from_name(v) {
+                        s.bindings.bind_warp_stop(key);
+                    }
+                }
                 "control.brake" => {
                     if let Some(key) = key_from_name(v) {
                         s.bindings.bind_brake(key);
@@ -574,6 +579,10 @@ impl Settings {
         out.push_str(&format!(
             "control.hyper = {}\n",
             key_name(self.bindings.hyper)
+        ));
+        out.push_str(&format!(
+            "control.warp-stop = {}\n",
+            key_name(self.bindings.warp_stop)
         ));
         out.push_str(&format!(
             "control.look-sens = {:.2}\n",

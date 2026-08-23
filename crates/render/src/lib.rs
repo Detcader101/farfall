@@ -16,6 +16,7 @@ pub mod blit;
 pub mod bodies;
 pub mod cabin;
 pub mod gauge;
+pub mod ghost;
 pub mod hud;
 pub mod instrument;
 pub mod planet;

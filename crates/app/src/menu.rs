@@ -84,6 +84,7 @@ enum Item {
     BindBrake,
     BindDespin,
     BindHyper,
+    BindWarpStop,
     Slot(Instrument),
     HoopSize,
     LandingHoops,
@@ -124,7 +125,8 @@ impl Item {
             Item::BindBoost => "BOOST",
             Item::BindBrake => "AIR BRAKE",
             Item::BindDespin => "DESPIN",
-            Item::BindHyper => "HYPER DRIVE",
+            Item::BindHyper => "CHAOS DRIVE",
+            Item::BindWarpStop => "WARP STOP",
             Item::Slot(i) => i.name(),
             Item::HoopSize => "HOOP SIZE",
             Item::LandingHoops => "LANDING HOOPS",
@@ -165,6 +167,7 @@ impl Item {
             Item::BindBrake => key_name(s.bindings.brake).to_string(),
             Item::BindDespin => key_name(s.bindings.despin).to_string(),
             Item::BindHyper => key_name(s.bindings.hyper).to_string(),
+            Item::BindWarpStop => key_name(s.bindings.warp_stop).to_string(),
             Item::Slot(i) => match s.layout.free(i) {
                 Some(_) => "DRAGGED".to_string(),
                 None => s.layout.get(i).name().to_string(),
@@ -212,7 +215,12 @@ impl Item {
     fn rebindable(self) -> bool {
         matches!(
             self,
-            Item::Bind(_) | Item::BindBoost | Item::BindBrake | Item::BindDespin | Item::BindHyper
+            Item::Bind(_)
+                | Item::BindBoost
+                | Item::BindBrake
+                | Item::BindDespin
+                | Item::BindHyper
+                | Item::BindWarpStop
         )
     }
 }
@@ -287,6 +295,7 @@ impl Menu {
                 v.push(Item::BindBrake);
                 v.push(Item::BindDespin);
                 v.push(Item::BindHyper);
+                v.push(Item::BindWarpStop);
                 v.push(Item::LookSens);
                 v
             }
@@ -390,6 +399,7 @@ impl Menu {
                 Item::BindBoost => settings.bindings.bind_boost(key),
                 Item::BindDespin => settings.bindings.bind_despin(key),
                 Item::BindHyper => settings.bindings.bind_hyper(key),
+                Item::BindWarpStop => settings.bindings.bind_warp_stop(key),
                 Item::BindBrake => settings.bindings.bind_brake(key),
                 _ => false,
             };
@@ -685,7 +695,8 @@ impl Menu {
             | Item::BindBoost
             | Item::BindBrake
             | Item::BindDespin
-            | Item::BindHyper => MenuEvent::Nothing,
+            | Item::BindHyper
+            | Item::BindWarpStop => MenuEvent::Nothing,
         }
     }
 

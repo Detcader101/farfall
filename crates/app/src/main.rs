@@ -43,6 +43,7 @@ use farfall_render::{
         gauge_pass, gvec_pass, AltitudeFade, GForceFade, GaugeFade, GaugePass, GaugeUniforms,
         HoloSway, MachAlert,
     },
+    ghost::{ghost_pass, GhostPass, GhostUniforms, GHOST_LIFE_S},
     hud::HudPass,
     instrument::InstrumentPass,
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
@@ -95,13 +96,19 @@ fn slot_of(
         None => ([0.0, 0.0], 0.0),
     }
 }
-/// The hyper drive's limits: seconds of full running before the drive
-/// slips (the slip point itself is drawn between 70% and 100% of this),
-/// how long the strain takes to ease off, and the crawl the field's
-/// collapse leaves the ship at.
+/// The Chaos Drive's limits: seconds of full running before the drive
+/// slips (the slip point itself is drawn between 70% and 100% of this —
+/// the pilot never knows exactly), and how long the entropy takes to
+/// ease off once the field is down.
 const HYPER_STRAIN_S: f32 = 40.0;
 const HYPER_EASE_S: f32 = 90.0;
-const HYPER_DROP_MPS: f64 = 1_500.0;
+
+/// How unstable the flight is at this much of the way to the slip: calm
+/// to halfway, then shaking harder and harder.
+fn chaos_level(entropy: f32, slip_at: f32) -> f32 {
+    let x = entropy / slip_at.max(1e-3);
+    ((x - 0.5) / 0.5).clamp(0.0, 1.0).powi(2)
+}
 
 /// A unit vector from two uniform draws, evenly over the sphere.
 fn random_unit(u1: f32, u2: f32) -> DVec3 {
@@ -159,6 +166,14 @@ struct DialEffective {
     stay: bool,
     /// Leaned toward the pilot, radians.
     tilt: f32,
+}
+
+/// The ship as it was at a WARP STOP: where the after-image comes from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Ghost {
+    orient: DQuat,
+    dir_world: DVec3,
+    at_s: f32,
 }
 
 /// Something on the glass the gaze can pick up.
@@ -232,6 +247,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
 ///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times)
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
+///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
+///                           many seconds old, ahead and a little banked)
 ///   FARFALL_BENCH_STRIKES=n (benchmark only: n strikes on the shield at
 ///                           staggered ages, for its ripples)
 ///   FARFALL_BENCH_G=x,y,z  (benchmark only: a felt load in g — right, up,
@@ -399,6 +416,7 @@ struct Passes {
     /// The predicted path, integrated on the GPU.
     trajectory: TrajectoryPass,
     shield: ShieldPass,
+    ghost: GhostPass,
 }
 
 impl Passes {
@@ -427,6 +445,7 @@ impl Passes {
             plasma,
             trajectory: TrajectoryPass::new(device, format, msaa),
             shield: shield_pass(device, format, msaa),
+            ghost: ghost_pass(device, format, msaa),
         }
     }
 }
@@ -881,6 +900,8 @@ struct Game {
     warp: Warp,
     /// The hyper drive's level 0..1, eased — the field takes a moment to form.
     hyper: f32,
+    /// The after-image of the last WARP STOP, while it lasts.
+    ghost: Option<Ghost>,
     /// Was the field up last frame (to feel its collapse).
     hyper_was: bool,
     /// The bench holding the field up.
@@ -975,6 +996,7 @@ impl Game {
             left_down: false,
             warp: Warp::new(),
             hyper: 0.0,
+            ghost: None,
             hyper_was: false,
             bench_hyper: false,
             hyper_strain: 0.0,
@@ -1491,13 +1513,12 @@ impl Game {
     /// left at a crawl down its nose. Off, the strain eases.
     fn run_hyper_strain(&mut self, dt: f32) {
         let held = self.input.controls(self.assist).hyper && !self.warp.active();
-        if self.hyper_was && !held && !self.warp.active() {
-            let v = self.state.ship.vel_mps;
-            let speed = v.length();
-            if speed > HYPER_DROP_MPS {
-                self.state.ship.vel_mps = v * (HYPER_DROP_MPS / speed);
-                log::info!("hyper: field collapsed at {speed:.3e} m/s, dropped to a crawl");
-            }
+        if self.hyper_was && !held {
+            log::info!(
+                "chaos drive: released at {:.3e} m/s, entropy {:.0}%",
+                self.state.ship.vel_mps.length(),
+                self.hyper_strain * 100.0
+            );
         }
         self.hyper_was = held;
         if held {
@@ -1530,16 +1551,82 @@ impl Game {
         .with_hyper(self.hyper)
     }
 
-    /// The strain line for the readout, once there is any.
+    /// The entropy line for the readout, once there is any.
     fn strain_text(&self) -> Option<String> {
         (self.hyper_strain > 0.02).then(|| {
             let pct = (self.hyper_strain * 100.0).round();
-            if self.hyper_strain > 0.6 {
-                format!("DRIVE STRAIN {pct:.0}%  !")
+            let chaos = chaos_level(self.hyper_strain, self.slip_at);
+            if chaos > 0.3 {
+                format!("ENTROPY {pct:.0}%  CHAOS")
+            } else if self.hyper_strain > 0.5 {
+                format!("ENTROPY {pct:.0}%  !")
             } else {
-                format!("DRIVE STRAIN {pct:.0}%")
+                format!("ENTROPY {pct:.0}%")
             }
         })
+    }
+
+    /// The drive's charge for the field: how far along the entropy is —
+    /// the speed climbs with it, the slip with it too. A skill game.
+    fn hyper_level(&self) -> f64 {
+        (self.hyper_strain / self.slip_at.max(1e-3)).clamp(0.0, 1.0) as f64
+    }
+
+    /// WARP STOP: all speed and all spin taken out of the ship at once —
+    /// it is warped in place to rest against the nearest body — and the
+    /// image it leaves behind carries on down the old vector for a moment.
+    fn warp_stop(&mut self) {
+        if self.warp.active() {
+            return;
+        }
+        let t = self.state.time_s;
+        let bodies = self.params.bodies(t);
+        let vels = self.params.body_velocities(t);
+        let pos = self.state.ship.pos_m;
+        let nearest = bodies
+            .iter()
+            .zip(vels.iter())
+            .min_by(|(a, _), (b, _)| {
+                let da = (pos - a.centre).length() / a.radius_m;
+                let db = (pos - b.centre).length() / b.radius_m;
+                da.partial_cmp(&db).unwrap()
+            })
+            .map(|(_, v)| *v)
+            .unwrap_or(DVec3::ZERO);
+        let rel = self.state.ship.vel_mps - nearest;
+        if rel.length() > 1e-6 {
+            self.ghost = Some(Ghost {
+                orient: self.state.ship.orient,
+                dir_world: rel.normalize(),
+                at_s: self.started.elapsed().as_secs_f32(),
+            });
+        }
+        log::info!(
+            "warp stop: {:.3e} m/s and {:.2} rad/s taken out",
+            rel.length(),
+            self.state.ship.ang_vel_radps.length()
+        );
+        self.state.ship.vel_mps = nearest;
+        self.state.ship.ang_vel_radps = DVec3::ZERO;
+        self.jumps = self.jumps.wrapping_add(1);
+        self.hyper_strain = (self.hyper_strain * 0.5).max(0.0);
+    }
+
+    /// The after-image this frame, if one is still showing.
+    fn ghost_uniforms(&self, cam: &CameraFrame) -> GhostUniforms {
+        let head = self.look.rotation();
+        let Some(g) = self.ghost else {
+            return GhostUniforms::none(cam, head);
+        };
+        let now = self.started.elapsed().as_secs_f32();
+        let age = now - g.at_s;
+        if !(0.0..GHOST_LIFE_S).contains(&age) {
+            return GhostUniforms::none(cam, head);
+        }
+        let ship_inv = self.state.ship.orient.inverse();
+        let dir_ship = (ship_inv * g.dir_world).as_vec3();
+        let rot_rel = (ship_inv * g.orient).as_quat();
+        GhostUniforms::new(cam, head, now, age, dir_ship, rot_rel, self.settings.shield)
     }
 
     /// Where a slipped drive drops the ship: some body, at a random
@@ -1697,7 +1784,7 @@ impl Game {
         // Advance the input ramp on wall time, before sampling it.
         self.input.update(frame_dt);
         // Through a jump the stick is dead: the drive has the ship.
-        let controls = if self.warp.active() {
+        let mut controls = if self.warp.active() {
             sim::Controls {
                 assist: self.assist,
                 ..Default::default()
@@ -1705,7 +1792,32 @@ impl Game {
         } else {
             self.input.controls(self.assist)
         };
+        controls.hyper_level = self.hyper_level();
+        // Fuelled by entropy: toward the slip the field shakes the ship —
+        // the stick and the throttle jostled by the drive, a little, then
+        // a lot, until it goes.
+        let chaos = if controls.hyper {
+            chaos_level(self.hyper_strain, self.slip_at)
+        } else {
+            0.0
+        };
+        let base = controls;
         while self.accumulator >= sim::DT {
+            if chaos > 0.0 {
+                let j = |g: &mut Game| (g.next_unit() * 2.0 - 1.0) as f64;
+                let (a, b, c) = (j(self), j(self), j(self));
+                let (d, e, f) = (j(self), j(self), j(self));
+                let k = chaos as f64;
+                controls = base;
+                controls.torque_body += DVec3::new(a, b, c) * 0.9 * k;
+                controls.thrust_body += DVec3::new(d, e, f) * 0.5 * k;
+                controls.torque_body = controls
+                    .torque_body
+                    .clamp(DVec3::splat(-1.0), DVec3::splat(1.0));
+                controls.thrust_body = controls
+                    .thrust_body
+                    .clamp(DVec3::splat(-1.0), DVec3::splat(1.0));
+            }
             let spacing = self.mark_spacing_m() as f64;
             let before = (self.odometer_m / spacing).floor();
             self.odometer_m += self.state.ship.vel_mps.length() * sim::DT;
@@ -2374,6 +2486,20 @@ impl App {
             game.hyper = 1.0;
             game.bench_hyper = true;
         }
+        if let Some(age) = std::env::var("FARFALL_BENCH_GHOST")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| v.trim().parse::<f32>().ok())
+        {
+            // The capture lands at t = 1 s of the bench clock: an image
+            // that old then, banked a little, gone down the nose.
+            let o = game.state.ship.orient;
+            game.ghost = Some(Ghost {
+                orient: o * DQuat::from_rotation_z(0.35) * DQuat::from_rotation_x(-0.15),
+                dir_world: o * DVec3::new(0.15, 0.05, -1.0).normalize(),
+                at_s: 1.0 - age,
+            });
+        }
         if let Some(n) = std::env::var("FARFALL_BENCH_STRIKES")
             .ok()
             .filter(|_| game.frozen)
@@ -2547,6 +2673,9 @@ impl ApplicationHandler for App {
                         log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
                     }
                     KeyCode::KeyJ if pressed && !event.repeat => game.engage_warp(),
+                    c if pressed && !event.repeat && c == game.settings.bindings.warp_stop => {
+                        game.warp_stop()
+                    }
                     KeyCode::KeyG if pressed && !event.repeat => game.toggle_landing(),
                     KeyCode::KeyK if pressed && !event.repeat => {
                         game.toggle_design();
@@ -2799,6 +2928,9 @@ impl ApplicationHandler for App {
                                 gpu.passes
                                     .shield
                                     .update(&gpu.queue, &game.shield_uniforms(&cam));
+                                gpu.passes
+                                    .ghost
+                                    .update(&gpu.queue, &game.ghost_uniforms(&cam));
                                 {
                                     let mut pass =
                                         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2817,6 +2949,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                                     gpu.passes.trajectory.draw(&mut pass);
                                     gpu.passes.shield.draw(&mut pass);
+                                    gpu.passes.ghost.draw(&mut pass);
                                     gpu.passes.cabin.draw(&mut pass);
                                     gpu.passes.horizon.draw(&mut pass);
                                     gpu.passes.gauge.draw(&mut pass);
@@ -2921,6 +3054,9 @@ impl ApplicationHandler for App {
                 gpu.passes
                     .shield
                     .update(&gpu.queue, &game.shield_uniforms(&cam));
+                gpu.passes
+                    .ghost
+                    .update(&gpu.queue, &game.ghost_uniforms(&cam));
                 let (altitude_m, _) = game.altitude_vspeed();
                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
 
@@ -2998,6 +3134,9 @@ impl ApplicationHandler for App {
                     }
                     if gpu.cfg.draws("shield") {
                         gpu.passes.shield.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("ghost") {
+                        gpu.passes.ghost.draw(&mut pass);
                     }
                     if gpu.cfg.draws("cockpit") {
                         gpu.passes.cabin.draw(&mut pass);
@@ -3335,12 +3474,27 @@ mod tests {
         let vc = (b.mu / r).sqrt();
         assert!(v > vc * 0.45 && v < vc * 1.45, "{} of circular", v / vc);
         assert_ne!(game.state.ship.pos_m, home);
-        // Let go of a running field: a crawl, down the nose.
+        // Let go of a running field: launched at that speed, nothing taken.
         let mut g2 = Game::new();
         g2.state.ship.vel_mps = glam::DVec3::new(0.0, 0.0, -2.0e7);
         g2.hyper_was = true;
         g2.run_hyper_strain(0.016);
-        assert!((g2.state.ship.vel_mps.length() - HYPER_DROP_MPS).abs() < 1e-6);
+        assert_eq!(g2.state.ship.vel_mps.length(), 2.0e7);
+        // WARP STOP takes it all out and leaves the image behind.
+        g2.state.ship.ang_vel_radps = glam::DVec3::new(0.5, 0.0, 0.0);
+        g2.warp_stop();
+        assert!(
+            g2.state.ship.vel_mps.length() < 1.0,
+            "{:?}",
+            g2.state.ship.vel_mps
+        );
+        assert_eq!(g2.state.ship.ang_vel_radps, glam::DVec3::ZERO);
+        let ghost = g2.ghost.expect("an after-image");
+        assert!((ghost.dir_world - glam::DVec3::NEG_Z).length() < 1e-9);
+        // Chaos: calm to halfway, shaking hard near the slip.
+        assert_eq!(chaos_level(0.2, 1.0), 0.0);
+        assert!(chaos_level(0.75, 1.0) > 0.1 && chaos_level(0.75, 1.0) < 0.5);
+        assert_eq!(chaos_level(1.0, 1.0), 1.0);
         // Off, the strain eases.
         let mut g3 = Game::new();
         g3.hyper_strain = 0.5;

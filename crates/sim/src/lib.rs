@@ -186,8 +186,9 @@ pub struct ShipParams {
     /// The hyper drive: the wormhole drive half-engaged — a field that
     /// moves space rather than the ship, so relativity's wall does not
     /// apply to it. Held, the velocity runs exponentially toward this
-    /// speed down the nose (the Sun in about a minute), whatever the ship
-    /// was doing; the drive's own wall is the whole wormhole.
+    /// speed (at full charge; a fraction of it below) down the nose,
+    /// whatever the ship was doing; the drive's own wall is the whole
+    /// wormhole.
     pub hyper_max_mps: f64,
     /// The field's time constant: how long the run-up takes to settle.
     pub hyper_tau_s: f64,
@@ -293,6 +294,9 @@ pub struct Controls {
     pub despin: bool,
     /// The hyper drive, held: the ship is hauled down its nose.
     pub hyper: bool,
+    /// How far the drive has charged, 0..1: the field's speed is this
+    /// much of hyper_max_mps (a floor keeps a fresh field moving at all).
+    pub hyper_level: f64,
 }
 
 impl Controls {
@@ -309,6 +313,7 @@ impl Controls {
             brake: self.brake,
             despin: self.despin,
             hyper: self.hyper,
+            hyper_level: self.hyper_level.clamp(0.0, 1.0),
         }
     }
 }
@@ -371,10 +376,11 @@ pub mod presets {
                 brake_mps2: 210.0,
                 brake_tau_s: 0.35,
                 despin_tau_s: 0.6,
-                // 1 AU at 1:100 is 1.5e9 m: at 3e7 m/s that is fifty
-                // seconds, plus the run-up.
-                hyper_max_mps: 3.0e7,
-                hyper_tau_s: 6.0,
+                // 1 AU at 1:100 is 1.5e9 m: at full charge, 1.2e8 m/s
+                // (0.4 c) crosses it in a dozen seconds; a fresh field at
+                // a tenth of that takes two minutes.
+                hyper_max_mps: 1.2e8,
+                hyper_tau_s: 4.0,
                 // Landing, not bouncing — and enough friction to come to rest
                 // rather than skating around the equator forever.
                 ground_restitution: 0.0,
@@ -668,7 +674,8 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     let vel = if c.hyper {
         let nose = ship.orient * DVec3::NEG_Z;
         let k = 1.0 - libm::exp(-DT / params.ship.hyper_tau_s);
-        vel + (nose * params.ship.hyper_max_mps - vel) * k
+        let level = 0.08 + 0.92 * c.hyper_level.clamp(0.0, 1.0);
+        vel + (nose * (params.ship.hyper_max_mps * level) - vel) * k
     } else {
         vel
     };

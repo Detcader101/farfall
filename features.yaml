@@ -229,8 +229,15 @@ features:
     settings: [ui.g-vector, ui.g-vector.size/style/fade/tilt]
     e2e: FARFALL_BENCH_G=-2.5,6.5,-1.0 capture as a tilted DIAL — dot up-left, ×5, 7.04, red rim, brake mark
 
+  - id: warp-stop
+    name: WARP STOP (V, rebindable) — all speed and spin taken out of the ship at once (warped in place to rest against the nearest body); the quantum after-image (ghost.wgsl) — the ship's own geometry, ray-marched from the same fighter SDF at the attitude it had — slides on down the old vector ahead, in the field's blue with a glowing rim and bands flowing down its length, fading over 1.8 s; the warp crack sounds
+    state: complete
+    tests: [crates/render/src/ghost.rs, crates/render/tests/shader_validation.rs, crates/app/src/main.rs::the_hyper_drive_strains_slips_somewhere_else_and_collapses_to_a_crawl]
+    settings: [control.warp-stop]
+    e2e: FARFALL_BENCH_GHOST=0.35 capture — the banked jet ahead, receding
+
   - id: hyper-drive
-    name: HYPER DRIVE (H, rebindable) — the wormhole drive half-engaged, a field that moves space (past the relativity wall, it is not the ship moving); held, the velocity runs to 3e7 m/s down the nose on a 6 s constant — the Sun in about a minute. Let go and the field collapses to a 1.5 km/s crawl. The price: DRIVE STRAIN climbs while held (faster at full run), and past a limit drawn fresh each time (28–40 s of full run) the drive SLIPS — the whole wormhole fires uncharged and drops the ship into an unstable orbit of a random body (planet/Moon/Sun/Uranus), at 1.8–6 radii, going a random way at 0.5–1.4× circular. The view opens, the glow and hum climb with the strain
+    name: CHAOS DRIVE (H, rebindable; "fuelled by entropy") — the wormhole drive half-engaged, a field that moves space (past the relativity wall, it is not the ship moving); held, the speed climbs with the charge — ENTROPY on the readout — from a tenth of 1.2e8 m/s to all of it (0.4 c, the Sun in a dozen seconds) as the entropy runs up; a skill game, because past a limit drawn fresh each time (28–40 s of full run) the drive SLIPS, and from halfway there the flight goes unstable — the drive jostles stick and throttle, a little, then a lot (CHAOS on the readout). Let go and you are launched at whatever speed you had (WARP STOP to kill it). The slip — the whole wormhole fires uncharged and drops the ship into an unstable orbit of a random body (planet/Moon/Sun/Uranus), at 1.8–6 radii, going a random way at 0.5–1.4× circular. The view opens, the glow and hum climb with the strain
     state: complete
     tests: [crates/sim/tests/assist.rs::hyper_drive_crosses_an_astronomical_unit_in_a_minute, crates/app/src/warp.rs::the_hyper_drive_is_half_a_charge, crates/app/src/warp.rs::a_slip_flips_at_once_and_jumps_at_the_peak, crates/app/src/main.rs::the_hyper_drive_strains_slips_somewhere_else_and_collapses_to_a_crawl]
     settings: [control.hyper]
