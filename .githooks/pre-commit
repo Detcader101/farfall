@@ -15,5 +15,12 @@ if git diff --cached --name-only | grep -qE '\.(rs|wgsl|toml)$'; then
     cargo clippy --workspace --all-targets -- -D warnings
     echo "pre-commit: tests"
     cargo test --workspace --quiet
+    # The picture itself: the game run headless through its bench knobs
+    # and the captures measured (crates/app/tests/scenes.rs). Needs a GPU
+    # and a window server; skipped where there is none (FARFALL_NO_SCENES=1).
+    if [ -z "$FARFALL_NO_SCENES" ]; then
+        echo "pre-commit: scenes"
+        FARFALL_SCENE_TESTS=1 cargo test --release -p farfall-app --test scenes --quiet
+    fi
     echo "pre-commit: ok"
 fi

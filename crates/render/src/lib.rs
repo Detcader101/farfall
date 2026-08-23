@@ -80,6 +80,18 @@ pub struct FrameUniforms {
 }
 
 impl FrameUniforms {
+    /// The stars' stretch at speed, 0..1 (right.w).
+    pub fn with_star_stretch(mut self, stretch: f32) -> Self {
+        self.right[3] = if stretch.is_finite() {
+            stretch.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self
+    }
+}
+
+impl FrameUniforms {
     /// Tell the sky passes about an opaque body in front of them — the
     /// planet — so pixels under its disc are not shaded only to be painted
     /// over. Purely an optimisation: the image is identical without it.

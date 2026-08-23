@@ -129,7 +129,7 @@ features:
     e2e: FARFALL_BENCH_HEAD=25,0 capture with ui.ladder on — bars sit on the nose, left of view
 
   - id: uranus
-    name: Uranus as a body and destination (1:100, 19.2 AU, rings); altitude over nearest body
+    name: Uranus as a body and destination (1:100, 19.2 AU, rings); altitude over nearest body. (A uniform-lane bug briefly hid it — the bodies block's field order is now pinned by a test and a scene test)
     state: complete
     tests: [crates/sim/tests/bodies.rs::uranus_is_far_large_and_pulls_like_uranus, crates/app/src/map.rs]
     e2e: FARFALL_BENCH_WARP arrival capture — ice giant overhead, 939 m/s circular orbit, tag ring
@@ -228,6 +228,18 @@ features:
     tests: [crates/render/src/gauge.rs::the_g_vector_ranges_on_the_plane_and_reads_the_total, crates/render/tests/shader_validation.rs]
     settings: [ui.g-vector, ui.g-vector.size/style/fade/tilt]
     e2e: FARFALL_BENCH_G=-2.5,6.5,-1.0 capture as a tilted DIAL — dot up-left, ×5, 7.04, red rim, brake mark
+
+  - id: scene-tests
+    name: Scene tests (crates/app/tests/scenes.rs) — the game run headless through its bench knobs, captures read back and measured: Uranus fills the sky from its ring with rocks in front, the belt's rocks and haze, the Sun's surface and spots, the blue sky over lit ground, shield ripples and the after-image, the menu and the dials. In the pre-commit gate (FARFALL_SCENE_TESTS=1; FARFALL_NO_SCENES=1 skips). Caught the Uranus lane bug
+    state: complete
+    tests: [crates/app/tests/scenes.rs, crates/render/src/bodies.rs::uranus_and_the_planet_land_in_their_own_lanes]
+    e2e: the tests are the look
+
+  - id: star-stretch
+    name: The stars stretch at speed — every star drawn out into a streak away from the centre of the view, the old Star Trek exposure drag, with the Chaos Drive and past a third of the way to the wall; the lens flare halved
+    state: complete
+    tests: [crates/render/tests/shader_validation.rs]
+    e2e: FARFALL_BENCH_HYPER=1 capture — streaks radiating
 
   - id: drive-look-v2
     name: The drive effects reworked — the quantum superstate as a liquid: four drifting vortices with fine ripples (analytic, no noise — the old fbm particles cost 18 ms at 2880×1800), chromatic splitting, radial speed streaks, a cold bloom on the charge and a cool vignette at speed; the FOV barely moves now (charge ×1.35, Chaos Drive ×1.12) — the speed is in the picture. The drive's voice is bassy and cinematic: a sub that swells with the charge under a saturated hum an octave and a fifth up, throbbing faster as it charges, a thread of dark noise only at the top. The readout scales with the view like a dial, so it never grows across the screen

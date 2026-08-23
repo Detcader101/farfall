@@ -19,6 +19,9 @@ override STAR_DENSITY: f32 = 1.0;
 
 struct Frame {
     // Camera basis, world space (camera-relative rendering: no translation).
+    // right.w: the stars' stretch 0..1 — at speed every star draws out
+    // into a streak away from the centre of the view, the old Star Trek
+    // way: the picture's exposure dragging as the sky rushes past.
     right: vec4<f32>,
     up: vec4<f32>,
     forward: vec4<f32>,
@@ -161,7 +164,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
     }
 
-    var col = tonemap(stars(dir) + milky_way(dir), exposure);
+    let stretch = frame.right.w;
+    var star_light = stars(dir);
+    if (stretch > 0.001) {
+        // The streak: the same star field sampled a few times along the
+        // line from this pixel toward the centre of the view, the tail
+        // fading — so each star trails outward from where it is.
+        let q = in.ndc * vec2<f32>(aspect, 1.0);
+        let r = length(q);
+        let reach = stretch * (0.06 + 0.22 * r);
+        var acc = star_light;
+        var wsum = 1.0;
+        for (var k = 1; k <= 5; k += 1) {
+            let s = f32(k) / 5.0;
+            let ndc_k = in.ndc * (1.0 - reach * s);
+            let dir_k = view_ray(ndc_k, frame.right.xyz, frame.up.xyz, frame.forward.xyz, tan_half_fov, aspect);
+            let w = 1.0 - s * 0.75;
+            acc += stars(dir_k) * w;
+            wsum += w;
+        }
+        // Brighter than the mean: a streak is the star's light spread out,
+        // and the eye reads the long faint line as the brilliant star it
+        // came from.
+        star_light = acc / wsum * (1.0 + 1.5 * stretch);
+    }
+    var col = tonemap(star_light + milky_way(dir), exposure);
     col += vec3<f32>(dither_px(in.pos.xy));
     return vec4<f32>(max(col, vec3<f32>(0.0)), 1.0);
 }

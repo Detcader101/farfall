@@ -37,7 +37,7 @@ so it handles like a VTOL: hold the horizon and the orbit holds, pitch down and
 you descend. Switch it **off** and the ship is a pure ballistic body: attitude
 and velocity are independent, and orbits are conserved exactly.
 
-**The drive's look**: the wormhole and the Chaos Drive show as a liquid, vortical refraction of the view with fine ripples, chromatic splitting, radial speed streaks and a cool rim — the lens barely widens; the picture does the talking. The drive's voice is a sub that swells under a saturated hum.
+**The drive's look**: the wormhole and the Chaos Drive show as a liquid, vortical refraction of the view with fine ripples, chromatic splitting, radial speed streaks and a cool rim — the lens barely widens; the picture does the talking — and the stars themselves draw out into streaks, the old Star Trek way. The drive's voice is a sub that swells under a saturated hum.
 
 **The Sun**: a saturated dot from the planet, a surface up close — limb darkening, granulation, sunspots drifting with its rotation, prominences on the limb and the odd coronal mass ejection — with a lens flare in the glass (starburst, streak, rainbow ghosts; LENS FLARE on the GFX page).
 

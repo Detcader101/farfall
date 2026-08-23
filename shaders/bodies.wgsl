@@ -81,7 +81,8 @@ fn lens_flare(ndc: vec2<f32>, sun_ndc: vec2<f32>, aspect: f32, strength: f32, t:
         let ring = (1.0 - smoothstep(0.85, 1.0, d)) * (0.25 + 0.75 * smoothstep(0.55, 0.95, d));
         out += tints[i] * ring * 0.16;
     }
-    return out * strength;
+    // Restrained: the flare is a hint of the glass, not the picture.
+    return out * strength * 0.45;
 }
 
 // A body's disc coverage and surface normal along `ray`, or cover 0.

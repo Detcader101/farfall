@@ -2923,10 +2923,12 @@ impl ApplicationHandler for App {
                                 let cam = game.camera(aspect);
                                 gpu.passes.starfield.update(
                                     &gpu.queue,
-                                    &FrameUniforms::from_camera(&cam).with_occluder(
-                                        (DVec3::ZERO - game.state.ship.pos_m).as_vec3(),
-                                        game.params.planet.radius_m as f32,
-                                    ),
+                                    &FrameUniforms::from_camera(&cam)
+                                        .with_occluder(
+                                            (DVec3::ZERO - game.state.ship.pos_m).as_vec3(),
+                                            game.params.planet.radius_m as f32,
+                                        )
+                                        .with_star_stretch(game.speed_look()),
                                 );
                                 gpu.passes
                                     .planet
@@ -3128,10 +3130,12 @@ impl ApplicationHandler for App {
                 game.update_drag(&cam);
                 gpu.passes.starfield.update(
                     &gpu.queue,
-                    &FrameUniforms::from_camera(&cam).with_occluder(
-                        (DVec3::ZERO - game.state.ship.pos_m).as_vec3(),
-                        game.params.planet.radius_m as f32,
-                    ),
+                    &FrameUniforms::from_camera(&cam)
+                        .with_occluder(
+                            (DVec3::ZERO - game.state.ship.pos_m).as_vec3(),
+                            game.params.planet.radius_m as f32,
+                        )
+                        .with_star_stretch(game.speed_look()),
                 );
                 gpu.passes
                     .planet

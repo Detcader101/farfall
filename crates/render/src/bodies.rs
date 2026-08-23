@@ -15,11 +15,12 @@ pub struct BodiesUniforms {
     sun: [f32; 4],
     /// x: tags, y: height px, z: LENS FLARE strength (0 off), w: unused
     look: [f32; 4],
-    /// xyz: the planet's centre relative to the camera, w: its radius —
-    /// the thing most likely to stand in front of the Sun
-    planet: [f32; 4],
     /// Uranus: xyz camera-relative centre, w radius.
     uranus: [f32; 4],
+    /// xyz: the planet's centre relative to the camera, w: its radius —
+    /// the thing most likely to stand in front of the Sun. LAST, as in
+    /// the shader: the struct is the wire format.
+    planet: [f32; 4],
 }
 
 impl BodiesUniforms {
@@ -163,5 +164,50 @@ impl BodiesPass {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Quat;
+
+    /// The uniform block is the shader's wire format: the lanes land where
+    /// bodies.wgsl reads them. A field in the wrong place once put the
+    /// planet's numbers where Uranus was read, and Uranus vanished.
+    #[test]
+    fn uranus_and_the_planet_land_in_their_own_lanes() {
+        let cam = CameraFrame {
+            orient: Quat::IDENTITY,
+            fov_y: 1.2,
+            aspect: 1.5,
+            time_s: 0.0,
+            exposure: 1.0,
+        };
+        let u = BodiesUniforms::new(
+            &cam,
+            (Vec3::new(1_000.0, 0.0, 0.0), 10.0),
+            (Vec3::new(2_000.0, 0.0, 0.0), 20.0),
+            (Vec3::new(3_000.0, 0.0, 0.0), 30.0),
+            1.0,
+            900.0,
+        )
+        .with_planet_and_flare((Vec3::new(4_000.0, 0.0, 0.0), 40.0), 0.5);
+        let words: &[f32] = bytemuck::cast_slice(bytemuck::bytes_of(&u));
+        // right, up, forward, params, moon, sun, look, uranus, planet.
+        assert_eq!(words[4 * 4], 1_000.0, "moon at lane 4");
+        assert_eq!(words[5 * 4 + 3], 20.0, "sun at lane 5");
+        assert_eq!(words[6 * 4 + 2], 0.5, "flare in look.z");
+        assert_eq!(
+            &words[7 * 4..7 * 4 + 4],
+            &[3_000.0, 0.0, 0.0, 30.0],
+            "uranus at lane 7"
+        );
+        assert_eq!(
+            &words[8 * 4..8 * 4 + 4],
+            &[4_000.0, 0.0, 0.0, 40.0],
+            "planet at lane 8"
+        );
+        assert_eq!(std::mem::size_of::<BodiesUniforms>(), 9 * 16);
     }
 }
