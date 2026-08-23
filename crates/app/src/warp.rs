@@ -194,6 +194,24 @@ impl Default for Warp {
     }
 }
 
+impl Look {
+    /// The hyper drive half-engages the wormhole drive: at level `h`
+    /// (0..1) the view opens partway to the charge, the drive glows, and
+    /// the field's particles stream — on top of whatever the full drive
+    /// is doing.
+    pub fn with_hyper(mut self, h: f32) -> Look {
+        let h = if h.is_finite() {
+            h.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.fov_scale *= 1.0 + 0.45 * h;
+        self.charge = self.charge.max(0.7 * h);
+        self.particles = self.particles.max(0.6 * h);
+        self
+    }
+}
+
 fn smooth(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     x * x * (3.0 - 2.0 * x)
@@ -296,6 +314,23 @@ impl Warp {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hyper_tests {
+    use super::*;
+
+    #[test]
+    fn the_hyper_drive_is_half_a_charge() {
+        let idle = Warp::new().look();
+        let h = idle.with_hyper(1.0);
+        assert!(h.fov_scale > 1.3 && h.fov_scale < 1.6, "{}", h.fov_scale);
+        assert!(h.charge > 0.5 && h.charge < 1.0);
+        assert!(h.particles > 0.0);
+        let none = idle.with_hyper(0.0);
+        assert_eq!(none, idle);
+        assert_eq!(idle.with_hyper(f32::NAN), idle);
     }
 }
 

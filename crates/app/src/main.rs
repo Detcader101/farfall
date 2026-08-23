@@ -187,6 +187,7 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
 ///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times)
+///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_G=x,y,z  (benchmark only: a felt load in g — right, up,
 ///                           forward — for the G instruments)
 ///   FARFALL_BENCH_THRUST=m,p,y,r (benchmark only: force main thrust 0..1 and
@@ -829,6 +830,8 @@ struct Game {
     left_down: bool,
     /// The wormhole drive's sequence.
     warp: Warp,
+    /// The hyper drive's level 0..1, eased — the field takes a moment to form.
+    hyper: f32,
     /// Felt acceleration over the last sim step, g, and the meter's fade.
     felt_g: f32,
     /// The same, as a vector in the ship's frame: right, up, forward (g).
@@ -906,6 +909,7 @@ impl Game {
             window_size: (1.0, 1.0),
             left_down: false,
             warp: Warp::new(),
+            hyper: 0.0,
             felt_g: 0.0,
             felt_g_body: [0.0; 3],
             g_fade: GForceFade::new(),
@@ -1184,6 +1188,12 @@ impl Game {
         }
     }
 
+    /// The drive's look this frame: the wormhole sequence, with the hyper
+    /// drive's half-charge over it.
+    fn warp_look(&self) -> warp::Look {
+        self.warp.look().with_hyper(self.hyper)
+    }
+
     /// A dial's effective settings: its own over the cockpit's.
     fn dial_tweak(&self, i: Instrument) -> DialEffective {
         let tw = self.settings.dials[i as usize];
@@ -1419,6 +1429,17 @@ impl Game {
         self.horizon_fade
             .update(frame_dt.min(0.25) as f32, altitude as f32);
         self.g_fade.update(frame_dt.min(0.25) as f32, self.felt_g);
+        // The hyper field forms over a moment and collapses faster.
+        {
+            let want = if self.input.controls(self.assist).hyper && !self.warp.active() {
+                1.0
+            } else {
+                0.0
+            };
+            let tau = if want > self.hyper { 0.6 } else { 0.25 };
+            let k = 1.0 - (-(frame_dt.min(0.25) as f32) / tau).exp();
+            self.hyper += (want - self.hyper) * k;
+        }
         self.look.update(frame_dt.min(0.25) as f32);
         if self.warp.update(frame_dt.min(0.25) as f32) {
             self.jump();
@@ -1654,7 +1675,7 @@ impl Game {
             entry: entry as f32,
             supersonic: if self.is_supersonic() { 1.0 } else { 0.0 },
             hoops: self.hoops_passed as f32,
-            warp: self.warp.look().charge,
+            warp: self.warp_look().charge,
             jumps: self.jumps as f32,
             master: 0.8,
         }
@@ -1802,7 +1823,7 @@ impl Game {
         CameraFrame {
             orient,
             fov_y: ((self.settings.fov + FOV_THRUST_GAIN * self.effort)
-                * self.warp.look().fov_scale)
+                * self.warp_look().fov_scale)
                 .to_radians()
                 .min(2.9),
             aspect,
@@ -2059,6 +2080,9 @@ impl App {
         }
         if game.frozen && std::env::var("FARFALL_BENCH_DESIGN").is_ok() {
             game.toggle_design();
+        }
+        if game.frozen && std::env::var("FARFALL_BENCH_HYPER").is_ok() {
+            game.hyper = 1.0;
         }
         if let Some(g) = std::env::var("FARFALL_BENCH_G")
             .ok()
@@ -2592,7 +2616,7 @@ impl ApplicationHandler for App {
                 let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
                 let px_canopy = hud_scale * 2.0 / gpu.config.height as f32;
                 {
-                    let l = game.warp.look();
+                    let l = game.warp_look();
                     gpu.blit.update(
                         &gpu.queue,
                         &PostUniforms::new(

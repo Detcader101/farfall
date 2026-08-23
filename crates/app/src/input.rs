@@ -116,6 +116,7 @@ const BOOST_KEY: KeyCode = KeyCode::ShiftLeft;
 const BRAKE_KEY: KeyCode = KeyCode::Space;
 /// The emergency gyro, likewise a state: hold to kill the spin.
 const DESPIN_KEY: KeyCode = KeyCode::KeyZ;
+const HYPER_KEY: KeyCode = KeyCode::KeyH;
 
 /// Physical-key bindings. Physical (not logical) keys so the layout is the same
 /// shape on QWERTY, AZERTY, and Dvorak.
@@ -142,6 +143,7 @@ pub struct Bindings {
     pub boost: KeyCode,
     pub brake: KeyCode,
     pub despin: KeyCode,
+    pub hyper: KeyCode,
 }
 
 impl Default for Bindings {
@@ -155,6 +157,7 @@ impl Default for Bindings {
             boost: BOOST_KEY,
             brake: BRAKE_KEY,
             despin: DESPIN_KEY,
+            hyper: HYPER_KEY,
         }
     }
 }
@@ -221,7 +224,30 @@ impl Bindings {
         if self.brake == key {
             self.brake = self.despin;
         }
+        if self.hyper == key {
+            self.hyper = self.despin;
+        }
         self.despin = key;
+        true
+    }
+
+    pub fn bind_hyper(&mut self, key: KeyCode) -> bool {
+        if is_reserved(key) {
+            return false;
+        }
+        if let Some(old) = self.action_for(key) {
+            self.keys[old as usize] = self.hyper;
+        }
+        if self.boost == key {
+            self.boost = self.hyper;
+        }
+        if self.brake == key {
+            self.brake = self.hyper;
+        }
+        if self.despin == key {
+            self.despin = self.hyper;
+        }
+        self.hyper = key;
         true
     }
 
@@ -361,6 +387,7 @@ pub struct InputState {
     boost: bool,
     brake: bool,
     despin: bool,
+    hyper: bool,
     /// Smoothed axis values: [thrust xyz, torque xyz].
     axes: [f64; 6],
     bindings: Option<Bindings>,
@@ -389,6 +416,9 @@ impl InputState {
         if key == b.despin {
             self.despin = pressed;
         }
+        if key == b.hyper {
+            self.hyper = pressed;
+        }
         if let Some(action) = b.action_for(key) {
             self.held[action as usize] = pressed;
         }
@@ -413,6 +443,7 @@ impl InputState {
         self.boost = false;
         self.brake = false;
         self.despin = false;
+        self.hyper = false;
         self.axes = [0.0; 6];
     }
 
@@ -463,6 +494,7 @@ impl InputState {
             boost: self.boost,
             brake: self.brake,
             despin: self.despin,
+            hyper: self.hyper,
         }
     }
 
@@ -480,6 +512,7 @@ impl InputState {
             boost: self.boost,
             brake: self.brake,
             despin: self.despin,
+            hyper: self.hyper,
         }
     }
 }

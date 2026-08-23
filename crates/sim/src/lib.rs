@@ -183,6 +183,14 @@ pub struct ShipParams {
     pub brake_tau_s: f64,
     /// Time constant of the emergency gyro's despin, seconds.
     pub despin_tau_s: f64,
+    /// The hyper drive: the wormhole drive half-engaged, a field that
+    /// hauls the ship down its nose at this acceleration for as long as
+    /// the pilot holds it — far past the engine, up to the relativity wall
+    /// (never through it: that takes the whole drive).
+    pub hyper_mps2: f64,
+    /// The field also drags the velocity onto the nose on this time
+    /// constant, so the ship goes where it points, whatever it was doing.
+    pub hyper_align_tau_s: f64,
     /// Restitution on hitting the ground: 0 lands, 1 bounces perfectly.
     pub ground_restitution: f64,
     /// Fraction of tangential speed kept per second while in contact.
@@ -283,6 +291,8 @@ pub struct Controls {
     /// constant — the one control that ignores the torque limits, for the
     /// tumble nothing else gets you out of.
     pub despin: bool,
+    /// The hyper drive, held: the ship is hauled down its nose.
+    pub hyper: bool,
 }
 
 impl Controls {
@@ -298,6 +308,7 @@ impl Controls {
             boost: self.boost,
             brake: self.brake,
             despin: self.despin,
+            hyper: self.hyper,
         }
     }
 }
@@ -360,6 +371,8 @@ pub mod presets {
                 brake_mps2: 210.0,
                 brake_tau_s: 0.35,
                 despin_tau_s: 0.6,
+                hyper_mps2: 2_500.0,
+                hyper_align_tau_s: 0.5,
                 // Landing, not bouncing — and enough friction to come to rest
                 // rather than skating around the equator forever.
                 ground_restitution: 0.0,
@@ -638,11 +651,21 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
         DVec3::ZERO
     };
 
+    // The hyper drive: a field down the nose, and the velocity hauled onto
+    // it. Relativity still has the last word below.
+    let a_hyper = if c.hyper {
+        let nose = ship.orient * DVec3::NEG_Z;
+        let lateral = ship.vel_mps - nose * ship.vel_mps.dot(nose);
+        nose * params.ship.hyper_mps2 - lateral / params.ship.hyper_align_tau_s
+    } else {
+        DVec3::ZERO
+    };
+
     // Kick, then drift. The branch with neither aid is kept textually
     // identical, so a system the pilot never engages cannot perturb the
     // physics contract (or the golden hash).
-    let vel = if c.assist || c.brake {
-        ship.vel_mps + (a_gravity + a_drag + a_thrust + a_align + a_brake) * DT
+    let vel = if c.assist || c.brake || c.hyper {
+        ship.vel_mps + (a_gravity + a_drag + a_thrust + a_align + a_brake + a_hyper) * DT
     } else {
         ship.vel_mps + (a_gravity + a_drag + a_thrust) * DT
     };

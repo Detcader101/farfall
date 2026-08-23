@@ -271,3 +271,37 @@ fn despin_kills_a_tumble_nothing_else_would() {
     let slow = run(&params, spun, 30, fc);
     assert!(slow.ship.ang_vel_radps.length() > wild.length() * 0.5);
 }
+
+/// The hyper drive hauls the ship down its nose: held for six seconds
+/// from orbit it is past the relativity wall and pointed where the nose
+/// is, whatever the orbit was doing — and released, it is left alone.
+#[test]
+fn hyper_drive_hauls_the_ship_down_its_nose_to_the_wall() {
+    let params = presets::earth_compact();
+    let start = spinning(&params, DVec3::ZERO);
+    let nose = start.ship.orient * DVec3::NEG_Z;
+    let held = Controls {
+        hyper: true,
+        ..Default::default()
+    };
+    let end = run(&params, start, 720, held);
+    let speed = end.ship.vel_mps.length();
+    assert!(
+        speed > farfall_sim::RELATIVITY_FROM_MPS,
+        "six seconds of hyper drive reach the wall: {speed} m/s"
+    );
+    assert!(speed < farfall_sim::LIGHT_SPEED_MPS, "and never through it");
+    let along = end.ship.vel_mps.normalize().dot(nose);
+    assert!(along > 0.995, "the velocity is on the nose: cos {along}");
+    // Let go: the next step is plain Newton — no hidden drag, no snap back.
+    let after = step(&params, &end, Controls::default());
+    let coast = step(
+        &params,
+        &end,
+        Controls {
+            assist: false,
+            ..Default::default()
+        },
+    );
+    assert_eq!(after.ship.vel_mps, coast.ship.vel_mps);
+}

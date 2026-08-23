@@ -428,6 +428,11 @@ impl Settings {
                         s.bindings.bind_despin(key);
                     }
                 }
+                "control.hyper" => {
+                    if let Some(key) = key_from_name(v) {
+                        s.bindings.bind_hyper(key);
+                    }
+                }
                 "control.brake" => {
                     if let Some(key) = key_from_name(v) {
                         s.bindings.bind_brake(key);
@@ -537,6 +542,10 @@ impl Settings {
         out.push_str(&format!(
             "control.despin = {}\n",
             key_name(self.bindings.despin)
+        ));
+        out.push_str(&format!(
+            "control.hyper = {}\n",
+            key_name(self.bindings.hyper)
         ));
         out.push_str(&format!(
             "control.look-sens = {:.2}\n",
