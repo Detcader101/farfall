@@ -107,6 +107,9 @@ enum Item {
     DialStyle,
     DialFade,
     DialTilt,
+    Camera,
+    HoloView,
+    HoloSize,
     MapRings,
     MapGrid,
     LookSens,
@@ -138,6 +141,9 @@ impl Item {
             Item::FpsFloor => "FPS FLOOR",
             Item::Sky => "SKY",
             Item::Flare => "LENS FLARE",
+            Item::Camera => "CAMERA",
+            Item::HoloView => "HOLO VIEW",
+            Item::HoloSize => "HOLO SIZE",
             Item::Fov => "FOV",
             Item::GaugeStyle => "GAUGE STYLE",
             Item::GaugesStay => "GAUGES",
@@ -196,6 +202,9 @@ impl Item {
                 }
             }
             Item::Fov => format!("{:.0} DEG", s.fov),
+            Item::Camera => if s.camera_chase { "CHASE" } else { "FIRST" }.to_string(),
+            Item::HoloView => if s.holo_view { "ON" } else { "OFF" }.to_string(),
+            Item::HoloSize => format!("{:.0}%", s.holo_size * 100.0),
             Item::GaugeStyle => s.gauge_style.name().to_string(),
             Item::GaugesStay => if s.gauges_stay { "STAY" } else { "FADE" }.to_string(),
             Item::Guide => if s.guide { "ON" } else { "OFF" }.to_string(),
@@ -293,6 +302,9 @@ impl Menu {
                 Item::Scale,
                 Item::Vsync,
                 Item::Fov,
+                Item::Camera,
+                Item::HoloView,
+                Item::HoloSize,
                 Item::CockpitRes,
                 Item::FpsFloor,
                 Item::Sky,
@@ -664,6 +676,26 @@ impl Menu {
                 s.flare = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::Camera => {
+                s.camera_chase = !s.camera_chase;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::HoloView => {
+                s.holo_view = !s.holo_view;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::HoloSize => {
+                let step = if forward { 0.04 } else { -0.04 };
+                let next = (s.holo_size + step).clamp(
+                    crate::settings::HOLO_SIZE_MIN,
+                    crate::settings::HOLO_SIZE_MAX,
+                );
+                if (next - s.holo_size).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.holo_size = next;
+                MenuEvent::Changed(Change::Layout)
+            }
             Item::Sky => {
                 let step = if forward { 0.25 } else { -0.25 };
                 let next = (s.sky + step).clamp(0.0, 2.0);
@@ -941,7 +973,9 @@ mod tests {
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
         m.key(KeyCode::Tab, &mut s); // back to graphics
-        for _ in 0..8 {
+                                     // QUIT is the last row; the walk must cross CAMERA and both HOLO
+                                     // rows on the way down.
+        for _ in 0..11 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Quit);

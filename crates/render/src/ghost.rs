@@ -76,6 +76,15 @@ impl GhostUniforms {
             dir: v4(d, strength.clamp(0.0, 2.0)),
         }
     }
+
+    /// See the image from an eye away from the pilot's seat (the chase
+    /// view): the image's origin moves the other way. Ship frame, metres.
+    pub fn with_eye(mut self, eye_ship: Vec3) -> Self {
+        self.at[0] -= eye_ship.x;
+        self.at[1] -= eye_ship.y;
+        self.at[2] -= eye_ship.z;
+        self
+    }
 }
 
 pub type GhostPass = InstrumentPass;

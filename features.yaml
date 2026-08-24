@@ -270,6 +270,13 @@ features:
     tests: [crates/app/src/belt.rs, crates/render/src/belt.rs, crates/render/tests/shader_validation.rs, crates/app/tests/scenes.rs]
     e2e: capture parked in the ring — craggy rocks ahead, the ring's haze behind; capture 9 km above the plane — the sheet is a field of rocks receding to the horizon, no stars through it (scene test the_far_ring_resolves_into_rocks_and_hides_the_stars)
 
+  - id: holo3pp
+    name: "The holo3PP (H, holo.view), and the chase camera it is measured against (Y, camera.chase): third person without ever leaving first person. Every world pass draws from a ViewPose (camera + a head rotation + an eye seat in the ship's frame), so a third-person view is only a camera — the ship-attached shaders come along untouched: the shield's shell, the warp-stop after-image and the belt fold the eye offset through with_eye lanes and stay glued to the hull. jet.wgsl draws the ship itself (the same fighter SDF as cabin/map/ghost), Sun-lit hull metal with the canopy's smoked glass and nozzles glowing with effort/hyper. The chase mode swings the whole screen behind the ship (freelook still turns it; cockpit passes skip) — kept as the dev/bench reference. The holo3PP renders that exact chase view (starfield, bodies, planet, belt, jet, trajectory, shield, ghost) into a 512x288 texture every frame and holo.wgsl projects it on the canopy as a hologram panel — faithful picture, hairline cyan frame, the cluster's scanlines and sway — draggable like the map, sized by HOLO SIZE. GFX menu: CAMERA, HOLO VIEW, HOLO SIZE"
+    state: complete
+    settings: [camera.chase, holo.view, holo.size, ui.panel-holo]
+    tests: [crates/render/src/jet.rs, crates/render/src/holo.rs, crates/app/src/main.rs::the_chase_eye_sits_behind_the_ship_and_the_world_measures_from_it, crates/render/tests/shader_validation.rs, crates/app/tests/scenes.rs]
+    e2e: FARFALL_BENCH_CHASE=1 capture — the fighter from behind over the planet, no cockpit (scene test); FARFALL_BENCH_HOLO=1 capture — the live panel on the glass with the cockpit around it (scene test); chase + strikes + ghost capture — shell ripples and after-image attached to the ship, not the camera. Perf 2880x1800 uncapped, chase 8.3 ms, holo on 13.2 ms
+
   - id: warp-stop
     name: WARP STOP (V, rebindable) — all speed and spin taken out of the ship at once (warped in place to rest against the nearest body); the quantum after-image (ghost.wgsl) — the ship's own geometry, ray-marched from the same fighter SDF at the attitude it had — slides on down the old vector ahead, in the field's blue with a glowing rim and bands flowing down its length, fading over 1.8 s; the warp crack sounds
     state: complete

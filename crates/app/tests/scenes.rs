@@ -260,6 +260,51 @@ fn the_shield_ripples_on_strikes_and_the_after_image_shows() {
 }
 
 #[test]
+fn the_chase_view_shows_the_ship_and_no_cockpit() {
+    if !enabled() {
+        return;
+    }
+    let f = capture("chase", &[("FARFALL_BENCH_CHASE", "1")]);
+    // The fighter, a few lengths ahead of the eye: a solid block of hull
+    // in the middle of the frame — low saturation, neither sky nor void.
+    let hull = f.share(0.40, 0.42, 0.60, 0.65, |c| {
+        lum(c) > 0.25 && (c[0] - c[2]).abs() < 0.16 && (c[1] - c[2]).abs() < 0.16
+    });
+    assert!(
+        hull > 0.05,
+        "the ship fills the chase view's middle: {hull}"
+    );
+    // And no instrument cluster: the dash's cyan dials are gone from the
+    // bottom of the frame.
+    let dials = f.share(0.0, 0.75, 1.0, 1.0, |c| {
+        c[1] > 0.5 && c[2] > 0.55 && c[0] < 0.35
+    });
+    assert!(dials < 0.004, "no cockpit in third person: {dials}");
+}
+
+#[test]
+fn the_holo3pp_panel_projects_the_chase_view_in_the_cockpit() {
+    if !enabled() {
+        return;
+    }
+    let f = capture("holo", &[("FARFALL_BENCH_HOLO", "1")]);
+    // The hologram frame: a hairline of cyan around the panel's box,
+    // bottom right of the glass.
+    let frame = f.share(0.52, 0.55, 1.0, 0.95, |c| {
+        c[1] > 0.5 && c[2] > 0.55 && c[0] < 0.4
+    });
+    assert!(frame > 0.001, "the holo frame is lit: {frame}");
+    // The picture inside is live: it holds real content (the planet and
+    // the stars of the chase view), not an empty black pane.
+    let content = f.share(0.60, 0.62, 0.85, 0.88, |c| lum(c) > 0.25);
+    assert!(content > 0.05, "the picture shows the world: {content}");
+    // And the cockpit is still the cockpit: the dials stay lit on the
+    // left of the dash — first person never left.
+    let dials = f.share(0.05, 0.7, 0.45, 1.0, |c| c[1] > 0.45 && c[2] > 0.45);
+    assert!(dials > 0.01, "the cockpit stays around it: {dials}");
+}
+
+#[test]
 fn the_menu_and_the_dials_draw() {
     if !enabled() {
         return;

@@ -150,6 +150,9 @@ pub const COCKPIT_RES_CHOICES: [f32; 3] = [0.5, 0.75, 1.0];
 
 /// Frame-rate floors on offer (0: none). The cabin's moving detail gives
 /// way while turning the head would cost more than the floor allows.
+pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.40, -0.50];
+pub const HOLO_SIZE_MIN: f32 = 0.16;
+pub const HOLO_SIZE_MAX: f32 = 0.50;
 pub const FPS_FLOOR_CHOICES: [f32; 5] = [0.0, 30.0, 60.0, 90.0, 120.0];
 
 /// The landing hoops' spacings on offer, metres.
@@ -211,6 +214,15 @@ pub struct Settings {
     pub map_rings: u32,
     /// The map's reference grid.
     pub map_grid: bool,
+    /// The chase camera: the whole view from outside the ship (the dev
+    /// third person the holo3PP is measured against).
+    pub camera_chase: bool,
+    /// The holo3PP panel: a live third-person projection on the glass.
+    pub holo_view: bool,
+    /// The holo panel's height, as a fraction of the screen's.
+    pub holo_size: f32,
+    /// Where the holo panel's centre sits (canopy NDC).
+    pub holo_anchor: [f32; 2],
     /// The wormhole drive's destination and safe distance.
     pub plan: Plan,
 }
@@ -245,6 +257,10 @@ impl Default for Settings {
             landing_spacing_m: 250.0,
             map_rings: 4,
             map_grid: true,
+            camera_chase: false,
+            holo_view: false,
+            holo_size: 0.30,
+            holo_anchor: HOLO_ANCHOR_DEFAULT,
             plan: Plan::default(),
         }
     }
@@ -346,6 +362,11 @@ impl Settings {
                         s.readout_anchor = [a[0].clamp(-1.6, 1.6), a[1].clamp(-1.6, 1.6)];
                     }
                 }
+                "ui.panel-holo" => {
+                    if let Some(a) = parse_pair(v) {
+                        s.holo_anchor = clamp_anchor(a);
+                    }
+                }
                 "ui.panel-map" => {
                     if let Some(a) = parse_pair(v) {
                         s.map_anchor = clamp_anchor(a);
@@ -384,6 +405,23 @@ impl Settings {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.shield = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "camera.chase" => match v {
+                    "on" => s.camera_chase = true,
+                    "off" => s.camera_chase = false,
+                    _ => {}
+                },
+                "holo.view" => match v {
+                    "on" => s.holo_view = true,
+                    "off" => s.holo_view = false,
+                    _ => {}
+                },
+                "holo.size" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.holo_size = f.clamp(HOLO_SIZE_MIN, HOLO_SIZE_MAX);
                         }
                     }
                 }
@@ -633,6 +671,19 @@ impl Settings {
         ));
         out.push_str(&format!("ui.shield = {:.2}\n", self.shield));
         out.push_str(&format!(
+            "camera.chase = {}\n",
+            if self.camera_chase { "on" } else { "off" }
+        ));
+        out.push_str(&format!(
+            "holo.view = {}\n",
+            if self.holo_view { "on" } else { "off" }
+        ));
+        out.push_str(&format!("holo.size = {:.2}\n", self.holo_size));
+        out.push_str(&format!(
+            "ui.panel-holo = {:.3},{:.3}\n",
+            self.holo_anchor[0], self.holo_anchor[1]
+        ));
+        out.push_str(&format!(
             "sound.hull = {}\n",
             if self.hull_sound { "on" } else { "off" }
         ));
@@ -741,6 +792,10 @@ mod tests {
         s.map_anchor = [0.125, -0.125];
         s.readout_anchor = [-0.5, 0.25];
         s.map_grid = false;
+        s.camera_chase = true;
+        s.holo_view = true;
+        s.holo_size = 0.40;
+        s.holo_anchor = [-0.375, 0.25];
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);
         assert_eq!(Settings::parse(&s.render()), s);

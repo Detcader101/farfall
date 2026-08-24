@@ -26,7 +26,7 @@ use settings::Settings;
 use warp::Warp;
 mod telemetry;
 
-use glam::{DQuat, DVec3};
+use glam::{DQuat, DVec3, Quat};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -46,8 +46,10 @@ use farfall_render::{
         HoloSway, MachAlert,
     },
     ghost::{ghost_pass, GhostPass, GhostUniforms, GHOST_LIFE_S},
+    holo::{HoloPass, HoloUniforms, HOLO_H, HOLO_W},
     hud::HudPass,
     instrument::InstrumentPass,
+    jet::{jet_pass, JetPass, JetUniforms},
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
     shield::{shield_pass, Impact, ShieldPass, ShieldUniforms},
     starfield::StarfieldPass,
@@ -188,6 +190,8 @@ enum Dragged {
     Readout,
     /// The map pane with its DRIVE panel.
     MapPanel,
+    /// The holo3PP panel.
+    HoloPanel,
 }
 
 impl Dragged {
@@ -197,6 +201,7 @@ impl Dragged {
             Dragged::MenuPanel => "SETTINGS PANEL",
             Dragged::Readout => "READOUT",
             Dragged::MapPanel => "MAP",
+            Dragged::HoloPanel => "HOLO3PP",
         }
     }
 }
@@ -420,6 +425,48 @@ struct Passes {
     shield: ShieldPass,
     ghost: GhostPass,
     belt: BeltPass,
+    /// The ship from outside, for the chase view and the holo3PP.
+    jet: JetPass,
+    /// The holo3PP: the chase view rendered small every frame, and the
+    /// panel that projects it on the glass.
+    holo: HoloRig,
+}
+
+/// The holo3PP's own instances of the world passes (their uniform buffers
+/// hold the chase pose while the main passes hold the pilot's), and the
+/// panel. The rig renders single-sample into the panel's small texture —
+/// the same passes, the same pose plumbing, just a second eye.
+struct HoloRig {
+    star: StarfieldPass,
+    bodies: BodiesPass,
+    planet: PlanetPass,
+    belt: BeltPass,
+    jet: JetPass,
+    trajectory: TrajectoryPass,
+    shield: ShieldPass,
+    ghost: GhostPass,
+    panel: HoloPass,
+}
+
+impl HoloRig {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        msaa: u32,
+        baked: &BakedMaps,
+    ) -> Self {
+        Self {
+            star: StarfieldPass::new(device, format, 1, STAR_DENSITY, baked),
+            bodies: BodiesPass::new(device, format, 1),
+            planet: PlanetPass::new(device, format, 1, baked),
+            belt: belt_pass(device, format, 1),
+            jet: jet_pass(device, format, 1),
+            trajectory: TrajectoryPass::new(device, format, 1),
+            shield: shield_pass(device, format, 1),
+            ghost: ghost_pass(device, format, 1),
+            panel: HoloPass::new(device, format, msaa, format),
+        }
+    }
 }
 
 impl Passes {
@@ -450,7 +497,81 @@ impl Passes {
             shield: shield_pass(device, format, msaa),
             ghost: ghost_pass(device, format, msaa),
             belt: belt_pass(device, format, msaa),
+            jet: jet_pass(device, format, msaa),
+            holo: HoloRig::new(device, format, msaa, baked),
         }
+    }
+}
+
+impl Gpu {
+    /// The holo3PP's frame: point the rig's passes at the chase pose and
+    /// draw the small picture. One call, shared by the visible frame and
+    /// the headless bench — the panel then samples the result.
+    fn encode_holo(&self, game: &Game, encoder: &mut wgpu::CommandEncoder) {
+        if !game.holo_active() {
+            return;
+        }
+        let hpose = game.chase_pose(HOLO_W as f32 / HOLO_H as f32);
+        let r = &self.passes.holo;
+        r.star.update(
+            &self.queue,
+            &FrameUniforms::from_camera(&hpose.cam)
+                .with_occluder(
+                    (DVec3::ZERO - game.eye_m(&hpose)).as_vec3(),
+                    game.params.planet.radius_m as f32,
+                )
+                .with_star_stretch(game.speed_look()),
+        );
+        r.planet.update(&self.queue, &game.planet_uniforms(&hpose));
+        r.bodies
+            .update(&self.queue, &game.bodies_uniforms(&hpose, HOLO_H as f32));
+        r.belt.update(&self.queue, &game.belt_uniforms(&hpose));
+        r.jet.update(&self.queue, &game.jet_uniforms(&hpose));
+        r.trajectory.update(
+            &self.queue,
+            &TrajectoryUniforms::new(
+                &hpose.cam,
+                &game.trajectory_world(game.eye_m(&hpose)),
+                TRAJECTORY_HORIZON_S,
+                game.trajectory_vis,
+                HOLO_H as f32,
+                game.marks(),
+            ),
+        );
+        r.shield.update(&self.queue, &game.shield_uniforms(&hpose));
+        r.ghost.update(&self.queue, &game.ghost_uniforms(&hpose));
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("holo picture"),
+            color_attachments: &[Some(r.panel.picture_attachment())],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        r.star.draw(&mut pass);
+        r.bodies.draw(&mut pass);
+        r.planet.draw(&mut pass);
+        r.belt.draw(&mut pass);
+        r.jet.draw(&mut pass);
+        r.trajectory.draw(&mut pass);
+        r.shield.draw(&mut pass);
+        r.ghost.draw(&mut pass);
+    }
+
+    /// The panel's own uniforms: where it sits on the glass this frame.
+    fn update_holo_panel(&self, game: &Game, cam: &CameraFrame, aspect: f32) {
+        self.passes.holo.panel.update(
+            &self.queue,
+            &HoloUniforms::new(
+                game.settings.holo_anchor,
+                game.settings.holo_size,
+                aspect,
+                self.config.height as f32,
+                cam.time_s,
+                game.holo_sway.sway(),
+                game.holo_active(),
+            ),
+        );
     }
 }
 
@@ -1033,7 +1154,9 @@ impl Game {
 
     /// The Sun and the Moon as the camera sees them: where the sim has them
     /// at sim time, subtracted in f64 (P3).
-    fn bodies_uniforms(&self, cam: &CameraFrame, height_px: f32) -> BodiesUniforms {
+    fn bodies_uniforms(&self, pose: &ViewPose, height_px: f32) -> BodiesUniforms {
+        let cam = &pose.cam;
+        let eye = self.eye_m(pose);
         let [_, moon, sun, uranus] = self.params.bodies(self.state.time_s);
         let tags = if self.settings.layout.shown(Instrument::BodyTags) {
             1.0
@@ -1042,24 +1165,15 @@ impl Game {
         };
         BodiesUniforms::new(
             cam,
-            (
-                (moon.centre - self.state.ship.pos_m).as_vec3(),
-                moon.radius_m as f32,
-            ),
-            (
-                (sun.centre - self.state.ship.pos_m).as_vec3(),
-                sun.radius_m as f32,
-            ),
-            (
-                (uranus.centre - self.state.ship.pos_m).as_vec3(),
-                uranus.radius_m as f32,
-            ),
+            ((moon.centre - eye).as_vec3(), moon.radius_m as f32),
+            ((sun.centre - eye).as_vec3(), sun.radius_m as f32),
+            ((uranus.centre - eye).as_vec3(), uranus.radius_m as f32),
             tags,
             height_px,
         )
         .with_planet_and_flare(
             (
-                (DVec3::ZERO - self.state.ship.pos_m).as_vec3(),
+                (DVec3::ZERO - eye).as_vec3(),
                 self.params.planet.radius_m as f32,
             ),
             self.settings.flare,
@@ -1579,15 +1693,16 @@ impl Game {
 
     /// The force field this frame: the head's frame, the clock, the
     /// setting and the shell's recent impacts.
-    fn shield_uniforms(&self, cam: &CameraFrame) -> ShieldUniforms {
+    fn shield_uniforms(&self, pose: &ViewPose) -> ShieldUniforms {
         ShieldUniforms::new(
-            cam,
-            self.look.rotation(),
+            &pose.cam,
+            pose.head,
             self.started.elapsed().as_secs_f32(),
             self.settings.shield,
             &self.impacts,
         )
         .with_hyper(self.hyper)
+        .with_eye(pose.eye_ship.as_vec3())
     }
 
     /// The entropy line for the readout, once there is any.
@@ -1653,27 +1768,29 @@ impl Game {
 
     /// The belt's live rocks for the shader: relative to the head, in the
     /// ship's frame; nothing when the ship is nowhere near the ring.
-    fn belt_uniforms(&self, cam: &CameraFrame) -> BeltUniforms {
+    fn belt_uniforms(&self, pose: &ViewPose) -> BeltUniforms {
         let ship_inv = self.state.ship.orient.inverse();
+        let eye = self.eye_m(pose);
         let now = self.started.elapsed().as_secs_f32();
         let rocks: Vec<RockView> = self
             .belt
             .rocks
             .iter()
             .map(|r| RockView {
-                centre: (ship_inv * (r.pos - self.state.ship.pos_m)).as_vec3(),
+                centre: (ship_inv * (r.pos - eye)).as_vec3(),
                 radius_m: r.radius_m as f32,
                 seed: r.seed,
                 phase: r.spin * now,
             })
             .collect();
         let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
-        BeltUniforms::new(cam, self.look.rotation(), now, sun_ship, 1.0, &rocks)
+        BeltUniforms::new(&pose.cam, pose.head, now, sun_ship, 1.0, &rocks)
     }
 
     /// The after-image this frame, if one is still showing.
-    fn ghost_uniforms(&self, cam: &CameraFrame) -> GhostUniforms {
-        let head = self.look.rotation();
+    fn ghost_uniforms(&self, pose: &ViewPose) -> GhostUniforms {
+        let cam = &pose.cam;
+        let head = pose.head;
         let Some(g) = self.ghost else {
             return GhostUniforms::none(cam, head);
         };
@@ -1686,6 +1803,27 @@ impl Game {
         let dir_ship = (ship_inv * g.dir_world).as_vec3();
         let rot_rel = (ship_inv * g.orient).as_quat();
         GhostUniforms::new(cam, head, now, age, dir_ship, rot_rel, self.settings.shield)
+            .with_eye(pose.eye_ship.as_vec3())
+    }
+
+    /// The ship itself, for an eye outside it; in the cockpit there is
+    /// nothing to draw and the pass discards.
+    fn jet_uniforms(&self, pose: &ViewPose) -> JetUniforms {
+        let ship_inv = self.state.ship.orient.inverse();
+        let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        let u = JetUniforms::new(
+            &pose.cam,
+            pose.head,
+            pose.eye_ship.as_vec3(),
+            sun_ship,
+            self.effort,
+            self.hyper,
+        );
+        if pose.eye_ship == DVec3::ZERO {
+            u
+        } else {
+            u.shown()
+        }
     }
 
     /// Where a slipped drive drops the ship: some body, at a random
@@ -2008,15 +2146,12 @@ impl Game {
     /// Planet as the camera sees it. The world-space subtraction happens here,
     /// in f64, and only the *relative* offset is narrowed to f32 — which is the
     /// whole floating-origin discipline in one line (SPEC P3).
-    fn planet_uniforms(&self, cam: &CameraFrame) -> PlanetUniforms {
-        let centre_rel = (DVec3::ZERO - self.state.ship.pos_m).as_vec3();
+    fn planet_uniforms(&self, pose: &ViewPose) -> PlanetUniforms {
+        let cam = &pose.cam;
+        let eye = self.eye_m(pose);
+        let centre_rel = (DVec3::ZERO - eye).as_vec3();
         let [_, moon, sun, _] = self.params.bodies(self.state.time_s);
-        let rel = |b: &sim::Body| {
-            (
-                (b.centre - self.state.ship.pos_m).as_vec3(),
-                b.radius_m as f32,
-            )
-        };
+        let rel = |b: &sim::Body| ((b.centre - eye).as_vec3(), b.radius_m as f32);
         PlanetUniforms::new(
             cam,
             centre_rel,
@@ -2052,11 +2187,11 @@ impl Game {
     /// The world as the path predictor needs it: the laws and the state,
     /// camera-relative. Nose-on drag: the prediction assumes the pilot flies
     /// prograde, which is what a prediction is for.
-    fn trajectory_world(&self) -> TrajectoryWorld {
+    fn trajectory_world(&self, eye_m: DVec3) -> TrajectoryWorld {
         let planet = &self.params.planet;
         let ship = &self.state.ship;
         TrajectoryWorld {
-            centre_rel: (DVec3::ZERO - ship.pos_m).as_vec3(),
+            centre_rel: (DVec3::ZERO - eye_m).as_vec3(),
             radius_m: planet.radius_m as f32,
             mu: planet.mu as f32,
             rho0: planet.atmo_rho0 as f32,
@@ -2247,6 +2382,19 @@ impl Game {
             }
             return false;
         }
+        // The holo3PP panel is glassware like the dials: take it by its
+        // frame.
+        if self.holo_active() {
+            let a = self.settings.holo_anchor;
+            let hh = self.settings.holo_size;
+            let hw = hh * (HOLO_W as f32 / HOLO_H as f32);
+            let inside = (gaze[0] - a[0]).abs() <= hw + 0.03 && (gaze[1] - a[1]).abs() <= hh + 0.03;
+            if inside {
+                self.drag = Some((Dragged::HoloPanel, [a[0] - gaze[0], a[1] - gaze[1]]));
+                log::info!("drag: picked up the holo panel");
+                return true;
+            }
+        }
         // The readout's block is a glass element like a dial: the gaze
         // while looking, or the cursor in design mode, takes it too.
         {
@@ -2308,6 +2456,7 @@ impl Game {
             Dragged::MenuPanel => self.settings.menu_anchor = clamp(at),
             Dragged::Readout => self.settings.readout_anchor = glass(at),
             Dragged::MapPanel => self.settings.map_anchor = clamp(at),
+            Dragged::HoloPanel => self.settings.holo_anchor = clamp(at),
         }
     }
 
@@ -2320,13 +2469,43 @@ impl Game {
     }
 
     fn camera(&self, aspect: f32) -> CameraFrame {
-        // The camera is the ship's orientation — both use the same
-        // right-handed frame with the nose at -Z, so no fix-up rotation is
-        // needed — times the pilot's head. The head is a view, not a
-        // control: nothing downstream of the sim sees it.
-        let orient = self.state.ship.orient.as_quat() * self.look.rotation();
+        self.pose(aspect).cam
+    }
+
+    /// This frame's eye on the world: the cockpit's, or the chase rig's
+    /// when the CAMERA setting says so.
+    fn pose(&self, aspect: f32) -> ViewPose {
+        if self.chase_active() {
+            self.chase_pose(aspect)
+        } else {
+            ViewPose {
+                cam: self.cam_for(aspect, self.look.rotation()),
+                head: self.look.rotation(),
+                eye_ship: DVec3::ZERO,
+            }
+        }
+    }
+
+    /// The chase rig: an eye a few lengths back and a little above, pitched
+    /// down so the ship centres. The pilot's freelook still turns it — a
+    /// look around the ship, not out of the canopy.
+    fn chase_pose(&self, aspect: f32) -> ViewPose {
+        let head = self.look.rotation() * Quat::from_rotation_x(-CHASE_PITCH_RAD);
+        ViewPose {
+            cam: self.cam_for(aspect, head),
+            head,
+            eye_ship: CHASE_EYE_SHIP,
+        }
+    }
+
+    /// The camera frame for a view turned `head` from the ship's own axes.
+    /// The camera is the ship's orientation — both use the same
+    /// right-handed frame with the nose at -Z, so no fix-up rotation is
+    /// needed — times the view's turn. The head is a view, not a control:
+    /// nothing downstream of the sim sees it.
+    fn cam_for(&self, aspect: f32, head: Quat) -> CameraFrame {
         CameraFrame {
-            orient,
+            orient: self.state.ship.orient.as_quat() * head,
             fov_y: ((self.settings.fov + FOV_THRUST_GAIN * self.effort)
                 * self.warp_look().fov_scale)
                 .to_radians()
@@ -2336,7 +2515,41 @@ impl Game {
             exposure: 1.6,
         }
     }
+
+    fn chase_active(&self) -> bool {
+        self.settings.camera_chase
+    }
+
+    /// The holo3PP renders only when its panel is up and the main view is
+    /// still the cockpit — in chase the whole screen already is the rig.
+    fn holo_active(&self) -> bool {
+        self.settings.holo_view && !self.chase_active()
+    }
+
+    /// Where a pose's eye sits in the world, metres.
+    fn eye_m(&self, pose: &ViewPose) -> DVec3 {
+        self.state.ship.pos_m + self.state.ship.orient * pose.eye_ship
+    }
 }
+
+/// One eye on the world: the camera frame, plus where that eye actually
+/// sits. Every world pass draws from a pose — the cockpit's (eye at the
+/// ship's origin) or the chase rig's — so the chase view and the holo3PP
+/// are the same code path as the canopy, never a special case.
+#[derive(Debug, Clone, Copy)]
+struct ViewPose {
+    cam: CameraFrame,
+    /// The view's rotation relative to the ship — the "head" every
+    /// ship-frame pass takes.
+    head: Quat,
+    /// The eye's seat in the ship's frame, metres. ZERO in the cockpit.
+    eye_ship: DVec3,
+}
+
+/// The chase rig's seat: behind and above, in the ship's frame.
+const CHASE_EYE_SHIP: DVec3 = DVec3::new(0.0, 3.2, 24.0);
+/// Pitched down to put the ship in the middle of the frame.
+const CHASE_PITCH_RAD: f32 = 0.13;
 
 /// How far the nose is pitched down from prograde at spawn, degrees.
 ///
@@ -2586,6 +2799,12 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_DESIGN").is_ok() {
             game.toggle_design();
         }
+        if game.frozen && std::env::var("FARFALL_BENCH_CHASE").is_ok() {
+            game.settings.camera_chase = true;
+        }
+        if game.frozen && std::env::var("FARFALL_BENCH_HOLO").is_ok() {
+            game.settings.holo_view = true;
+        }
         if game.frozen && std::env::var("FARFALL_BENCH_HYPER").is_ok() {
             game.hyper = 1.0;
             game.bench_hyper = true;
@@ -2797,6 +3016,26 @@ impl ApplicationHandler for App {
                             game.settings.layout.get(Instrument::Trajectory).name()
                         );
                     }
+                    KeyCode::KeyY if pressed && !event.repeat => {
+                        game.settings.camera_chase = !game.settings.camera_chase;
+                        game.settings.save();
+                        log::info!(
+                            "camera {}",
+                            if game.settings.camera_chase {
+                                "CHASE"
+                            } else {
+                                "FIRST PERSON"
+                            }
+                        );
+                    }
+                    KeyCode::KeyH if pressed && !event.repeat => {
+                        game.settings.holo_view = !game.settings.holo_view;
+                        game.settings.save();
+                        log::info!(
+                            "holo3PP {}",
+                            if game.settings.holo_view { "ON" } else { "OFF" }
+                        );
+                    }
                     KeyCode::KeyX if pressed && !event.repeat => {
                         game.assist = !game.assist;
                         log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
@@ -2924,26 +3163,27 @@ impl ApplicationHandler for App {
                                     }
                                 }
                                 let aspect = gpu.config.width as f32 / gpu.config.height as f32;
-                                let cam = game.camera(aspect);
+                                let pose = game.pose(aspect);
+                                let cam = pose.cam;
                                 gpu.passes.starfield.update(
                                     &gpu.queue,
                                     &FrameUniforms::from_camera(&cam)
                                         .with_occluder(
-                                            (DVec3::ZERO - game.state.ship.pos_m).as_vec3(),
+                                            (DVec3::ZERO - game.eye_m(&pose)).as_vec3(),
                                             game.params.planet.radius_m as f32,
                                         )
                                         .with_star_stretch(game.speed_look()),
                                 );
                                 gpu.passes
                                     .planet
-                                    .update(&gpu.queue, &game.planet_uniforms(&cam));
+                                    .update(&gpu.queue, &game.planet_uniforms(&pose));
                                 gpu.passes.bodies.update(
                                     &gpu.queue,
-                                    &game.bodies_uniforms(&cam, gpu.scene.size().1 as f32),
+                                    &game.bodies_uniforms(&pose, gpu.scene.size().1 as f32),
                                 );
                                 gpu.passes
                                     .belt
-                                    .update(&gpu.queue, &game.belt_uniforms(&cam));
+                                    .update(&gpu.queue, &game.belt_uniforms(&pose));
                                 let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
                                 // The capture should show what the pilot
@@ -3001,11 +3241,13 @@ impl ApplicationHandler for App {
                                         game.highlight_row(),
                                     );
                                 }
+                                gpu.update_holo_panel(game, &cam, aspect);
                                 let mut encoder = gpu.device.create_command_encoder(
                                     &wgpu::CommandEncoderDescriptor {
                                         label: Some("headless"),
                                     },
                                 );
+                                gpu.encode_holo(game, &mut encoder);
                                 let thermal_in = game.thermal_inputs(game.frame_dt);
                                 gpu.passes.plasma.update(
                                     &gpu.queue,
@@ -3028,7 +3270,7 @@ impl ApplicationHandler for App {
                                     &gpu.queue,
                                     &TrajectoryUniforms::new(
                                         &cam,
-                                        &game.trajectory_world(),
+                                        &game.trajectory_world(game.eye_m(&pose)),
                                         TRAJECTORY_HORIZON_S,
                                         game.trajectory_vis,
                                         gpu.scene.size().1 as f32,
@@ -3037,10 +3279,11 @@ impl ApplicationHandler for App {
                                 );
                                 gpu.passes
                                     .shield
-                                    .update(&gpu.queue, &game.shield_uniforms(&cam));
+                                    .update(&gpu.queue, &game.shield_uniforms(&pose));
                                 gpu.passes
                                     .ghost
-                                    .update(&gpu.queue, &game.ghost_uniforms(&cam));
+                                    .update(&gpu.queue, &game.ghost_uniforms(&pose));
+                                gpu.passes.jet.update(&gpu.queue, &game.jet_uniforms(&pose));
                                 {
                                     let mut pass =
                                         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -3057,19 +3300,25 @@ impl ApplicationHandler for App {
                                     gpu.passes.bodies.draw(&mut pass);
                                     gpu.passes.planet.draw(&mut pass);
                                     gpu.passes.belt.draw(&mut pass);
-                                    gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
+                                    gpu.passes.jet.draw(&mut pass);
+                                    if !game.chase_active() {
+                                        gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
+                                    }
                                     gpu.passes.trajectory.draw(&mut pass);
                                     gpu.passes.shield.draw(&mut pass);
                                     gpu.passes.ghost.draw(&mut pass);
-                                    gpu.passes.cabin.draw(&mut pass);
-                                    gpu.passes.horizon.draw(&mut pass);
-                                    gpu.passes.gauge.draw(&mut pass);
-                                    gpu.passes.alt_gauge.draw(&mut pass);
-                                    gpu.passes.g_gauge.draw(&mut pass);
-                                    gpu.passes.gvec.draw(&mut pass);
-                                    gpu.passes.gyro.draw(&mut pass);
-                                    gpu.passes.guide.draw(&mut pass);
-                                    gpu.passes.guide.draw(&mut pass);
+                                    if !game.chase_active() {
+                                        gpu.passes.cabin.draw(&mut pass);
+                                        gpu.passes.horizon.draw(&mut pass);
+                                        gpu.passes.gauge.draw(&mut pass);
+                                        gpu.passes.alt_gauge.draw(&mut pass);
+                                        gpu.passes.g_gauge.draw(&mut pass);
+                                        gpu.passes.gvec.draw(&mut pass);
+                                        gpu.passes.gyro.draw(&mut pass);
+                                        gpu.passes.guide.draw(&mut pass);
+                                        gpu.passes.guide.draw(&mut pass);
+                                    }
+                                    gpu.passes.holo.panel.draw(&mut pass);
                                     if capture_text && game.map_open() {
                                         gpu.map.draw(&mut pass);
                                     }
@@ -3130,27 +3379,28 @@ impl ApplicationHandler for App {
                 }
 
                 let aspect = gpu.config.width as f32 / gpu.config.height as f32;
-                let cam = game.camera(aspect);
+                let pose = game.pose(aspect);
+                let cam = pose.cam;
                 game.update_drag(&cam);
                 gpu.passes.starfield.update(
                     &gpu.queue,
                     &FrameUniforms::from_camera(&cam)
                         .with_occluder(
-                            (DVec3::ZERO - game.state.ship.pos_m).as_vec3(),
+                            (DVec3::ZERO - game.eye_m(&pose)).as_vec3(),
                             game.params.planet.radius_m as f32,
                         )
                         .with_star_stretch(game.speed_look()),
                 );
                 gpu.passes
                     .planet
-                    .update(&gpu.queue, &game.planet_uniforms(&cam));
+                    .update(&gpu.queue, &game.planet_uniforms(&pose));
                 gpu.passes.bodies.update(
                     &gpu.queue,
-                    &game.bodies_uniforms(&cam, gpu.scene.size().1 as f32),
+                    &game.bodies_uniforms(&pose, gpu.scene.size().1 as f32),
                 );
                 gpu.passes
                     .belt
-                    .update(&gpu.queue, &game.belt_uniforms(&cam));
+                    .update(&gpu.queue, &game.belt_uniforms(&pose));
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,
@@ -3160,7 +3410,7 @@ impl ApplicationHandler for App {
                     &gpu.queue,
                     &TrajectoryUniforms::new(
                         &cam,
-                        &game.trajectory_world(),
+                        &game.trajectory_world(game.eye_m(&pose)),
                         TRAJECTORY_HORIZON_S,
                         game.trajectory_vis,
                         gpu.scene.size().1 as f32,
@@ -3169,10 +3419,11 @@ impl ApplicationHandler for App {
                 );
                 gpu.passes
                     .shield
-                    .update(&gpu.queue, &game.shield_uniforms(&cam));
+                    .update(&gpu.queue, &game.shield_uniforms(&pose));
                 gpu.passes
                     .ghost
-                    .update(&gpu.queue, &game.ghost_uniforms(&cam));
+                    .update(&gpu.queue, &game.ghost_uniforms(&pose));
+                gpu.passes.jet.update(&gpu.queue, &game.jet_uniforms(&pose));
                 let (altitude_m, _) = game.altitude_vspeed();
                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
 
@@ -3211,9 +3462,12 @@ impl ApplicationHandler for App {
                     game.highlight_row(),
                 );
 
+                gpu.update_holo_panel(game, &cam, aspect);
                 let mut encoder = gpu
                     .device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                // Pass 0a: the holo3PP's picture — the chase view, small.
+                gpu.encode_holo(game, &mut encoder);
                 // Pass 0: advance the hull heat field (64x64, on the GPU).
                 gpu.passes
                     .thermal
@@ -3247,7 +3501,10 @@ impl ApplicationHandler for App {
                     if gpu.cfg.draws("belt") {
                         gpu.passes.belt.draw(&mut pass);
                     }
-                    if gpu.cfg.draws("plasma") {
+                    if gpu.cfg.draws("jet") {
+                        gpu.passes.jet.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("plasma") && !game.chase_active() {
                         gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                     }
                     if gpu.cfg.draws("trajectory") {
@@ -3259,10 +3516,10 @@ impl ApplicationHandler for App {
                     if gpu.cfg.draws("ghost") {
                         gpu.passes.ghost.draw(&mut pass);
                     }
-                    if gpu.cfg.draws("cockpit") {
+                    if gpu.cfg.draws("cockpit") && !game.chase_active() {
                         gpu.passes.cabin.draw(&mut pass);
                     }
-                    if gpu.cfg.draws("gauge") {
+                    if gpu.cfg.draws("gauge") && !game.chase_active() {
                         gpu.passes.horizon.draw(&mut pass);
                         gpu.passes.gauge.draw(&mut pass);
                         gpu.passes.alt_gauge.draw(&mut pass);
@@ -3270,6 +3527,9 @@ impl ApplicationHandler for App {
                         gpu.passes.gvec.draw(&mut pass);
                         gpu.passes.gyro.draw(&mut pass);
                         gpu.passes.guide.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("holo") {
+                        gpu.passes.holo.panel.draw(&mut pass);
                     }
                 }
                 {
@@ -3442,6 +3702,44 @@ mod tests {
             (angle - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
             "view swung {angle} rad, expected pi/2"
         );
+    }
+
+    /// The chase rig: the eye sits behind and above the ship in its own
+    /// frame, the view pitches down to centre it, and every world builder
+    /// measures from that eye — not from the pilot's seat.
+    #[test]
+    fn the_chase_eye_sits_behind_the_ship_and_the_world_measures_from_it() {
+        let mut game = Game::new();
+        game.state.ship.orient = DQuat::from_rotation_y(1.1);
+        game.state.ship.pos_m = DVec3::new(1.0e6, -2.0e6, 3.0e6);
+        // First person: the eye is the ship.
+        let fp = game.pose(1.5);
+        assert_eq!(game.eye_m(&fp), game.state.ship.pos_m);
+        // Chase: behind (+Z of the ship) and above (+Y), world frame.
+        game.settings.camera_chase = true;
+        let ch = game.pose(1.5);
+        let off = game.eye_m(&ch) - game.state.ship.pos_m;
+        let back = game.state.ship.orient * DVec3::Z;
+        let up = game.state.ship.orient * DVec3::Y;
+        assert!(off.dot(back) > 20.0, "the eye is lengths behind: {off:?}");
+        assert!(off.dot(up) > 2.0, "and above: {off:?}");
+        assert!(
+            (off.length() - CHASE_EYE_SHIP.length()).abs() < 1e-9,
+            "rigid rig"
+        );
+        // The view pitches down toward the ship, and the ship is in frame:
+        // the eye-to-ship line is close to the view's forward axis.
+        let fwd = ch.cam.basis().2;
+        let to_ship = (-off).normalize().as_vec3();
+        assert!(
+            fwd.dot(to_ship) > 0.99,
+            "the ship centres in the chase view: {}",
+            fwd.dot(to_ship)
+        );
+        // The jet draws in chase and never in the cockpit.
+        assert!(game.chase_active());
+        game.settings.camera_chase = false;
+        assert!(!game.chase_active());
     }
 
     fn fly(keys: &[KeyCode], secs: u64) -> sim::ShipState {

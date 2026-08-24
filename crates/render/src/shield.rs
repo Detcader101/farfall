@@ -78,6 +78,15 @@ impl ShieldUniforms {
         }
     }
 
+    /// See the shell from an eye away from the pilot's seat (the chase
+    /// view): its centre moves the other way. Ship frame, metres.
+    pub fn with_eye(mut self, eye_ship: Vec3) -> Self {
+        self.shell[0] -= eye_ship.x;
+        self.shell[1] -= eye_ship.y;
+        self.shell[2] -= eye_ship.z;
+        self
+    }
+
     /// Under the hyper drive the whole shell ablates: the field lights
     /// from the nose back, streaming, at this level 0..1.
     pub fn with_hyper(mut self, hyper: f32) -> Self {
