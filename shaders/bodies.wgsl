@@ -299,7 +299,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (resolved > 0.001 && past > 0.0 && past < sun_limb * 0.9) {
         // Where on the limb this is: the angle round the disc.
         let to_c = bd.sun.xyz / max(sun_d, 1.0);
-        let side = normalize(cross(to_c, bd.up.xyz));
+        // The limb angle is measured against the WORLD, not the canopy:
+        // prominences and the CME are the Sun's own weather and must hold
+        // still while the ship rolls. (The lens flare alone lives in
+        // screen space — that one is the canopy's artifact and may turn.)
+        let side = normalize(cross(to_c, vec3<f32>(0.0, 1.0, 0.0)));
         let upv = cross(side, to_c);
         let off = ray - to_c * dot(ray, to_c);
         let theta = atan2(dot(off, upv), dot(off, side));

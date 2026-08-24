@@ -12,7 +12,7 @@
 //! file; there is no "save" — the file is the state.
 
 use crate::cockpit::Instrument;
-use crate::input::{is_reserved, key_name, Action};
+use crate::input::{is_reserved, key_name, Action, Named};
 use crate::settings::{
     Settings, COCKPIT_RES_CHOICES, FOV_MAX, FOV_MIN, FPS_FLOOR_CHOICES, HOOP_SIZE_MAX,
     HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
@@ -80,11 +80,7 @@ enum Item {
     Vsync,
     Quit,
     Bind(Action),
-    BindBoost,
-    BindBrake,
-    BindDespin,
-    BindHyper,
-    BindWarpStop,
+    BindNamed(Named),
     Slot(Instrument),
     HoopSize,
     LandingHoops,
@@ -126,11 +122,7 @@ impl Item {
             Item::Vsync => "VSYNC",
             Item::Quit => "QUIT GAME",
             Item::Bind(a) => a.name(),
-            Item::BindBoost => "BOOST",
-            Item::BindBrake => "AIR BRAKE",
-            Item::BindDespin => "DESPIN",
-            Item::BindHyper => "CHAOS DRIVE",
-            Item::BindWarpStop => "WARP STOP",
+            Item::BindNamed(n) => n.name(),
             Item::Slot(i) => i.name(),
             Item::HoopSize => "HOOP SIZE",
             Item::LandingHoops => "LANDING HOOPS",
@@ -171,11 +163,7 @@ impl Item {
             Item::Vsync => (if s.vsync { "ON" } else { "OFF" }).to_string(),
             Item::Quit => String::new(),
             Item::Bind(a) => key_name(s.bindings.key_for(a)).to_string(),
-            Item::BindBoost => key_name(s.bindings.boost).to_string(),
-            Item::BindBrake => key_name(s.bindings.brake).to_string(),
-            Item::BindDespin => key_name(s.bindings.despin).to_string(),
-            Item::BindHyper => key_name(s.bindings.hyper).to_string(),
-            Item::BindWarpStop => key_name(s.bindings.warp_stop).to_string(),
+            Item::BindNamed(n) => key_name(s.bindings.named(n)).to_string(),
             Item::Slot(i) => match s.layout.free(i) {
                 Some(_) => "DRAGGED".to_string(),
                 None => s.layout.get(i).name().to_string(),
@@ -231,15 +219,7 @@ impl Item {
     }
 
     fn rebindable(self) -> bool {
-        matches!(
-            self,
-            Item::Bind(_)
-                | Item::BindBoost
-                | Item::BindBrake
-                | Item::BindDespin
-                | Item::BindHyper
-                | Item::BindWarpStop
-        )
+        matches!(self, Item::Bind(_) | Item::BindNamed(_))
     }
 }
 
@@ -313,11 +293,9 @@ impl Menu {
             ],
             Page::Controls => {
                 let mut v: Vec<Item> = Action::ALL.iter().map(|&a| Item::Bind(a)).collect();
-                v.push(Item::BindBoost);
-                v.push(Item::BindBrake);
-                v.push(Item::BindDespin);
-                v.push(Item::BindHyper);
-                v.push(Item::BindWarpStop);
+                for n in Named::ALL {
+                    v.push(Item::BindNamed(n));
+                }
                 v.push(Item::LookSens);
                 v
             }
@@ -418,11 +396,7 @@ impl Menu {
             }
             let bound = match item {
                 Item::Bind(a) => settings.bindings.bind(a, key),
-                Item::BindBoost => settings.bindings.bind_boost(key),
-                Item::BindDespin => settings.bindings.bind_despin(key),
-                Item::BindHyper => settings.bindings.bind_hyper(key),
-                Item::BindWarpStop => settings.bindings.bind_warp_stop(key),
-                Item::BindBrake => settings.bindings.bind_brake(key),
+                Item::BindNamed(n) => settings.bindings.bind_named(n, key),
                 _ => false,
             };
             self.rebinding = false;
@@ -741,13 +715,7 @@ impl Menu {
                 s.hoop_size = next;
                 MenuEvent::Changed(Change::Layout)
             }
-            Item::Quit
-            | Item::Bind(_)
-            | Item::BindBoost
-            | Item::BindBrake
-            | Item::BindDespin
-            | Item::BindHyper
-            | Item::BindWarpStop => MenuEvent::Nothing,
+            Item::Quit | Item::Bind(_) | Item::BindNamed(_) => MenuEvent::Nothing,
         }
     }
 
@@ -1057,7 +1025,15 @@ mod tests {
                 }
                 Page::Controls => {
                     assert!(items.iter().all(|i| i.rebindable() || *i == Item::LookSens));
-                    assert!(on(Item::BindDespin) && on(Item::BindHyper));
+                    // EVERY bind the game answers to is on this page: all
+                    // twelve axis actions and all sixteen named controls.
+                    // A key that works in game but is missing here is a bug.
+                    for a in Action::ALL {
+                        assert!(on(Item::Bind(a)), "missing axis bind {a:?}");
+                    }
+                    for n in Named::ALL {
+                        assert!(on(Item::BindNamed(n)), "missing named bind {n:?}");
+                    }
                 }
                 Page::Cockpit => {
                     assert!(on(Item::CockpitFrame) && on(Item::HoopSize));

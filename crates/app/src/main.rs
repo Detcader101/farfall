@@ -59,7 +59,7 @@ use farfall_render::{
     CameraFrame, FrameUniforms, SceneTarget,
 };
 use farfall_sim as sim;
-use input::InputState;
+use input::{InputState, Named};
 use telemetry::FrameStats;
 use winit::{
     application::ApplicationHandler,
@@ -247,6 +247,7 @@ const MACH1_MPS: f64 = 340.0;
 ///                           Moon, to check what hides what); with
 ///                           FARFALL_BENCH_VEL=x,y,z for the velocity
 ///                           (else at rest) and FARFALL_BENCH_LOOK=x,y,z
+///   FARFALL_BENCH_ROLL=rad (benchmark only: rolled about the look axis)
 ///                           for where the nose points (else the planet)
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
@@ -1085,6 +1086,15 @@ impl Game {
                 .and_then(|v| parse_vec3(&v))
                 .unwrap_or(-pos);
             state.ship.orient = look_at(aim, DVec3::Y);
+            // FARFALL_BENCH_ROLL=rad: rolled about the look axis — for
+            // checking that what belongs to the world (the Sun's own
+            // weather) holds still while the ship turns over.
+            if let Some(roll) = std::env::var("FARFALL_BENCH_ROLL")
+                .ok()
+                .and_then(|v| v.trim().parse::<f64>().ok())
+            {
+                state.ship.orient *= DQuat::from_rotation_z(roll);
+            }
         }
         let now = Instant::now();
         Self {
@@ -2520,6 +2530,11 @@ impl Game {
         self.settings.camera_chase
     }
 
+    /// The key a named control answers to right now.
+    fn bind(&self, n: Named) -> KeyCode {
+        self.settings.bindings.named(n)
+    }
+
     /// The holo3PP renders only when its panel is up and the main view is
     /// still the cockpit — in chase the whole screen already is the rig.
     fn holo_active(&self) -> bool {
@@ -2930,7 +2945,7 @@ impl ApplicationHandler for App {
                 }
                 if game.panel_open() {
                     // M closes the map from anywhere in it.
-                    if pressed && !event.repeat && code == KeyCode::KeyM {
+                    if pressed && !event.repeat && code == game.bind(Named::Map) {
                         game.toggle_map();
                         return;
                     }
@@ -2978,11 +2993,21 @@ impl ApplicationHandler for App {
                     // world pauses, the keys must not carry a thrust demand
                     // across.
                     KeyCode::Escape if pressed && !event.repeat => game.toggle_menu(),
-                    KeyCode::KeyM if pressed && !event.repeat => game.toggle_map(),
-                    // Edge-triggered, and `repeat` is filtered: holding the key
-                    // must not strobe the toggle.
-                    KeyCode::KeyC if pressed && !event.repeat => game.cycle_appearance(),
-                    KeyCode::F12 | KeyCode::KeyP if pressed && !event.repeat => {
+                    // Every named control below reads its binding — the
+                    // KEYS page lists all of them, so what the menu shows
+                    // is what the keyboard does. Edge-triggered, and
+                    // `repeat` is filtered: holding a key must not strobe
+                    // a toggle.
+                    c if pressed && !event.repeat && c == game.bind(Named::Map) => {
+                        game.toggle_map()
+                    }
+                    c if pressed && !event.repeat && c == game.bind(Named::Appearance) => {
+                        game.cycle_appearance()
+                    }
+                    c if pressed
+                        && !event.repeat
+                        && (c == game.bind(Named::Capture) || c == KeyCode::F12) =>
+                    {
                         gpu.capture_requested = true;
                     }
                     KeyCode::BracketLeft | KeyCode::BracketRight if pressed && !event.repeat => {
@@ -2995,20 +3020,24 @@ impl ApplicationHandler for App {
                         gpu.scene.set_scale(next);
                         log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
                     }
-                    KeyCode::KeyJ if pressed && !event.repeat => game.engage_warp(),
-                    c if pressed && !event.repeat && c == game.settings.bindings.warp_stop => {
+                    c if pressed && !event.repeat && c == game.bind(Named::Engage) => {
+                        game.engage_warp()
+                    }
+                    c if pressed && !event.repeat && c == game.bind(Named::WarpStop) => {
                         game.warp_stop()
                     }
-                    KeyCode::KeyG if pressed && !event.repeat => game.toggle_landing(),
-                    KeyCode::KeyK if pressed && !event.repeat => {
+                    c if pressed && !event.repeat && c == game.bind(Named::Landing) => {
+                        game.toggle_landing()
+                    }
+                    c if pressed && !event.repeat && c == game.bind(Named::Design) => {
                         game.toggle_design();
                         gpu.set_look_cursor(game.look.engaged() && !game.design);
                     }
-                    KeyCode::KeyL if pressed && !event.repeat => {
+                    c if pressed && !event.repeat && c == game.bind(Named::LookLock) => {
                         game.look.toggle_lock();
                         gpu.set_look_cursor(game.look.engaged());
                     }
-                    KeyCode::KeyT if pressed && !event.repeat => {
+                    c if pressed && !event.repeat && c == game.bind(Named::Trajectory) => {
                         game.settings.layout.cycle(Instrument::Trajectory, true);
                         game.settings.save();
                         log::info!(
@@ -3016,7 +3045,7 @@ impl ApplicationHandler for App {
                             game.settings.layout.get(Instrument::Trajectory).name()
                         );
                     }
-                    KeyCode::KeyY if pressed && !event.repeat => {
+                    c if pressed && !event.repeat && c == game.bind(Named::Chase) => {
                         game.settings.camera_chase = !game.settings.camera_chase;
                         game.settings.save();
                         log::info!(
@@ -3028,7 +3057,7 @@ impl ApplicationHandler for App {
                             }
                         );
                     }
-                    KeyCode::KeyH if pressed && !event.repeat => {
+                    c if pressed && !event.repeat && c == game.bind(Named::Holo) => {
                         game.settings.holo_view = !game.settings.holo_view;
                         game.settings.save();
                         log::info!(
@@ -3036,7 +3065,7 @@ impl ApplicationHandler for App {
                             if game.settings.holo_view { "ON" } else { "OFF" }
                         );
                     }
-                    KeyCode::KeyX if pressed && !event.repeat => {
+                    c if pressed && !event.repeat && c == game.bind(Named::Assist) => {
                         game.assist = !game.assist;
                         log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
                     }
@@ -3855,7 +3884,8 @@ mod tests {
         let home = game.state.ship.pos_m;
         // Hold the field at full run: strain climbs, and within a minute
         // the drive slips — into the flip, then a jump to some body.
-        game.input.set(game.settings.bindings.hyper, true);
+        game.input
+            .set(game.settings.bindings.named(Named::Hyper), true);
         game.hyper_was = true;
         game.state.ship.vel_mps = glam::DVec3::new(0.0, 0.0, -game.params.ship.hyper_max_mps);
         let mut slipped = false;

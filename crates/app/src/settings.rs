@@ -7,7 +7,7 @@
 //! fall back, missing lines mean default.
 
 use crate::cockpit::{Instrument, Layout, Slot};
-use crate::input::{key_from_name, key_name, Action, Bindings};
+use crate::input::{key_from_name, key_name, Action, Bindings, Named};
 use crate::warp::{Destination, Plan};
 use std::path::PathBuf;
 
@@ -494,29 +494,18 @@ impl Settings {
                         }
                     }
                 }
-                "control.boost" => {
+                k2 if k2
+                    .strip_prefix("control.")
+                    .is_some_and(|name| Named::ALL.iter().any(|n| n.key() == name)) =>
+                {
+                    let name = k2.strip_prefix("control.").unwrap();
+                    let n = Named::ALL
+                        .iter()
+                        .copied()
+                        .find(|n| n.key() == name)
+                        .unwrap();
                     if let Some(key) = key_from_name(v) {
-                        s.bindings.bind_boost(key);
-                    }
-                }
-                "control.despin" => {
-                    if let Some(key) = key_from_name(v) {
-                        s.bindings.bind_despin(key);
-                    }
-                }
-                "control.hyper" => {
-                    if let Some(key) = key_from_name(v) {
-                        s.bindings.bind_hyper(key);
-                    }
-                }
-                "control.warp-stop" => {
-                    if let Some(key) = key_from_name(v) {
-                        s.bindings.bind_warp_stop(key);
-                    }
-                }
-                "control.brake" => {
-                    if let Some(key) = key_from_name(v) {
-                        s.bindings.bind_brake(key);
+                        s.bindings.bind_named(n, key);
                     }
                 }
                 _ => {
@@ -612,26 +601,13 @@ impl Settings {
                 key_name(self.bindings.key_for(a))
             ));
         }
-        out.push_str(&format!(
-            "control.boost = {}\n",
-            key_name(self.bindings.boost)
-        ));
-        out.push_str(&format!(
-            "control.brake = {}\n",
-            key_name(self.bindings.brake)
-        ));
-        out.push_str(&format!(
-            "control.despin = {}\n",
-            key_name(self.bindings.despin)
-        ));
-        out.push_str(&format!(
-            "control.hyper = {}\n",
-            key_name(self.bindings.hyper)
-        ));
-        out.push_str(&format!(
-            "control.warp-stop = {}\n",
-            key_name(self.bindings.warp_stop)
-        ));
+        for n in Named::ALL {
+            out.push_str(&format!(
+                "control.{} = {}\n",
+                n.key(),
+                key_name(self.bindings.named(n))
+            ));
+        }
         out.push_str(&format!(
             "control.look-sens = {:.2}\n",
             self.look_sensitivity
@@ -759,7 +735,7 @@ mod tests {
             ..Default::default()
         };
         s.bindings.bind(Action::PitchUp, KeyCode::KeyI);
-        s.bindings.bind_boost(KeyCode::ControlLeft);
+        s.bindings.bind_named(Named::Boost, KeyCode::ControlLeft);
         s.layout.set(Instrument::Gyro, Slot::TopCentre);
         s.layout.set(Instrument::Horizon, Slot::Off);
         s.layout.set_safe_edge(0.07);

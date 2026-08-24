@@ -110,14 +110,118 @@ const AXES: [(Action, bool, usize, f64); Action::COUNT] = [
     (Action::RollRight, true, 2, -1.0),
 ];
 
-/// Boost is a modifier rather than an axis, so it sits outside [`AXES`].
-const BOOST_KEY: KeyCode = KeyCode::ShiftLeft;
-/// Air brake, likewise: it is a state, not a direction.
-const BRAKE_KEY: KeyCode = KeyCode::Space;
-/// The emergency gyro, likewise a state: hold to kill the spin.
-const DESPIN_KEY: KeyCode = KeyCode::KeyZ;
-const HYPER_KEY: KeyCode = KeyCode::KeyH;
-const WARP_STOP_KEY: KeyCode = KeyCode::KeyV;
+/// Every named, non-axis control the game has: held states (boost, brake,
+/// despin, the chaos drive) and edge toggles (map, modes, cameras). One
+/// key each, every one rebindable, every one a row on the KEYS page — a
+/// bind that exists in the game but not in the menu is a bug.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Named {
+    Boost,
+    Brake,
+    Despin,
+    Hyper,
+    WarpStop,
+    Map,
+    Appearance,
+    Engage,
+    Landing,
+    Design,
+    LookLock,
+    Trajectory,
+    Assist,
+    Chase,
+    Holo,
+    Capture,
+}
+
+impl Named {
+    pub const COUNT: usize = 16;
+    pub const ALL: [Named; Named::COUNT] = [
+        Named::Boost,
+        Named::Brake,
+        Named::Despin,
+        Named::Hyper,
+        Named::WarpStop,
+        Named::Map,
+        Named::Appearance,
+        Named::Engage,
+        Named::Landing,
+        Named::Design,
+        Named::LookLock,
+        Named::Trajectory,
+        Named::Assist,
+        Named::Chase,
+        Named::Holo,
+        Named::Capture,
+    ];
+
+    /// Menu label.
+    pub fn name(self) -> &'static str {
+        match self {
+            Named::Boost => "BOOST",
+            Named::Brake => "AIR BRAKE",
+            Named::Despin => "DESPIN",
+            Named::Hyper => "CHAOS DRIVE",
+            Named::WarpStop => "WARP STOP",
+            Named::Map => "MAP",
+            Named::Appearance => "ATMOSPHERE",
+            Named::Engage => "ENGAGE DRIVE",
+            Named::Landing => "LANDING MODE",
+            Named::Design => "DESIGN MODE",
+            Named::LookLock => "LOOK LOCK",
+            Named::Trajectory => "TRAJECTORY",
+            Named::Assist => "FLIGHT ASSIST",
+            Named::Chase => "CHASE CAM",
+            Named::Holo => "HOLO3PP",
+            Named::Capture => "CAPTURE",
+        }
+    }
+
+    /// Settings-file key (control.<this>).
+    pub fn key(self) -> &'static str {
+        match self {
+            Named::Boost => "boost",
+            Named::Brake => "brake",
+            Named::Despin => "despin",
+            Named::Hyper => "hyper",
+            Named::WarpStop => "warp-stop",
+            Named::Map => "map",
+            Named::Appearance => "atmosphere",
+            Named::Engage => "engage",
+            Named::Landing => "landing",
+            Named::Design => "design",
+            Named::LookLock => "look-lock",
+            Named::Trajectory => "trajectory",
+            Named::Assist => "assist",
+            Named::Chase => "chase",
+            Named::Holo => "holo",
+            Named::Capture => "capture",
+        }
+    }
+
+    /// The stock key. H is the chaos drive and stays the chaos drive: the
+    /// holo3PP lives on N, clear of everything the dash already answers to.
+    pub fn default_key(self) -> KeyCode {
+        match self {
+            Named::Boost => KeyCode::ShiftLeft,
+            Named::Brake => KeyCode::Space,
+            Named::Despin => KeyCode::KeyZ,
+            Named::Hyper => KeyCode::KeyH,
+            Named::WarpStop => KeyCode::KeyV,
+            Named::Map => KeyCode::KeyM,
+            Named::Appearance => KeyCode::KeyC,
+            Named::Engage => KeyCode::KeyJ,
+            Named::Landing => KeyCode::KeyG,
+            Named::Design => KeyCode::KeyK,
+            Named::LookLock => KeyCode::KeyL,
+            Named::Trajectory => KeyCode::KeyT,
+            Named::Assist => KeyCode::KeyX,
+            Named::Chase => KeyCode::KeyY,
+            Named::Holo => KeyCode::KeyN,
+            Named::Capture => KeyCode::KeyP,
+        }
+    }
+}
 
 /// Physical-key bindings. Physical (not logical) keys so the layout is the same
 /// shape on QWERTY, AZERTY, and Dvorak.
@@ -136,16 +240,12 @@ const BINDINGS: [(KeyCode, Action); Action::COUNT] = [
     (KeyCode::KeyE, Action::RollRight),
 ];
 
-/// The pilot's key map: one physical key per action, plus the two
-/// modifiers. Rebindable from the menu, kept in the settings file.
+/// The pilot's key map: one physical key per action, plus every named
+/// control. Rebindable from the menu, kept in the settings file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bindings {
     keys: [KeyCode; Action::COUNT],
-    pub boost: KeyCode,
-    pub brake: KeyCode,
-    pub despin: KeyCode,
-    pub hyper: KeyCode,
-    pub warp_stop: KeyCode,
+    named: [KeyCode; Named::COUNT],
 }
 
 impl Default for Bindings {
@@ -154,14 +254,11 @@ impl Default for Bindings {
         for (key, action) in BINDINGS {
             keys[action as usize] = key;
         }
-        Self {
-            keys,
-            boost: BOOST_KEY,
-            brake: BRAKE_KEY,
-            despin: DESPIN_KEY,
-            hyper: HYPER_KEY,
-            warp_stop: WARP_STOP_KEY,
+        let mut named = [KeyCode::KeyW; Named::COUNT];
+        for n in Named::ALL {
+            named[n as usize] = n.default_key();
         }
+        Self { keys, named }
     }
 }
 
@@ -178,116 +275,50 @@ impl Bindings {
     }
 
     /// Bind `key` to `action`. A key can mean one thing: whatever it meant
-    /// before is unbound (the old action keeps no key until rebound).
-    /// Returns false if the key is reserved by the game itself.
+    /// before is unbound by swap — the displaced control takes this
+    /// action's old key, so no key is ever lost and no key ever means two
+    /// things. Returns false if the key is reserved by the game itself.
     pub fn bind(&mut self, action: Action, key: KeyCode) -> bool {
         if is_reserved(key) {
             return false;
         }
-        if let Some(old) = self.action_for(key) {
-            if old != action {
-                // Swap: the displaced action takes this action's old key.
-                self.keys[old as usize] = self.keys[action as usize];
+        let old = self.keys[action as usize];
+        if let Some(displaced) = self.action_for(key) {
+            if displaced != action {
+                self.keys[displaced as usize] = old;
             }
         }
-        if self.boost == key {
-            self.boost = self.keys[action as usize];
-        }
-        if self.brake == key {
-            self.brake = self.keys[action as usize];
+        for n in Named::ALL {
+            if self.named[n as usize] == key {
+                self.named[n as usize] = old;
+            }
         }
         self.keys[action as usize] = key;
         true
     }
 
-    pub fn bind_boost(&mut self, key: KeyCode) -> bool {
-        if is_reserved(key) {
-            return false;
-        }
-        if let Some(old) = self.action_for(key) {
-            self.keys[old as usize] = self.boost;
-        }
-        if self.brake == key {
-            self.brake = self.boost;
-        }
-        self.boost = key;
-        true
+    pub fn named(&self, n: Named) -> KeyCode {
+        self.named[n as usize]
     }
 
-    pub fn bind_despin(&mut self, key: KeyCode) -> bool {
+    /// Bind a named control, with the same swap rule as [`Self::bind`]:
+    /// whatever held `key` — an axis action or another named control —
+    /// takes this control's old key. One uniform rule for all sixteen,
+    /// instead of a bespoke (and forgetful) function per control.
+    pub fn bind_named(&mut self, n: Named, key: KeyCode) -> bool {
         if is_reserved(key) {
             return false;
         }
-        if let Some(old) = self.action_for(key) {
-            self.keys[old as usize] = self.despin;
+        let old = self.named[n as usize];
+        if let Some(displaced) = self.action_for(key) {
+            self.keys[displaced as usize] = old;
         }
-        if self.boost == key {
-            self.boost = self.despin;
+        for m in Named::ALL {
+            if m != n && self.named[m as usize] == key {
+                self.named[m as usize] = old;
+            }
         }
-        if self.brake == key {
-            self.brake = self.despin;
-        }
-        if self.hyper == key {
-            self.hyper = self.despin;
-        }
-        self.despin = key;
-        true
-    }
-
-    pub fn bind_hyper(&mut self, key: KeyCode) -> bool {
-        if is_reserved(key) {
-            return false;
-        }
-        if let Some(old) = self.action_for(key) {
-            self.keys[old as usize] = self.hyper;
-        }
-        if self.boost == key {
-            self.boost = self.hyper;
-        }
-        if self.brake == key {
-            self.brake = self.hyper;
-        }
-        if self.despin == key {
-            self.despin = self.hyper;
-        }
-        self.hyper = key;
-        true
-    }
-
-    pub fn bind_warp_stop(&mut self, key: KeyCode) -> bool {
-        if is_reserved(key) {
-            return false;
-        }
-        if let Some(old) = self.action_for(key) {
-            self.keys[old as usize] = self.warp_stop;
-        }
-        if self.boost == key {
-            self.boost = self.warp_stop;
-        }
-        if self.brake == key {
-            self.brake = self.warp_stop;
-        }
-        if self.despin == key {
-            self.despin = self.warp_stop;
-        }
-        if self.hyper == key {
-            self.hyper = self.warp_stop;
-        }
-        self.warp_stop = key;
-        true
-    }
-
-    pub fn bind_brake(&mut self, key: KeyCode) -> bool {
-        if is_reserved(key) {
-            return false;
-        }
-        if let Some(old) = self.action_for(key) {
-            self.keys[old as usize] = self.brake;
-        }
-        if self.boost == key {
-            self.boost = self.brake;
-        }
-        self.brake = key;
+        self.named[n as usize] = key;
         true
     }
 }
@@ -433,16 +464,16 @@ impl InputState {
 
     pub fn set(&mut self, key: KeyCode, pressed: bool) {
         let b = self.bindings();
-        if key == b.boost {
+        if key == b.named(Named::Boost) {
             self.boost = pressed;
         }
-        if key == b.brake {
+        if key == b.named(Named::Brake) {
             self.brake = pressed;
         }
-        if key == b.despin {
+        if key == b.named(Named::Despin) {
             self.despin = pressed;
         }
-        if key == b.hyper {
+        if key == b.named(Named::Hyper) {
             self.hyper = pressed;
         }
         if let Some(action) = b.action_for(key) {
@@ -548,6 +579,63 @@ impl InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Out of the box no two controls share a key — in particular the
+    /// holo3PP must not sit on H, which is the chaos drive. (It did, for
+    /// one commit. The chase view opened on a drive key.)
+    #[test]
+    fn no_two_default_binds_share_a_key() {
+        let b = Bindings::default();
+        let mut seen: Vec<(String, KeyCode)> = Vec::new();
+        for a in Action::ALL {
+            seen.push((format!("{a:?}"), b.key_for(a)));
+        }
+        for n in Named::ALL {
+            seen.push((format!("{n:?}"), b.named(n)));
+        }
+        for (i, (na, ka)) in seen.iter().enumerate() {
+            for (nb, kb) in &seen[i + 1..] {
+                assert_ne!(ka, kb, "{na} and {nb} share a default key");
+            }
+        }
+        assert_ne!(
+            b.named(Named::Holo),
+            b.named(Named::Hyper),
+            "the holo3PP stays off the chaos drive's key"
+        );
+    }
+
+    /// One swap rule for every control: binding a named control to a key
+    /// another control holds hands that control the old key back — axis
+    /// or named, nothing is forgotten and no key means two things.
+    #[test]
+    fn rebinding_swaps_uniformly_across_actions_and_named_controls() {
+        let mut b = Bindings::default();
+        // Chase takes the chaos drive's H: hyper gets chase's old Y.
+        let old_chase = b.named(Named::Chase);
+        assert!(b.bind_named(Named::Chase, KeyCode::KeyH));
+        assert_eq!(b.named(Named::Chase), KeyCode::KeyH);
+        assert_eq!(b.named(Named::Hyper), old_chase, "hyper took the old key");
+        // A named control takes an axis key: the axis gets the old key.
+        let old_map = b.named(Named::Map);
+        assert!(b.bind_named(Named::Map, KeyCode::KeyW));
+        assert_eq!(b.named(Named::Map), KeyCode::KeyW);
+        assert_eq!(b.key_for(Action::ThrustForward), old_map);
+        // An axis takes a named key: the named control gets the old key.
+        let old_thrust = b.key_for(Action::ThrustBack);
+        assert!(b.bind(Action::ThrustBack, b.named(Named::Holo)));
+        assert_eq!(b.named(Named::Holo), old_thrust);
+        // Reserved keys stay the game's.
+        assert!(!b.bind_named(Named::Holo, KeyCode::Escape));
+        // After all that shuffling, still no key means two things.
+        let mut all: Vec<KeyCode> = Action::ALL.iter().map(|&a| b.key_for(a)).collect();
+        all.extend(Named::ALL.iter().map(|&n| b.named(n)));
+        for (i, ka) in all.iter().enumerate() {
+            for kb in &all[i + 1..] {
+                assert_ne!(ka, kb, "a key means two things after swaps");
+            }
+        }
+    }
 
     /// Hold keys and let the smoothing settle, so tests see steady-state
     /// deflection rather than the first frame of the ramp.
