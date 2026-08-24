@@ -339,3 +339,40 @@ features:
     name: Ship loss on hard impact / Sun contact
     state: deferred
     note: user asked to hold this until more features exist
+
+  - id: arms-core
+    name: ARMS — four hardpoints (nose, wings, belly) with mountable weapons, fire groups on 1-6, a shared reactor power split with drive and shield, per-weapon heat and ammo, an ARMS menu page; see WEAPONS.md
+    state: planned
+    settings: [arms.power, arms.safeties, arms.slot.*, arms.group*.mode]
+
+  - id: arms-autocannon
+    name: Autocannon — kinetic slugs as a GPU tracer pass (muzzle flash, streak with heat shimmer, ricochet sparks), recoil on the ship, rocks take damage keyed on their cell id
+    state: planned
+
+  - id: arms-debris
+    name: Rocks break — destroyed rocks split into ray-traced fragments in the belt's live set with ejecta and dust
+    state: planned
+
+  - id: arms-scars
+    name: Scars — glowing crater decals on rocks and bodies that cool from white through orange to dull red
+    state: planned
+
+  - id: arms-railgun-lance
+    name: Railgun (charge, rail glow, hypervelocity slug, plasma wake, bass crack) and Lance (continuous cutting beam that slices rocks along the sweep)
+    state: planned
+
+  - id: arms-targeting
+    name: Targeting — lock, lead marker on the glass from target velocity and slug speed, threat arrows at the glass edge, turret mode where freelook gimbals the guns
+    state: planned
+
+  - id: arms-ordnance
+    name: Flak proximity bursts, guided torpedoes with a post shockwave, mines dropped astern
+    state: planned
+
+  - id: arms-tools
+    name: Tools — tractor/repulsor beam, mining cutter with collectible ore, illumination flares, scanner pulse
+    state: planned
+
+  - id: arms-ship-damage
+    name: Ship damage model — hull and subsystem hp, deterministic and pure for later lockstep multiplayer; own-ship hits feed the shield impacts
+    state: planned
