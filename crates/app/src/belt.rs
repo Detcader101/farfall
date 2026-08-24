@@ -7,6 +7,8 @@
 //! The rocks are the app's, not the sim's: a strike is an impulse on the
 //! ship's state, applied after the step, like a jump.
 
+use std::collections::{HashMap, HashSet};
+
 use glam::DVec3;
 
 use crate::warp::{RING_AXIS, RING_HALF_M, RING_INNER, RING_OUTER};
@@ -23,6 +25,17 @@ pub const DROP_M: f64 = 6_500.0;
 pub const CELL_M: f64 = 1_400.0;
 /// The ship, as a sphere, for contact.
 pub const SHIP_RADIUS_M: f64 = 5.0;
+/// A rock's toughness: the energy (J) it takes to break one, per square
+/// metre of its cross-section — cracking is a surface thing, so a rock
+/// twice the size takes four times the punishment, not eight.
+pub const TOUGH_J_PER_M2: f64 = 2.0e4;
+/// Below this radius a broken rock is dust: no fragments.
+pub const FRAG_MIN_M: f64 = 4.0;
+/// Fragments' ids use this slot range, above the cell's own 0..3.
+const FRAG_SLOT0: u8 = 8;
+
+/// A rock's identity: its cell and its slot in it.
+pub type RockId = (i64, i64, i64, u8);
 
 /// A rock in the live set.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -141,12 +154,27 @@ pub fn cell_of(uranus: &Body, p: DVec3, t_s: f64) -> (i64, i64, i64) {
     )
 }
 
+/// What a hit did to a rock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Damage {
+    pub destroyed: bool,
+    /// Fragments spawned (0 when the rock was dust-sized or survived).
+    pub fragments: usize,
+}
+
 /// The belt's live state.
 #[derive(Debug, Default)]
 pub struct Belt {
     pub rocks: Vec<Rock>,
     /// The ship's bumps this step, for the shield and the sound.
     pub hits: Vec<Hit>,
+    /// Damage taken so far by rocks that have been shot, J, by id: the
+    /// rocks themselves are regenerated from their hash, so the wounds
+    /// are kept aside.
+    pub wounds: HashMap<RockId, f64>,
+    /// Rocks that are gone: never brought back in from the hash.
+    pub dead: HashSet<RockId>,
+    frag_seq: u32,
 }
 
 impl Belt {
@@ -194,6 +222,7 @@ impl Belt {
                     let cell = (here.0 + dx, here.1 + dy, here.2 + dz);
                     for rock in cell_rocks(&uranus, cell, t_s) {
                         if (rock.pos - ship_pos).length() < LIVE_M
+                            && !self.dead.contains(&rock.id)
                             && !self.rocks.iter().any(|r| r.id == rock.id)
                         {
                             near.push(rock);
@@ -274,10 +303,190 @@ impl Belt {
     }
 }
 
+impl Belt {
+    /// The energy it takes to break this rock.
+    pub fn toughness_j(radius_m: f64) -> f64 {
+        TOUGH_J_PER_M2 * std::f64::consts::PI * radius_m * radius_m
+    }
+
+    /// How hurt rock `i` is, 0 (whole) .. 1 (about to go).
+    pub fn wound(&self, i: usize) -> f64 {
+        let r = &self.rocks[i];
+        (self.wounds.get(&r.id).copied().unwrap_or(0.0) / Self::toughness_j(r.radius_m))
+            .clamp(0.0, 1.0)
+    }
+
+    /// A slug of `energy_j` strikes rock `i` at `at`, going `dir` with
+    /// momentum `momentum_kgmps`: the rock is shoved and wounded; broken
+    /// past its toughness, it goes — into fragments, if it is big enough
+    /// to leave any. Returns what happened.
+    pub fn strike(
+        &mut self,
+        i: usize,
+        energy_j: f64,
+        momentum_kgmps: f64,
+        at: DVec3,
+        dir: DVec3,
+    ) -> Damage {
+        let rock = self.rocks[i];
+        let mass = 2_000.0 * (4.0 / 3.0) * std::f64::consts::PI * rock.radius_m.powi(3);
+        self.rocks[i].vel += dir.normalize_or_zero() * (momentum_kgmps / mass);
+        let w = self.wounds.entry(rock.id).or_insert(0.0);
+        *w += energy_j.max(0.0);
+        if *w < Self::toughness_j(rock.radius_m) {
+            return Damage {
+                destroyed: false,
+                fragments: 0,
+            };
+        }
+        self.wounds.remove(&rock.id);
+        self.dead.insert(rock.id);
+        self.rocks.swap_remove(i);
+        let rock_after = Rock {
+            vel: rock.vel + dir.normalize_or_zero() * (momentum_kgmps / mass),
+            ..rock
+        };
+        let n = self.fragment(rock_after, at);
+        Damage {
+            destroyed: true,
+            fragments: n,
+        }
+    }
+
+    /// Break a rock into pieces about the strike: a few chunks of a third
+    /// to a half its size, flung apart from where it was hit, spinning.
+    /// Dust-sized rocks leave nothing. Returns how many were made.
+    fn fragment(&mut self, rock: Rock, at: DVec3) -> usize {
+        if rock.radius_m < FRAG_MIN_M * 1.5 {
+            return 0;
+        }
+        let seq = self.frag_seq;
+        let h = |salt: u32| unit(hash(rock.id.0, rock.id.1, rock.id.2, salt ^ seq));
+        let n = 3 + (hash(rock.id.0, rock.id.1, rock.id.2, 99 ^ seq) % 3) as usize;
+        let away = (rock.pos - at).normalize_or_zero();
+        let mut made = 0;
+        for k in 0..n {
+            if self.rocks.len() >= LIVE {
+                break;
+            }
+            let s = 16 * k as u32;
+            let radius_m = rock.radius_m * (0.32 + 0.2 * h(s + 1));
+            let dir =
+                DVec3::new(h(s + 2) - 0.5, h(s + 3) - 0.5, h(s + 4) - 0.5).normalize_or_zero();
+            // Pieces leave from the far side of the hit, mostly.
+            let fling = (dir + away * 0.8).normalize_or_zero();
+            let speed = 2.0 + 6.0 * h(s + 5);
+            let slot = FRAG_SLOT0.wrapping_add((self.frag_seq % 240) as u8);
+            self.frag_seq = self.frag_seq.wrapping_add(1);
+            self.rocks.push(Rock {
+                id: (rock.id.0, rock.id.1, rock.id.2, slot),
+                pos: rock.pos + fling * (rock.radius_m - radius_m) * 0.9,
+                vel: rock.vel + fling * speed,
+                radius_m: radius_m.max(1.0),
+                seed: h(s + 6) as f32,
+                spin: ((h(s + 7) - 0.5) * 2.0) as f32,
+            });
+            made += 1;
+        }
+        made
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use farfall_sim::presets;
+
+    fn a_belt_with(radius_m: f64) -> Belt {
+        let mut b = Belt::default();
+        b.rocks.push(Rock {
+            id: (1, 2, 3, 0),
+            pos: DVec3::new(100.0, 0.0, 0.0),
+            vel: DVec3::ZERO,
+            radius_m,
+            seed: 0.3,
+            spin: 0.1,
+        });
+        b
+    }
+
+    #[test]
+    fn a_rock_is_shoved_and_wounded_then_breaks_into_fragments_and_stays_dead() {
+        let mut b = a_belt_with(20.0);
+        let tough = Belt::toughness_j(20.0);
+        let at = DVec3::new(80.0, 0.0, 0.0);
+        let d = b.strike(0, tough * 0.4, 1.0e6, at, DVec3::X);
+        assert!(!d.destroyed && d.fragments == 0);
+        assert!(b.rocks[0].vel.x > 0.0, "shoved along the slug");
+        assert!((b.wound(0) - 0.4).abs() < 1e-9, "{}", b.wound(0));
+        let d = b.strike(0, tough * 0.7, 1.0e6, at, DVec3::X);
+        assert!(d.destroyed);
+        assert!((3..=5).contains(&d.fragments), "{d:?}");
+        assert_eq!(b.rocks.len(), d.fragments);
+        assert!(b.dead.contains(&(1, 2, 3, 0)));
+        assert!(b.wounds.is_empty());
+        let mut ids = std::collections::HashSet::new();
+        for r in &b.rocks {
+            assert!(
+                r.radius_m < 20.0 * 0.55 && r.radius_m > 20.0 * 0.3,
+                "{}",
+                r.radius_m
+            );
+            assert!(
+                r.vel.length() > 1.0 && r.vel.length() < 20.0,
+                "flung: {:?}",
+                r.vel
+            );
+            assert!(ids.insert(r.id), "fragment ids are distinct");
+            assert!(r.id.3 >= 8, "fragments never collide with the hash's slots");
+        }
+        // Dust: a small rock leaves nothing.
+        let mut b = a_belt_with(5.0);
+        let d = b.strike(0, Belt::toughness_j(5.0) * 2.0, 1.0, at, DVec3::X);
+        assert!(d.destroyed && d.fragments == 0 && b.rocks.is_empty());
+    }
+
+    #[test]
+    fn a_bigger_rock_is_tougher_by_its_face_not_its_bulk() {
+        let a = Belt::toughness_j(10.0);
+        let b = Belt::toughness_j(20.0);
+        assert!((b / a - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_dead_rock_is_not_brought_back_in() {
+        let p = presets::earth_compact();
+        let uranus = p.bodies(0.0)[3];
+        // Find any populated cell and stand in it.
+        let mut found = None;
+        'outer: for x in 0..200 {
+            for y in 0..8 {
+                for z in -2..3 {
+                    let rocks = cell_rocks(&uranus, (x, y, z), 0.0);
+                    if let Some(r) = rocks.first() {
+                        found = Some(*r);
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let rock = found.expect("some rock in the ring");
+        let mut b = Belt::default();
+        let ship = rock.pos + DVec3::new(50.0, 0.0, 0.0);
+        b.step(&p, 0.0, 1.0 / 120.0, ship, rock.vel);
+        assert!(b.rocks.iter().any(|r| r.id == rock.id), "it comes in");
+        let i = b.rocks.iter().position(|r| r.id == rock.id).unwrap();
+        let d = b.strike(
+            i,
+            Belt::toughness_j(rock.radius_m) * 2.0,
+            0.0,
+            ship,
+            -DVec3::X,
+        );
+        assert!(d.destroyed);
+        b.step(&p, 1.0 / 120.0, 1.0 / 120.0, ship, rock.vel);
+        assert!(!b.rocks.iter().any(|r| r.id == rock.id), "and stays gone");
+    }
 
     #[test]
     fn the_ring_is_populated_the_same_way_every_time_and_only_in_the_ring() {

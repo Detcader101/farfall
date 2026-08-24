@@ -8,6 +8,7 @@
 //! [`input`]), the camera rides the hull looking down the nose, and rotational
 //! flight assist is toggleable. Planet, HUD, and sun arrive in M1 tasks 4-6.
 
+mod arms;
 mod belt;
 mod capture;
 mod cockpit;
@@ -32,6 +33,9 @@ use std::time::{Duration, Instant};
 
 use capture::Capture;
 use farfall_audio::Audio;
+use farfall_render::tracer::{
+    tracer_pass, BurstView, Occluder, SlugView, TracerPass, TracerScene, TracerUniforms,
+};
 use farfall_render::{
     attitude::{
         guide_pass, gyro_pass, horizon_pass, Attitude, GuideUniforms, GyroUniforms, HorizonFade,
@@ -202,6 +206,11 @@ impl Dragged {
 }
 
 /// What the text readout shows this frame.
+/// The gun mounts' gimbal: how far off the nose the gaze can take them.
+const GIMBAL_RAD: f64 = 35.0 * std::f64::consts::PI / 180.0;
+/// How much of a slug's flight the tracer shows behind its head, s.
+const TRACER_TRAIL_S: f64 = 0.06;
+
 struct Readout {
     altitude_m: f64,
     speed_mps: f64,
@@ -251,6 +260,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
 ///                           many seconds old, ahead and a little banked)
+///   FARFALL_BENCH_ARMS=1   (benchmark only: tracers from both guns, a muzzle
+///                           flash and every kind of burst ahead)
 ///   FARFALL_BENCH_STRIKES=n (benchmark only: n strikes on the shield at
 ///                           staggered ages, for its ripples)
 ///   FARFALL_BENCH_G=x,y,z  (benchmark only: a felt load in g — right, up,
@@ -420,6 +431,8 @@ struct Passes {
     shield: ShieldPass,
     ghost: GhostPass,
     belt: BeltPass,
+    /// The arms' light: tracers, flashes, bursts.
+    tracer: TracerPass,
 }
 
 impl Passes {
@@ -450,6 +463,7 @@ impl Passes {
             shield: shield_pass(device, format, msaa),
             ghost: ghost_pass(device, format, msaa),
             belt: belt_pass(device, format, msaa),
+            tracer: tracer_pass(device, format, msaa),
         }
     }
 }
@@ -908,6 +922,9 @@ struct Game {
     ghost: Option<Ghost>,
     /// The asteroid belt's live rocks, when the ship is in Uranus' ring.
     belt: belt::Belt,
+    /// The arms, and the trigger.
+    arms: arms::Arms,
+    fire_held: bool,
     /// Was the field up last frame (to feel its collapse).
     hyper_was: bool,
     /// The bench holding the field up.
@@ -1004,6 +1021,8 @@ impl Game {
             hyper: 0.0,
             ghost: None,
             belt: belt::Belt::default(),
+            arms: arms::Arms::default(),
+            fire_held: false,
             hyper_was: false,
             bench_hyper: false,
             hyper_strain: 0.0,
@@ -1671,6 +1690,99 @@ impl Game {
         BeltUniforms::new(cam, self.look.rotation(), now, sun_ship, 1.0, &rocks)
     }
 
+    /// Where the guns point, world frame: the gaze while looking, within
+    /// the mounts' gimbal; the nose otherwise.
+    fn aim_world(&self) -> DVec3 {
+        let nose = DVec3::NEG_Z;
+        let gaze = self.look.rotation().as_dquat() * DVec3::NEG_Z;
+        let ang = gaze.dot(nose).clamp(-1.0, 1.0).acos();
+        let dir = if ang <= GIMBAL_RAD {
+            gaze
+        } else {
+            let axis = nose.cross(gaze).normalize_or_zero();
+            if axis == DVec3::ZERO {
+                nose
+            } else {
+                DQuat::from_axis_angle(axis, GIMBAL_RAD) * nose
+            }
+        };
+        self.state.ship.orient * dir
+    }
+
+    /// The arms' line for the readout, while there is anything to say.
+    fn arms_text(&self) -> Option<String> {
+        let a = &self.arms;
+        (a.heat.iter().any(|&h| h > 0.01) || a.charge > 0.0 || a.jammed.iter().any(|&j| j))
+            .then(|| a.text())
+    }
+
+    /// The arms' light this frame: slugs and bursts relative to the head,
+    /// the rocks along for occlusion.
+    fn tracer_uniforms(&self, cam: &CameraFrame) -> TracerUniforms {
+        let head = self.look.rotation();
+        if self.arms.slugs.is_empty() && self.arms.bursts.is_empty() {
+            return TracerUniforms::none(cam, head);
+        }
+        let ship_inv = self.state.ship.orient.inverse();
+        let ship_pos = self.state.ship.pos_m;
+        let ship_vel = self.state.ship.vel_mps;
+        let now = self.started.elapsed().as_secs_f32();
+        let t = self.state.time_s;
+        let to_ship = |p: DVec3| (ship_inv * (p - ship_pos)).as_vec3();
+        let slugs: Vec<SlugView> = self
+            .arms
+            .slugs
+            .iter()
+            .map(|sl| {
+                let age = (t - sl.born_s).max(0.0);
+                let trail = (sl.vel - ship_vel) * age.min(TRACER_TRAIL_S);
+                SlugView {
+                    head: to_ship(sl.pos),
+                    tail: to_ship(sl.pos - trail),
+                    kind: sl.weapon.kind(),
+                    age_s: age as f32,
+                }
+            })
+            .collect();
+        let bursts: Vec<BurstView> = self
+            .arms
+            .bursts
+            .iter()
+            .map(|b| {
+                let age = (t - b.at_s).max(0.0);
+                BurstView {
+                    at: to_ship(b.pos + b.vel * age),
+                    age_s: age as f32,
+                    kind: b.kind,
+                    size: b.size,
+                    seed: b.seed,
+                }
+            })
+            .collect();
+        let rocks: Vec<Occluder> = self
+            .belt
+            .rocks
+            .iter()
+            .map(|r| Occluder {
+                centre: to_ship(r.pos),
+                radius_m: r.radius_m as f32,
+            })
+            .collect();
+        let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        TracerUniforms::new(
+            cam,
+            head,
+            now,
+            self.settings.arms_glow,
+            sun_ship,
+            &TracerScene {
+                slugs: &slugs,
+                bursts: &bursts,
+                rocks: &rocks,
+            },
+        )
+    }
+
     /// The after-image this frame, if one is still showing.
     fn ghost_uniforms(&self, cam: &CameraFrame) -> GhostUniforms {
         let head = self.look.rotation();
@@ -1916,6 +2028,24 @@ impl Game {
             if shove != DVec3::ZERO {
                 self.state.ship.vel_mps += shove;
             }
+            // The arms: slugs fly, land on rocks, and the guns kick.
+            self.arms.power = self.settings.arms_power;
+            let trigger = self.fire_held && !self.menu.open && !self.map_open() && !self.design;
+            let kick = self.arms.step(
+                self.state.time_s,
+                sim::DT,
+                &arms::Ship {
+                    pos: self.state.ship.pos_m,
+                    vel: self.state.ship.vel_mps,
+                    orient: self.state.ship.orient,
+                    aim: self.aim_world(),
+                },
+                trigger,
+                &mut self.belt,
+            );
+            if kick != DVec3::ZERO {
+                self.state.ship.vel_mps += kick;
+            }
             let hits: Vec<belt::Hit> = self.belt.hits.clone();
             for h in hits {
                 let ship_inv = self.state.ship.orient.inverse();
@@ -2141,6 +2271,15 @@ impl Game {
                 0.0
             },
             strike_size: self.strike_size,
+            shots: self.arms.shots as f32,
+            shot_kind: self.arms.shot_kind as f32,
+            bangs: self.arms.bangs as f32,
+            bang_size: self.arms.bang_size,
+            rail: if self.arms.selected == arms::Weapon::Rail {
+                self.arms.charge
+            } else {
+                0.0
+            },
         }
     }
 
@@ -2604,6 +2743,60 @@ impl App {
                 at_s: 1.0 - age,
             });
         }
+        if game.frozen && std::env::var("FARFALL_BENCH_ARMS").is_ok() {
+            // Both guns in the air and every kind of burst at once, ahead:
+            // cannon tracers from both wings a little way out, a rail slug
+            // further, a muzzle flash on the right wing, hits and a rock
+            // breaking down the nose.
+            let o = game.state.ship.orient;
+            let p = game.state.ship.pos_m;
+            let v = game.state.ship.vel_mps;
+            let t = game.state.time_s;
+            for i in 0..6 {
+                let side = if i % 2 == 0 {
+                    arms::WING_L
+                } else {
+                    arms::WING_R
+                };
+                let dist = 30.0 + 90.0 * i as f64;
+                let dir =
+                    o * DVec3::new(0.012 * (i as f64 - 2.5), 0.004 * i as f64, -1.0).normalize();
+                game.arms.slugs.push(arms::Slug {
+                    pos: p + o * side + dir * dist,
+                    vel: v + dir * arms::Weapon::Cannon.muzzle_mps(),
+                    born_s: t - dist / arms::Weapon::Cannon.muzzle_mps(),
+                    weapon: arms::Weapon::Cannon,
+                });
+            }
+            let dir = o * DVec3::new(-0.05, 0.02, -1.0).normalize();
+            game.arms.slugs.push(arms::Slug {
+                pos: p + o * arms::NOSE + dir * 700.0,
+                vel: v + dir * arms::Weapon::Rail.muzzle_mps(),
+                born_s: t - 0.12,
+                weapon: arms::Weapon::Rail,
+            });
+            let burst = |at: DVec3, age: f64, kind: u8, size: f32, seed: f32| arms::Burst {
+                pos: p + o * at,
+                vel: v,
+                at_s: t - age,
+                kind,
+                size,
+                seed,
+            };
+            game.arms
+                .bursts
+                .push(burst(arms::WING_R, 0.02, 0, 1.0, 0.2));
+            game.arms
+                .bursts
+                .push(burst(DVec3::new(6.0, 2.0, -260.0), 0.15, 1, 0.8, 0.5));
+            game.arms
+                .bursts
+                .push(burst(DVec3::new(-40.0, 10.0, -500.0), 0.3, 3, 1.2, 0.7));
+            game.arms
+                .bursts
+                .push(burst(DVec3::new(25.0, -8.0, -380.0), 0.5, 2, 1.0, 0.9));
+            game.arms.heat[0] = 0.4;
+        }
         if let Some(n) = std::env::var("FARFALL_BENCH_STRIKES")
             .ok()
             .filter(|_| game.frozen)
@@ -2797,6 +2990,18 @@ impl ApplicationHandler for App {
                             game.settings.layout.get(Instrument::Trajectory).name()
                         );
                     }
+                    KeyCode::Digit1 if pressed && !event.repeat => {
+                        game.arms.select(arms::Weapon::Cannon);
+                        log::info!("arms: {}", game.arms.selected.name());
+                    }
+                    KeyCode::Digit2 if pressed && !event.repeat => {
+                        game.arms.select(arms::Weapon::Rail);
+                        log::info!("arms: {}", game.arms.selected.name());
+                    }
+                    KeyCode::KeyN if pressed && !event.repeat => {
+                        game.arms.next_weapon();
+                        log::info!("arms: {}", game.arms.selected.name());
+                    }
                     KeyCode::KeyX if pressed && !event.repeat => {
                         game.assist = !game.assist;
                         log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
@@ -2827,11 +3032,16 @@ impl ApplicationHandler for App {
                     let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                     let cam = game.camera(aspect);
                     let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
-                    game.begin_drag(
+                    // The glass first: a dial or a panel under the gaze is
+                    // picked up. Nothing there, and the button is the
+                    // trigger.
+                    let picked = game.begin_drag(
                         &cam,
                         text_width_ndc(hud_scale * 2.0 / gpu.config.height as f32),
                     );
+                    game.fire_held = !picked && !game.menu.open && !game.map_open() && !game.design;
                 } else {
+                    game.fire_held = false;
                     game.end_drag();
                 }
             }
@@ -2860,6 +3070,7 @@ impl ApplicationHandler for App {
             // event; without this the ship keeps thrusting unattended.
             WindowEvent::Focused(false) => {
                 game.input.release_all();
+                game.fire_held = false;
                 game.look.set_held(false);
                 gpu.set_look_cursor(game.look.engaged());
                 game.end_drag();
@@ -2944,6 +3155,9 @@ impl ApplicationHandler for App {
                                 gpu.passes
                                     .belt
                                     .update(&gpu.queue, &game.belt_uniforms(&cam));
+                                gpu.passes
+                                    .tracer
+                                    .update(&gpu.queue, &game.tracer_uniforms(&cam));
                                 let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
                                 // The capture should show what the pilot
@@ -3057,6 +3271,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.bodies.draw(&mut pass);
                                     gpu.passes.planet.draw(&mut pass);
                                     gpu.passes.belt.draw(&mut pass);
+                                    gpu.passes.tracer.draw(&mut pass);
                                     gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                                     gpu.passes.trajectory.draw(&mut pass);
                                     gpu.passes.shield.draw(&mut pass);
@@ -3151,6 +3366,9 @@ impl ApplicationHandler for App {
                 gpu.passes
                     .belt
                     .update(&gpu.queue, &game.belt_uniforms(&cam));
+                gpu.passes
+                    .tracer
+                    .update(&gpu.queue, &game.tracer_uniforms(&cam));
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,
@@ -3246,6 +3464,9 @@ impl ApplicationHandler for App {
                     }
                     if gpu.cfg.draws("belt") {
                         gpu.passes.belt.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("tracer") {
+                        gpu.passes.tracer.draw(&mut pass);
                     }
                     if gpu.cfg.draws("plasma") {
                         gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
@@ -3373,7 +3594,10 @@ impl ApplicationHandler for App {
                         speed_mps: game.state.ship.vel_mps.length(),
                         assist: game.assist,
                         show: game.settings.layout.shown(Instrument::Readout) || game.landing,
-                        landing: game.landing_text().or_else(|| game.strain_text()),
+                        landing: game
+                            .landing_text()
+                            .or_else(|| game.strain_text())
+                            .or_else(|| game.arms_text()),
                     },
                 );
                 if game.design {

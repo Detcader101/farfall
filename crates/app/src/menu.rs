@@ -26,12 +26,19 @@ pub enum Page {
     Controls,
     Cockpit,
     Gauges,
+    Arms,
     Map,
 }
 
 impl Page {
     /// The settings menu's pages. The MAP is its own panel (M), not a page.
-    const ALL: [Page; 4] = [Page::Graphics, Page::Controls, Page::Cockpit, Page::Gauges];
+    const ALL: [Page; 5] = [
+        Page::Graphics,
+        Page::Controls,
+        Page::Cockpit,
+        Page::Gauges,
+        Page::Arms,
+    ];
 
     fn short(self) -> &'static str {
         match self {
@@ -39,6 +46,7 @@ impl Page {
             Page::Controls => "KEYS",
             Page::Cockpit => "CABIN",
             Page::Gauges => "GAUGES",
+            Page::Arms => "ARMS",
             Page::Map => "MAP",
         }
     }
@@ -49,6 +57,7 @@ impl Page {
             Page::Controls => "CONTROLS",
             Page::Cockpit => "COCKPIT",
             Page::Gauges => "GAUGES",
+            Page::Arms => "ARMS",
             Page::Map => "MAP",
         }
     }
@@ -113,6 +122,9 @@ enum Item {
     Destination,
     SafeDist,
     Engage,
+    /// The ARMS page: the reactor's share, and the light.
+    ArmsPower,
+    ArmsGlow,
 }
 
 impl Item {
@@ -144,6 +156,8 @@ impl Item {
             Item::Guide => "GUIDE",
             Item::HullSound => "HULL SOUNDS",
             Item::Shield => "SHIELD",
+            Item::ArmsPower => "REACTOR TO ARMS",
+            Item::ArmsGlow => "MUZZLE LIGHT",
             Item::DialSelect => "DIAL",
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
@@ -218,6 +232,14 @@ impl Item {
             Item::Destination => s.plan.dest.name().to_string(),
             Item::SafeDist => format!("{:.2} R", s.plan.safe_radii),
             Item::Engage => String::new(),
+            Item::ArmsPower => format!("{:.0}%", s.arms_power * 100.0),
+            Item::ArmsGlow => {
+                if s.arms_glow > 0.0 {
+                    format!("{:.0}%", s.arms_glow * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
         }
     }
 
@@ -347,6 +369,7 @@ impl Menu {
                 );
                 v
             }
+            Page::Arms => vec![Item::ArmsPower, Item::ArmsGlow],
             Page::Map => vec![
                 Item::Destination,
                 Item::SafeDist,
@@ -578,6 +601,24 @@ impl Menu {
             }
             Item::HullSound => {
                 s.hull_sound = !s.hull_sound;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsPower => {
+                let step = if forward { 0.1 } else { -0.1 };
+                let next = (s.arms_power + step).clamp(0.0, 1.0);
+                if (next - s.arms_power).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_power = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsGlow => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.arms_glow + step).clamp(0.0, 2.0);
+                if (next - s.arms_glow).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_glow = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Shield => {
@@ -940,7 +981,8 @@ mod tests {
             MenuEvent::Changed(Change::Layout)
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
-        m.key(KeyCode::Tab, &mut s); // back to graphics
+        m.key(KeyCode::Tab, &mut s); // on to ARMS
+        m.key(KeyCode::Tab, &mut s); // and back round to graphics
         for _ in 0..8 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
@@ -1049,6 +1091,10 @@ mod tests {
                         !on(Item::Slot(Instrument::Hoops)),
                         "hoops live with the cabin"
                     );
+                }
+                Page::Arms => {
+                    assert!(on(Item::ArmsPower) && on(Item::ArmsGlow));
+                    assert!(items.len() >= 2);
                 }
                 Page::Map => unreachable!(),
             }

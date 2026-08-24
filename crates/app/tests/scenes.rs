@@ -260,6 +260,29 @@ fn the_shield_ripples_on_strikes_and_the_after_image_shows() {
 }
 
 #[test]
+fn the_arms_light_the_belt() {
+    if !enabled() {
+        return;
+    }
+    let f = capture(
+        "arms",
+        &[
+            ("FARFALL_BENCH_POS", RING_POS),
+            ("FARFALL_BENCH_LOOK", RING_LOOK_ALONG),
+            ("FARFALL_BENCH_ARMS", "1"),
+        ],
+    );
+    // Tracers and bursts: hot, warm pixels in the middle of the view.
+    let fire = f.share(0.2, 0.3, 0.8, 0.7, |c| {
+        c[0] > 0.75 && c[1] > 0.45 && c[0] > c[2] + 0.15
+    });
+    assert!(fire > 0.002, "tracers and sparks ahead: {fire}");
+    // The rail's violet wake, somewhere left of the nose.
+    let wake = f.share(0.2, 0.3, 0.7, 0.7, |c| c[2] > 0.3 && c[2] > c[1] + 0.08);
+    assert!(wake > 0.0002, "the rail's wake: {wake}");
+}
+
+#[test]
 fn the_menu_and_the_dials_draw() {
     if !enabled() {
         return;

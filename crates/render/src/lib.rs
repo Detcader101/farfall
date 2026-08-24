@@ -26,6 +26,7 @@ pub mod shield;
 pub mod starfield;
 pub mod text;
 pub mod thermal;
+pub mod tracer;
 pub mod trajectory;
 
 /// Everything a pass needs to know about "where we're looking" this frame.

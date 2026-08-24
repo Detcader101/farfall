@@ -213,6 +213,10 @@ pub struct Settings {
     pub map_grid: bool,
     /// The wormhole drive's destination and safe distance.
     pub plan: Plan,
+    /// The reactor's share for the arms, 0..1, and their light's strength
+    /// (tracers, flashes, bursts), 0 (off) .. 2.
+    pub arms_power: f32,
+    pub arms_glow: f32,
 }
 
 impl Default for Settings {
@@ -246,6 +250,8 @@ impl Default for Settings {
             map_rings: 4,
             map_grid: true,
             plan: Plan::default(),
+            arms_power: 0.5,
+            arms_glow: 1.0,
         }
     }
 }
@@ -380,6 +386,20 @@ impl Settings {
                     "fade" => s.gauges_stay = false,
                     _ => {}
                 },
+                "arms.power" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_power = f.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                "arms.glow" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_glow = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
                 "ui.shield" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -632,6 +652,8 @@ impl Settings {
             if self.guide { "on" } else { "off" }
         ));
         out.push_str(&format!("ui.shield = {:.2}\n", self.shield));
+        out.push_str(&format!("arms.power = {:.2}\n", self.arms_power));
+        out.push_str(&format!("arms.glow = {:.2}\n", self.arms_glow));
         out.push_str(&format!(
             "sound.hull = {}\n",
             if self.hull_sound { "on" } else { "off" }
@@ -716,6 +738,8 @@ mod tests {
         s.look_sensitivity = 1.75;
         s.hull_sound = false;
         s.shield = 1.5;
+        s.arms_power = 0.75;
+        s.arms_glow = 1.5;
         s.hoop_size = 2.5;
         s.map_rings = 2;
         s.landing_spacing_m = 500.0;
