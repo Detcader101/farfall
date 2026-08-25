@@ -25,6 +25,7 @@ pub mod planet;
 pub mod scar;
 pub mod shaders;
 pub mod shield;
+pub mod sight;
 pub mod starfield;
 pub mod text;
 pub mod thermal;

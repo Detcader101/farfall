@@ -129,6 +129,7 @@ enum Item {
     ArmsShardLife,
     ArmsScarSize,
     ArmsScarCool,
+    ArmsSight,
 }
 
 impl Item {
@@ -162,6 +163,7 @@ impl Item {
             Item::Shield => "SHIELD",
             Item::ArmsPower => "REACTOR TO ARMS",
             Item::ArmsGlow => "MUZZLE LIGHT",
+            Item::ArmsSight => "GUN SIGHT",
             Item::ArmsShards => "DEBRIS",
             Item::ArmsShardLife => "DEBRIS LIFE",
             Item::ArmsScarSize => "SCARS",
@@ -264,6 +266,13 @@ impl Item {
                 }
             }
             Item::ArmsScarCool => format!("{:.0} S", s.arms_scar_cool),
+            Item::ArmsSight => {
+                if s.arms_sight > 0.0 {
+                    format!("{:.0}%", s.arms_sight * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
         }
     }
 
@@ -396,6 +405,7 @@ impl Menu {
             Page::Arms => vec![
                 Item::ArmsPower,
                 Item::ArmsGlow,
+                Item::ArmsSight,
                 Item::ArmsShards,
                 Item::ArmsShardLife,
                 Item::ArmsScarSize,
@@ -671,6 +681,15 @@ impl Menu {
                     return MenuEvent::Nothing;
                 }
                 s.arms_shard_life = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsSight => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.arms_sight + step).clamp(0.0, 2.0);
+                if (next - s.arms_sight).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_sight = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::ArmsScarSize => {
@@ -1166,6 +1185,7 @@ mod tests {
                     assert!(on(Item::ArmsPower) && on(Item::ArmsGlow));
                     assert!(on(Item::ArmsShards) && on(Item::ArmsShardLife));
                     assert!(on(Item::ArmsScarSize) && on(Item::ArmsScarCool));
+                    assert!(on(Item::ArmsSight));
                     assert!(items.len() >= 2);
                 }
                 Page::Map => unreachable!(),

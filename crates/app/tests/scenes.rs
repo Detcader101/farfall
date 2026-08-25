@@ -333,6 +333,43 @@ fn the_scars_glow_on_the_rock_ahead() {
 }
 
 #[test]
+fn the_gun_sight_holds_on_the_gimbal_ring() {
+    if !enabled() {
+        return;
+    }
+    // The head turned well past the gimbal: the sight stops on the ring,
+    // amber, with a leader back to the gaze — against the same frame
+    // with the sight off.
+    let amber = |c: [f32; 3]| c[0] > 0.45 && c[1] > 0.25 && c[0] > c[2] + 0.2 && c[0] >= c[1];
+    let with = capture(
+        "sight",
+        &[
+            ("FARFALL_BENCH_ARMS", "sight"),
+            ("FARFALL_BENCH_HEAD", "55,4"),
+        ],
+    )
+    .share(0.0, 0.2, 1.0, 0.9, amber);
+    let without = capture(
+        "nosight",
+        &[
+            ("FARFALL_BENCH_ARMS", "nosight"),
+            ("FARFALL_BENCH_HEAD", "55,4"),
+        ],
+    )
+    .share(0.0, 0.2, 1.0, 0.9, amber);
+    assert!(
+        with > without * 3.0 + 0.000005,
+        "the sight held on the ring: {with} vs {without} without"
+    );
+    // Straight ahead: a cyan sight at the centre of the glass.
+    let g = capture("sight-ahead", &[("FARFALL_BENCH_ARMS", "sight")]);
+    let cyan = g.share(0.42, 0.42, 0.58, 0.58, |c| {
+        c[1] > 0.6 && c[2] > 0.6 && c[0] < 0.6
+    });
+    assert!(cyan > 0.0005, "the sight ahead: {cyan}");
+}
+
+#[test]
 fn the_menu_and_the_dials_draw() {
     if !enabled() {
         return;

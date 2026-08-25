@@ -35,6 +35,7 @@ use capture::Capture;
 use farfall_audio::Audio;
 use farfall_render::debris::{debris_pass, DebrisPass, DebrisScene, DebrisUniforms, ShardView};
 use farfall_render::scar::{scar_heat, scar_pass, ScarPass, ScarScene, ScarUniforms, ScarView};
+use farfall_render::sight::{sight_pass, SightPass, SightScene, SightUniforms};
 use farfall_render::tracer::{
     tracer_pass, BurstView, Occluder, SlugView, TracerPass, TracerScene, TracerUniforms,
 };
@@ -262,6 +263,10 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
 ///                           many seconds old, ahead and a little banked)
+///   FARFALL_BENCH_ARMS=nosight (benchmark only: the sight off, for a baseline)
+///   FARFALL_BENCH_ARMS=sight (benchmark only: the cannon hot, as if firing:
+///                           pair with FARFALL_BENCH_HEAD past the gimbal to
+///                           see the sight held on the ring)
 ///   FARFALL_BENCH_ARMS=scars (benchmark only: three craters, hot to cold, on
 ///                           the nearest rock ahead)
 ///   FARFALL_BENCH_ARMS=debris (benchmark only: a rock's shards ahead, fresh
@@ -443,6 +448,8 @@ struct Passes {
     debris: DebrisPass,
     /// The arms' scars: craters glowing on the rocks.
     scar: ScarPass,
+    /// The gun sight on the glass.
+    sight: SightPass,
 }
 
 impl Passes {
@@ -476,6 +483,7 @@ impl Passes {
             tracer: tracer_pass(device, format, msaa),
             debris: debris_pass(device, format, msaa),
             scar: scar_pass(device, format, msaa),
+            sight: sight_pass(device, format, msaa),
         }
     }
 }
@@ -1705,20 +1713,63 @@ impl Game {
     /// Where the guns point, world frame: the gaze while looking, within
     /// the mounts' gimbal; the nose otherwise.
     fn aim_world(&self) -> DVec3 {
+        self.state.ship.orient * self.aim_ship().0
+    }
+
+    /// Where the guns point in the ship's frame: the gaze within the
+    /// gimbal, else the gimbal's edge nearest it — and whether it was
+    /// held back.
+    fn aim_ship(&self) -> (DVec3, bool) {
         let nose = DVec3::NEG_Z;
         let gaze = self.look.rotation().as_dquat() * DVec3::NEG_Z;
         let ang = gaze.dot(nose).clamp(-1.0, 1.0).acos();
-        let dir = if ang <= GIMBAL_RAD {
-            gaze
+        if ang <= GIMBAL_RAD {
+            return (gaze, false);
+        }
+        let axis = nose.cross(gaze).normalize_or_zero();
+        if axis == DVec3::ZERO {
+            (nose, true)
         } else {
-            let axis = nose.cross(gaze).normalize_or_zero();
-            if axis == DVec3::ZERO {
-                nose
-            } else {
-                DQuat::from_axis_angle(axis, GIMBAL_RAD) * nose
-            }
+            (DQuat::from_axis_angle(axis, GIMBAL_RAD) * nose, true)
+        }
+    }
+
+    /// The gun sight this frame: off with a panel up or in design.
+    fn sight_uniforms(&self, cam: &CameraFrame) -> SightUniforms {
+        if self.panel_open() || self.settings.arms_sight <= 0.0 {
+            return SightUniforms::none(cam);
+        }
+        let (aim, clamped) = self.aim_ship();
+        let w = self.arms.selected;
+        let mut barrels = [None; farfall_render::sight::BARRELS];
+        let mounts: &[DVec3] = match w {
+            arms::Weapon::Cannon => &[arms::WING_L, arms::WING_R],
+            arms::Weapon::Rail => &[arms::NOSE],
         };
-        self.state.ship.orient * dir
+        for (b, m) in barrels.iter_mut().zip(mounts.iter()) {
+            *b = Some(m.as_vec3());
+        }
+        SightUniforms::new(
+            cam,
+            self.look.rotation(),
+            &SightScene {
+                aim: aim.as_vec3(),
+                gaze: (self.look.rotation() * glam::Vec3::NEG_Z),
+                gimbal_rad: GIMBAL_RAD as f32,
+                clamped,
+                barrels,
+                kind: w.kind(),
+                heat: self.arms.heat_of(w),
+                charge: if w == arms::Weapon::Rail {
+                    self.arms.charge
+                } else {
+                    0.0
+                },
+                jammed: self.arms.jammed_of(w),
+                empty: self.arms.ammo_of(w) == 0,
+                strength: self.settings.arms_sight,
+            },
+        )
     }
 
     /// The arms' line for the readout, while there is anything to say.
@@ -2856,6 +2907,14 @@ impl App {
             });
         }
         let bench_arms = std::env::var("FARFALL_BENCH_ARMS").unwrap_or_default();
+        if game.frozen && bench_arms == "sight" {
+            game.arms.heat[0] = 0.55;
+        }
+        if game.frozen && bench_arms == "nosight" {
+            // The same frame without the sight, for the scene test's
+            // baseline.
+            game.settings.arms_sight = 0.0;
+        }
         if game.frozen && bench_arms == "scars" {
             // A rock of our own a little way ahead, wearing three craters
             // on the face toward us: one just struck, one cooling, one
@@ -3362,6 +3421,9 @@ impl ApplicationHandler for App {
                                 gpu.passes
                                     .scar
                                     .update(&gpu.queue, &game.scar_uniforms(&cam));
+                                gpu.passes
+                                    .sight
+                                    .update(&gpu.queue, &game.sight_uniforms(&cam));
                                 let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
                                 // The capture should show what the pilot
@@ -3490,7 +3552,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.gvec.draw(&mut pass);
                                     gpu.passes.gyro.draw(&mut pass);
                                     gpu.passes.guide.draw(&mut pass);
-                                    gpu.passes.guide.draw(&mut pass);
+                                    gpu.passes.sight.draw(&mut pass);
                                     if capture_text && game.map_open() {
                                         gpu.map.draw(&mut pass);
                                     }
@@ -3581,6 +3643,9 @@ impl ApplicationHandler for App {
                 gpu.passes
                     .scar
                     .update(&gpu.queue, &game.scar_uniforms(&cam));
+                gpu.passes
+                    .sight
+                    .update(&gpu.queue, &game.sight_uniforms(&cam));
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,
@@ -3709,6 +3774,7 @@ impl ApplicationHandler for App {
                         gpu.passes.gvec.draw(&mut pass);
                         gpu.passes.gyro.draw(&mut pass);
                         gpu.passes.guide.draw(&mut pass);
+                        gpu.passes.sight.draw(&mut pass);
                     }
                 }
                 {

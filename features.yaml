@@ -371,6 +371,13 @@ features:
     name: Railgun (charge, rail glow, hypervelocity slug, plasma wake, bass crack) and Lance (continuous cutting beam that slices rocks along the sweep)
     state: planned
 
+  - id: arms-sight
+    name: The gun sight — a hologram on the glass where the guns point (the gimballed aim, not the nose), so it rides with the head in freelook; past the gimbal it stops on the ring, turns amber, and a dashed leader runs back to a cross at the gaze; the gimbal ring itself faint about the nose; a pip for each barrel at the convergence range; heat as an arc inside the ring, the rail's charge as an arc outside; red and blinking when jammed or empty; off with a panel up; GUN SIGHT on the ARMS page
+    state: complete
+    tests: [crates/render/src/sight.rs, crates/app/tests/scenes.rs::the_gun_sight_holds_on_the_gimbal_ring, crates/app/src/menu.rs::the_pages_are_categories_that_make_sense]
+    settings: [arms.sight]
+    e2e: FARFALL_BENCH_ARMS=sight captures looked at, ahead and with FARFALL_BENCH_HEAD=55,4 — cyan reticle with wing pips and heat arc at the centre; amber reticle held on the gimbal ring with the leader to the gaze
+
   - id: arms-targeting
     name: Targeting — lock, lead marker on the glass from target velocity and slug speed, threat arrows at the glass edge, turret mode where freelook gimbals the guns
     state: planned
