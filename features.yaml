@@ -354,3 +354,64 @@ features:
     name: Ship loss on hard impact / Sun contact
     state: deferred
     note: user asked to hold this until more features exist
+
+  - id: arms-core
+    name: ARMS — wing cannon and nose rail on 1/2/N, the trigger on the left button (a dial under the gaze still wins), the guns gimballed to the gaze within 35 degrees, a reactor share that sets rate and charge, per-weapon heat that jams and clears, magazines, recoil on the ship, a readout line, an ARMS menu page; the sound of each gun and of a slug on rock; see WEAPONS.md
+    state: tests-pass
+    tests: [crates/app/src/arms.rs, crates/app/src/menu.rs::the_pages_are_categories_that_make_sense, crates/app/src/settings.rs::edits_round_trip, crates/audio/src/synth.rs::the_guns_report_once_per_shot_and_the_rail_is_the_heavier]
+    settings: [arms.power, arms.glow]
+    note: hardpoint mounting, fire groups, the belly slot and the power split against drive/shield are still to come
+
+  - id: arms-autocannon
+    name: Cannon and rail slugs as a GPU tracer pass — a white-hot head with an orange guttering tail (the rail's a violet plasma wake), muzzle flashes, sparks spraying off a hit rock with a puff of dust, all hidden behind rocks; rocks wounded by energy against a toughness by their face, keyed on their cell id
+    state: tests-pass
+    tests: [crates/render/src/tracer.rs, crates/app/src/belt.rs::a_rock_is_shoved_and_wounded_then_breaks_into_fragments_and_stays_dead, crates/app/tests/scenes.rs::the_arms_light_the_belt]
+    e2e: FARFALL_BENCH_ARMS=1 capture at the ring looked at — tracers, sparks, the wake; not yet fired in flight
+
+  - id: arms-debris
+    name: Rocks break — a rock past its toughness splits into 2-4 ray-traced fragments in the belt's live set with its mass and momentum shared out (less a dust share), flung from the far side of the hit, never brought back from the hash; shards (a debris pass of tumbling, sun-lit, ray-traced slabs of the same stone) chip off every hit and pour out of a break carrying the rock's velocity, their fresh faces cooling white to orange to dull red, thinning out at the end of their life, hidden behind rocks; a flash, a swelling cloud of grit and embers, a shock ring
+    state: complete
+    tests: [crates/app/src/belt.rs::a_rock_is_shoved_and_wounded_then_breaks_into_fragments_and_stays_dead, crates/app/src/arms.rs::shards_fly_off_a_hit_carry_the_rock_along_and_die_in_their_time, crates/render/src/debris.rs, crates/app/tests/scenes.rs::the_debris_tumbles_ahead]
+    settings: [arms.shards, arms.shard-life]
+    e2e: FARFALL_BENCH_ARMS=debris capture at the ring looked at — a cloud of tumbling shards 70 m ahead, the fresh ones glowing, the break's burst behind; a live break not yet flown
+
+  - id: arms-scars
+    name: Scars — a hit that does not break its rock leaves a crater on the face, riding with the rock, sized by the blow; a scar pass paints it as light over the belt (a hot floor, cracks running out, a rim, a halo on the stone), cooling white to orange to dull red to nothing on a curve, hidden behind nearer rocks; capped at 32, gone with the rock; SCARS and SCAR COOLING on the ARMS page
+    state: complete
+    tests: [crates/app/src/arms.rs::a_hit_leaves_a_scar_that_cools_away_and_goes_with_its_rock, crates/render/src/scar.rs, crates/app/tests/scenes.rs::the_scars_glow_on_the_rock_ahead]
+    settings: [arms.scar-size, arms.scar-cool]
+    e2e: FARFALL_BENCH_ARMS=scars capture at the ring looked at — three craters on a rock 140 m ahead, white, orange, near cold; not yet struck in flight
+    note: scars on bodies (planets, moons) are still to come with the ship damage model
+  - id: arms-railgun-lance
+    name: Railgun (charge, rail glow, hypervelocity slug, plasma wake, bass crack) and Lance (continuous cutting beam that slices rocks along the sweep)
+    state: planned
+
+  - id: arms-sight
+    name: The gun sight — a hologram on the glass where the guns point (the gimballed aim, not the nose), so it rides with the head in freelook; past the gimbal it stops on the ring, turns amber, and a dashed leader runs back to a cross at the gaze; the gimbal ring itself faint about the nose; a pip for each barrel at the convergence range; heat as an arc inside the ring, the rail's charge as an arc outside; red and blinking when jammed or empty; off with a panel up; GUN SIGHT on the ARMS page
+    state: complete
+    tests: [crates/render/src/sight.rs, crates/app/tests/scenes.rs::the_gun_sight_holds_on_the_gimbal_ring, crates/app/src/menu.rs::the_pages_are_categories_that_make_sense]
+    settings: [arms.sight]
+    e2e: FARFALL_BENCH_ARMS=sight captures looked at, ahead and with FARFALL_BENCH_HEAD=55,4 — cyan reticle with wing pips and heat arc at the centre; amber reticle held on the gimbal ring with the leader to the gaze
+
+  - id: cam-shake
+    name: The helmet camera — the view is on the pilot's head, not a tripod; a damped spring in yaw, pitch and roll pushed by the felt load (sway, lag, overshoot, settle), a tremor that grows with thrust and g, a jolt from every shot (the rail's much the bigger, capped), all applied in the head's frame so cabin, glass, holograms and world move as one; CAMERA SHAKE on the CABIN page, 0 off .. 200%
+    state: complete
+    tests: [crates/app/src/shake.rs, crates/app/tests/scenes.rs::the_helmet_camera_moves_the_whole_view_together, crates/app/src/menu.rs::the_pages_are_categories_that_make_sense]
+    settings: [cam.shake]
+    e2e: FARFALL_BENCH_SHAKE=4,3,6 capture looked at with FARFALL_BENCH_HEAD=0,-26 — the whole cockpit rolled and nodded together, dials on their dash; the live sway and the guns' jolt not yet flown
+
+  - id: arms-targeting
+    name: Targeting — lock, lead marker on the glass from target velocity and slug speed, threat arrows at the glass edge, turret mode where freelook gimbals the guns
+    state: planned
+
+  - id: arms-ordnance
+    name: Flak proximity bursts, guided torpedoes with a post shockwave, mines dropped astern
+    state: planned
+
+  - id: arms-tools
+    name: Tools — tractor/repulsor beam, mining cutter with collectible ore, illumination flares, scanner pulse
+    state: planned
+
+  - id: arms-ship-damage
+    name: Ship damage model — hull and subsystem hp, deterministic and pure for later lockstep multiplayer; own-ship hits feed the shield impacts
+    state: planned

@@ -17,9 +17,12 @@ pub const TRAJECTORY: &str = include_str!("../../../shaders/trajectory.wgsl");
 pub const GYRO: &str = include_str!("../../../shaders/gyro.wgsl");
 pub const GVEC: &str = include_str!("../../../shaders/gvec.wgsl");
 pub const SHIELD: &str = include_str!("../../../shaders/shield.wgsl");
+pub const DEBRIS: &str = include_str!("../../../shaders/debris.wgsl");
 pub const GHOST: &str = include_str!("../../../shaders/ghost.wgsl");
 pub const JET: &str = include_str!("../../../shaders/jet.wgsl");
 pub const HOLO: &str = include_str!("../../../shaders/holo.wgsl");
+pub const SCAR: &str = include_str!("../../../shaders/scar.wgsl");
+pub const SIGHT: &str = include_str!("../../../shaders/sight.wgsl");
 pub const BELT: &str = include_str!("../../../shaders/belt.wgsl");
 pub const HORIZON: &str = include_str!("../../../shaders/horizon.wgsl");
 pub const BODIES: &str = include_str!("../../../shaders/bodies.wgsl");
@@ -27,6 +30,7 @@ pub const MAP: &str = include_str!("../../../shaders/map.wgsl");
 pub const COCKPIT: &str = include_str!("../../../shaders/cockpit.wgsl");
 pub const CABIN_BLIT: &str = include_str!("../../../shaders/cabin_blit.wgsl");
 pub const GUIDE: &str = include_str!("../../../shaders/guide.wgsl");
+pub const TRACER: &str = include_str!("../../../shaders/tracer.wgsl");
 
 /// Every pass: display name, source, and required entry points.
 pub const PASSES: &[(&str, &str, &[&str])] = &[
@@ -53,9 +57,12 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("gyro", GYRO, &["vs_main", "fs_main"]),
     ("gvec", GVEC, &["vs_main", "fs_main"]),
     ("shield", SHIELD, &["vs_main", "fs_main"]),
+    ("debris", DEBRIS, &["vs_main", "fs_main"]),
     ("ghost", GHOST, &["vs_main", "fs_main"]),
     ("jet", JET, &["vs_main", "fs_main"]),
     ("holo", HOLO, &["vs_main", "fs_main"]),
+    ("scar", SCAR, &["vs_main", "fs_main"]),
+    ("sight", SIGHT, &["vs_main", "fs_main"]),
     ("belt", BELT, &["vs_main", "fs_main"]),
     ("horizon", HORIZON, &["vs_main", "fs_main"]),
     ("bodies", BODIES, &["vs_main", "fs_main"]),
@@ -63,6 +70,7 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("cockpit", COCKPIT, &["vs_main", "fs_main"]),
     ("cabin_blit", CABIN_BLIT, &["vs_main", "fs_main"]),
     ("guide", GUIDE, &["vs_main", "fs_main"]),
+    ("tracer", TRACER, &["vs_main", "fs_main"]),
 ];
 
 /// Prepend the shared prelude to a pass source.

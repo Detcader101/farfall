@@ -41,7 +41,9 @@ column, it violates the pillar and needs a spec change, not a quiet exception.
 
 ## 3. Non-goals (MVP era, M0–M3)
 
-- No combat, no NPCs, no economy, no narrative system. (Vision-level only; see §9.)
+- No NPCs, no economy, no narrative system. (Vision-level only; see §9.) Combat came
+  early after all: the arms lane (WEAPONS.md) — guns, rocks that break, ship damage
+  later — lives in the app beside the belt, outside the sim's hash.
 - No multiplayer netcode — only the architectural seam for it (P5).
 - No VR implementation — only the `XrBackend` seam (§5.3) and a scheduled spike (M4).
 - No landing/touchdown — the slice ends at a low-altitude flyover (§4).

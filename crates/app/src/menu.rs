@@ -26,12 +26,19 @@ pub enum Page {
     Controls,
     Cockpit,
     Gauges,
+    Arms,
     Map,
 }
 
 impl Page {
     /// The settings menu's pages. The MAP is its own panel (M), not a page.
-    const ALL: [Page; 4] = [Page::Graphics, Page::Controls, Page::Cockpit, Page::Gauges];
+    const ALL: [Page; 5] = [
+        Page::Graphics,
+        Page::Controls,
+        Page::Cockpit,
+        Page::Gauges,
+        Page::Arms,
+    ];
 
     fn short(self) -> &'static str {
         match self {
@@ -39,6 +46,7 @@ impl Page {
             Page::Controls => "KEYS",
             Page::Cockpit => "CABIN",
             Page::Gauges => "GAUGES",
+            Page::Arms => "ARMS",
             Page::Map => "MAP",
         }
     }
@@ -49,6 +57,7 @@ impl Page {
             Page::Controls => "CONTROLS",
             Page::Cockpit => "COCKPIT",
             Page::Gauges => "GAUGES",
+            Page::Arms => "ARMS",
             Page::Map => "MAP",
         }
     }
@@ -112,6 +121,16 @@ enum Item {
     Destination,
     SafeDist,
     Engage,
+    /// The ARMS page: the reactor's share, and the light.
+    ArmsPower,
+    ArmsGlow,
+    ArmsShards,
+    ArmsShardLife,
+    ArmsScarSize,
+    ArmsScarCool,
+    ArmsSight,
+    /// The camera on the head: sway, tremor, jolts.
+    CamShake,
 }
 
 impl Item {
@@ -142,6 +161,14 @@ impl Item {
             Item::Guide => "GUIDE",
             Item::HullSound => "HULL SOUNDS",
             Item::Shield => "SHIELD",
+            Item::ArmsPower => "REACTOR TO ARMS",
+            Item::ArmsGlow => "MUZZLE LIGHT",
+            Item::ArmsSight => "GUN SIGHT",
+            Item::CamShake => "CAMERA SHAKE",
+            Item::ArmsShards => "DEBRIS",
+            Item::ArmsShardLife => "DEBRIS LIFE",
+            Item::ArmsScarSize => "SCARS",
+            Item::ArmsScarCool => "SCAR COOLING",
             Item::DialSelect => "DIAL",
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
@@ -222,6 +249,44 @@ impl Item {
                 }
             }
             Item::Engage => String::new(),
+            Item::ArmsPower => format!("{:.0}%", s.arms_power * 100.0),
+            Item::ArmsGlow => {
+                if s.arms_glow > 0.0 {
+                    format!("{:.0}%", s.arms_glow * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::ArmsShards => {
+                if s.arms_shards > 0 {
+                    s.arms_shards.to_string()
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::ArmsShardLife => format!("{:.0} S", s.arms_shard_life),
+            Item::ArmsScarSize => {
+                if s.arms_scar_size > 0.0 {
+                    format!("{:.0}%", s.arms_scar_size * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::ArmsScarCool => format!("{:.0} S", s.arms_scar_cool),
+            Item::ArmsSight => {
+                if s.arms_sight > 0.0 {
+                    format!("{:.0}%", s.arms_sight * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::CamShake => {
+                if s.cam_shake > 0.0 {
+                    format!("{:.0}%", s.cam_shake * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
         }
     }
 
@@ -320,6 +385,7 @@ impl Menu {
                 Item::Slot(Instrument::HoopSound),
                 Item::HoopSize,
                 Item::LandingHoops,
+                Item::CamShake,
             ],
             // The gauges: the cockpit-wide look, then one dial's own
             // numbers, then where each instrument sits (or OFF) — the
@@ -344,6 +410,15 @@ impl Menu {
                 );
                 v
             }
+            Page::Arms => vec![
+                Item::ArmsPower,
+                Item::ArmsGlow,
+                Item::ArmsSight,
+                Item::ArmsShards,
+                Item::ArmsShardLife,
+                Item::ArmsScarSize,
+                Item::ArmsScarCool,
+            ],
             Page::Map => vec![
                 Item::Destination,
                 Item::SafeDist,
@@ -571,6 +646,81 @@ impl Menu {
             }
             Item::HullSound => {
                 s.hull_sound = !s.hull_sound;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsPower => {
+                let step = if forward { 0.1 } else { -0.1 };
+                let next = (s.arms_power + step).clamp(0.0, 1.0);
+                if (next - s.arms_power).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_power = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsGlow => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.arms_glow + step).clamp(0.0, 2.0);
+                if (next - s.arms_glow).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_glow = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsShards => {
+                let next = if forward {
+                    (s.arms_shards + 8).min(crate::settings::ARMS_SHARDS_MAX)
+                } else {
+                    s.arms_shards.saturating_sub(8)
+                };
+                if next == s.arms_shards {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_shards = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsShardLife => {
+                let step = if forward { 1.0 } else { -1.0 };
+                let next = (s.arms_shard_life + step).clamp(1.0, 12.0);
+                if (next - s.arms_shard_life).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_shard_life = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::CamShake => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.cam_shake + step).clamp(0.0, 2.0);
+                if (next - s.cam_shake).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.cam_shake = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsSight => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.arms_sight + step).clamp(0.0, 2.0);
+                if (next - s.arms_sight).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_sight = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsScarSize => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.arms_scar_size + step).clamp(0.0, 2.0);
+                if (next - s.arms_scar_size).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_scar_size = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsScarCool => {
+                let step = if forward { 4.0 } else { -4.0 };
+                let next = (s.arms_scar_cool + step).clamp(2.0, 60.0);
+                if (next - s.arms_scar_cool).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_scar_cool = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Shield => {
@@ -947,7 +1097,8 @@ mod tests {
             MenuEvent::Changed(Change::Layout)
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
-        m.key(KeyCode::Tab, &mut s); // back to graphics
+        m.key(KeyCode::Tab, &mut s); // on to ARMS
+        m.key(KeyCode::Tab, &mut s); // and back round to graphics
                                      // QUIT is the last row; the walk must cross CAMERA and both HOLO
                                      // rows on the way down.
         for _ in 0..11 {
@@ -1058,6 +1209,7 @@ mod tests {
                         assert_eq!(w[1], w[0] + 1, "hoop settings together: {hoops:?}");
                     }
                     assert_eq!(at(Item::HullSound), at(Item::Shield) + 1);
+                    assert!(on(Item::CamShake));
                 }
                 Page::Gauges => {
                     assert!(on(Item::GaugeStyle) && on(Item::GaugesStay) && on(Item::Guide));
@@ -1066,6 +1218,13 @@ mod tests {
                         !on(Item::Slot(Instrument::Hoops)),
                         "hoops live with the cabin"
                     );
+                }
+                Page::Arms => {
+                    assert!(on(Item::ArmsPower) && on(Item::ArmsGlow));
+                    assert!(on(Item::ArmsShards) && on(Item::ArmsShardLife));
+                    assert!(on(Item::ArmsScarSize) && on(Item::ArmsScarCool));
+                    assert!(on(Item::ArmsSight));
+                    assert!(items.len() >= 2);
                 }
                 Page::Map => unreachable!(),
             }

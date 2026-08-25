@@ -22,6 +22,8 @@
 //!   is zero in clean space by construction (the entry level needs air).
 //! - **brake** — band-passed retro-thruster hiss.
 
+use core::f32::consts::TAU;
+
 /// Control inputs, all unitless and pre-normalised by the caller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Levels {
@@ -79,6 +81,18 @@ pub struct Levels {
     pub strikes: f32,
     /// The latest strike's size 0..1 (a grain to a pebble).
     pub strike_size: f32,
+    /// Shots fired by the arms, as a count, and the last one's kind (0 the
+    /// cannon, 1 the rail). The synth fires the gun's report on every
+    /// increment: the ship's own frame carries it, so the vacuum does
+    /// not mute it.
+    pub shots: f32,
+    pub shot_kind: f32,
+    /// Slugs landing on rock, as a count, and the last one's size (a
+    /// rock's radius over 20 m, scaled down with distance). A crunch.
+    pub bangs: f32,
+    pub bang_size: f32,
+    /// The rail's charge 0..1: a rising whine while it is held.
+    pub rail: f32,
 }
 
 impl Default for Levels {
@@ -98,6 +112,11 @@ impl Default for Levels {
             stress: 0.0,
             strikes: 0.0,
             strike_size: 0.0,
+            shots: 0.0,
+            shot_kind: 0.0,
+            bangs: 0.0,
+            bang_size: 0.0,
+            rail: 0.0,
         }
     }
 }
@@ -263,6 +282,25 @@ pub struct Synth {
     strike_f: f32,
     strike_size: f32,
     strike_lp: f32,
+    // The arms: the gun's report, the crunch of a slug on rock, the
+    // rail's whine.
+    last_shots: u32,
+    shot_kind: f32,
+    shot_t: f32,
+    shot_env: f32,
+    shot_phase: f32,
+    shot_sub_phase: f32,
+    shot_lp: f32,
+    shot_ring_phase: f32,
+    last_bangs: u32,
+    bang_t: f32,
+    bang_env: f32,
+    bang_size: f32,
+    bang_lp: f32,
+    bang_lp2: f32,
+    bang_sub: f32,
+    rail_phase: f32,
+    rail_level: Smooth,
     // RCS thrusters.
     rcs: Smooth,
     rcs_phase: f32,
@@ -337,6 +375,23 @@ impl Synth {
             strike_f: 2_000.0,
             strike_size: 0.0,
             strike_lp: 0.0,
+            last_shots: 0,
+            shot_kind: 0.0,
+            shot_t: 10.0,
+            shot_env: 0.0,
+            shot_phase: 0.0,
+            shot_sub_phase: 0.0,
+            shot_lp: 0.0,
+            shot_ring_phase: 0.0,
+            last_bangs: 0,
+            bang_t: 10.0,
+            bang_env: 0.0,
+            bang_size: 0.0,
+            bang_lp: 0.0,
+            bang_lp2: 0.0,
+            bang_sub: 0.0,
+            rail_phase: 0.0,
+            rail_level: Smooth::new(sample_rate, 0.02),
             rcs: Smooth::new(sample_rate, 0.06),
             rcs_phase: 0.0,
             rcs_lp: 0.0,
@@ -373,6 +428,8 @@ impl Synth {
             self.last_hoops = levels.hoops.max(0.0) as u32;
             self.last_jumps = levels.jumps.max(0.0) as u32;
             self.last_strikes = levels.strikes.max(0.0) as u32;
+            self.last_shots = levels.shots.max(0.0) as u32;
+            self.last_bangs = levels.bangs.max(0.0) as u32;
             self.stress.value = levels.stress.clamp(0.0, 1.0);
         }
 
@@ -715,6 +772,101 @@ impl Synth {
             self.strike_env = grit_env.max((-self.strike_t * 16.0).exp() * size);
         }
 
+        // ---- the arms -------------------------------------------------------
+        // The gun's report. The cannon: a hard thump — a sine dropping
+        // through the low mids in forty milliseconds under a click of
+        // noise, over before it can ring. The rail: a crack (a spike of
+        // noise), a sub that falls to nothing over a third of a second,
+        // and a metallic ring off the rails that decays behind it. Both
+        // through the frame, never muted.
+        let shots = levels.shots.max(0.0) as u32;
+        if shots != self.last_shots {
+            self.last_shots = shots;
+            self.shot_t = 0.0;
+            self.shot_env = 1.0;
+            self.shot_kind = levels.shot_kind;
+            self.shot_phase = 0.0;
+            self.shot_sub_phase = 0.0;
+            self.shot_ring_phase = 0.0;
+        }
+        let mut shot_out = 0.0;
+        if self.shot_env > 1e-3 {
+            let dt = 1.0 / self.rate;
+            self.shot_t += dt;
+            let t = self.shot_t;
+            let rail = self.shot_kind > 0.5;
+            if !rail {
+                let f = 120.0 + 260.0 * (-t * 60.0).exp();
+                self.shot_phase += TAU * f * dt;
+                let thump = self.shot_phase.sin() * (-t * 28.0).exp();
+                let n = self.rng_l.white();
+                let lp = self.lp_coeff(3_500.0);
+                self.shot_lp += (n - self.shot_lp) * lp;
+                let click = self.shot_lp * (-t * 300.0).exp() * 0.8;
+                shot_out = (thump * 0.9 + click) * 0.7;
+                self.shot_env = (-t * 28.0).exp();
+            } else {
+                let f = 26.0 + 90.0 * (-t * 9.0).exp();
+                self.shot_sub_phase += TAU * f * dt;
+                let sub = self.shot_sub_phase.sin() * (-t * 6.0).exp();
+                let n = self.rng_l.white();
+                let crack = n * (-t * 160.0).exp() * 1.2;
+                let ring_f = 880.0 + 400.0 * (-t * 4.0).exp();
+                self.shot_ring_phase += TAU * ring_f * dt;
+                let ring = (self.shot_ring_phase.sin() + 0.4 * (self.shot_ring_phase * 2.01).sin())
+                    * (-t * 5.0).exp()
+                    * 0.18;
+                shot_out = (sub * 1.1 + crack + ring).tanh() * 0.9;
+                self.shot_env = (-t * 5.0).exp();
+            }
+        }
+        // A slug on rock: a crunch — noise through a band that sits lower
+        // for a bigger rock, a fast attack, a decay that lengthens with
+        // the size, and a thud under it. Through the frame.
+        let bangs = levels.bangs.max(0.0) as u32;
+        if bangs != self.last_bangs {
+            self.last_bangs = bangs;
+            self.bang_t = 0.0;
+            self.bang_env = 1.0;
+            self.bang_size = levels.bang_size.clamp(0.05, 3.0);
+        }
+        let mut bang_out = 0.0;
+        if self.bang_env > 1e-3 {
+            let dt = 1.0 / self.rate;
+            self.bang_t += dt;
+            let t = self.bang_t;
+            let size = self.bang_size.min(1.5);
+            let n = self.rng_r.white();
+            let f_hi = 1_400.0 - 700.0 * size.min(1.0);
+            let lp = self.lp_coeff(f_hi);
+            self.bang_lp += (n - self.bang_lp) * lp;
+            let lp2 = self.lp_coeff(f_hi * 0.3);
+            self.bang_lp2 += (self.bang_lp - self.bang_lp2) * lp2;
+            let crunch =
+                (self.bang_lp - self.bang_lp2) * (-t * (30.0 - 18.0 * size.min(1.0))).exp();
+            let n2 = self.rng_l.white();
+            let lp3 = self.lp_coeff(90.0 + 60.0 * size);
+            self.bang_sub += (n2 - self.bang_sub) * lp3;
+            let thud = self.bang_sub * (-t * 12.0).exp() * size * 3.0;
+            let gain = (0.25 + 0.5 * size).min(1.0);
+            bang_out = (crunch * 1.6 + thud) * gain;
+            self.bang_env = (-t * 8.0).exp() * gain.max(0.3);
+        }
+        // The rail charging: a whine that climbs with the charge, with a
+        // hum under it that thickens as it goes.
+        let rail = self.rail_level.next(levels.rail.clamp(0.0, 1.0));
+        let mut rail_out = 0.0;
+        if rail > 1e-3 {
+            let dt = 1.0 / self.rate;
+            self.rail_phase += TAU * (180.0 + 1_500.0 * rail * rail) * dt;
+            if self.rail_phase > TAU {
+                self.rail_phase -= TAU;
+            }
+            let whine = self.rail_phase.sin() * 0.05 * rail;
+            let hum = (self.rail_phase * 0.04).sin() * 0.06 * rail * rail;
+            rail_out = whine + hum;
+        }
+
         // ---- mix --------------------------------------------------------
         let master = self.master.next(levels.master.clamp(0.0, 1.0));
         // Silence multiplies everything the SHIP makes: past the atmosphere
@@ -725,7 +877,8 @@ impl Synth {
         // would silence the build-up at exactly the altitudes where it
         // happens (which is why the old mix was barely audible on entry).
         let mono = engine + hiss + rcs_out;
-        let frame_borne = womp + warp_out + crack_out + hull_out + strike_out;
+        let frame_borne =
+            womp + warp_out + crack_out + hull_out + strike_out + shot_out + bang_out + rail_out;
         let l = (((mono + wind.0) * silence + entry_out + frame_borne) * master).tanh();
         let r = (((mono + wind.1) * silence + entry_out + frame_borne) * master).tanh();
 
@@ -798,6 +951,11 @@ mod tests {
                 stress: 1.0,
                 strikes: 0.0,
                 strike_size: 1.0,
+                shots: 0.0,
+                shot_kind: 0.0,
+                bangs: 0.0,
+                bang_size: 0.0,
+                rail: 0.0,
             },
             Levels {
                 effort: 55.0,
@@ -814,6 +972,11 @@ mod tests {
                 stress: 9.0,
                 strikes: 3.0,
                 strike_size: -2.0,
+                shots: 0.0,
+                shot_kind: 0.0,
+                bangs: 0.0,
+                bang_size: 0.0,
+                rail: 0.0,
             },
         ];
         for levels in cases {
@@ -1353,6 +1516,84 @@ mod tests {
 
     /// A strike rings once, in vacuum, bright for a grain and with a thud
     /// for a pebble; the count alone stays quiet.
+    /// Energy under 120 Hz against the whole: how bassy a sound is.
+    fn low_share(buf: &[f32]) -> f32 {
+        let mut lp = 0.0f32;
+        let k = 1.0 - (-TAU * 120.0 / 48_000.0).exp();
+        let mut low = 0.0f32;
+        let mut all = 0.0f32;
+        for s in buf.iter().step_by(2) {
+            lp += (s - lp) * k;
+            low += lp * lp;
+            all += s * s;
+        }
+        low / all.max(1e-9)
+    }
+
+    #[test]
+    fn the_guns_report_once_per_shot_and_the_rail_is_the_heavier() {
+        let quiet = Levels::default();
+        let mut synth = Synth::new(48_000.0, 7);
+        let mut warm = vec![0.0f32; 9_600];
+        synth.render(&quiet, &mut warm);
+        let mut buf = vec![0.0f32; 48_000];
+        synth.render(&quiet, &mut buf);
+        assert!(rms(&buf) < 1e-3, "silent in space: {}", rms(&buf));
+        // One cannon shot: a report, then silence again.
+        let shot = Levels {
+            shots: 1.0,
+            shot_kind: 0.0,
+            ..quiet
+        };
+        let mut first = vec![0.0f32; 4_800];
+        synth.render(&shot, &mut first);
+        let cannon = rms(&first);
+        assert!(cannon > 0.02, "the cannon is heard: {cannon}");
+        let mut later = vec![0.0f32; 4_800];
+        synth.render(&shot, &mut later);
+        synth.render(&shot, &mut later);
+        assert!(rms(&later) < cannon * 0.1, "and over: {}", rms(&later));
+        // The rail: bassier.
+        let rail = Levels {
+            shots: 2.0,
+            shot_kind: 1.0,
+            ..quiet
+        };
+        let mut r = vec![0.0f32; 9_600];
+        synth.render(&rail, &mut r);
+        assert!(rms(&r) > 0.02);
+        assert!(
+            low_share(&r) > low_share(&first) * 1.5,
+            "rail {} cannon {}",
+            low_share(&r),
+            low_share(&first)
+        );
+        // A slug on rock crunches, once.
+        let bang = Levels {
+            shots: 2.0,
+            shot_kind: 1.0,
+            bangs: 1.0,
+            bang_size: 1.0,
+            ..quiet
+        };
+        let mut settle = vec![0.0f32; 96_000];
+        synth.render(&rail, &mut settle);
+        let mut b = vec![0.0f32; 4_800];
+        synth.render(&bang, &mut b);
+        assert!(rms(&b) > 0.01, "the crunch: {}", rms(&b));
+        let mut b2 = vec![0.0f32; 4_800];
+        for _ in 0..4 {
+            synth.render(&bang, &mut b2);
+        }
+        assert!(rms(&b2) < rms(&b) * 0.2, "once: {}", rms(&b2));
+        // The rail's charge whines while held.
+        let charge = Levels { rail: 0.8, ..bang };
+        let mut c = vec![0.0f32; 48_000];
+        synth.render(&charge, &mut c);
+        let tail = &c[38_400..];
+        assert!(rms(tail) > 0.01, "the whine holds: {}", rms(tail));
+    }
+
     #[test]
     fn strikes_ring_once_and_pebbles_thud() {
         let ring = |size: f32| {
@@ -1361,6 +1602,11 @@ mod tests {
             let before = Levels {
                 strikes: 1.0,
                 strike_size: size,
+                shots: 0.0,
+                shot_kind: 0.0,
+                bangs: 0.0,
+                bang_size: 0.0,
+                rail: 0.0,
                 ..Default::default()
             };
             s.render(&before, &mut b);
@@ -1496,6 +1742,11 @@ mod tests {
             stress: 0.4,
             strikes: 0.0,
             strike_size: 0.0,
+            shots: 0.0,
+            shot_kind: 0.0,
+            bangs: 0.0,
+            bang_size: 0.0,
+            rail: 0.0,
         };
         let a = render_secs(levels, 0.25);
         let b = render_secs(levels, 0.25);

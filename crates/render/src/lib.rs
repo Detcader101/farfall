@@ -16,6 +16,7 @@ pub mod belt;
 pub mod blit;
 pub mod bodies;
 pub mod cabin;
+pub mod debris;
 pub mod gauge;
 pub mod ghost;
 pub mod holo;
@@ -23,11 +24,14 @@ pub mod hud;
 pub mod instrument;
 pub mod jet;
 pub mod planet;
+pub mod scar;
 pub mod shaders;
 pub mod shield;
+pub mod sight;
 pub mod starfield;
 pub mod text;
 pub mod thermal;
+pub mod tracer;
 pub mod trajectory;
 
 /// Everything a pass needs to know about "where we're looking" this frame.

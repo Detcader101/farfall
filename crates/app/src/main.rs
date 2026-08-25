@@ -8,6 +8,7 @@
 //! [`input`]), the camera rides the hull looking down the nose, and rotational
 //! flight assist is toggleable. Planet, HUD, and sun arrive in M1 tasks 4-6.
 
+mod arms;
 mod belt;
 mod capture;
 mod cockpit;
@@ -17,6 +18,7 @@ mod look;
 mod map;
 mod menu;
 mod settings;
+mod shake;
 mod warp;
 
 use cockpit::Instrument;
@@ -32,6 +34,12 @@ use std::time::{Duration, Instant};
 
 use capture::Capture;
 use farfall_audio::Audio;
+use farfall_render::debris::{debris_pass, DebrisPass, DebrisScene, DebrisUniforms, ShardView};
+use farfall_render::scar::{scar_heat, scar_pass, ScarPass, ScarScene, ScarUniforms, ScarView};
+use farfall_render::sight::{sight_pass, SightPass, SightScene, SightUniforms};
+use farfall_render::tracer::{
+    tracer_pass, BurstView, Occluder, SlugView, TracerPass, TracerScene, TracerUniforms,
+};
 use farfall_render::{
     attitude::{
         guide_pass, gyro_pass, horizon_pass, Attitude, GuideUniforms, GyroUniforms, HorizonFade,
@@ -207,6 +215,11 @@ impl Dragged {
 }
 
 /// What the text readout shows this frame.
+/// The gun mounts' gimbal: how far off the nose the gaze can take them.
+const GIMBAL_RAD: f64 = 35.0 * std::f64::consts::PI / 180.0;
+/// How much of a slug's flight the tracer shows behind its head, s.
+const TRACER_TRAIL_S: f64 = 0.06;
+
 struct Readout {
     altitude_m: f64,
     speed_mps: f64,
@@ -257,8 +270,20 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
 ///                           many seconds old, ahead and a little banked)
+///   FARFALL_BENCH_ARMS=nosight (benchmark only: the sight off, for a baseline)
+///   FARFALL_BENCH_ARMS=sight (benchmark only: the cannon hot, as if firing:
+///                           pair with FARFALL_BENCH_HEAD past the gimbal to
+///                           see the sight held on the ring)
+///   FARFALL_BENCH_ARMS=scars (benchmark only: three craters, hot to cold, on
+///                           the nearest rock ahead)
+///   FARFALL_BENCH_ARMS=debris (benchmark only: a rock's shards ahead, fresh
+///                           ones glowing, with the break's burst)
+///   FARFALL_BENCH_ARMS=1   (benchmark only: tracers from both guns, a muzzle
+///                           flash and every kind of burst ahead)
 ///   FARFALL_BENCH_STRIKES=n (benchmark only: n strikes on the shield at
 ///                           staggered ages, for its ripples)
+///   FARFALL_BENCH_SHAKE=y,p,r (benchmark only: the helmet camera parked at
+///                           this yaw, pitch, roll in degrees)
 ///   FARFALL_BENCH_G=x,y,z  (benchmark only: a felt load in g — right, up,
 ///                           forward — for the G instruments)
 ///   FARFALL_BENCH_THRUST=m,p,y,r (benchmark only: force main thrust 0..1 and
@@ -430,6 +455,14 @@ struct Passes {
     jet: JetPass,
     /// The holo3PP: the volumetric hologram over the dash.
     holo: HoloPass,
+    /// The arms' light: tracers, flashes, bursts.
+    tracer: TracerPass,
+    /// The arms' debris: shards off the rocks.
+    debris: DebrisPass,
+    /// The arms' scars: craters glowing on the rocks.
+    scar: ScarPass,
+    /// The gun sight on the glass.
+    sight: SightPass,
 }
 
 impl Passes {
@@ -462,6 +495,10 @@ impl Passes {
             belt: belt_pass(device, format, msaa),
             jet: jet_pass(device, format, msaa),
             holo: holo_pass(device, format, msaa),
+            tracer: tracer_pass(device, format, msaa),
+            debris: debris_pass(device, format, msaa),
+            scar: scar_pass(device, format, msaa),
+            sight: sight_pass(device, format, msaa),
         }
     }
 }
@@ -519,7 +556,7 @@ impl Gpu {
         // also shrinks with a wider live field of view, as a fixed object
         // would.
         let t = (cam.fov_y * 0.5).tan();
-        let head = look.rotation();
+        let head = game.head();
         let fov_scale = ref_tan / t.max(1e-4);
         let placed = |i: Instrument| -> Option<farfall_render::cabin::Placement> {
             let tw = tweak(i);
@@ -885,6 +922,9 @@ struct Game {
     alt_fade: AltitudeFade,
     /// Hologram inertia: instruments lag rotation for parallax.
     holo_sway: HoloSway,
+    /// The camera on the pilot's head, and the bench's parked pose.
+    shake: shake::Shake,
+    bench_shake: Option<[f32; 3]>,
     /// The sound-barrier flash, fired by the same edge as the sonic boom.
     mach_alert: MachAlert,
     /// Last wall-clock frame time, clamped, for presentation-side integrators.
@@ -931,6 +971,9 @@ struct Game {
     ghost: Option<Ghost>,
     /// The asteroid belt's live rocks, when the ship is in Uranus' ring.
     belt: belt::Belt,
+    /// The arms, and the trigger.
+    arms: arms::Arms,
+    fire_held: bool,
     /// Was the field up last frame (to feel its collapse).
     hyper_was: bool,
     /// The bench holding the field up.
@@ -1011,6 +1054,8 @@ impl Game {
             gauge_fade: GaugeFade::new(),
             alt_fade: AltitudeFade::new(),
             holo_sway: HoloSway::new(),
+            shake: shake::Shake::new(1.0),
+            bench_shake: None,
             mach_alert: MachAlert::new(),
             frame_dt: 0.0,
             trajectory_vis: 1.0,
@@ -1036,6 +1081,8 @@ impl Game {
             hyper: 0.0,
             ghost: None,
             belt: belt::Belt::default(),
+            arms: arms::Arms::default(),
+            fire_held: false,
             hyper_was: false,
             bench_hyper: false,
             hyper_strain: 0.0,
@@ -1258,7 +1305,7 @@ impl Game {
                 ]
             }),
         };
-        let cu = CabinUniforms::new(cam, self.look.rotation(), sun_ship, look, &sockets);
+        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets);
         let bu = cu.blit(look);
         (cu, bu)
     }
@@ -1348,7 +1395,7 @@ impl Game {
         let a = self.settings.layout.anchor(Instrument::Gyro)?;
         let dir = anchor_direction(a, self.ref_tan(), cam.aspect);
         let t = (cam.fov_y * 0.5).tan();
-        let place = farfall_render::cabin::Placement::ball(self.look.rotation(), t, dir, tw.size)?;
+        let place = farfall_render::cabin::Placement::ball(self.head(), t, dir, tw.size)?;
         let ship_inv = self.state.ship.orient.as_quat().inverse();
         let up_w = self.up_world().as_vec3();
         let east_w = {
@@ -1698,6 +1745,249 @@ impl Game {
         BeltUniforms::new(&pose.cam, pose.head, now, sun_ship, 1.0, &rocks)
     }
 
+    /// Where the guns point, world frame: the gaze while looking, within
+    /// the mounts' gimbal; the nose otherwise.
+    fn aim_world(&self) -> DVec3 {
+        self.state.ship.orient * self.aim_ship().0
+    }
+
+    /// Where the guns point in the ship's frame: the gaze within the
+    /// gimbal, else the gimbal's edge nearest it — and whether it was
+    /// held back.
+    fn aim_ship(&self) -> (DVec3, bool) {
+        let nose = DVec3::NEG_Z;
+        let gaze = self.look.rotation().as_dquat() * DVec3::NEG_Z;
+        let ang = gaze.dot(nose).clamp(-1.0, 1.0).acos();
+        if ang <= GIMBAL_RAD {
+            return (gaze, false);
+        }
+        let axis = nose.cross(gaze).normalize_or_zero();
+        if axis == DVec3::ZERO {
+            (nose, true)
+        } else {
+            (DQuat::from_axis_angle(axis, GIMBAL_RAD) * nose, true)
+        }
+    }
+
+    /// The camera's head: the pilot's look with the helmet camera's
+    /// shake on it. Every cockpit-frame pass takes this, so the cabin,
+    /// the glass and the world all move together.
+    fn head(&self) -> glam::Quat {
+        self.look.rotation() * self.shake.rotation()
+    }
+
+    /// The gun sight this frame: off with a panel up or in design.
+    fn sight_uniforms(&self, pose: &ViewPose) -> SightUniforms {
+        let cam = &pose.cam;
+        if self.panel_open() || self.settings.arms_sight <= 0.0 {
+            return SightUniforms::none(cam);
+        }
+        let (aim, clamped) = self.aim_ship();
+        let w = self.arms.selected;
+        let mut barrels = [None; farfall_render::sight::BARRELS];
+        let mounts: &[DVec3] = match w {
+            arms::Weapon::Cannon => &[arms::WING_L, arms::WING_R],
+            arms::Weapon::Rail => &[arms::NOSE],
+        };
+        for (b, m) in barrels.iter_mut().zip(mounts.iter()) {
+            *b = Some(m.as_vec3());
+        }
+        SightUniforms::new(
+            cam,
+            pose.head,
+            &SightScene {
+                aim: aim.as_vec3(),
+                gaze: (self.look.rotation() * glam::Vec3::NEG_Z),
+                gimbal_rad: GIMBAL_RAD as f32,
+                clamped,
+                barrels,
+                kind: w.kind(),
+                heat: self.arms.heat_of(w),
+                charge: if w == arms::Weapon::Rail {
+                    self.arms.charge
+                } else {
+                    0.0
+                },
+                jammed: self.arms.jammed_of(w),
+                empty: self.arms.ammo_of(w) == 0,
+                strength: self.settings.arms_sight,
+            },
+        )
+    }
+
+    /// The arms' line for the readout, while there is anything to say.
+    fn arms_text(&self) -> Option<String> {
+        let a = &self.arms;
+        (a.heat.iter().any(|&h| h > 0.01) || a.charge > 0.0 || a.jammed.iter().any(|&j| j))
+            .then(|| a.text())
+    }
+
+    /// The arms' light this frame: slugs and bursts relative to the head,
+    /// the rocks along for occlusion.
+    fn tracer_uniforms(&self, pose: &ViewPose) -> TracerUniforms {
+        let cam = &pose.cam;
+        let head = pose.head;
+        if self.arms.slugs.is_empty() && self.arms.bursts.is_empty() {
+            return TracerUniforms::none(cam, head);
+        }
+        let ship_inv = self.state.ship.orient.inverse();
+        let ship_pos = self.state.ship.pos_m;
+        let ship_vel = self.state.ship.vel_mps;
+        let now = self.started.elapsed().as_secs_f32();
+        let t = self.state.time_s;
+        let to_ship = |p: DVec3| (ship_inv * (p - ship_pos)).as_vec3();
+        let slugs: Vec<SlugView> = self
+            .arms
+            .slugs
+            .iter()
+            .map(|sl| {
+                let age = (t - sl.born_s).max(0.0);
+                let trail = (sl.vel - ship_vel) * age.min(TRACER_TRAIL_S);
+                SlugView {
+                    head: to_ship(sl.pos),
+                    tail: to_ship(sl.pos - trail),
+                    kind: sl.weapon.kind(),
+                    age_s: age as f32,
+                }
+            })
+            .collect();
+        let bursts: Vec<BurstView> = self
+            .arms
+            .bursts
+            .iter()
+            .map(|b| {
+                let age = (t - b.at_s).max(0.0);
+                BurstView {
+                    at: to_ship(b.pos + b.vel * age),
+                    age_s: age as f32,
+                    kind: b.kind,
+                    size: b.size,
+                    seed: b.seed,
+                }
+            })
+            .collect();
+        let rocks: Vec<Occluder> = self
+            .belt
+            .rocks
+            .iter()
+            .map(|r| Occluder {
+                centre: to_ship(r.pos),
+                radius_m: r.radius_m as f32,
+            })
+            .collect();
+        let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        TracerUniforms::new(
+            cam,
+            head,
+            now,
+            self.settings.arms_glow,
+            sun_ship,
+            &TracerScene {
+                slugs: &slugs,
+                bursts: &bursts,
+                rocks: &rocks,
+            },
+        )
+    }
+
+    /// The scars this frame, each on its rock, in the ship's frame.
+    fn scar_uniforms(&self, pose: &ViewPose) -> ScarUniforms {
+        let cam = &pose.cam;
+        let head = pose.head;
+        if self.arms.scars.is_empty() {
+            return ScarUniforms::none(cam, head);
+        }
+        let ship_inv = self.state.ship.orient.inverse();
+        let ship_pos = self.state.ship.pos_m;
+        let t = self.state.time_s;
+        let to_ship = |p: DVec3| (ship_inv * (p - ship_pos)).as_vec3();
+        let scars: Vec<ScarView> = self
+            .arms
+            .scars
+            .iter()
+            .filter_map(|sc| {
+                let rock = self.belt.rocks.iter().find(|r| r.id == sc.rock)?;
+                Some(ScarView {
+                    centre: to_ship(rock.pos),
+                    radius_m: rock.radius_m as f32,
+                    dir: (ship_inv * sc.dir).as_vec3(),
+                    size_m: sc.size_m,
+                    heat: scar_heat((t - sc.born_s) as f32, self.settings.arms_scar_cool),
+                    seed: sc.seed,
+                })
+            })
+            .collect();
+        let rocks: Vec<farfall_render::scar::Occluder> = self
+            .belt
+            .rocks
+            .iter()
+            .map(|r| farfall_render::scar::Occluder {
+                centre: to_ship(r.pos),
+                radius_m: r.radius_m as f32,
+            })
+            .collect();
+        ScarUniforms::new(
+            cam,
+            head,
+            self.settings.arms_glow,
+            &ScarScene {
+                scars: &scars,
+                rocks: &rocks,
+            },
+        )
+    }
+
+    /// The shards this frame, in the ship's frame, with the rocks that
+    /// can hide them.
+    fn debris_uniforms(&self, pose: &ViewPose) -> DebrisUniforms {
+        let cam = &pose.cam;
+        let head = pose.head;
+        if self.arms.shards.is_empty() {
+            return DebrisUniforms::none(cam, head);
+        }
+        let ship_inv = self.state.ship.orient.inverse();
+        let ship_pos = self.state.ship.pos_m;
+        let t = self.state.time_s;
+        let to_ship = |p: DVec3| (ship_inv * (p - ship_pos)).as_vec3();
+        let shards: Vec<ShardView> = self
+            .arms
+            .shards
+            .iter()
+            .map(|sh| {
+                let age = (t - sh.born_s).max(0.0);
+                ShardView {
+                    at: to_ship(sh.pos),
+                    size: sh.size,
+                    axis: (ship_inv * sh.axis).as_vec3(),
+                    angle: (sh.spin * age) as f32,
+                    age01: (age / sh.life_s.max(0.01) as f64) as f32,
+                    seed: sh.seed,
+                }
+            })
+            .collect();
+        let rocks: Vec<farfall_render::debris::Occluder> = self
+            .belt
+            .rocks
+            .iter()
+            .map(|r| farfall_render::debris::Occluder {
+                centre: to_ship(r.pos),
+                radius_m: r.radius_m as f32,
+            })
+            .collect();
+        let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        DebrisUniforms::new(
+            cam,
+            head,
+            1.0,
+            self.settings.arms_glow,
+            sun_ship,
+            &DebrisScene {
+                shards: &shards,
+                rocks: &rocks,
+            },
+        )
+    }
+
     /// The after-image this frame, if one is still showing.
     fn ghost_uniforms(&self, pose: &ViewPose) -> GhostUniforms {
         let cam = &pose.cam;
@@ -1937,6 +2227,15 @@ impl Game {
             return;
         }
 
+        // The camera on the head: pushed by the load, trembling under
+        // thrust, settling — or parked, for a bench.
+        self.shake.strength = self.settings.cam_shake;
+        self.shake
+            .step(self.frame_dt, self.felt_g_body, self.effort);
+        if let Some([y, p, r]) = self.bench_shake {
+            self.shake.park(y, p, r);
+        }
+
         if self.frozen {
             return;
         }
@@ -2011,6 +2310,29 @@ impl Game {
             );
             if shove != DVec3::ZERO {
                 self.state.ship.vel_mps += shove;
+            }
+            // The arms: slugs fly, land on rocks, and the guns kick.
+            self.arms.power = self.settings.arms_power;
+            self.arms.shards_per_break = self.settings.arms_shards;
+            self.arms.shard_life_s = self.settings.arms_shard_life;
+            self.arms.scar_size = self.settings.arms_scar_size;
+            self.arms.scar_cool_s = self.settings.arms_scar_cool;
+            let trigger = self.fire_held && !self.menu.open && !self.map_open() && !self.design;
+            let kick = self.arms.step(
+                self.state.time_s,
+                sim::DT,
+                &arms::Ship {
+                    pos: self.state.ship.pos_m,
+                    vel: self.state.ship.vel_mps,
+                    orient: self.state.ship.orient,
+                    aim: self.aim_world(),
+                },
+                trigger,
+                &mut self.belt,
+            );
+            if kick != DVec3::ZERO {
+                self.shake.kick(kick.length() as f32, self.arms.last_side);
+                self.state.ship.vel_mps += kick;
             }
             let hits: Vec<belt::Hit> = self.belt.hits.clone();
             for h in hits {
@@ -2234,6 +2556,15 @@ impl Game {
                 0.0
             },
             strike_size: self.strike_size,
+            shots: self.arms.shots as f32,
+            shot_kind: self.arms.shot_kind as f32,
+            bangs: self.arms.bangs as f32,
+            bang_size: self.arms.bang_size,
+            rail: if self.arms.selected == arms::Weapon::Rail {
+                self.arms.charge
+            } else {
+                0.0
+            },
         }
     }
 
@@ -2436,8 +2767,8 @@ impl Game {
             self.chase_pose(aspect)
         } else {
             ViewPose {
-                cam: self.cam_for(aspect, self.look.rotation()),
-                head: self.look.rotation(),
+                cam: self.cam_for(aspect, self.head()),
+                head: self.head(),
                 eye_ship: DVec3::ZERO,
             }
         }
@@ -2447,7 +2778,7 @@ impl Game {
     /// down so the ship centres. The pilot's freelook still turns it — a
     /// look around the ship, not out of the canopy.
     fn chase_pose(&self, aspect: f32) -> ViewPose {
-        let head = self.look.rotation() * Quat::from_rotation_x(-CHASE_PITCH_RAD);
+        let head = self.head() * Quat::from_rotation_x(-CHASE_PITCH_RAD);
         ViewPose {
             cam: self.cam_for(aspect, head),
             head,
@@ -2785,6 +3116,154 @@ impl App {
                 at_s: 1.0 - age,
             });
         }
+        let bench_arms = std::env::var("FARFALL_BENCH_ARMS").unwrap_or_default();
+        if game.frozen && bench_arms == "sight" {
+            game.arms.heat[0] = 0.55;
+        }
+        if game.frozen && bench_arms == "nosight" {
+            // The same frame without the sight, for the scene test's
+            // baseline.
+            game.settings.arms_sight = 0.0;
+        }
+        if game.frozen && bench_arms == "scars" {
+            // A rock of our own a little way ahead, wearing three craters
+            // on the face toward us: one just struck, one cooling, one
+            // nearly cold.
+            let o = game.state.ship.orient;
+            let p = game.state.ship.pos_m;
+            let v = game.state.ship.vel_mps;
+            let t = game.state.time_s;
+            let rock = belt::Rock {
+                id: (0, 0, 0, 250),
+                pos: p + o * DVec3::new(6.0, -4.0, -140.0),
+                vel: v,
+                radius_m: 30.0,
+                seed: 0.6,
+                spin: 0.0,
+            };
+            game.belt.rocks.push(rock);
+            let toward = (p - rock.pos).normalize_or_zero();
+            let side = toward.cross(DVec3::Y).normalize_or_zero();
+            let up = side.cross(toward);
+            for (k, (age, ox, oy)) in [(0.3, -0.55, 0.1), (4.0, 0.05, -0.35), (10.0, 0.5, 0.3)]
+                .iter()
+                .enumerate()
+            {
+                game.arms.scars.push(arms::Scar {
+                    rock: rock.id,
+                    dir: (toward + side * *ox + up * *oy).normalize_or_zero(),
+                    born_s: t - *age,
+                    size_m: 5.0,
+                    seed: 0.2 + 0.3 * k as f32,
+                });
+            }
+        }
+        if game.frozen && bench_arms == "debris" {
+            // A rock just broken ahead: its shards spread out in a cloud,
+            // the freshest still glowing, a few chips nearer; the break's
+            // own burst behind them.
+            let o = game.state.ship.orient;
+            let p = game.state.ship.pos_m;
+            let v = game.state.ship.vel_mps;
+            let t = game.state.time_s;
+            let mut h = 0.37f32;
+            let mut unit = || {
+                h = (h * 9.731 + 0.173).fract();
+                h
+            };
+            for i in 0..48 {
+                let age = 0.05 + 2.4 * unit();
+                let dir = DVec3::new(
+                    unit() as f64 - 0.5,
+                    unit() as f64 - 0.5,
+                    unit() as f64 - 0.5,
+                )
+                .normalize_or_zero();
+                let speed = 4.0 + 14.0 * unit() as f64;
+                let at = DVec3::new(0.0, -1.0, -70.0) + dir * speed * age as f64;
+                let axis = DVec3::new(
+                    unit() as f64 - 0.5,
+                    unit() as f64 - 0.5,
+                    unit() as f64 - 0.5,
+                )
+                .normalize_or_zero();
+                let spin = 0.5 + 3.0 * unit() as f64;
+                let size = if i % 8 == 0 { 3.5 } else { 0.6 + 1.6 * unit() };
+                let seed = unit();
+                game.arms.shards.push(arms::Shard {
+                    pos: p + o * at,
+                    vel: v + o * dir * speed,
+                    axis,
+                    spin,
+                    size,
+                    born_s: t - age as f64,
+                    life_s: 5.0,
+                    seed,
+                });
+            }
+            game.arms.bursts.push(arms::Burst {
+                pos: p + o * DVec3::new(0.0, -1.0, -70.0),
+                vel: v,
+                at_s: t - 0.9,
+                kind: 2,
+                size: 1.2,
+                seed: 0.4,
+            });
+        }
+        if game.frozen && (bench_arms == "1" || bench_arms == "guns") {
+            // Both guns in the air and every kind of burst at once, ahead:
+            // cannon tracers from both wings a little way out, a rail slug
+            // further, a muzzle flash on the right wing, hits and a rock
+            // breaking down the nose.
+            let o = game.state.ship.orient;
+            let p = game.state.ship.pos_m;
+            let v = game.state.ship.vel_mps;
+            let t = game.state.time_s;
+            for i in 0..6 {
+                let side = if i % 2 == 0 {
+                    arms::WING_L
+                } else {
+                    arms::WING_R
+                };
+                let dist = 30.0 + 90.0 * i as f64;
+                let dir =
+                    o * DVec3::new(0.012 * (i as f64 - 2.5), 0.004 * i as f64, -1.0).normalize();
+                game.arms.slugs.push(arms::Slug {
+                    pos: p + o * side + dir * dist,
+                    vel: v + dir * arms::Weapon::Cannon.muzzle_mps(),
+                    born_s: t - dist / arms::Weapon::Cannon.muzzle_mps(),
+                    weapon: arms::Weapon::Cannon,
+                });
+            }
+            let dir = o * DVec3::new(-0.05, 0.02, -1.0).normalize();
+            game.arms.slugs.push(arms::Slug {
+                pos: p + o * arms::NOSE + dir * 700.0,
+                vel: v + dir * arms::Weapon::Rail.muzzle_mps(),
+                born_s: t - 0.12,
+                weapon: arms::Weapon::Rail,
+            });
+            let burst = |at: DVec3, age: f64, kind: u8, size: f32, seed: f32| arms::Burst {
+                pos: p + o * at,
+                vel: v,
+                at_s: t - age,
+                kind,
+                size,
+                seed,
+            };
+            game.arms
+                .bursts
+                .push(burst(arms::WING_R, 0.02, 0, 1.0, 0.2));
+            game.arms
+                .bursts
+                .push(burst(DVec3::new(6.0, 2.0, -260.0), 0.15, 1, 0.8, 0.5));
+            game.arms
+                .bursts
+                .push(burst(DVec3::new(-40.0, 10.0, -500.0), 0.3, 3, 1.2, 0.7));
+            game.arms
+                .bursts
+                .push(burst(DVec3::new(25.0, -8.0, -380.0), 0.5, 2, 1.0, 0.9));
+            game.arms.heat[0] = 0.4;
+        }
         if let Some(n) = std::env::var("FARFALL_BENCH_STRIKES")
             .ok()
             .filter(|_| game.frozen)
@@ -2812,6 +3291,20 @@ impl App {
         {
             game.felt_g_body = g;
             game.felt_g = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+        }
+        if let Some(pose) = std::env::var("FARFALL_BENCH_SHAKE")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| {
+                let p: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                (p.len() == 3).then(|| [p[0], p[1], p[2]])
+            })
+        {
+            game.bench_shake = Some([
+                pose[0].to_radians(),
+                pose[1].to_radians(),
+                pose[2].to_radians(),
+            ]);
         }
         if let Some(pages) = std::env::var("FARFALL_BENCH_MENU")
             .ok()
@@ -3012,6 +3505,18 @@ impl ApplicationHandler for App {
                             if game.settings.holo_view { "ON" } else { "OFF" }
                         );
                     }
+                    KeyCode::Digit1 if pressed && !event.repeat => {
+                        game.arms.select(arms::Weapon::Cannon);
+                        log::info!("arms: {}", game.arms.selected.name());
+                    }
+                    KeyCode::Digit2 if pressed && !event.repeat => {
+                        game.arms.select(arms::Weapon::Rail);
+                        log::info!("arms: {}", game.arms.selected.name());
+                    }
+                    KeyCode::KeyN if pressed && !event.repeat => {
+                        game.arms.next_weapon();
+                        log::info!("arms: {}", game.arms.selected.name());
+                    }
                     c if pressed && !event.repeat && c == game.bind(Named::Assist) => {
                         game.assist = !game.assist;
                         log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
@@ -3042,11 +3547,16 @@ impl ApplicationHandler for App {
                     let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                     let cam = game.camera(aspect);
                     let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
-                    game.begin_drag(
+                    // The glass first: a dial or a panel under the gaze is
+                    // picked up. Nothing there, and the button is the
+                    // trigger.
+                    let picked = game.begin_drag(
                         &cam,
                         text_width_ndc(hud_scale * 2.0 / gpu.config.height as f32),
                     );
+                    game.fire_held = !picked && !game.menu.open && !game.map_open() && !game.design;
                 } else {
+                    game.fire_held = false;
                     game.end_drag();
                 }
             }
@@ -3075,6 +3585,7 @@ impl ApplicationHandler for App {
             // event; without this the ship keeps thrusting unattended.
             WindowEvent::Focused(false) => {
                 game.input.release_all();
+                game.fire_held = false;
                 game.look.set_held(false);
                 gpu.set_look_cursor(game.look.engaged());
                 game.end_drag();
@@ -3160,6 +3671,18 @@ impl ApplicationHandler for App {
                                 gpu.passes
                                     .belt
                                     .update(&gpu.queue, &game.belt_uniforms(&pose));
+                                gpu.passes
+                                    .tracer
+                                    .update(&gpu.queue, &game.tracer_uniforms(&pose));
+                                gpu.passes
+                                    .debris
+                                    .update(&gpu.queue, &game.debris_uniforms(&pose));
+                                gpu.passes
+                                    .scar
+                                    .update(&gpu.queue, &game.scar_uniforms(&pose));
+                                gpu.passes
+                                    .sight
+                                    .update(&gpu.queue, &game.sight_uniforms(&pose));
                                 let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
                                 // The capture should show what the pilot
@@ -3229,7 +3752,7 @@ impl ApplicationHandler for App {
                                     &PlasmaUniforms::new(
                                         &cam,
                                         thermal_in.vel_ship_mps,
-                                        game.look.rotation(),
+                                        game.head(),
                                     ),
                                 );
                                 gpu.passes
@@ -3275,6 +3798,9 @@ impl ApplicationHandler for App {
                                     gpu.passes.bodies.draw(&mut pass);
                                     gpu.passes.planet.draw(&mut pass);
                                     gpu.passes.belt.draw(&mut pass);
+                                    gpu.passes.scar.draw(&mut pass);
+                                    gpu.passes.debris.draw(&mut pass);
+                                    gpu.passes.tracer.draw(&mut pass);
                                     gpu.passes.jet.draw(&mut pass);
                                     if !game.chase_active() {
                                         gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
@@ -3292,6 +3818,7 @@ impl ApplicationHandler for App {
                                         gpu.passes.gyro.draw(&mut pass);
                                         gpu.passes.guide.draw(&mut pass);
                                         gpu.passes.guide.draw(&mut pass);
+                                        gpu.passes.sight.draw(&mut pass);
                                     }
                                     gpu.passes.holo.draw(&mut pass);
                                     if capture_text && game.map_open() {
@@ -3376,10 +3903,22 @@ impl ApplicationHandler for App {
                 gpu.passes
                     .belt
                     .update(&gpu.queue, &game.belt_uniforms(&pose));
+                gpu.passes
+                    .tracer
+                    .update(&gpu.queue, &game.tracer_uniforms(&pose));
+                gpu.passes
+                    .debris
+                    .update(&gpu.queue, &game.debris_uniforms(&pose));
+                gpu.passes
+                    .scar
+                    .update(&gpu.queue, &game.scar_uniforms(&pose));
+                gpu.passes
+                    .sight
+                    .update(&gpu.queue, &game.sight_uniforms(&pose));
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,
-                    &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps, game.look.rotation()),
+                    &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps, game.head()),
                 );
                 gpu.passes.trajectory.update(
                     &gpu.queue,
@@ -3474,6 +4013,15 @@ impl ApplicationHandler for App {
                     if gpu.cfg.draws("belt") {
                         gpu.passes.belt.draw(&mut pass);
                     }
+                    if gpu.cfg.draws("scar") {
+                        gpu.passes.scar.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("debris") {
+                        gpu.passes.debris.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("tracer") {
+                        gpu.passes.tracer.draw(&mut pass);
+                    }
                     if gpu.cfg.draws("jet") {
                         gpu.passes.jet.draw(&mut pass);
                     }
@@ -3500,6 +4048,7 @@ impl ApplicationHandler for App {
                         gpu.passes.gvec.draw(&mut pass);
                         gpu.passes.gyro.draw(&mut pass);
                         gpu.passes.guide.draw(&mut pass);
+                        gpu.passes.sight.draw(&mut pass);
                     }
                     if gpu.cfg.draws("holo") {
                         gpu.passes.holo.draw(&mut pass);
@@ -3606,7 +4155,10 @@ impl ApplicationHandler for App {
                         speed_mps: game.state.ship.vel_mps.length(),
                         assist: game.assist,
                         show: game.settings.layout.shown(Instrument::Readout) || game.landing,
-                        landing: game.landing_text().or_else(|| game.strain_text()),
+                        landing: game
+                            .landing_text()
+                            .or_else(|| game.strain_text())
+                            .or_else(|| game.arms_text()),
                     },
                 );
                 if game.design {

@@ -34,6 +34,11 @@ struct Shared {
     stress: AtomicU32,
     strikes: AtomicU32,
     strike_size: AtomicU32,
+    shots: AtomicU32,
+    shot_kind: AtomicU32,
+    bangs: AtomicU32,
+    bang_size: AtomicU32,
+    rail: AtomicU32,
 }
 
 impl Shared {
@@ -54,6 +59,13 @@ impl Shared {
         self.strikes.store(l.strikes.to_bits(), Ordering::Relaxed);
         self.strike_size
             .store(l.strike_size.to_bits(), Ordering::Relaxed);
+        self.shots.store(l.shots.to_bits(), Ordering::Relaxed);
+        self.shot_kind
+            .store(l.shot_kind.to_bits(), Ordering::Relaxed);
+        self.bangs.store(l.bangs.to_bits(), Ordering::Relaxed);
+        self.bang_size
+            .store(l.bang_size.to_bits(), Ordering::Relaxed);
+        self.rail.store(l.rail.to_bits(), Ordering::Relaxed);
     }
     fn load(&self) -> Levels {
         Levels {
@@ -71,6 +83,11 @@ impl Shared {
             stress: f32::from_bits(self.stress.load(Ordering::Relaxed)),
             strikes: f32::from_bits(self.strikes.load(Ordering::Relaxed)),
             strike_size: f32::from_bits(self.strike_size.load(Ordering::Relaxed)),
+            shots: f32::from_bits(self.shots.load(Ordering::Relaxed)),
+            shot_kind: f32::from_bits(self.shot_kind.load(Ordering::Relaxed)),
+            bangs: f32::from_bits(self.bangs.load(Ordering::Relaxed)),
+            bang_size: f32::from_bits(self.bang_size.load(Ordering::Relaxed)),
+            rail: f32::from_bits(self.rail.load(Ordering::Relaxed)),
         }
     }
 }

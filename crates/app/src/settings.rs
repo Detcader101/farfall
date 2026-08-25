@@ -161,6 +161,8 @@ pub const LANDING_SPACINGS: [f32; 4] = [100.0, 250.0, 500.0, 1000.0];
 /// Hoop size range, as a multiple of the stock diameter.
 pub const HOOP_SIZE_MIN: f32 = 0.25;
 pub const HOOP_SIZE_MAX: f32 = 4.0;
+/// The most shards a break may throw (the debris pass holds 64).
+pub const ARMS_SHARDS_MAX: u32 = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
@@ -227,6 +229,23 @@ pub struct Settings {
     pub holo_anchor: [f32; 2],
     /// The wormhole drive's destination and safe distance.
     pub plan: Plan,
+    /// The reactor's share for the arms, 0..1, and their light's strength
+    /// (tracers, flashes, bursts), 0 (off) .. 2.
+    pub arms_power: f32,
+    pub arms_glow: f32,
+    /// Shards a broken rock throws (a hit chips a sixth), 0..48, and how
+    /// long they last, seconds.
+    pub arms_shards: u32,
+    pub arms_shard_life: f32,
+    /// The craters a hit leaves: their size (0 none .. 2), and how long
+    /// one takes to cool, seconds.
+    pub arms_scar_size: f32,
+    pub arms_scar_cool: f32,
+    /// The gun sight on the glass: 0 off .. 2 bright.
+    pub arms_sight: f32,
+    /// The camera on the pilot's head: sway under load, tremor under
+    /// thrust, jolts from the guns. 0 off .. 2 double.
+    pub cam_shake: f32,
 }
 
 impl Default for Settings {
@@ -264,6 +283,14 @@ impl Default for Settings {
             holo_size: 0.30,
             holo_anchor: HOLO_ANCHOR_DEFAULT,
             plan: Plan::default(),
+            arms_power: 0.5,
+            arms_glow: 1.0,
+            arms_shards: 24,
+            arms_shard_life: 5.0,
+            arms_scar_size: 1.0,
+            arms_scar_cool: 12.0,
+            arms_sight: 1.0,
+            cam_shake: 1.0,
         }
     }
 }
@@ -403,6 +430,60 @@ impl Settings {
                     "fade" => s.gauges_stay = false,
                     _ => {}
                 },
+                "arms.power" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_power = f.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                "arms.shards" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        s.arms_shards = n.min(ARMS_SHARDS_MAX);
+                    }
+                }
+                "cam.shake" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.cam_shake = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "arms.sight" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_sight = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "arms.scar-size" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_scar_size = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "arms.scar-cool" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_scar_cool = f.clamp(2.0, 60.0);
+                        }
+                    }
+                }
+                "arms.shard-life" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_shard_life = f.clamp(1.0, 12.0);
+                        }
+                    }
+                }
+                "arms.glow" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_glow = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
                 "ui.shield" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -648,6 +729,14 @@ impl Settings {
             if self.guide { "on" } else { "off" }
         ));
         out.push_str(&format!("ui.shield = {:.2}\n", self.shield));
+        out.push_str(&format!("arms.power = {:.2}\n", self.arms_power));
+        out.push_str(&format!("arms.glow = {:.2}\n", self.arms_glow));
+        out.push_str(&format!("arms.shards = {}\n", self.arms_shards));
+        out.push_str(&format!("arms.shard-life = {:.1}\n", self.arms_shard_life));
+        out.push_str(&format!("arms.scar-size = {:.2}\n", self.arms_scar_size));
+        out.push_str(&format!("arms.scar-cool = {:.0}\n", self.arms_scar_cool));
+        out.push_str(&format!("arms.sight = {:.2}\n", self.arms_sight));
+        out.push_str(&format!("cam.shake = {:.2}\n", self.cam_shake));
         out.push_str(&format!(
             "camera.chase = {}\n",
             if self.camera_chase { "on" } else { "off" }
@@ -745,6 +834,14 @@ mod tests {
         s.look_sensitivity = 1.75;
         s.hull_sound = false;
         s.shield = 1.5;
+        s.arms_power = 0.75;
+        s.arms_glow = 1.5;
+        s.arms_shards = 40;
+        s.arms_shard_life = 8.0;
+        s.arms_scar_size = 1.5;
+        s.arms_scar_cool = 30.0;
+        s.arms_sight = 0.5;
+        s.cam_shake = 1.75;
         s.hoop_size = 2.5;
         s.map_rings = 2;
         s.landing_spacing_m = 500.0;

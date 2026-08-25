@@ -46,6 +46,20 @@ impl Frame {
         ]
     }
 
+    /// Mean absolute difference from another frame of the same size, 0..1.
+    fn diff(&self, other: &Frame) -> f32 {
+        assert_eq!((self.w, self.h), (other.w, other.h));
+        let mut sum = 0.0f64;
+        for y in 0..self.h {
+            for x in 0..self.w {
+                let a = self.at(x, y);
+                let b = other.at(x, y);
+                sum += ((a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs()) as f64;
+            }
+        }
+        (sum / (3.0 * self.w as f64 * self.h as f64)) as f32
+    }
+
     /// How many pixels in the box satisfy the predicate, as a fraction.
     fn share(&self, x0: f32, y0: f32, x1: f32, y1: f32, f: impl Fn([f32; 3]) -> bool) -> f32 {
         let mut hit = 0.0;
@@ -88,23 +102,40 @@ fn capture(name: &str, env: &[(&str, &str)]) -> Frame {
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("the game runs");
-    assert!(
-        out.status.success(),
-        "{name}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let png: PathBuf = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|p| p.extension().is_some_and(|x| x == "png"))
-        .unwrap_or_else(|| panic!("{name}: no capture in {}", dir.display()));
+    let find_png = || -> Option<PathBuf> {
+        std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().is_some_and(|x| x == "png"))
+    };
+    let mut png: Option<PathBuf> = None;
+    // The scenes run in parallel on one GPU: a starved run can quit before
+    // its final frame is read back. One more go before it counts.
+    for attempt in 0..2 {
+        let out = cmd.output().expect("the game runs");
+        assert!(
+            out.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        png = find_png();
+        if png.is_some() {
+            break;
+        }
+        eprintln!("{name}: no capture on attempt {attempt}, again");
+    }
+    let png = png.unwrap_or_else(|| panic!("{name}: no capture in {}", dir.display()));
     let decoder = png::Decoder::new(std::fs::File::open(&png).unwrap());
     let mut reader = decoder.read_info().unwrap();
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).unwrap();
     assert_eq!(info.color_type, png::ColorType::Rgba);
-    let _ = std::fs::remove_dir_all(&dir);
+    // FARFALL_SCENE_KEEP=1 leaves the captures on disk, to be looked at.
+    if std::env::var("FARFALL_SCENE_KEEP").is_err() {
+        let _ = std::fs::remove_dir_all(&dir);
+    } else {
+        eprintln!("{name}: kept {}", dir.display());
+    }
     Frame {
         w: info.width as usize,
         h: info.height as usize,
@@ -257,6 +288,132 @@ fn the_shield_ripples_on_strikes_and_the_after_image_shows() {
     );
     let image = g.share(0.4, 0.3, 0.75, 0.6, |c| c[2] > 0.3 && c[2] > c[0] + 0.08);
     assert!(image > 0.002, "the after-image ahead: {image}");
+}
+
+#[test]
+fn the_arms_light_the_belt() {
+    if !enabled() {
+        return;
+    }
+    let f = capture(
+        "arms",
+        &[
+            ("FARFALL_BENCH_POS", RING_POS),
+            ("FARFALL_BENCH_LOOK", RING_LOOK_ALONG),
+            ("FARFALL_BENCH_ARMS", "1"),
+        ],
+    );
+    // Tracers and bursts: hot, warm pixels in the middle of the view.
+    let fire = f.share(0.2, 0.3, 0.8, 0.7, |c| {
+        c[0] > 0.75 && c[1] > 0.45 && c[0] > c[2] + 0.15
+    });
+    assert!(fire > 0.002, "tracers and sparks ahead: {fire}");
+    // The rail's violet wake, somewhere left of the nose.
+    let wake = f.share(0.2, 0.3, 0.7, 0.7, |c| c[2] > 0.3 && c[2] > c[1] + 0.08);
+    assert!(wake > 0.0002, "the rail's wake: {wake}");
+}
+
+#[test]
+fn the_debris_tumbles_ahead() {
+    if !enabled() {
+        return;
+    }
+    let f = capture(
+        "debris",
+        &[
+            ("FARFALL_BENCH_POS", RING_POS),
+            ("FARFALL_BENCH_LOOK", RING_LOOK_ALONG),
+            ("FARFALL_BENCH_ARMS", "debris"),
+        ],
+    );
+    // Fresh shards glow orange-white in the middle of the view.
+    let ember = f.share(0.3, 0.3, 0.7, 0.7, |c| c[0] > 0.6 && c[0] > c[2] + 0.25);
+    assert!(ember > 0.0003, "embers among the shards: {ember}");
+}
+
+#[test]
+fn the_scars_glow_on_the_rock_ahead() {
+    if !enabled() {
+        return;
+    }
+    let f = capture(
+        "scars",
+        &[
+            ("FARFALL_BENCH_POS", RING_POS),
+            ("FARFALL_BENCH_LOOK", RING_LOOK_ALONG),
+            ("FARFALL_BENCH_ARMS", "scars"),
+        ],
+    );
+    // Hot orange-white craters somewhere on the glass.
+    let hot = f.share(0.0, 0.0, 1.0, 1.0, |c| {
+        c[0] > 0.8 && c[1] > 0.35 && c[0] > c[2] + 0.12
+    });
+    assert!(hot > 0.0002, "craters glowing: {hot}");
+}
+
+#[test]
+fn the_gun_sight_holds_on_the_gimbal_ring() {
+    if !enabled() {
+        return;
+    }
+    // The head turned well past the gimbal: the sight stops on the ring,
+    // amber, with a leader back to the gaze — against the same frame
+    // with the sight off, measured where the reticle sits (35 degrees
+    // from a gaze 55 off: a fifth of the way in from the left).
+    let amber = |c: [f32; 3]| c[0] > 0.45 && c[1] > 0.25 && c[0] > c[2] + 0.2 && c[0] >= c[1];
+    let with = capture(
+        "sight",
+        &[
+            ("FARFALL_BENCH_ARMS", "sight"),
+            ("FARFALL_BENCH_HEAD", "55,4"),
+        ],
+    )
+    .share(0.2, 0.4, 0.45, 0.6, amber);
+    let without = capture(
+        "nosight",
+        &[
+            ("FARFALL_BENCH_ARMS", "nosight"),
+            ("FARFALL_BENCH_HEAD", "55,4"),
+        ],
+    )
+    .share(0.2, 0.4, 0.45, 0.6, amber);
+    assert!(
+        with > without + 0.0001,
+        "the sight held on the ring: {with} vs {without} without"
+    );
+    // Straight ahead: a cyan sight at the centre of the glass.
+    let g = capture("sight-ahead", &[("FARFALL_BENCH_ARMS", "sight")]);
+    let cyan = g.share(0.42, 0.42, 0.58, 0.58, |c| {
+        c[1] > 0.6 && c[2] > 0.6 && c[0] < 0.6
+    });
+    assert!(cyan > 0.0005, "the sight ahead: {cyan}");
+}
+
+#[test]
+fn the_helmet_camera_moves_the_whole_view_together() {
+    if !enabled() {
+        return;
+    }
+    // Parked at a deflection the cabin, glass and world all shift as one:
+    // the frame differs from the still one, but the dials are still on
+    // their dash (the same cyan share, moved).
+    let still = capture("shake-still", &[("FARFALL_BENCH_HEAD", "0,-26")]);
+    let shook = capture(
+        "shake",
+        &[
+            ("FARFALL_BENCH_HEAD", "0,-26"),
+            ("FARFALL_BENCH_SHAKE", "4,3,6"),
+        ],
+    );
+    let d = still.diff(&shook);
+    assert!(d > 0.01, "the view moved: {d}");
+    let cyan = |c: [f32; 3]| c[1] > 0.45 && c[2] > 0.45 && c[0] < 0.5;
+    let a = still.share(0.0, 0.3, 1.0, 1.0, cyan);
+    let b = shook.share(0.0, 0.3, 1.0, 1.0, cyan);
+    assert!(
+        (a - b).abs() < a * 0.35 + 0.002,
+        "the dials came along: {a} vs {b}"
+    );
 }
 
 #[test]
