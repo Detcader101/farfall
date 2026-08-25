@@ -130,6 +130,8 @@ enum Item {
     ArmsScarSize,
     ArmsScarCool,
     ArmsSight,
+    /// The camera on the head: sway, tremor, jolts.
+    CamShake,
 }
 
 impl Item {
@@ -164,6 +166,7 @@ impl Item {
             Item::ArmsPower => "REACTOR TO ARMS",
             Item::ArmsGlow => "MUZZLE LIGHT",
             Item::ArmsSight => "GUN SIGHT",
+            Item::CamShake => "CAMERA SHAKE",
             Item::ArmsShards => "DEBRIS",
             Item::ArmsShardLife => "DEBRIS LIFE",
             Item::ArmsScarSize => "SCARS",
@@ -273,6 +276,13 @@ impl Item {
                     "OFF".to_string()
                 }
             }
+            Item::CamShake => {
+                if s.cam_shake > 0.0 {
+                    format!("{:.0}%", s.cam_shake * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
         }
     }
 
@@ -378,6 +388,7 @@ impl Menu {
                 Item::Slot(Instrument::HoopSound),
                 Item::HoopSize,
                 Item::LandingHoops,
+                Item::CamShake,
             ],
             // The gauges: the cockpit-wide look, then one dial's own
             // numbers, then where each instrument sits (or OFF) — the
@@ -681,6 +692,15 @@ impl Menu {
                     return MenuEvent::Nothing;
                 }
                 s.arms_shard_life = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::CamShake => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.cam_shake + step).clamp(0.0, 2.0);
+                if (next - s.cam_shake).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.cam_shake = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::ArmsSight => {
@@ -1172,6 +1192,7 @@ mod tests {
                         assert_eq!(w[1], w[0] + 1, "hoop settings together: {hoops:?}");
                     }
                     assert_eq!(at(Item::HullSound), at(Item::Shield) + 1);
+                    assert!(on(Item::CamShake));
                 }
                 Page::Gauges => {
                     assert!(on(Item::GaugeStyle) && on(Item::GaugesStay) && on(Item::Guide));

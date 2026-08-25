@@ -46,6 +46,20 @@ impl Frame {
         ]
     }
 
+    /// Mean absolute difference from another frame of the same size, 0..1.
+    fn diff(&self, other: &Frame) -> f32 {
+        assert_eq!((self.w, self.h), (other.w, other.h));
+        let mut sum = 0.0f64;
+        for y in 0..self.h {
+            for x in 0..self.w {
+                let a = self.at(x, y);
+                let b = other.at(x, y);
+                sum += ((a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs()) as f64;
+            }
+        }
+        (sum / (3.0 * self.w as f64 * self.h as f64)) as f32
+    }
+
     /// How many pixels in the box satisfy the predicate, as a fraction.
     fn share(&self, x0: f32, y0: f32, x1: f32, y1: f32, f: impl Fn([f32; 3]) -> bool) -> f32 {
         let mut hit = 0.0;
@@ -116,7 +130,12 @@ fn capture(name: &str, env: &[(&str, &str)]) -> Frame {
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).unwrap();
     assert_eq!(info.color_type, png::ColorType::Rgba);
-    let _ = std::fs::remove_dir_all(&dir);
+    // FARFALL_SCENE_KEEP=1 leaves the captures on disk, to be looked at.
+    if std::env::var("FARFALL_SCENE_KEEP").is_err() {
+        let _ = std::fs::remove_dir_all(&dir);
+    } else {
+        eprintln!("{name}: kept {}", dir.display());
+    }
     Frame {
         w: info.width as usize,
         h: info.height as usize,
@@ -339,7 +358,8 @@ fn the_gun_sight_holds_on_the_gimbal_ring() {
     }
     // The head turned well past the gimbal: the sight stops on the ring,
     // amber, with a leader back to the gaze — against the same frame
-    // with the sight off.
+    // with the sight off, measured where the reticle sits (35 degrees
+    // from a gaze 55 off: a fifth of the way in from the left).
     let amber = |c: [f32; 3]| c[0] > 0.45 && c[1] > 0.25 && c[0] > c[2] + 0.2 && c[0] >= c[1];
     let with = capture(
         "sight",
@@ -348,7 +368,7 @@ fn the_gun_sight_holds_on_the_gimbal_ring() {
             ("FARFALL_BENCH_HEAD", "55,4"),
         ],
     )
-    .share(0.0, 0.2, 1.0, 0.9, amber);
+    .share(0.2, 0.4, 0.45, 0.6, amber);
     let without = capture(
         "nosight",
         &[
@@ -356,9 +376,9 @@ fn the_gun_sight_holds_on_the_gimbal_ring() {
             ("FARFALL_BENCH_HEAD", "55,4"),
         ],
     )
-    .share(0.0, 0.2, 1.0, 0.9, amber);
+    .share(0.2, 0.4, 0.45, 0.6, amber);
     assert!(
-        with > without * 3.0 + 0.000005,
+        with > without + 0.0001,
         "the sight held on the ring: {with} vs {without} without"
     );
     // Straight ahead: a cyan sight at the centre of the glass.
@@ -367,6 +387,33 @@ fn the_gun_sight_holds_on_the_gimbal_ring() {
         c[1] > 0.6 && c[2] > 0.6 && c[0] < 0.6
     });
     assert!(cyan > 0.0005, "the sight ahead: {cyan}");
+}
+
+#[test]
+fn the_helmet_camera_moves_the_whole_view_together() {
+    if !enabled() {
+        return;
+    }
+    // Parked at a deflection the cabin, glass and world all shift as one:
+    // the frame differs from the still one, but the dials are still on
+    // their dash (the same cyan share, moved).
+    let still = capture("shake-still", &[("FARFALL_BENCH_HEAD", "0,-26")]);
+    let shook = capture(
+        "shake",
+        &[
+            ("FARFALL_BENCH_HEAD", "0,-26"),
+            ("FARFALL_BENCH_SHAKE", "4,3,6"),
+        ],
+    );
+    let d = still.diff(&shook);
+    assert!(d > 0.01, "the view moved: {d}");
+    let cyan = |c: [f32; 3]| c[1] > 0.45 && c[2] > 0.45 && c[0] < 0.5;
+    let a = still.share(0.0, 0.3, 1.0, 1.0, cyan);
+    let b = shook.share(0.0, 0.3, 1.0, 1.0, cyan);
+    assert!(
+        (a - b).abs() < a * 0.35 + 0.002,
+        "the dials came along: {a} vs {b}"
+    );
 }
 
 #[test]

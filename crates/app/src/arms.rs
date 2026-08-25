@@ -199,6 +199,9 @@ pub struct Arms {
     pub scars: Vec<Scar>,
     pub scar_size: f32,
     pub scar_cool_s: f32,
+    /// Which side the last shot left from, -1..1 (x of its mount over
+    /// the wing's reach): for the camera's jolt.
+    pub last_side: f32,
     next_shot_s: f64,
     left_next: bool,
     trigger_was: bool,
@@ -227,6 +230,7 @@ impl Default for Arms {
             scars: Vec::new(),
             scar_size: 1.0,
             scar_cool_s: 12.0,
+            last_side: 0.0,
             next_shot_s: 0.0,
             left_next: true,
             trigger_was: false,
@@ -509,6 +513,7 @@ impl Arms {
         let w = self.selected;
         let i = w.index();
         self.ammo[i] -= 1;
+        self.last_side = (mount.x / 2.6).clamp(-1.0, 1.0) as f32;
         self.heat[i] += w.heat_per_shot() * level as f32;
         if self.heat[i] >= JAM_HEAT {
             self.jammed[i] = true;

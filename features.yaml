@@ -378,6 +378,13 @@ features:
     settings: [arms.sight]
     e2e: FARFALL_BENCH_ARMS=sight captures looked at, ahead and with FARFALL_BENCH_HEAD=55,4 — cyan reticle with wing pips and heat arc at the centre; amber reticle held on the gimbal ring with the leader to the gaze
 
+  - id: cam-shake
+    name: The helmet camera — the view is on the pilot's head, not a tripod; a damped spring in yaw, pitch and roll pushed by the felt load (sway, lag, overshoot, settle), a tremor that grows with thrust and g, a jolt from every shot (the rail's much the bigger, capped), all applied in the head's frame so cabin, glass, holograms and world move as one; CAMERA SHAKE on the CABIN page, 0 off .. 200%
+    state: complete
+    tests: [crates/app/src/shake.rs, crates/app/tests/scenes.rs::the_helmet_camera_moves_the_whole_view_together, crates/app/src/menu.rs::the_pages_are_categories_that_make_sense]
+    settings: [cam.shake]
+    e2e: FARFALL_BENCH_SHAKE=4,3,6 capture looked at with FARFALL_BENCH_HEAD=0,-26 — the whole cockpit rolled and nodded together, dials on their dash; the live sway and the guns' jolt not yet flown
+
   - id: arms-targeting
     name: Targeting — lock, lead marker on the glass from target velocity and slug speed, threat arrows at the glass edge, turret mode where freelook gimbals the guns
     state: planned

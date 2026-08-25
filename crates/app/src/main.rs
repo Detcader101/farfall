@@ -18,6 +18,7 @@ mod look;
 mod map;
 mod menu;
 mod settings;
+mod shake;
 mod warp;
 
 use cockpit::Instrument;
@@ -275,6 +276,8 @@ const MACH1_MPS: f64 = 340.0;
 ///                           flash and every kind of burst ahead)
 ///   FARFALL_BENCH_STRIKES=n (benchmark only: n strikes on the shield at
 ///                           staggered ages, for its ripples)
+///   FARFALL_BENCH_SHAKE=y,p,r (benchmark only: the helmet camera parked at
+///                           this yaw, pitch, roll in degrees)
 ///   FARFALL_BENCH_G=x,y,z  (benchmark only: a felt load in g — right, up,
 ///                           forward — for the G instruments)
 ///   FARFALL_BENCH_THRUST=m,p,y,r (benchmark only: force main thrust 0..1 and
@@ -530,7 +533,7 @@ impl Gpu {
         // also shrinks with a wider live field of view, as a fixed object
         // would.
         let t = (cam.fov_y * 0.5).tan();
-        let head = look.rotation();
+        let head = game.head();
         let fov_scale = ref_tan / t.max(1e-4);
         let placed = |i: Instrument| -> Option<farfall_render::cabin::Placement> {
             let tw = tweak(i);
@@ -896,6 +899,9 @@ struct Game {
     alt_fade: AltitudeFade,
     /// Hologram inertia: instruments lag rotation for parallax.
     holo_sway: HoloSway,
+    /// The camera on the pilot's head, and the bench's parked pose.
+    shake: shake::Shake,
+    bench_shake: Option<[f32; 3]>,
     /// The sound-barrier flash, fired by the same edge as the sonic boom.
     mach_alert: MachAlert,
     /// Last wall-clock frame time, clamped, for presentation-side integrators.
@@ -1016,6 +1022,8 @@ impl Game {
             gauge_fade: GaugeFade::new(),
             alt_fade: AltitudeFade::new(),
             holo_sway: HoloSway::new(),
+            shake: shake::Shake::new(1.0),
+            bench_shake: None,
             mach_alert: MachAlert::new(),
             frame_dt: 0.0,
             trajectory_vis: 1.0,
@@ -1272,7 +1280,7 @@ impl Game {
                 ]
             }),
         };
-        let cu = CabinUniforms::new(cam, self.look.rotation(), sun_ship, look, &sockets);
+        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets);
         let bu = cu.blit(look);
         (cu, bu)
     }
@@ -1362,7 +1370,7 @@ impl Game {
         let a = self.settings.layout.anchor(Instrument::Gyro)?;
         let dir = anchor_direction(a, self.ref_tan(), cam.aspect);
         let t = (cam.fov_y * 0.5).tan();
-        let place = farfall_render::cabin::Placement::ball(self.look.rotation(), t, dir, tw.size)?;
+        let place = farfall_render::cabin::Placement::ball(self.head(), t, dir, tw.size)?;
         let ship_inv = self.state.ship.orient.as_quat().inverse();
         let up_w = self.up_world().as_vec3();
         let east_w = {
@@ -1621,7 +1629,7 @@ impl Game {
     fn shield_uniforms(&self, cam: &CameraFrame) -> ShieldUniforms {
         ShieldUniforms::new(
             cam,
-            self.look.rotation(),
+            self.head(),
             self.started.elapsed().as_secs_f32(),
             self.settings.shield,
             &self.impacts,
@@ -1707,7 +1715,7 @@ impl Game {
             })
             .collect();
         let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
-        BeltUniforms::new(cam, self.look.rotation(), now, sun_ship, 1.0, &rocks)
+        BeltUniforms::new(cam, self.head(), now, sun_ship, 1.0, &rocks)
     }
 
     /// Where the guns point, world frame: the gaze while looking, within
@@ -1734,6 +1742,13 @@ impl Game {
         }
     }
 
+    /// The camera's head: the pilot's look with the helmet camera's
+    /// shake on it. Every cockpit-frame pass takes this, so the cabin,
+    /// the glass and the world all move together.
+    fn head(&self) -> glam::Quat {
+        self.look.rotation() * self.shake.rotation()
+    }
+
     /// The gun sight this frame: off with a panel up or in design.
     fn sight_uniforms(&self, cam: &CameraFrame) -> SightUniforms {
         if self.panel_open() || self.settings.arms_sight <= 0.0 {
@@ -1751,7 +1766,7 @@ impl Game {
         }
         SightUniforms::new(
             cam,
-            self.look.rotation(),
+            self.head(),
             &SightScene {
                 aim: aim.as_vec3(),
                 gaze: (self.look.rotation() * glam::Vec3::NEG_Z),
@@ -1782,7 +1797,7 @@ impl Game {
     /// The arms' light this frame: slugs and bursts relative to the head,
     /// the rocks along for occlusion.
     fn tracer_uniforms(&self, cam: &CameraFrame) -> TracerUniforms {
-        let head = self.look.rotation();
+        let head = self.head();
         if self.arms.slugs.is_empty() && self.arms.bursts.is_empty() {
             return TracerUniforms::none(cam, head);
         }
@@ -1848,7 +1863,7 @@ impl Game {
 
     /// The scars this frame, each on its rock, in the ship's frame.
     fn scar_uniforms(&self, cam: &CameraFrame) -> ScarUniforms {
-        let head = self.look.rotation();
+        let head = self.head();
         if self.arms.scars.is_empty() {
             return ScarUniforms::none(cam, head);
         }
@@ -1895,7 +1910,7 @@ impl Game {
     /// The shards this frame, in the ship's frame, with the rocks that
     /// can hide them.
     fn debris_uniforms(&self, cam: &CameraFrame) -> DebrisUniforms {
-        let head = self.look.rotation();
+        let head = self.head();
         if self.arms.shards.is_empty() {
             return DebrisUniforms::none(cam, head);
         }
@@ -1944,7 +1959,7 @@ impl Game {
 
     /// The after-image this frame, if one is still showing.
     fn ghost_uniforms(&self, cam: &CameraFrame) -> GhostUniforms {
-        let head = self.look.rotation();
+        let head = self.head();
         let Some(g) = self.ghost else {
             return GhostUniforms::none(cam, head);
         };
@@ -2112,6 +2127,15 @@ impl Game {
             return;
         }
 
+        // The camera on the head: pushed by the load, trembling under
+        // thrust, settling — or parked, for a bench.
+        self.shake.strength = self.settings.cam_shake;
+        self.shake
+            .step(self.frame_dt, self.felt_g_body, self.effort);
+        if let Some([y, p, r]) = self.bench_shake {
+            self.shake.park(y, p, r);
+        }
+
         if self.frozen {
             return;
         }
@@ -2207,6 +2231,7 @@ impl Game {
                 &mut self.belt,
             );
             if kick != DVec3::ZERO {
+                self.shake.kick(kick.length() as f32, self.arms.last_side);
                 self.state.ship.vel_mps += kick;
             }
             let hits: Vec<belt::Hit> = self.belt.hits.clone();
@@ -2626,7 +2651,7 @@ impl Game {
         // right-handed frame with the nose at -Z, so no fix-up rotation is
         // needed — times the pilot's head. The head is a view, not a
         // control: nothing downstream of the sim sees it.
-        let orient = self.state.ship.orient.as_quat() * self.look.rotation();
+        let orient = self.state.ship.orient.as_quat() * self.head();
         CameraFrame {
             orient,
             fov_y: ((self.settings.fov + FOV_THRUST_GAIN * self.effort)
@@ -3082,6 +3107,20 @@ impl App {
             game.felt_g_body = g;
             game.felt_g = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
         }
+        if let Some(pose) = std::env::var("FARFALL_BENCH_SHAKE")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| {
+                let p: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                (p.len() == 3).then(|| [p[0], p[1], p[2]])
+            })
+        {
+            game.bench_shake = Some([
+                pose[0].to_radians(),
+                pose[1].to_radians(),
+                pose[2].to_radians(),
+            ]);
+        }
         if let Some(pages) = std::env::var("FARFALL_BENCH_MENU")
             .ok()
             .filter(|_| game.frozen)
@@ -3492,7 +3531,7 @@ impl ApplicationHandler for App {
                                     &PlasmaUniforms::new(
                                         &cam,
                                         thermal_in.vel_ship_mps,
-                                        game.look.rotation(),
+                                        game.head(),
                                     ),
                                 );
                                 gpu.passes
@@ -3649,7 +3688,7 @@ impl ApplicationHandler for App {
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,
-                    &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps, game.look.rotation()),
+                    &PlasmaUniforms::new(&cam, thermal_in.vel_ship_mps, game.head()),
                 );
                 gpu.passes.trajectory.update(
                     &gpu.queue,
