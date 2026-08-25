@@ -267,4 +267,26 @@ impl InstrumentPass {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..6, 0..1);
     }
+
+    /// Draw only within `rect` ([x, y, w, h] in target pixels) — an
+    /// instrument covers a corner of the screen and a full-screen quad
+    /// that discards still pays to rasterise every pixel. None draws
+    /// nothing (the instrument is hidden). `full` is the target's size,
+    /// to put the scissor back for whatever draws next.
+    pub fn draw_within(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        rect: Option<[u32; 4]>,
+        full: (u32, u32),
+    ) {
+        let Some([x, y, w, h]) = rect else {
+            return;
+        };
+        if w == 0 || h == 0 {
+            return;
+        }
+        pass.set_scissor_rect(x, y, w, h);
+        self.draw(pass);
+        pass.set_scissor_rect(0, 0, full.0, full.1);
+    }
 }

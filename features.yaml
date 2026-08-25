@@ -23,8 +23,9 @@ rules:
 # persisted as control.<key>; the menu lists every one (id complete-key-menu).
 controls:
   axes: {thrust-forward: W, thrust-back: S, strafe-left: A, strafe-right: D, thrust-up: R, thrust-down: F, pitch-up: Up, pitch-down: Down, yaw-left: Left, yaw-right: Right, roll-left: Q, roll-right: E}
-  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P, bay: B, next-weapon: U, weapon-1: 1, weapon-2: 2}
-  fixed: {menu: Esc, page: Tab, capture-alt: F12, pane-zoom: "+ / -", fire: "left mouse"}
+  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P, bay: B, next-weapon: U, weapon-1: 1, weapon-2: 2, scale-down: "[", scale-up: "]"}
+  fixed: {menu: Esc, page: Tab, capture-alt: F12, pane-zoom: "+ / -", fire: "left mouse", freelook: "right mouse"}
+  rule: every key the game answers to is a Named bind on the KEYS page; only the menu keys, the pane zoom and the mouse buttons are fixed
   mouse: freelook while the right button is held; left drag turns the map or moves a panel; wheel zooms the map
 
 # Every key ~/.farfall/settings.cfg may hold, by group (crates/app/src/settings.rs).
@@ -49,7 +50,7 @@ bench:
   knobs:
     FARFALL_BENCH_SECONDS: how long a run lasts (20)
     FARFALL_BENCH_FULL: borderless fullscreen at the real resolution
-    FARFALL_BENCH_POS / _VEL / _LOOK: park the ship at x,y,z with a velocity, looking along a direction
+    FARFALL_BENCH_POS / FARFALL_BENCH_VEL / FARFALL_BENCH_LOOK: park the ship at x,y,z with a velocity, looking along a direction
     FARFALL_BENCH_ROLL: rolled about the look axis, radians
     FARFALL_BENCH_ALT: frozen altitude in metres over the planet
     FARFALL_BENCH_HEAD: head yaw,pitch in degrees
@@ -493,3 +494,17 @@ features:
     settings: [ui.pointer-size]
     tests: [crates/render/src/pointer.rs, "crates/app/src/menu.rs::the_ship_panel_fits_the_hardpoints_and_never_pages", "crates/app/src/settings.rs::edits_round_trip", crates/render/tests/shader_validation.rs, "crates/app/tests/scenes.rs::the_ship_bay_fills_the_screen_with_the_hologram_its_callouts_and_a_pointer"]
     e2e: "FARFALL_BENCH_SHIP=1 capture — the arrow over the hologram at 62%,36% (scene test); clicked through the GFX page by hand"
+
+  - id: render-pipeline
+    name: "The frame's plumbing: bake.wgsl bakes the noise/star maps once at start; the scene renders at graphics.scale into a target, blit.wgsl upscales it with the post look (exposure, warp effects) and the HUD draws native on top; cabin_blit.wgsl composites the cached cabin march (id cabin-cached) over the sky. FARFALL_SKIP=a,b leaves passes out for profiling; FARFALL_SCALE overrides the scale; [ and ] step it in flight (RENDER SCALE +/- binds)"
+    state: complete
+    settings: [graphics.scale, graphics.msaa, graphics.vsync, control.scale-down, control.scale-up]
+    tests: ["crates/render/tests/shader_validation.rs", "crates/app/src/settings.rs::edits_round_trip", "crates/app/src/input.rs::no_two_default_binds_share_a_key"]
+    e2e: "every capture goes through it; perf lines name the scale"
+
+  - id: perf-staging
+    name: "The staging perf pass (everything merged): per-pass budget at the reference scene, 2880x1800 uncapped, medians of interleaved runs — base 11.5 ms; starfield ~3.5, bodies (Uranus + ring) ~3, gauges+horizon+sight ~3, planet ~1.3, cabin (cached) ~0.2; chase 8.9; holo3PP 13.0; the SHIP bay 24.4 -> 18.1 (a box bound on the march instead of a sphere, mounts gated behind the hull's distance, 4-tap normals, 56 steps); dials draw only in their own scissor patch (draw_within) and hidden dials are not drawn at all; belt specks search only the neighbour cells a rock could reach from. Next: the starfield's per-pixel cost, the ring's shading, the bay at half resolution"
+    state: in-progress
+    tests: ["crates/app/src/main.rs::a_dial_draws_only_in_its_own_patch", "crates/render/tests/shader_validation.rs"]
+    e2e: "bench.sh runs above; dials capture unchanged with the scissors"
+

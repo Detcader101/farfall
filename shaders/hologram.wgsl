@@ -40,9 +40,12 @@ struct Hologram {
 
 const DIM_ALPHA: f32 = 0.74;
 const PANE_ALPHA: f32 = 0.93;
-const STEPS: u32 = 72u;
-// Half-extent bounding the hull and anything mounted, ship m.
-const BOUND_MODEL: f32 = 10.5;
+const STEPS: u32 = 56u;
+// The box bounding the hull and anything mounted, ship m (wings to
+// ±6.2, the fin up to 1.6, the belly rail down to -2.4, nose -7.2 to
+// the nozzles +7.8).
+const BOUND_LO: vec3<f32> = vec3<f32>(-6.2, -2.4, -7.2);
+const BOUND_HI: vec3<f32> = vec3<f32>(6.2, 1.6, 7.8);
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -95,9 +98,15 @@ fn sd_mount(q: vec3<f32>, m: vec3<f32>, kind: f32) -> f32 {
     return 1e9;
 }
 
-// The hull and its mounts, model frame.
+// The hull and its mounts, model frame. The mounts hang within a few
+// metres of the hull, so a point further out than that needs only the
+// hull's distance (a safe lower bound for the march) — which is most of
+// the screen, most of the march.
 fn sd_holo(q: vec3<f32>) -> f32 {
     var d = sd_fighter_exterior(q);
+    if (d > 3.5) {
+        return d;
+    }
     for (var i = 0u; i < 4u; i += 1u) {
         let hp = holo.pts[i];
         d = min(d, sd_mount(q, hp.xyz, hp.w));
@@ -105,13 +114,15 @@ fn sd_holo(q: vec3<f32>) -> f32 {
     return d;
 }
 
+// Four taps (a tetrahedron), not six.
 fn holo_normal(q: vec3<f32>) -> vec3<f32> {
     let e = 0.02;
-    return normalize(vec3<f32>(
-        sd_holo(q + vec3<f32>(e, 0.0, 0.0)) - sd_holo(q - vec3<f32>(e, 0.0, 0.0)),
-        sd_holo(q + vec3<f32>(0.0, e, 0.0)) - sd_holo(q - vec3<f32>(0.0, e, 0.0)),
-        sd_holo(q + vec3<f32>(0.0, 0.0, e)) - sd_holo(q - vec3<f32>(0.0, 0.0, e)),
-    ));
+    let k0 = vec3<f32>(1.0, -1.0, -1.0);
+    let k1 = vec3<f32>(-1.0, -1.0, 1.0);
+    let k2 = vec3<f32>(-1.0, 1.0, -1.0);
+    let k3 = vec3<f32>(1.0, 1.0, 1.0);
+    return normalize(k0 * sd_holo(q + k0 * e) + k1 * sd_holo(q + k1 * e)
+        + k2 * sd_holo(q + k2 * e) + k3 * sd_holo(q + k3 * e));
 }
 
 @fragment
@@ -159,18 +170,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var colour = vec3<f32>(0.0);
     var t_hit = 1e9;
 
-    // A sphere about the model bounds the march.
-    let b = dot(ray, -eye);
-    let disc = b * b - (dot(eye, eye) - BOUND_MODEL * BOUND_MODEL);
-    if (disc > 0.0) {
-        var t = max(b - sqrt(disc), 0.0);
-        let t_out = b + sqrt(disc);
+    // A box about the model bounds the march — the fighter is long and
+    // flat, so a box is a far tighter bound than a sphere: most of the
+    // screen never steps at all.
+    let inv = 1.0 / ray;
+    let t0 = (BOUND_LO - eye) * inv;
+    let t1 = (BOUND_HI - eye) * inv;
+    let tmin = min(t0, t1);
+    let tmax = max(t0, t1);
+    let t_in = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));
+    let t_box = min(min(tmax.x, tmax.y), tmax.z);
+    if (t_box > t_in) {
+        var t = t_in;
+        let t_out = t_box;
         var hit = false;
         var q = vec3<f32>(0.0);
         for (var i = 0u; i < STEPS; i += 1u) {
             q = eye + ray * t;
             let d = sd_holo(q);
-            if (d < 0.01) {
+            if (d < 0.004 * max(t, 2.0)) {
                 hit = true;
                 break;
             }

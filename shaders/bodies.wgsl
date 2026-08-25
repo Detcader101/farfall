@@ -78,8 +78,14 @@ fn belt_specks(along: f32, r_off: f32, px_m: f32, e_along: vec3<f32>, e_rad: vec
     let fr = r_off / BELT_CELL_M - cr;
     let da = select(1, -1, fa < 0.5);
     let dr = select(1, -1, fr < 0.5);
-    for (var ia = 0; ia < 2; ia += 1) {
-        for (var ir = 0; ir < 2; ir += 1) {
+    // A rock is 300 m at most, so a neighbour cell can only reach this
+    // point from within that of its edge: most points need no neighbour
+    // along, across, or both — the same picture for a third of the hashes.
+    let reach = 300.0 / BELT_CELL_M;
+    let na = select(1, 2, min(fa, 1.0 - fa) < reach);
+    let nr = select(1, 2, min(fr, 1.0 - fr) < reach);
+    for (var ia = 0; ia < na; ia += 1) {
+        for (var ir = 0; ir < nr; ir += 1) {
             for (var iz = -1; iz <= 0; iz += 1) {
                 let x = i32(ca) + select(0, da, ia == 1);
                 let y = i32(cr) + select(0, dr, ir == 1);

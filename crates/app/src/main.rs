@@ -129,6 +129,35 @@ fn apply_menu_event(
     }
 }
 
+/// The target-pixel rectangle a dial can reach: its drawing radius
+/// (0.155 canopy units at size 1, on the reference glass) with room for
+/// the hologram's sway, its socket, needles and text; None when hidden.
+/// Canopy x runs over the aspect, so the patch is a rect, not a square.
+fn dial_scissor(
+    anchor: [f32; 2],
+    on: f32,
+    size: f32,
+    aspect: f32,
+    target: (u32, u32),
+) -> Option<[u32; 4]> {
+    if on <= 0.001 {
+        return None;
+    }
+    let r = 0.155 * size * 1.6 + 0.12;
+    let (w, h) = (target.0 as f32, target.1 as f32);
+    let px = |ndc: f32, span: f32| ((ndc * 0.5 + 0.5) * span).clamp(0.0, span);
+    let x0 = px(anchor[0] - r / aspect, w);
+    let x1 = px(anchor[0] + r / aspect, w);
+    let y0 = px(-(anchor[1] + r), h);
+    let y1 = px(-(anchor[1] - r), h);
+    let (x0, y0) = (x0.floor() as u32, y0.floor() as u32);
+    let (x1, y1) = (x1.ceil() as u32, y1.ceil() as u32);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some([x0, y0, x1 - x0, y1 - y0])
+}
+
 /// The bay camera's field of view: tan of half of it.
 const BAY_TAN_HALF_FOV: f32 = 0.42;
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
@@ -583,6 +612,9 @@ struct Gpu {
     map: InstrumentPass,
     /// The SHIP bay's hologram pane.
     hologram: HologramPass,
+    /// Where each dial pass may draw this frame (target pixels): speed,
+    /// altitude, g-meter, g-vector, gyro. None: hidden, not drawn.
+    dial_rects: std::cell::Cell<[Option<[u32; 4]>; 5]>,
     /// The panels' mouse pointer.
     pointer: PointerPass,
     text: TextBitmap,
@@ -691,6 +723,19 @@ impl Gpu {
             .placed(placed(Instrument::GVector)),
         );
         let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, ref_tan, Instrument::Gyro);
+        // Each dial's patch of the target: a full-screen pass that discards
+        // is not free, so the dials draw only where they are.
+        let size = self.scene.size();
+        let rect = |a: [f32; 2], on: f32, i: Instrument| {
+            dial_scissor(a, on, tweak(i).size * fov_scale, aspect, size)
+        };
+        self.dial_rects.set([
+            rect(speed_anchor, speed_on, Instrument::Speed),
+            rect(alt_anchor, alt_on, Instrument::Altitude),
+            rect(g_anchor, g_on, Instrument::GForce),
+            rect(gv_anchor, gv_on, Instrument::GVector),
+            rect(gyro_anchor, gyro_on, Instrument::Gyro),
+        ]);
         self.passes.gyro.update(
             &self.queue,
             &GyroUniforms::new(
@@ -3391,6 +3436,7 @@ impl App {
             map,
             hologram,
             pointer,
+            dial_rects: std::cell::Cell::new([None; 5]),
             text: TextBitmap::new(),
             cfg,
             perf: Perf::new(),
@@ -3771,8 +3817,11 @@ impl ApplicationHandler for App {
                     {
                         gpu.capture_requested = true;
                     }
-                    KeyCode::BracketLeft | KeyCode::BracketRight if pressed && !event.repeat => {
-                        let step = if code == KeyCode::BracketRight {
+                    c if pressed
+                        && !event.repeat
+                        && (c == game.bind(Named::ScaleDown) || c == game.bind(Named::ScaleUp)) =>
+                    {
+                        let step = if c == game.bind(Named::ScaleUp) {
                             0.1
                         } else {
                             -0.1
@@ -4192,11 +4241,31 @@ impl ApplicationHandler for App {
                                     if !game.chase_active() {
                                         gpu.passes.cabin.draw(&mut pass);
                                         gpu.passes.horizon.draw(&mut pass);
-                                        gpu.passes.gauge.draw(&mut pass);
-                                        gpu.passes.alt_gauge.draw(&mut pass);
-                                        gpu.passes.g_gauge.draw(&mut pass);
-                                        gpu.passes.gvec.draw(&mut pass);
-                                        gpu.passes.gyro.draw(&mut pass);
+                                        gpu.passes.gauge.draw_within(
+                                            &mut pass,
+                                            gpu.dial_rects.get()[0],
+                                            gpu.scene.size(),
+                                        );
+                                        gpu.passes.alt_gauge.draw_within(
+                                            &mut pass,
+                                            gpu.dial_rects.get()[1],
+                                            gpu.scene.size(),
+                                        );
+                                        gpu.passes.g_gauge.draw_within(
+                                            &mut pass,
+                                            gpu.dial_rects.get()[2],
+                                            gpu.scene.size(),
+                                        );
+                                        gpu.passes.gvec.draw_within(
+                                            &mut pass,
+                                            gpu.dial_rects.get()[3],
+                                            gpu.scene.size(),
+                                        );
+                                        gpu.passes.gyro.draw_within(
+                                            &mut pass,
+                                            gpu.dial_rects.get()[4],
+                                            gpu.scene.size(),
+                                        );
                                         gpu.passes.guide.draw(&mut pass);
                                         gpu.passes.guide.draw(&mut pass);
                                         gpu.passes.sight.draw(&mut pass);
@@ -4442,11 +4511,31 @@ impl ApplicationHandler for App {
                     }
                     if gpu.cfg.draws("gauge") && !game.chase_active() {
                         gpu.passes.horizon.draw(&mut pass);
-                        gpu.passes.gauge.draw(&mut pass);
-                        gpu.passes.alt_gauge.draw(&mut pass);
-                        gpu.passes.g_gauge.draw(&mut pass);
-                        gpu.passes.gvec.draw(&mut pass);
-                        gpu.passes.gyro.draw(&mut pass);
+                        gpu.passes.gauge.draw_within(
+                            &mut pass,
+                            gpu.dial_rects.get()[0],
+                            gpu.scene.size(),
+                        );
+                        gpu.passes.alt_gauge.draw_within(
+                            &mut pass,
+                            gpu.dial_rects.get()[1],
+                            gpu.scene.size(),
+                        );
+                        gpu.passes.g_gauge.draw_within(
+                            &mut pass,
+                            gpu.dial_rects.get()[2],
+                            gpu.scene.size(),
+                        );
+                        gpu.passes.gvec.draw_within(
+                            &mut pass,
+                            gpu.dial_rects.get()[3],
+                            gpu.scene.size(),
+                        );
+                        gpu.passes.gyro.draw_within(
+                            &mut pass,
+                            gpu.dial_rects.get()[4],
+                            gpu.scene.size(),
+                        );
                         gpu.passes.guide.draw(&mut pass);
                         gpu.passes.sight.draw(&mut pass);
                     }
@@ -4638,6 +4727,27 @@ mod tests {
     /// The chase rig: the eye sits behind and above the ship in its own
     /// frame, the view pitches down to centre it, and every world builder
     /// measures from that eye — not from the pilot's seat.
+    /// A dial's scissor: a patch around its screen anchor, wider than
+    /// tall by the aspect, clamped to the target; hidden dials get none.
+    #[test]
+    fn a_dial_draws_only_in_its_own_patch() {
+        let r = dial_scissor([0.0, 0.0], 1.0, 1.0, 2.0, (2000, 1000)).unwrap();
+        // Centred: symmetric about the middle.
+        assert_eq!(r[0] + r[2] / 2, 1000);
+        assert_eq!(r[1] + r[3] / 2, 500);
+        // Canopy x runs over the aspect: the patch is as wide in pixels as
+        // it is tall.
+        assert!((r[2] as i32 - r[3] as i32).abs() <= 2, "{r:?}");
+        assert!(r[3] < 1000 && r[3] > 200);
+        // A corner dial is clamped to the screen, never negative.
+        let c = dial_scissor([-0.98, -0.98], 1.0, 1.0, 2.0, (2000, 1000)).unwrap();
+        assert_eq!(c[0], 0);
+        assert!(c[1] + c[3] <= 1000);
+        assert!(dial_scissor([0.0, 0.0], 0.0, 1.0, 2.0, (2000, 1000)).is_none());
+        // Off-screen entirely: nothing.
+        assert!(dial_scissor([3.0, 3.0], 1.0, 1.0, 2.0, (2000, 1000)).is_none());
+    }
+
     #[test]
     fn the_chase_eye_sits_behind_the_ship_and_the_world_measures_from_it() {
         let mut game = Game::new();
