@@ -1,220 +1,194 @@
-//! The holo3PP panel: the chase view, rendered to a small texture every
-//! frame, projected on the canopy as a hologram — third person without
-//! ever leaving first person. See `shaders/holo.wgsl`.
+//! The holo3PP: a volumetric hologram in the cabin — the ship in
+//! miniature at its true attitude, with the velocity vector, the nearest
+//! body and the Sun around it at their true bearings. Third person without
+//! ever leaving first person, and not a screen: a 3D object over an
+//! emitter in the dash, with real parallax. See `shaders/holo.wgsl`.
 
-/// The offscreen picture's size. Small on purpose: the panel covers a
-/// fraction of the screen, and the world passes render it live every
-/// frame beside the real view.
-pub const HOLO_W: u32 = 512;
-pub const HOLO_H: u32 = 288;
+use glam::{Quat, Vec3};
+
+use crate::cabin::{anchor_direction, socket_centre};
+use crate::instrument::InstrumentPass;
+use crate::CameraFrame;
+
+/// How far the hologram's underside floats above its emitter (m).
+pub const HOLO_LIFT_M: f32 = 0.03;
+/// The hologram's radius at size 1.0 (m).
+pub const HOLO_RADIUS_M: f32 = 0.7;
+
+/// What the hologram shows this frame, all in the ship's frame.
+#[derive(Debug, Clone, Copy)]
+pub struct HoloScene {
+    /// Velocity direction (relative to the nearest body).
+    pub vel_dir: Vec3,
+    /// Speed, m/s, relative to the nearest body.
+    pub speed_mps: f32,
+    /// The nearest body's bearing and the sine of its angular radius.
+    pub body_dir: Vec3,
+    pub body_sin: f32,
+    /// The Sun's bearing.
+    pub sun_dir: Vec3,
+    /// Engines 0..1 and the chaos drive's field 0..1.
+    pub effort: f32,
+    pub hyper: f32,
+}
+
+/// The rod's length for a speed: a log scale, so a walking pace and an
+/// interplanetary one both read — 1 m/s a stub, 1 km/s half, 1000 km/s
+/// full.
+pub fn arrow_length(speed_mps: f32) -> f32 {
+    ((1.0 + speed_mps.max(0.0)).log10() / 6.0).clamp(0.0, 1.0)
+}
+
+/// Where the hologram's centre sits for a glass anchor: over the socket
+/// that anchor's direction meets in the dash, lifted its radius clear.
+pub fn holo_centre(anchor: [f32; 2], tan_half_fov: f32, aspect: f32, radius_m: f32) -> Vec3 {
+    let socket = socket_centre(anchor_direction(anchor, tan_half_fov, aspect));
+    socket + Vec3::new(0.0, radius_m + HOLO_LIFT_M, 0.0)
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HoloUniforms {
-    a: [f32; 4],
-    b: [f32; 4],
-    sway: [f32; 4],
+    right: [f32; 4],
+    up: [f32; 4],
+    fwd: [f32; 4],
+    centre: [f32; 4],
+    vel: [f32; 4],
+    body: [f32; 4],
+    sun: [f32; 4],
+    misc: [f32; 4],
 }
 
 impl HoloUniforms {
-    /// `centre`: the panel's middle on the canopy (NDC); `half_h`: half
-    /// its height in canopy units; `shown`: draw at all.
+    /// `head`: the view's rotation in the ship's frame; `centre`: the
+    /// hologram's centre in that frame (m), `radius_m` its radius;
+    /// `shown`: draw at all.
     pub fn new(
-        centre: [f32; 2],
-        half_h: f32,
-        aspect: f32,
-        height_px: f32,
-        time_s: f32,
-        sway: [f32; 2],
+        cam: &CameraFrame,
+        head: Quat,
+        centre: Vec3,
+        radius_m: f32,
+        scene: &HoloScene,
         shown: bool,
     ) -> Self {
+        let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
         Self {
-            a: [centre[0], centre[1], half_h.max(0.0), aspect],
-            b: [
-                HOLO_W as f32 / HOLO_H as f32,
-                height_px,
+            right: v4(head * Vec3::X, cam.aspect),
+            up: v4(head * Vec3::Y, (cam.fov_y * 0.5).tan()),
+            fwd: v4(head * Vec3::NEG_Z, cam.time_s.rem_euclid(1000.0)),
+            centre: v4(centre, radius_m.max(0.01)),
+            vel: v4(
+                scene.vel_dir.normalize_or_zero(),
+                arrow_length(scene.speed_mps),
+            ),
+            body: v4(
+                scene.body_dir.normalize_or_zero(),
+                scene.body_sin.clamp(0.0, 1.0),
+            ),
+            sun: v4(
+                scene.sun_dir.normalize_or_zero(),
                 if shown { 1.0 } else { 0.0 },
-                time_s.rem_euclid(1000.0),
+            ),
+            misc: [
+                scene.effort.clamp(0.0, 1.0),
+                scene.hyper.clamp(0.0, 1.0),
+                HOLO_LIFT_M,
+                0.0,
             ],
-            sway: [sway[0], sway[1], 0.0, 0.0],
         }
     }
 }
 
-/// The panel pass and the texture the rig renders into.
-pub struct HoloPass {
-    pipeline: wgpu::RenderPipeline,
-    uniforms: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    view: wgpu::TextureView,
-}
+pub type HoloPass = InstrumentPass;
 
-impl HoloPass {
-    pub fn new(
-        device: &wgpu::Device,
-        target_format: wgpu::TextureFormat,
-        sample_count: u32,
-        picture_format: wgpu::TextureFormat,
-    ) -> Self {
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("holo picture"),
-            size: wgpu::Extent3d {
-                width: HOLO_W,
-                height: HOLO_H,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: picture_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("holo"),
-            source: wgpu::ShaderSource::Wgsl(crate::shaders::compose(crate::shaders::HOLO).into()),
-        });
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("holo uniforms"),
-            size: std::mem::size_of::<HoloUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("holo sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("holo bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("holo bg"),
-            layout: &bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("holo layout"),
-            bind_group_layouts: &[Some(&bgl)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("holo"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: sample_count,
-                ..Default::default()
-            },
-            multiview_mask: None,
-            cache: None,
-        });
-        Self {
-            pipeline,
-            uniforms,
-            bind_group,
-            view,
-        }
-    }
-
-    /// The attachment the rig renders the chase view into.
-    pub fn picture_attachment(&self) -> wgpu::RenderPassColorAttachment<'_> {
-        wgpu::RenderPassColorAttachment {
-            view: &self.view,
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-            },
-        }
-    }
-
-    pub fn update(&self, queue: &wgpu::Queue, u: &HoloUniforms) {
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(u));
-    }
-
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.draw(0..3, 0..1);
-    }
+pub fn holo_pass(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> HoloPass {
+    // Light, not glass: the hologram adds over the cabin.
+    HoloPass::new_sized(
+        device,
+        target_format,
+        sample_count,
+        "holo",
+        crate::shaders::HOLO,
+        std::mem::size_of::<HoloUniforms>() as u64,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cabin::DASH_N;
+
+    fn scene() -> HoloScene {
+        HoloScene {
+            vel_dir: Vec3::new(0.0, 0.0, -2.0),
+            speed_mps: 1000.0,
+            body_dir: Vec3::new(0.0, -3.0, 0.0),
+            body_sin: 0.8,
+            sun_dir: Vec3::X,
+            effort: 0.5,
+            hyper: 0.25,
+        }
+    }
 
     /// The uniform block is a wire format for holo.wgsl: pin the lanes.
     #[test]
     fn holo_lanes_hold_their_places() {
-        let u = HoloUniforms::new([0.5, -0.25], 0.3, 1.6, 1200.0, 7.0, [0.01, -0.02], true);
-        assert_eq!(std::mem::size_of::<HoloUniforms>(), 3 * 16);
-        assert_eq!(u.a, [0.5, -0.25, 0.3, 1.6]);
-        assert_eq!(u.b[0], HOLO_W as f32 / HOLO_H as f32, "picture aspect");
-        assert_eq!(u.b[2], 1.0, "shown");
-        assert_eq!(u.sway[0], 0.01);
-        let off = HoloUniforms::new([0.0, 0.0], 0.3, 1.6, 1200.0, 7.0, [0.0, 0.0], false);
-        assert_eq!(off.b[2], 0.0, "hidden discards");
+        let cam = CameraFrame {
+            orient: Quat::IDENTITY,
+            fov_y: 1.0,
+            aspect: 2.0,
+            time_s: 3.0,
+            exposure: 1.5,
+        };
+        let u = HoloUniforms::new(
+            &cam,
+            Quat::IDENTITY,
+            Vec3::new(0.5, -0.3, -1.2),
+            0.15,
+            &scene(),
+            true,
+        );
+        assert_eq!(std::mem::size_of::<HoloUniforms>(), 8 * 16);
+        assert_eq!(u.right[3], 2.0, "aspect rides right.w");
+        assert_eq!(u.centre, [0.5, -0.3, -1.2, 0.15]);
+        assert_eq!(&u.vel[..3], &[0.0, 0.0, -1.0], "directions are unit");
+        assert!(
+            (u.vel[3] - 0.5).abs() < 0.01,
+            "1 km/s is half a rod: {}",
+            u.vel[3]
+        );
+        assert_eq!(u.body[3], 0.8);
+        assert_eq!(u.sun[3], 1.0, "shown");
+        assert_eq!(u.misc[0], 0.5, "effort");
+        assert_eq!(u.misc[1], 0.25, "hyper");
+        let off = HoloUniforms::new(&cam, Quat::IDENTITY, Vec3::ZERO, 0.15, &scene(), false);
+        assert_eq!(off.sun[3], 0.0, "hidden discards");
+    }
+
+    /// The rod: a log of the speed, clamped — a stub at walking pace,
+    /// full at a thousand kilometres a second.
+    #[test]
+    fn the_velocity_rod_grows_with_the_log_of_the_speed() {
+        assert_eq!(arrow_length(0.0), 0.0);
+        assert!(arrow_length(1.0) < 0.1);
+        assert!((arrow_length(1.0e6) - 1.0).abs() < 1e-3);
+        assert_eq!(arrow_length(1.0e9), 1.0);
+    }
+
+    /// The hologram stands on the dash: its centre sits its radius (and a
+    /// hair) above the socket under its anchor, and a lower-right anchor
+    /// lands it right of the pilot and below the sill — out of the view.
+    #[test]
+    fn the_hologram_stands_over_its_socket_out_of_the_view() {
+        let c = holo_centre([0.55, -0.55], 0.55, 1.6, 0.15);
+        assert!(c.x > 0.3, "right of the pilot: {c}");
+        assert!(c.y < -0.2, "below the sill: {c}");
+        let socket = c - Vec3::new(0.0, 0.15 + HOLO_LIFT_M, 0.0);
+        let on_dash = (socket - crate::cabin::DASH_C).dot(DASH_N).abs();
+        assert!(on_dash < 1e-3, "the socket is in the dash plane: {on_dash}");
     }
 }

@@ -150,7 +150,7 @@ pub const COCKPIT_RES_CHOICES: [f32; 3] = [0.5, 0.75, 1.0];
 
 /// Frame-rate floors on offer (0: none). The cabin's moving detail gives
 /// way while turning the head would cost more than the floor allows.
-pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.40, -0.50];
+pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.55, -0.55];
 pub const HOLO_SIZE_MIN: f32 = 0.16;
 pub const HOLO_SIZE_MAX: f32 = 0.50;
 pub const FPS_FLOOR_CHOICES: [f32; 5] = [0.0, 30.0, 60.0, 90.0, 120.0];
@@ -217,11 +217,13 @@ pub struct Settings {
     /// The chase camera: the whole view from outside the ship (the dev
     /// third person the holo3PP is measured against).
     pub camera_chase: bool,
-    /// The holo3PP panel: a live third-person projection on the glass.
+    /// The holo3PP: a live volumetric hologram of the ship and its
+    /// neighbourhood, over an emitter in the dash.
     pub holo_view: bool,
-    /// The holo panel's height, as a fraction of the screen's.
+    /// The hologram's size (its radius is this times half a metre).
     pub holo_size: f32,
-    /// Where the holo panel's centre sits (canopy NDC).
+    /// The hologram's emitter: a glass anchor (canopy NDC) whose direction
+    /// meets the dash at the socket.
     pub holo_anchor: [f32; 2],
     /// The wormhole drive's destination and safe distance.
     pub plan: Plan,

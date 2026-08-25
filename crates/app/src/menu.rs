@@ -213,7 +213,14 @@ impl Item {
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}", s.look_sensitivity),
             Item::Destination => s.plan.dest.name().to_string(),
-            Item::SafeDist => format!("{:.2} R", s.plan.safe_radii),
+            // Uranus is arrived at in its belt whatever the distance says.
+            Item::SafeDist => {
+                if s.plan.dest == crate::warp::Destination::Uranus {
+                    "IN THE BELT".to_string()
+                } else {
+                    format!("{:.2} R", s.plan.safe_radii)
+                }
+            }
             Item::Engage => String::new(),
         }
     }

@@ -75,6 +75,13 @@ impl Destination {
         self.body(params, 0.0).radius_m
     }
 
+    /// The body's own velocity in the planet's frame at sim time `t`.
+    pub fn velocity(self, params: &WorldParams, t_s: f64) -> DVec3 {
+        let vels = params.body_velocities(t_s);
+        let i = Self::ALL.iter().position(|&d| d == self).unwrap_or(0);
+        vels[i]
+    }
+
     /// Centre of the body in the planet's frame at sim time `t`.
     pub fn centre(self, params: &WorldParams, t_s: f64) -> DVec3 {
         self.body(params, t_s).centre
@@ -130,23 +137,48 @@ impl Plan {
         };
     }
 
-    /// Distance from the body's surface, metres.
+    /// Distance from the body's surface, metres. Uranus is arrived at in
+    /// its ring whatever the plan says: the belt's middle radius.
     pub fn safe_m(&self, params: &WorldParams) -> f64 {
+        if self.dest == Destination::Uranus {
+            return (RING_MID - 1.0) * self.dest.radius_m(params);
+        }
         self.safe_radii * self.dest.radius_m(params)
     }
 
     /// Where the jump lands: on the line from the body toward where the
     /// ship is now (so the old place is behind you), at surface + safe
     /// distance — and in a circular orbit about it, prograde along the
-    /// ship's heading projected level. Every body pulls, so every body is
-    /// arrived at the same way: the drive never drops you into a fall.
+    /// ship's heading projected level, riding along with the body itself.
+    /// Every body pulls, so every body is arrived at the same way: the
+    /// drive never drops you into a fall.
+    ///
+    /// Uranus is the exception in where, not how: the drive lands you IN
+    /// the asteroid belt — on the ring's middle radius, in its plane, on
+    /// the side of Uranus you came from, going round with the rocks at
+    /// exactly their speed and way. A perfect orbit of the belt: the rocks
+    /// about you hang still.
     pub fn arrival(&self, params: &WorldParams, ship: &ShipState, t_s: f64) -> (DVec3, DVec3) {
         let body = self.dest.body(params, t_s);
+        let body_vel = self.dest.velocity(params, t_s);
         let mut away = ship.pos_m - body.centre;
         if away.length() < 1.0 {
             away = DVec3::X;
         }
         let away = away.normalize();
+        if self.dest == Destination::Uranus {
+            let (e1, _, axis) = crate::belt::ring_frame();
+            let mut radial = away - axis * away.dot(axis);
+            if radial.length() < 1e-6 {
+                radial = e1;
+            }
+            let radial = radial.normalize();
+            let r = body.radius_m * RING_MID;
+            let pos = body.centre + radial * r;
+            // The ring's own motion at its middle (belt::cell_rocks).
+            let vel = body_vel + axis.cross(radial) * (body.mu / r).sqrt();
+            return (pos, vel);
+        }
         let r = body.radius_m + self.safe_m(params);
         let pos = body.centre + away * r;
         let nose = ship.orient * DVec3::NEG_Z;
@@ -154,7 +186,7 @@ impl Plan {
         if tangent.length() < 1e-6 {
             tangent = away.cross(DVec3::Y);
         }
-        let vel = tangent.normalize() * (body.mu / r).sqrt();
+        let vel = body_vel + tangent.normalize() * (body.mu / r).sqrt();
         (pos, vel)
     }
 }
@@ -393,10 +425,13 @@ mod tests {
                 let centre = dest.centre(&p, 0.0);
                 let d = (pos - centre).length();
                 let r = dest.radius_m(&p);
-                assert!(
-                    (d - r * (1.0 + radii)).abs() < 1e-3 * d,
-                    "{dest:?} {radii}: {d}"
-                );
+                // Uranus is arrived at in its ring, whatever the plan says.
+                let want = if dest == Destination::Uranus {
+                    r * RING_MID
+                } else {
+                    r * (1.0 + radii)
+                };
+                assert!((d - want).abs() < 1e-3 * d, "{dest:?} {radii}: {d}");
                 assert!(d > r, "{dest:?} inside the body");
             }
         }
@@ -415,12 +450,55 @@ mod tests {
             let body = dest.body(&p, 0.0);
             let rel = pos - body.centre;
             let r = rel.length();
+            // Circular about the body — in the body's own frame, so a
+            // moving body is arrived at riding along with it.
+            let vel = vel - dest.velocity(&p, 0.0);
             assert!(
                 (vel.length() - (body.mu / r).sqrt()).abs() < 1e-6,
                 "{dest:?} not circular"
             );
             assert!(vel.dot(rel.normalize()).abs() < 1e-6, "{dest:?} not level");
         }
+    }
+
+    /// Uranus: the drive lands you in the belt — the ring's middle radius,
+    /// in its plane, going round with the rocks at their exact speed and
+    /// way, so the rocks about you hang still.
+    #[test]
+    fn uranus_is_arrived_at_in_the_belt_riding_with_the_rocks() {
+        let p = presets::earth_compact();
+        let s = presets::circular_orbit(&p, 12_000.0);
+        let plan = Plan {
+            dest: Destination::Uranus,
+            safe_radii: 20.0,
+        };
+        let t = 1234.5;
+        let (pos, vel) = plan.arrival(&p, &s.ship, t);
+        let uranus = Destination::Uranus.body(&p, t);
+        let (_, _, axis) = crate::belt::ring_frame();
+        let rel = pos - uranus.centre;
+        assert!(
+            rel.dot(axis).abs() < 1e-3,
+            "in the ring's plane: {}",
+            rel.dot(axis)
+        );
+        assert!(
+            (rel.length() - uranus.radius_m * RING_MID).abs() < 1e-3,
+            "on the ring's middle radius"
+        );
+        // The ring turns rigidly at the rate of its middle: a rock at the
+        // arrival point moves at exactly this.
+        let ring_vel = Destination::Uranus.velocity(&p, t)
+            + axis.cross(rel) * crate::belt::ring_rate_radps(&uranus);
+        assert!(
+            (vel - ring_vel).length() < 1e-6,
+            "riding with the rocks: {vel:?} vs {ring_vel:?}"
+        );
+        // And the map's arrival marker agrees: safe_m puts it in the ring.
+        assert!(
+            (uranus.radius_m + plan.safe_m(&p) - rel.length()).abs() < 1e-3,
+            "the plan's arrival distance is the ring's"
+        );
     }
 
     #[test]

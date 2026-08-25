@@ -283,25 +283,35 @@ fn the_chase_view_shows_the_ship_and_no_cockpit() {
 }
 
 #[test]
-fn the_holo3pp_panel_projects_the_chase_view_in_the_cockpit() {
+fn the_holo3pp_stands_as_a_3d_hologram_over_the_dash() {
     if !enabled() {
         return;
     }
     let f = capture("holo", &[("FARFALL_BENCH_HOLO", "1")]);
-    // The hologram frame: a hairline of cyan around the panel's box,
-    // bottom right of the glass.
-    let frame = f.share(0.52, 0.55, 1.0, 0.95, |c| {
-        c[1] > 0.5 && c[2] > 0.55 && c[0] < 0.4
+    // Over the right of the dash, below the sill: the little ship and its
+    // emitter's ring in the hologram's cyan...
+    let cyan = f.share(0.60, 0.55, 0.92, 0.88, |c| {
+        c[1] > 0.45 && c[2] > 0.5 && c[0] < 0.45 && c[2] > c[0] + 0.2
     });
-    assert!(frame > 0.001, "the holo frame is lit: {frame}");
-    // The picture inside is live: it holds real content (the planet and
-    // the stars of the chase view), not an empty black pane.
-    let content = f.share(0.60, 0.62, 0.85, 0.88, |c| lum(c) > 0.25);
-    assert!(content > 0.05, "the picture shows the world: {content}");
-    // And the cockpit is still the cockpit: the dials stay lit on the
-    // left of the dash — first person never left.
-    let dials = f.share(0.05, 0.7, 0.45, 1.0, |c| c[1] > 0.45 && c[2] > 0.45);
-    assert!(dials > 0.01, "the cockpit stays around it: {dials}");
+    assert!(
+        cyan > 0.002,
+        "the hologram's ship and emitter are lit: {cyan}"
+    );
+    // ...and the nearest body (Uranus, 200 km under the keel here) as an
+    // amber wire globe at its true size beside it.
+    let amber = f.share(0.60, 0.55, 0.92, 0.88, |c| {
+        c[0] > 0.45 && c[0] > c[2] + 0.15 && c[1] > 0.25
+    });
+    assert!(amber > 0.001, "the body's wire globe is lit: {amber}");
+    // And nothing of it over the forward view: the hologram is out of the
+    // way.
+    let over_view = f.share(0.30, 0.10, 0.70, 0.45, |c| {
+        c[0] > 0.45 && c[0] > c[2] + 0.15 && c[1] > 0.25
+    });
+    assert!(
+        over_view < 0.0005,
+        "no hologram in the forward view: {over_view}"
+    );
 }
 
 #[test]

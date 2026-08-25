@@ -26,7 +26,7 @@ use settings::Settings;
 use warp::Warp;
 mod telemetry;
 
-use glam::{DQuat, DVec3, Quat};
+use glam::{DQuat, DVec3, Quat, Vec3};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -46,7 +46,7 @@ use farfall_render::{
         HoloSway, MachAlert,
     },
     ghost::{ghost_pass, GhostPass, GhostUniforms, GHOST_LIFE_S},
-    holo::{HoloPass, HoloUniforms, HOLO_H, HOLO_W},
+    holo::{holo_centre, holo_pass, HoloPass, HoloScene, HoloUniforms, HOLO_RADIUS_M},
     hud::HudPass,
     instrument::InstrumentPass,
     jet::{jet_pass, JetPass, JetUniforms},
@@ -428,46 +428,8 @@ struct Passes {
     belt: BeltPass,
     /// The ship from outside, for the chase view and the holo3PP.
     jet: JetPass,
-    /// The holo3PP: the chase view rendered small every frame, and the
-    /// panel that projects it on the glass.
-    holo: HoloRig,
-}
-
-/// The holo3PP's own instances of the world passes (their uniform buffers
-/// hold the chase pose while the main passes hold the pilot's), and the
-/// panel. The rig renders single-sample into the panel's small texture —
-/// the same passes, the same pose plumbing, just a second eye.
-struct HoloRig {
-    star: StarfieldPass,
-    bodies: BodiesPass,
-    planet: PlanetPass,
-    belt: BeltPass,
-    jet: JetPass,
-    trajectory: TrajectoryPass,
-    shield: ShieldPass,
-    ghost: GhostPass,
-    panel: HoloPass,
-}
-
-impl HoloRig {
-    fn new(
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        msaa: u32,
-        baked: &BakedMaps,
-    ) -> Self {
-        Self {
-            star: StarfieldPass::new(device, format, 1, STAR_DENSITY, baked),
-            bodies: BodiesPass::new(device, format, 1),
-            planet: PlanetPass::new(device, format, 1, baked),
-            belt: belt_pass(device, format, 1),
-            jet: jet_pass(device, format, 1),
-            trajectory: TrajectoryPass::new(device, format, 1),
-            shield: shield_pass(device, format, 1),
-            ghost: ghost_pass(device, format, 1),
-            panel: HoloPass::new(device, format, msaa, format),
-        }
-    }
+    /// The holo3PP: the volumetric hologram over the dash.
+    holo: HoloPass,
 }
 
 impl Passes {
@@ -499,80 +461,19 @@ impl Passes {
             ghost: ghost_pass(device, format, msaa),
             belt: belt_pass(device, format, msaa),
             jet: jet_pass(device, format, msaa),
-            holo: HoloRig::new(device, format, msaa, baked),
+            holo: holo_pass(device, format, msaa),
         }
     }
 }
 
 impl Gpu {
-    /// The holo3PP's frame: point the rig's passes at the chase pose and
-    /// draw the small picture. One call, shared by the visible frame and
-    /// the headless bench — the panel then samples the result.
-    fn encode_holo(&self, game: &Game, encoder: &mut wgpu::CommandEncoder) {
-        if !game.holo_active() {
-            return;
-        }
-        let hpose = game.chase_pose(HOLO_W as f32 / HOLO_H as f32);
-        let r = &self.passes.holo;
-        r.star.update(
-            &self.queue,
-            &FrameUniforms::from_camera(&hpose.cam)
-                .with_occluder(
-                    (DVec3::ZERO - game.eye_m(&hpose)).as_vec3(),
-                    game.params.planet.radius_m as f32,
-                )
-                .with_star_stretch(game.speed_look()),
-        );
-        r.planet.update(&self.queue, &game.planet_uniforms(&hpose));
-        r.bodies
-            .update(&self.queue, &game.bodies_uniforms(&hpose, HOLO_H as f32));
-        r.belt.update(&self.queue, &game.belt_uniforms(&hpose));
-        r.jet.update(&self.queue, &game.jet_uniforms(&hpose));
-        r.trajectory.update(
-            &self.queue,
-            &TrajectoryUniforms::new(
-                &hpose.cam,
-                &game.trajectory_world(game.eye_m(&hpose)),
-                TRAJECTORY_HORIZON_S,
-                game.trajectory_vis,
-                HOLO_H as f32,
-                game.marks(),
-            ),
-        );
-        r.shield.update(&self.queue, &game.shield_uniforms(&hpose));
-        r.ghost.update(&self.queue, &game.ghost_uniforms(&hpose));
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("holo picture"),
-            color_attachments: &[Some(r.panel.picture_attachment())],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        r.star.draw(&mut pass);
-        r.bodies.draw(&mut pass);
-        r.planet.draw(&mut pass);
-        r.belt.draw(&mut pass);
-        r.jet.draw(&mut pass);
-        r.trajectory.draw(&mut pass);
-        r.shield.draw(&mut pass);
-        r.ghost.draw(&mut pass);
-    }
-
-    /// The panel's own uniforms: where it sits on the glass this frame.
-    fn update_holo_panel(&self, game: &Game, cam: &CameraFrame, aspect: f32) {
-        self.passes.holo.panel.update(
-            &self.queue,
-            &HoloUniforms::new(
-                game.settings.holo_anchor,
-                game.settings.holo_size,
-                aspect,
-                self.config.height as f32,
-                cam.time_s,
-                game.holo_sway.sway(),
-                game.holo_active(),
-            ),
-        );
+    /// The holo3PP's frame: the miniature's scene in the ship's frame,
+    /// seen from the pilot's head.
+    fn update_holo(&self, game: &Game, aspect: f32) {
+        let pose = game.pose(aspect);
+        self.passes
+            .holo
+            .update(&self.queue, &game.holo_uniforms(&pose));
     }
 }
 
@@ -1836,6 +1737,53 @@ impl Game {
         }
     }
 
+    /// The holo3PP's miniature: the ship's neighbourhood in its own frame
+    /// — the velocity relative to the nearest body, that body's bearing and
+    /// angular size, the Sun's bearing, the engines.
+    fn holo_uniforms(&self, pose: &ViewPose) -> HoloUniforms {
+        let ship_inv = self.state.ship.orient.inverse();
+        let t = self.state.time_s;
+        let bodies = self.params.bodies(t);
+        let vels = self.params.body_velocities(t);
+        // The nearest body by altitude, as the altimeter picks it.
+        let mut near: Option<(f64, DVec3, f64, DVec3)> = None;
+        for (b, v) in bodies.iter().zip(vels) {
+            let rel = b.centre - self.state.ship.pos_m;
+            let alt = rel.length() - b.radius_m;
+            if near.is_none_or(|n| alt < n.0) {
+                near = Some((alt, rel, b.radius_m, v));
+            }
+        }
+        let (body_dir, body_sin, vel_rel) = match near {
+            Some((_, rel, r, v)) => (
+                (ship_inv * rel).as_vec3(),
+                (r / rel.length().max(1.0)).clamp(0.0, 1.0) as f32,
+                self.state.ship.vel_mps - v,
+            ),
+            None => (Vec3::ZERO, 0.0, self.state.ship.vel_mps),
+        };
+        let scene = HoloScene {
+            vel_dir: (ship_inv * vel_rel).as_vec3(),
+            speed_mps: vel_rel.length() as f32,
+            body_dir,
+            body_sin,
+            sun_dir: (ship_inv * self.params.sun.dir).as_vec3(),
+            effort: self.effort,
+            hyper: self.hyper,
+        };
+        let tan_half = (pose.cam.fov_y * 0.5).tan();
+        let radius = self.settings.holo_size * HOLO_RADIUS_M;
+        let centre = holo_centre(self.settings.holo_anchor, tan_half, pose.cam.aspect, radius);
+        HoloUniforms::new(
+            &pose.cam,
+            pose.head,
+            centre,
+            radius,
+            &scene,
+            self.holo_active(),
+        )
+    }
+
     /// Where a slipped drive drops the ship: some body, at a random
     /// distance of a few radii, going some way at a speed around circular
     /// — an orbit, but not one that stays. Attitude kept, spin killed.
@@ -2392,16 +2340,15 @@ impl Game {
             }
             return false;
         }
-        // The holo3PP panel is glassware like the dials: take it by its
-        // frame.
+        // The holo3PP is glassware like the dials: take it by its
+        // emitter's anchor and slide it along the dash.
         if self.holo_active() {
             let a = self.settings.holo_anchor;
-            let hh = self.settings.holo_size;
-            let hw = hh * (HOLO_W as f32 / HOLO_H as f32);
-            let inside = (gaze[0] - a[0]).abs() <= hw + 0.03 && (gaze[1] - a[1]).abs() <= hh + 0.03;
+            let r = self.settings.holo_size * 0.9;
+            let inside = (gaze[0] - a[0]).abs() <= r && (gaze[1] - a[1]).abs() <= r;
             if inside {
                 self.drag = Some((Dragged::HoloPanel, [a[0] - gaze[0], a[1] - gaze[1]]));
-                log::info!("drag: picked up the holo panel");
+                log::info!("drag: picked up the hologram");
                 return true;
             }
         }
@@ -3270,13 +3217,12 @@ impl ApplicationHandler for App {
                                         game.highlight_row(),
                                     );
                                 }
-                                gpu.update_holo_panel(game, &cam, aspect);
+                                gpu.update_holo(game, aspect);
                                 let mut encoder = gpu.device.create_command_encoder(
                                     &wgpu::CommandEncoderDescriptor {
                                         label: Some("headless"),
                                     },
                                 );
-                                gpu.encode_holo(game, &mut encoder);
                                 let thermal_in = game.thermal_inputs(game.frame_dt);
                                 gpu.passes.plasma.update(
                                     &gpu.queue,
@@ -3347,7 +3293,7 @@ impl ApplicationHandler for App {
                                         gpu.passes.guide.draw(&mut pass);
                                         gpu.passes.guide.draw(&mut pass);
                                     }
-                                    gpu.passes.holo.panel.draw(&mut pass);
+                                    gpu.passes.holo.draw(&mut pass);
                                     if capture_text && game.map_open() {
                                         gpu.map.draw(&mut pass);
                                     }
@@ -3491,12 +3437,10 @@ impl ApplicationHandler for App {
                     game.highlight_row(),
                 );
 
-                gpu.update_holo_panel(game, &cam, aspect);
+                gpu.update_holo(game, aspect);
                 let mut encoder = gpu
                     .device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-                // Pass 0a: the holo3PP's picture — the chase view, small.
-                gpu.encode_holo(game, &mut encoder);
                 // Pass 0: advance the hull heat field (64x64, on the GPU).
                 gpu.passes
                     .thermal
@@ -3558,7 +3502,7 @@ impl ApplicationHandler for App {
                         gpu.passes.guide.draw(&mut pass);
                     }
                     if gpu.cfg.draws("holo") {
-                        gpu.passes.holo.panel.draw(&mut pass);
+                        gpu.passes.holo.draw(&mut pass);
                     }
                 }
                 {
