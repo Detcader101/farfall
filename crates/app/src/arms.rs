@@ -7,6 +7,7 @@
 
 use glam::{DQuat, DVec3};
 
+use crate::bay::{Hardpoint, Mount, STOCK};
 use crate::belt::Belt;
 
 /// The ship's mass for recoil, kg.
@@ -91,7 +92,8 @@ impl Weapon {
     }
 }
 
-/// Where the guns are, ship frame (x right, y up, -z the nose), metres.
+/// Where the stock guns are, ship frame (x right, y up, -z the nose),
+/// metres — the hardpoints' places, see [`crate::bay::Hardpoint`].
 pub const WING_L: DVec3 = DVec3::new(-2.6, -0.35, -0.6);
 pub const WING_R: DVec3 = DVec3::new(2.6, -0.35, -0.6);
 pub const NOSE: DVec3 = DVec3::new(0.0, -0.45, -4.2);
@@ -148,6 +150,8 @@ pub struct Arms {
     pub jammed: [bool; 2],
     /// The reactor's share for the guns, 0..1.
     pub power: f32,
+    /// The ship's fit: what each hardpoint carries (the SHIP bay's).
+    pub mounts: [Mount; 4],
     /// The rail's charge 0..1 while the trigger is held.
     pub charge: f32,
     pub slugs: Vec<Slug>,
@@ -160,7 +164,8 @@ pub struct Arms {
     pub bang_size: f32,
     pub breaks: u32,
     next_shot_s: f64,
-    left_next: bool,
+    /// Which of a weapon's mounts fires next: they take turns.
+    round: usize,
     trigger_was: bool,
     seq: u32,
 }
@@ -182,7 +187,8 @@ impl Default for Arms {
             bang_size: 0.0,
             breaks: 0,
             next_shot_s: 0.0,
-            left_next: true,
+            mounts: STOCK,
+            round: 0,
             trigger_was: false,
             seq: 1,
         }
@@ -267,14 +273,14 @@ impl Arms {
         let mut recoil = DVec3::ZERO;
         let w = self.selected;
         let i = w.index();
-        let can_fire = !self.jammed[i] && self.ammo[i] > 0 && power > 0.02;
+        let can_fire =
+            !self.jammed[i] && self.ammo[i] > 0 && power > 0.02 && self.mounted(w).is_some();
         match w {
             Weapon::Cannon => {
                 if trigger && can_fire && t_s >= self.next_shot_s {
                     let rate = w.rate_hz() * (0.45 + 0.55 * power as f64);
                     self.next_shot_s = t_s + 1.0 / rate;
-                    let mount = if self.left_next { WING_L } else { WING_R };
-                    self.left_next = !self.left_next;
+                    let mount = self.next_mount(w);
                     recoil += self.fire(t_s, ship, mount, 1.0);
                 }
             }
@@ -286,13 +292,15 @@ impl Arms {
                     // Let go: it fires with what it has.
                     let level = self.charge;
                     self.charge = 0.0;
-                    recoil += self.fire(t_s, ship, NOSE, level as f64);
+                    let mount = self.next_mount(w);
+                    recoil += self.fire(t_s, ship, mount, level as f64);
                 } else {
                     self.charge = (self.charge - dt as f32 * 2.0).max(0.0);
                 }
                 if self.charge >= 1.0 && can_fire {
                     self.charge = 0.0;
-                    recoil += self.fire(t_s, ship, NOSE, 1.0);
+                    let mount = self.next_mount(w);
+                    recoil += self.fire(t_s, ship, mount, 1.0);
                 }
             }
         }
@@ -371,6 +379,26 @@ impl Arms {
 
     /// One slug leaves `mount` at `level` of the muzzle speed. Returns the
     /// recoil on the ship.
+    /// The hardpoints carrying this weapon, in order; None if it is not
+    /// mounted at all.
+    pub fn mounted(&self, w: Weapon) -> Option<Vec<Hardpoint>> {
+        let v: Vec<Hardpoint> = Hardpoint::ALL
+            .iter()
+            .zip(self.mounts.iter())
+            .filter(|(_, m)| m.weapon() == Some(w))
+            .map(|(h, _)| *h)
+            .collect();
+        (!v.is_empty()).then_some(v)
+    }
+
+    /// The weapon's mounts take turns: the next one's place.
+    fn next_mount(&mut self, w: Weapon) -> DVec3 {
+        let hs = self.mounted(w).unwrap_or_else(|| vec![Hardpoint::Nose]);
+        let h = hs[self.round % hs.len()];
+        self.round += 1;
+        h.pos()
+    }
+
     fn fire(&mut self, t_s: f64, ship: &Ship, mount: DVec3, level: f64) -> DVec3 {
         let w = self.selected;
         let i = w.index();
@@ -422,7 +450,9 @@ impl Arms {
     pub fn text(&self) -> String {
         let w = self.selected;
         let heat = (self.heat_of(w) * 100.0).round();
-        let state = if self.jammed_of(w) {
+        let state = if self.mounted(w).is_none() {
+            " NO MOUNT".to_string()
+        } else if self.jammed_of(w) {
             " JAM".to_string()
         } else if self.ammo_of(w) == 0 {
             " EMPTY".to_string()
@@ -609,5 +639,40 @@ mod tests {
             arms.step(t, dt, &ship(), false, &mut belt);
         }
         assert!(arms.bursts.is_empty());
+    }
+    #[test]
+    fn the_guns_fire_from_whatever_the_bay_mounted_and_not_at_all_when_nothing_is() {
+        let mut arms = Arms::default();
+        let mut belt = Belt::default();
+        let ship = Ship {
+            pos: DVec3::ZERO,
+            vel: DVec3::ZERO,
+            orient: DQuat::IDENTITY,
+            aim: DVec3::NEG_Z,
+        };
+        // Both wings and the belly carry cannon: three mounts take turns.
+        arms.mounts = [Mount::Empty, Mount::Cannon, Mount::Cannon, Mount::Cannon];
+        let mut t = 0.0;
+        for _ in 0..40 {
+            arms.step(t, 0.01, &ship, true, &mut belt);
+            t += 0.01;
+        }
+        let xs: Vec<f64> = arms.slugs.iter().map(|s| s.pos.x.signum()).collect();
+        assert!(arms.slugs.len() >= 3, "{}", arms.slugs.len());
+        assert!(xs.contains(&-1.0) && xs.contains(&1.0), "{xs:?}");
+        assert!(
+            arms.slugs.iter().any(|s| s.pos.y < -1.5),
+            "one from the belly: {:?}",
+            arms.slugs.iter().map(|s| s.pos).collect::<Vec<_>>()
+        );
+        // Nothing mounted for the rail: it will not charge or fire.
+        arms.select(Weapon::Rail);
+        for _ in 0..200 {
+            arms.step(t, 0.01, &ship, true, &mut belt);
+            t += 0.01;
+        }
+        assert_eq!(arms.charge, 0.0);
+        assert_eq!(arms.ammo_of(Weapon::Rail), Weapon::Rail.magazine());
+        assert!(arms.text().contains("NO MOUNT"), "{}", arms.text());
     }
 }

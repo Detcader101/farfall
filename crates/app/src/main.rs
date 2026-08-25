@@ -9,6 +9,7 @@
 //! flight assist is toggleable. Planet, HUD, and sun arrive in M1 tasks 4-6.
 
 mod arms;
+mod bay;
 mod belt;
 mod capture;
 mod cockpit;
@@ -27,7 +28,7 @@ use settings::Settings;
 use warp::Warp;
 mod telemetry;
 
-use glam::{DQuat, DVec3};
+use glam::{DQuat, DVec3, Vec3};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -50,6 +51,9 @@ use farfall_render::{
         HoloSway, MachAlert,
     },
     ghost::{ghost_pass, GhostPass, GhostUniforms, GHOST_LIFE_S},
+    hologram::{
+        hologram_pass, HologramCamera, HologramPass, HologramScene, HologramUniforms, MountView,
+    },
     hud::HudPass,
     instrument::InstrumentPass,
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
@@ -76,6 +80,8 @@ const STAR_DENSITY: f64 = 1.0;
 /// concern (planet rotation, orbit) and does not belong in the renderer.
 /// Chosen so the terminator crosses the visible face at spawn.
 /// How often the frame-time window is summarised to the log.
+/// The bay camera's field of view: tan of half of it.
+const BAY_TAN_HALF_FOV: f32 = 0.42;
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 /// A glass anchor as the turned head sees it: the glass is a sphere about
 /// the pilot, so every element is re-projected, not slid (look.rs). The
@@ -192,6 +198,8 @@ enum Dragged {
     Readout,
     /// The map pane with its DRIVE panel.
     MapPanel,
+    /// The SHIP bay's hologram pane with its card.
+    BayPanel,
 }
 
 impl Dragged {
@@ -201,6 +209,7 @@ impl Dragged {
             Dragged::MenuPanel => "SETTINGS PANEL",
             Dragged::Readout => "READOUT",
             Dragged::MapPanel => "MAP",
+            Dragged::BayPanel => "SHIP BAY",
         }
     }
 }
@@ -252,6 +261,7 @@ const MACH1_MPS: f64 = 340.0;
 ///                           FARFALL_BENCH_VEL=x,y,z for the velocity
 ///                           (else at rest) and FARFALL_BENCH_LOOK=x,y,z
 ///                           for where the nose points (else the planet)
+///   FARFALL_BENCH_SHIP=1   (benchmark only: open the SHIP bay for a capture)
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
@@ -482,6 +492,8 @@ struct Gpu {
     hud: HudPass,
     /// The system map pane, native resolution like the text.
     map: InstrumentPass,
+    /// The SHIP bay's hologram pane.
+    hologram: HologramPass,
     text: TextBitmap,
     cfg: Config,
     perf: Perf,
@@ -897,6 +909,9 @@ struct Game {
     drag: Option<(Dragged, [f32; 2])>,
     /// The map's orbiting camera.
     map_view: map::MapView,
+    /// The SHIP bay: its card and its orbiting camera.
+    bay_panel: Menu,
+    bay_view: bay::BayView,
     /// Jumps made, for the drive's crack.
     jumps: u32,
     /// Bench: thrust and RCS demands forced for a capture.
@@ -1006,6 +1021,8 @@ impl Game {
             look: Look::new(),
             drag: None,
             map_view: map::MapView::default(),
+            bay_panel: Menu::ship_panel(),
+            bay_view: bay::BayView::default(),
             jumps: 0,
             bench_thrust: std::env::var("FARFALL_BENCH_THRUST").ok().and_then(|v| {
                 let xs: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -1048,6 +1065,8 @@ impl Game {
         self.settings = settings;
         self.input.set_bindings(settings.bindings);
         self.look.sensitivity = settings.look_sensitivity;
+        // The guns fire from whatever the bay mounted.
+        self.arms.mounts = settings.mounts;
     }
 
     /// The Sun and the Moon as the camera sees them: where the sim has them
@@ -1146,9 +1165,19 @@ impl Game {
         self.map_panel.open
     }
 
+    /// The SHIP bay (and its card) is up.
+    fn bay_open(&self) -> bool {
+        self.bay_panel.open
+    }
+
+    /// A pane with a picture is up: the map or the bay.
+    fn pane_open(&self) -> bool {
+        self.map_open() || self.bay_open()
+    }
+
     /// Any panel is up: the world waits and the keys go to it.
     fn panel_open(&self) -> bool {
-        self.menu.open || self.map_panel.open || self.design
+        self.menu.open || self.map_panel.open || self.bay_panel.open || self.design
     }
 
     /// M: the map up or down. One panel at a time.
@@ -1156,6 +1185,17 @@ impl Game {
         self.map_panel.toggle();
         if self.map_panel.open {
             self.menu.open = false;
+            self.bay_panel.open = false;
+        }
+        self.input.release_all();
+    }
+
+    /// B: the SHIP bay up or down. One panel at a time.
+    fn toggle_bay(&mut self) {
+        self.bay_panel.toggle();
+        if self.bay_panel.open {
+            self.menu.open = false;
+            self.map_panel.open = false;
         }
         self.input.release_all();
     }
@@ -1165,8 +1205,60 @@ impl Game {
         self.menu.toggle();
         if self.menu.open {
             self.map_panel.open = false;
+            self.bay_panel.open = false;
         }
         self.input.release_all();
+    }
+
+    /// The bay pane's geometry this frame: centre and half width (NDC).
+    fn bay_pane(&self) -> [f32; 3] {
+        let a = self.settings.bay_anchor;
+        [
+            a[0].clamp(-0.95, 0.95),
+            a[1].clamp(-0.95, 0.95),
+            self.settings.bay_size,
+        ]
+    }
+
+    /// Where the bay's card starts: hung off the pane's top-left, `text_w`
+    /// (NDC) to its left — the DRIVE card's pattern.
+    fn bay_text_anchor(&self, aspect: f32, text_w: f32) -> [f32; 2] {
+        let [cx, cy, hw] = self.bay_pane();
+        [cx - hw - text_w - 0.03, cy + hw * aspect]
+    }
+
+    /// The bay's hologram this frame.
+    fn hologram_uniforms(&self, aspect: f32, time_s: f32, height_px: f32) -> HologramUniforms {
+        let [cx, cy, hw] = self.bay_pane();
+        let v = &self.bay_view;
+        let mut mounts = [MountView {
+            at: Vec3::ZERO,
+            kind: 0,
+        }; farfall_render::hologram::HARDPOINTS];
+        for ((m, h), fit) in mounts
+            .iter_mut()
+            .zip(bay::Hardpoint::ALL.iter())
+            .zip(self.settings.mounts.iter())
+        {
+            *m = MountView {
+                at: h.pos().as_vec3(),
+                kind: fit.kind(),
+            };
+        }
+        HologramUniforms::new(&HologramScene {
+            camera: HologramCamera::orbit(v.yaw, v.pitch, v.dist, BAY_TAN_HALF_FOV),
+            pane_centre: [cx, cy],
+            pane_half_w: hw,
+            aspect,
+            visibility: if self.bay_open() { 1.0 } else { 0.0 },
+            hue: self.settings.bay_hue,
+            saturation: self.settings.bay_saturation,
+            scanlines: self.settings.bay_scanlines,
+            selected: self.bay_panel.bay_selected(),
+            mounts,
+            time_s,
+            height_px,
+        })
     }
 
     /// The map pane's geometry this frame.
@@ -1196,6 +1288,8 @@ impl Game {
         }
         if self.map_open() {
             self.drive_text_anchor(aspect, text_w)
+        } else if self.bay_open() {
+            self.bay_text_anchor(aspect, text_w)
         } else if self.menu.open {
             self.settings.menu_anchor
         } else {
@@ -1307,7 +1401,7 @@ impl Game {
     /// design card are on the glass, re-projected like a dial.
     fn text_screen_anchor(&self, cam: &CameraFrame, text_w: f32) -> [f32; 2] {
         let a = self.text_anchor(cam.aspect, text_w);
-        if self.menu.open || self.map_open() {
+        if self.menu.open || self.pane_open() {
             a
         } else {
             on_glass(&self.look, cam, self.ref_tan(), a)
@@ -1321,6 +1415,8 @@ impl Game {
             Some(self.menu.cursor_row_px())
         } else if self.map_panel.open {
             Some(self.map_panel.cursor_row_px())
+        } else if self.bay_panel.open {
+            Some(self.bay_panel.cursor_row_px())
         } else {
             None
         }
@@ -1404,6 +1500,7 @@ impl Game {
         if self.design {
             self.menu.open = false;
             self.map_panel.open = false;
+            self.bay_panel.open = false;
         } else {
             self.settings.save();
         }
@@ -2030,6 +2127,7 @@ impl Game {
             }
             // The arms: slugs fly, land on rocks, and the guns kick.
             self.arms.power = self.settings.arms_power;
+            self.arms.mounts = self.settings.mounts;
             let trigger = self.fire_held && !self.menu.open && !self.map_open() && !self.design;
             let kick = self.arms.step(
                 self.state.time_s,
@@ -2373,6 +2471,23 @@ impl Game {
             }
             return false;
         }
+        if self.bay_open() {
+            let [cx, cy, hw] = self.bay_pane();
+            let hh = hw * cam.aspect;
+            let inside = (gaze[0] - cx).abs() <= hw + 0.02 && (gaze[1] - cy).abs() <= hh + 0.02;
+            let text = self.bay_text_anchor(cam.aspect, text_w);
+            let on_text = gaze[0] >= text[0] - 0.02
+                && gaze[0] <= text[0] + text_w + 0.02
+                && gaze[1] <= text[1] + 0.02
+                && gaze[1] >= text[1] - 0.5;
+            if inside || on_text {
+                let a = self.settings.bay_anchor;
+                self.drag = Some((Dragged::BayPanel, [a[0] - gaze[0], a[1] - gaze[1]]));
+                log::info!("drag: picked up the ship bay");
+                return true;
+            }
+            return false;
+        }
         if self.menu.open {
             let a = self.settings.menu_anchor;
             let on_text = gaze[0] >= a[0] - 0.02
@@ -2447,6 +2562,7 @@ impl Game {
             Dragged::MenuPanel => self.settings.menu_anchor = clamp(at),
             Dragged::Readout => self.settings.readout_anchor = glass(at),
             Dragged::MapPanel => self.settings.map_anchor = clamp(at),
+            Dragged::BayPanel => self.settings.bay_anchor = clamp(at),
         }
     }
 
@@ -2679,6 +2795,7 @@ impl App {
             farfall_render::shaders::MAP,
             map::UNIFORM_BYTES,
         );
+        let hologram = hologram_pass(&device, config.format, 1);
 
         window.request_redraw();
         // Audio: live synthesis, muted for benchmarks (a frozen sim droning
@@ -2707,6 +2824,7 @@ impl App {
             baked,
             hud,
             map,
+            hologram,
             text: TextBitmap::new(),
             cfg,
             perf: Perf::new(),
@@ -2721,6 +2839,9 @@ impl App {
         game.menu.set_msaa_supported(&msaa_supported);
         if game.frozen && std::env::var("FARFALL_BENCH_MAP").is_ok() {
             game.toggle_map();
+        }
+        if game.frozen && std::env::var("FARFALL_BENCH_SHIP").is_ok() {
+            game.toggle_bay();
         }
         if game.frozen && std::env::var("FARFALL_BENCH_DESIGN").is_ok() {
             game.toggle_design();
@@ -2903,22 +3024,33 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if game.panel_open() {
-                    // M closes the map from anywhere in it.
+                    // M closes the map from anywhere in it; B the bay.
                     if pressed && !event.repeat && code == KeyCode::KeyM {
                         game.toggle_map();
                         return;
                     }
-                    // Map zoom from the keyboard, for a mouse with no wheel.
-                    if pressed && game.map_open() {
-                        match code {
-                            KeyCode::Equal | KeyCode::NumpadAdd => game.map_view.zoom_by(1.0),
-                            KeyCode::Minus | KeyCode::NumpadSubtract => game.map_view.zoom_by(-1.0),
-                            _ => {}
+                    if pressed && !event.repeat && code == KeyCode::KeyB {
+                        game.toggle_bay();
+                        return;
+                    }
+                    // Pane zoom from the keyboard, for a mouse with no wheel.
+                    if pressed && game.pane_open() {
+                        let notches = match code {
+                            KeyCode::Equal | KeyCode::NumpadAdd => 1.0,
+                            KeyCode::Minus | KeyCode::NumpadSubtract => -1.0,
+                            _ => 0.0,
+                        };
+                        if game.map_open() {
+                            game.map_view.zoom_by(notches);
+                        } else {
+                            game.bay_view.zoom_by(notches);
                         }
                     }
                     if pressed && !event.repeat {
                         let panel = if game.map_open() {
                             &mut game.map_panel
+                        } else if game.bay_open() {
+                            &mut game.bay_panel
                         } else {
                             &mut game.menu
                         };
@@ -2931,7 +3063,7 @@ impl ApplicationHandler for App {
                                         game.look.sensitivity = game.settings.look_sensitivity;
                                     }
                                     Change::Graphics => gpu.apply_graphics(&game.settings),
-                                    Change::Layout => {}
+                                    Change::Layout => game.arms.mounts = game.settings.mounts,
                                 }
                             }
                             MenuEvent::Quit => {
@@ -2953,6 +3085,7 @@ impl ApplicationHandler for App {
                     // across.
                     KeyCode::Escape if pressed && !event.repeat => game.toggle_menu(),
                     KeyCode::KeyM if pressed && !event.repeat => game.toggle_map(),
+                    KeyCode::KeyB if pressed && !event.repeat => game.toggle_bay(),
                     // Edge-triggered, and `repeat` is filtered: holding the key
                     // must not strobe the toggle.
                     KeyCode::KeyC if pressed && !event.repeat => game.cycle_appearance(),
@@ -3039,7 +3172,8 @@ impl ApplicationHandler for App {
                         &cam,
                         text_width_ndc(hud_scale * 2.0 / gpu.config.height as f32),
                     );
-                    game.fire_held = !picked && !game.menu.open && !game.map_open() && !game.design;
+                    game.fire_held =
+                        !picked && !game.menu.open && !game.pane_open() && !game.design;
                 } else {
                     game.fire_held = false;
                     game.end_drag();
@@ -3054,6 +3188,9 @@ impl ApplicationHandler for App {
                     if game.left_down && game.map_open() && game.drag.is_none() {
                         game.map_view.drag(now.0 - last.0, now.1 - last.1);
                     }
+                    if game.left_down && game.bay_open() && game.drag.is_none() {
+                        game.bay_view.drag(now.0 - last.0, now.1 - last.1);
+                    }
                 }
                 game.cursor = Some(now);
             }
@@ -3064,6 +3201,13 @@ impl ApplicationHandler for App {
                         winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                     };
                     game.map_view.zoom_by(notches);
+                }
+                if game.bay_open() {
+                    let notches = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+                    };
+                    game.bay_view.zoom_by(notches);
                 }
             }
             // A key held while the window loses focus never sees its release
@@ -3176,6 +3320,16 @@ impl ApplicationHandler for App {
                                     }
                                 } else if capture_text && game.map_open() {
                                     game.map_panel.render(&mut gpu.text, &game.settings);
+                                } else if capture_text && game.bay_open() {
+                                    game.bay_panel.render(&mut gpu.text, &game.settings);
+                                    gpu.hologram.update(
+                                        &gpu.queue,
+                                        &game.hologram_uniforms(
+                                            aspect,
+                                            cam.time_s,
+                                            gpu.scene.size().1 as f32,
+                                        ),
+                                    );
                                 } else if capture_text && game.menu.open {
                                     game.menu.render(&mut gpu.text, &game.settings);
                                 } else if capture_text {
@@ -3211,7 +3365,7 @@ impl ApplicationHandler for App {
                                         aspect,
                                         sh as f32,
                                         game.holo_sway.sway(),
-                                        game.menu.open || game.map_open(),
+                                        game.menu.open || game.pane_open(),
                                         game.highlight_row(),
                                     );
                                 }
@@ -3287,6 +3441,9 @@ impl ApplicationHandler for App {
                                     gpu.passes.guide.draw(&mut pass);
                                     if capture_text && game.map_open() {
                                         gpu.map.draw(&mut pass);
+                                    }
+                                    if capture_text && game.bay_open() {
+                                        gpu.hologram.draw(&mut pass);
                                     }
                                     if capture_text {
                                         gpu.hud.draw(&mut pass);
@@ -3417,6 +3574,14 @@ impl ApplicationHandler for App {
                     gpu.map
                         .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
                 }
+                if game.bay_open() {
+                    // The bay turns by itself when the hand is off it.
+                    game.bay_view.tick(game.frame_dt, game.settings.bay_spin);
+                    gpu.hologram.update(
+                        &gpu.queue,
+                        &game.hologram_uniforms(aspect, cam.time_s, gpu.config.height as f32),
+                    );
+                }
                 gpu.hud.update(
                     &gpu.queue,
                     &gpu.text,
@@ -3425,7 +3590,7 @@ impl ApplicationHandler for App {
                     aspect,
                     gpu.config.height as f32,
                     game.holo_sway.sway(),
-                    game.menu.open || game.map_open(),
+                    game.menu.open || game.pane_open(),
                     game.highlight_row(),
                 );
 
@@ -3516,6 +3681,9 @@ impl ApplicationHandler for App {
                     }
                     if game.map_open() {
                         gpu.map.draw(&mut pass);
+                    }
+                    if game.bay_open() {
+                        gpu.hologram.draw(&mut pass);
                     }
                     if gpu.cfg.draws("hud") {
                         gpu.hud.draw(&mut pass);
@@ -3609,6 +3777,9 @@ impl ApplicationHandler for App {
                 } else if game.map_open() {
                     gpu.text.clear();
                     game.map_panel.render(&mut gpu.text, &game.settings);
+                } else if game.bay_open() {
+                    gpu.text.clear();
+                    game.bay_panel.render(&mut gpu.text, &game.settings);
                 } else if game.menu.open {
                     gpu.text.clear();
                     game.menu.render(&mut gpu.text, &game.settings);

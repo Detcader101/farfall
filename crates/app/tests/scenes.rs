@@ -303,3 +303,29 @@ fn the_menu_and_the_dials_draw() {
     let lit = d.share(0.0, 0.4, 1.0, 1.0, |c| c[1] > 0.45 && c[2] > 0.45);
     assert!(lit > 0.01, "dials on the dash: {lit}");
 }
+
+/// The SHIP bay (B): a screen-fixed pane upper right with the fighter's
+/// own hologram in it, cyan on the pane's dark ground, and its card.
+#[test]
+fn the_ship_bay_shows_the_fighter_as_a_cyan_hologram_in_its_pane() {
+    if !enabled() {
+        return;
+    }
+    let f = capture("ship", &[("FARFALL_BENCH_SHIP", "1")]);
+    // The pane: centred at anchor (0.30, 0.45), 0.28 half-wide.
+    let cyan = f.share(0.55, 0.12, 0.75, 0.42, |c| {
+        c[1] > 0.45 && c[2] > 0.5 && c[0] < 0.5 && c[2] > c[0] + 0.15
+    });
+    assert!(
+        cyan > 0.02,
+        "the hologram and its turntable are lit: {cyan}"
+    );
+    // The pane dims what is behind it: the ground inside is dark.
+    let dark = f.share(0.55, 0.12, 0.75, 0.42, |c| lum(c) < 0.30);
+    assert!(dark > 0.4, "the pane's ground is dark: {dark}");
+    // Nothing of it down on the dash.
+    let below = f.share(0.55, 0.6, 0.75, 0.9, |c| {
+        c[1] > 0.45 && c[2] > 0.5 && c[0] < 0.5 && c[2] > c[0] + 0.15
+    });
+    assert!(below < cyan, "the bay stays in its pane: {below}");
+}
