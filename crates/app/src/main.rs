@@ -3716,7 +3716,7 @@ impl ApplicationHandler for App {
                         game.toggle_map();
                         return;
                     }
-                    if pressed && !event.repeat && code == KeyCode::KeyB {
+                    if pressed && !event.repeat && code == game.bind(Named::Bay) {
                         game.toggle_bay();
                         return;
                     }
@@ -3756,7 +3756,9 @@ impl ApplicationHandler for App {
                     // is what the keyboard does. Edge-triggered, and
                     // `repeat` is filtered: holding a key must not strobe
                     // a toggle.
-                    KeyCode::KeyB if pressed && !event.repeat => game.toggle_bay(),
+                    c if pressed && !event.repeat && c == game.bind(Named::Bay) => {
+                        game.toggle_bay()
+                    }
                     c if pressed && !event.repeat && c == game.bind(Named::Map) => {
                         game.toggle_map()
                     }
@@ -3824,15 +3826,15 @@ impl ApplicationHandler for App {
                             if game.settings.holo_view { "ON" } else { "OFF" }
                         );
                     }
-                    KeyCode::Digit1 if pressed && !event.repeat => {
+                    c if pressed && !event.repeat && c == game.bind(Named::Weapon1) => {
                         game.arms.select(arms::Weapon::Cannon);
                         log::info!("arms: {}", game.arms.selected.name());
                     }
-                    KeyCode::Digit2 if pressed && !event.repeat => {
+                    c if pressed && !event.repeat && c == game.bind(Named::Weapon2) => {
                         game.arms.select(arms::Weapon::Rail);
                         log::info!("arms: {}", game.arms.selected.name());
                     }
-                    KeyCode::KeyN if pressed && !event.repeat => {
+                    c if pressed && !event.repeat && c == game.bind(Named::NextWeapon) => {
                         game.arms.next_weapon();
                         log::info!("arms: {}", game.arms.selected.name());
                     }

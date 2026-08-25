@@ -132,10 +132,14 @@ pub enum Named {
     Chase,
     Holo,
     Capture,
+    Bay,
+    NextWeapon,
+    Weapon1,
+    Weapon2,
 }
 
 impl Named {
-    pub const COUNT: usize = 16;
+    pub const COUNT: usize = 20;
     pub const ALL: [Named; Named::COUNT] = [
         Named::Boost,
         Named::Brake,
@@ -153,6 +157,10 @@ impl Named {
         Named::Chase,
         Named::Holo,
         Named::Capture,
+        Named::Bay,
+        Named::NextWeapon,
+        Named::Weapon1,
+        Named::Weapon2,
     ];
 
     /// Menu label.
@@ -174,6 +182,10 @@ impl Named {
             Named::Chase => "CHASE CAM",
             Named::Holo => "HOLO3PP",
             Named::Capture => "CAPTURE",
+            Named::Bay => "SHIP BAY",
+            Named::NextWeapon => "NEXT WEAPON",
+            Named::Weapon1 => "CANNON",
+            Named::Weapon2 => "RAIL",
         }
     }
 
@@ -196,6 +208,10 @@ impl Named {
             Named::Chase => "chase",
             Named::Holo => "holo",
             Named::Capture => "capture",
+            Named::Bay => "bay",
+            Named::NextWeapon => "next-weapon",
+            Named::Weapon1 => "weapon-1",
+            Named::Weapon2 => "weapon-2",
         }
     }
 
@@ -219,6 +235,11 @@ impl Named {
             Named::Chase => KeyCode::KeyY,
             Named::Holo => KeyCode::KeyN,
             Named::Capture => KeyCode::KeyP,
+            Named::Bay => KeyCode::KeyB,
+            // N is the holo3PP; the weapons cycle on U.
+            Named::NextWeapon => KeyCode::KeyU,
+            Named::Weapon1 => KeyCode::Digit1,
+            Named::Weapon2 => KeyCode::Digit2,
         }
     }
 }
