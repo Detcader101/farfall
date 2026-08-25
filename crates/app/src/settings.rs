@@ -25,8 +25,9 @@ fn parse_pair(v: &str) -> Option<[f32; 2]> {
 pub const MENU_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
 pub const MAP_ANCHOR_DEFAULT: [f32; 2] = [0.42, 0.12];
 /// The SHIP bay's panel: right of the hologram, up.
-pub const BAY_ANCHOR_DEFAULT: [f32; 2] = [0.30, 0.45];
+pub const BAY_ANCHOR_DEFAULT: [f32; 2] = [0.95, 0.90];
 pub const BAY_HUE_DEFAULT: f32 = 0.52;
+pub const POINTER_SIZE_DEFAULT: f32 = 0.045;
 pub const BAY_SCANLINES_DEFAULT: f32 = 120.0;
 pub const BAY_SIZE_DEFAULT: f32 = 0.28;
 pub const BAY_SIZE_MIN: f32 = 0.14;
@@ -236,6 +237,8 @@ pub struct Settings {
     pub bay_scanlines: f32,
     pub bay_size: f32,
     pub bay_spin: bool,
+    /// The pointer's height, a fraction of the screen's.
+    pub pointer_size: f32,
     /// Where the SHIP bay's panel sits (top-left, canopy NDC).
     pub bay_anchor: [f32; 2],
 }
@@ -279,6 +282,7 @@ impl Default for Settings {
             bay_scanlines: BAY_SCANLINES_DEFAULT,
             bay_size: BAY_SIZE_DEFAULT,
             bay_spin: true,
+            pointer_size: POINTER_SIZE_DEFAULT,
             bay_anchor: BAY_ANCHOR_DEFAULT,
         }
     }
@@ -385,7 +389,7 @@ impl Settings {
                         s.map_anchor = clamp_anchor(a);
                     }
                 }
-                "ui.panel-bay" => {
+                "ui.panel-bay-card" => {
                     if let Some(a) = parse_pair(v) {
                         s.bay_anchor = clamp_anchor(a);
                     }
@@ -415,6 +419,13 @@ impl Settings {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.bay_size = f.clamp(BAY_SIZE_MIN, BAY_SIZE_MAX);
+                        }
+                    }
+                }
+                "ui.pointer-size" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.pointer_size = f.clamp(0.02, 0.1);
                         }
                     }
                 }
@@ -745,8 +756,9 @@ impl Settings {
             "ship.holo-spin = {}\n",
             if self.bay_spin { "on" } else { "off" }
         ));
+        out.push_str(&format!("ui.pointer-size = {:.3}\n", self.pointer_size));
         out.push_str(&format!(
-            "ui.panel-bay = {:.3},{:.3}\n",
+            "ui.panel-bay-card = {:.3},{:.3}\n",
             self.bay_anchor[0], self.bay_anchor[1]
         ));
         out.push_str(&format!(
@@ -865,6 +877,7 @@ mod tests {
         s.bay_scanlines = 60.0;
         s.bay_size = 0.2;
         s.bay_spin = false;
+        s.pointer_size = 0.06;
         s.readout_anchor = [-0.5, 0.25];
         s.map_grid = false;
         s.plan.dest = Destination::Moon;

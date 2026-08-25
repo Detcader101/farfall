@@ -138,6 +138,7 @@ enum Item {
     BayScanlines,
     BaySize,
     BaySpin,
+    PointerSize,
 }
 
 impl Item {
@@ -177,6 +178,7 @@ impl Item {
             Item::BayScanlines => "SCANLINES",
             Item::BaySize => "HOLO SIZE",
             Item::BaySpin => "HOLO SPIN",
+            Item::PointerSize => "POINTER SIZE",
             Item::DialSelect => "DIAL",
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
@@ -265,6 +267,7 @@ impl Item {
             Item::BayScanlines => format!("{:.0}", s.bay_scanlines),
             Item::BaySize => format!("{:.0}%", s.bay_size * 100.0),
             Item::BaySpin => if s.bay_spin { "ON" } else { "OFF" }.to_string(),
+            Item::PointerSize => format!("{:.0}%", s.pointer_size / 0.045 * 100.0),
         }
     }
 
@@ -340,6 +343,12 @@ impl Menu {
                 Item::Scale,
                 Item::Vsync,
                 Item::Fov,
+                Item::BayHue,
+                Item::BaySaturation,
+                Item::BayScanlines,
+                Item::BaySize,
+                Item::BaySpin,
+                Item::PointerSize,
                 Item::CockpitRes,
                 Item::FpsFloor,
                 Item::Sky,
@@ -402,17 +411,7 @@ impl Menu {
                 Item::MapRings,
                 Item::MapGrid,
             ],
-            Page::Ship => {
-                let mut v: Vec<Item> = Hardpoint::ALL.iter().map(|&h| Item::Mount(h)).collect();
-                v.extend([
-                    Item::BayHue,
-                    Item::BaySaturation,
-                    Item::BayScanlines,
-                    Item::BaySize,
-                    Item::BaySpin,
-                ]);
-                v
-            }
+            Page::Ship => Hardpoint::ALL.iter().map(|&h| Item::Mount(h)).collect(),
         }
     }
 
@@ -468,6 +467,30 @@ impl Menu {
     }
 
     /// A key press while the menu is open.
+    /// A click on the panel's row `row` (0 is the header): the cursor
+    /// goes there and the item is adjusted forward — the pointer's way
+    /// through a menu.
+    pub fn click(&mut self, row: usize, settings: &mut Settings) -> MenuEvent {
+        let items = self.items();
+        if row == 0 || row > VISIBLE_ITEMS {
+            return MenuEvent::Nothing;
+        }
+        let idx = self.scroll + row - 1;
+        if idx >= items.len() {
+            return MenuEvent::Nothing;
+        }
+        self.cursor = idx;
+        self.key(KeyCode::Enter, settings)
+    }
+
+    /// Put the cursor on this item, if the page has it.
+    pub fn set_cursor(&mut self, idx: usize) {
+        if idx < self.items().len() {
+            self.cursor = idx;
+            self.keep_cursor_visible();
+        }
+    }
+
     pub fn key(&mut self, key: KeyCode, settings: &mut Settings) -> MenuEvent {
         let items = self.items();
         let item = items[self.cursor.min(items.len() - 1)];
@@ -717,6 +740,15 @@ impl Menu {
                 s.bay_spin = !s.bay_spin;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::PointerSize => {
+                let before = s.pointer_size;
+                s.pointer_size = (before + if forward { 0.005 } else { -0.005 }).clamp(0.02, 0.1);
+                if (s.pointer_size - before).abs() < 1e-6 {
+                    MenuEvent::Nothing
+                } else {
+                    MenuEvent::Changed(Change::Layout)
+                }
+            }
             Item::Shield => {
                 let step = if forward { 0.25 } else { -0.25 };
                 let next = (s.shield + step).clamp(0.0, 2.0);
@@ -928,7 +960,7 @@ impl Menu {
             match self.page {
                 Page::Controls => "TAB PAGE  ENTER BIND  ESC BACK",
                 Page::Map => "< > SET  ENTER ENGAGE  M CLOSE",
-                Page::Ship => "< > FIT  DRAG TURN  B CLOSE",
+                Page::Ship => "CLICK A SLOT  DRAG TURN  B CLOSE",
                 _ => "TAB PAGE  < > ADJUST  ESC BACK",
             }
         }
@@ -1084,7 +1116,7 @@ mod tests {
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
         m.key(KeyCode::Tab, &mut s); // on to ARMS
         m.key(KeyCode::Tab, &mut s); // and back round to graphics
-        for _ in 0..8 {
+        for _ in 0..m.items().len() - 1 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Quit);
@@ -1214,7 +1246,7 @@ mod tests {
         let mut m = Menu::ship_panel();
         m.toggle();
         assert!(m.open && m.page == Page::Ship);
-        assert_eq!(m.items().len(), Hardpoint::ALL.len() + 5);
+        assert_eq!(m.items().len(), Hardpoint::ALL.len());
         assert_eq!(m.bay_selected(), Some(0), "the nose first");
         // Tab is nothing here: the bay is one panel.
         m.key(KeyCode::Tab, &mut s);
@@ -1233,8 +1265,22 @@ mod tests {
         m.key(KeyCode::ArrowDown, &mut s);
         m.key(KeyCode::ArrowDown, &mut s);
         assert_eq!(m.bay_selected(), Some(3));
-        // The look rows light no pip: hue wraps, the rest clamp, spin flips.
-        m.key(KeyCode::ArrowDown, &mut s);
+        // A click on a row is the cursor there and a step forward; the
+        // header and rows past the list are nothing.
+        assert_eq!(m.click(0, &mut s), MenuEvent::Nothing);
+        assert_eq!(m.click(9, &mut s), MenuEvent::Nothing);
+        let before = s.mounts[1];
+        assert_eq!(m.click(2, &mut s), MenuEvent::Changed(Change::Layout));
+        assert_eq!(m.bay_selected(), Some(1));
+        assert_ne!(s.mounts[1], before);
+        assert!(m.header().contains("SHIP BAY"));
+        assert_eq!(m.key(KeyCode::Escape, &mut s), MenuEvent::Closed);
+        // The look rows live on the GFX page and light no pip: hue wraps,
+        // the rest clamp, spin flips, the pointer sizes.
+        let mut m = Menu::new();
+        m.page = Page::Graphics;
+        let at = m.items().iter().position(|&i| i == Item::BayHue).unwrap();
+        m.set_cursor(at);
         assert_eq!(m.bay_selected(), None);
         let hue = s.bay_hue;
         for _ in 0..24 {
@@ -1264,8 +1310,11 @@ mod tests {
         m.key(KeyCode::ArrowDown, &mut s);
         m.key(KeyCode::ArrowRight, &mut s);
         assert!(!s.bay_spin);
-        assert!(m.header().contains("SHIP BAY"));
-        assert_eq!(m.key(KeyCode::Escape, &mut s), MenuEvent::Closed);
+        m.key(KeyCode::ArrowDown, &mut s);
+        for _ in 0..40 {
+            m.key(KeyCode::ArrowRight, &mut s);
+        }
+        assert_eq!(s.pointer_size, 0.1);
     }
 
     #[test]

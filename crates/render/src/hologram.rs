@@ -56,6 +56,40 @@ impl HologramCamera {
     }
 }
 
+impl HologramCamera {
+    /// Where a model point lands on the screen (NDC), for a pane centred
+    /// at `pane_centre` with `pane_half_w` (NDC) on a screen of `aspect`;
+    /// None behind the eye.
+    pub fn project(
+        &self,
+        at: Vec3,
+        aspect: f32,
+        pane_centre: [f32; 2],
+        pane_half_w: f32,
+    ) -> Option<[f32; 2]> {
+        let rel = at - self.eye;
+        let z = rel.dot(self.fwd);
+        if z <= 1e-3 {
+            return None;
+        }
+        let u = rel.dot(self.right) / (z * self.tan_half_fov);
+        let v = rel.dot(self.up) / (z * self.tan_half_fov);
+        let half_h = pane_half_w * aspect;
+        Some([
+            pane_centre[0] + u * half_h / aspect,
+            pane_centre[1] + v * half_h,
+        ])
+    }
+}
+
+/// A callout: where a hardpoint's label sits on the screen (NDC, the
+/// point the leader line runs to), and whether its dropdown is open.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Callout {
+    pub at: [f32; 2],
+    pub open: bool,
+}
+
 /// The picture this frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HologramScene {
@@ -76,6 +110,10 @@ pub struct HologramScene {
     pub mounts: [MountView; HARDPOINTS],
     pub time_s: f32,
     pub height_px: f32,
+    /// The whole screen is the bay: no pane frame, a deep backdrop.
+    pub fullscreen: bool,
+    /// One per hardpoint; None draws no leader line.
+    pub callouts: [Option<Callout>; HARDPOINTS],
 }
 
 #[repr(C)]
@@ -89,6 +127,7 @@ pub struct HologramUniforms {
     look: [f32; 4],
     misc: [f32; 4],
     pts: [[f32; 4]; HARDPOINTS],
+    rows: [[f32; 4]; HARDPOINTS],
 }
 
 impl HologramUniforms {
@@ -116,8 +155,17 @@ impl HologramUniforms {
                 scene.scanlines.max(0.0),
                 scene.selected.map_or(-1.0, |i| i as f32),
             ],
-            misc: [scene.time_s.rem_euclid(1000.0), scene.height_px, 0.0, 0.0],
+            misc: [
+                scene.time_s.rem_euclid(1000.0),
+                scene.height_px,
+                if scene.fullscreen { 1.0 } else { 0.0 },
+                0.0,
+            ],
             pts,
+            rows: scene.callouts.map(|c| match c {
+                Some(c) => [c.at[0], c.at[1], 1.0, if c.open { 1.0 } else { 0.0 }],
+                None => [0.0; 4],
+            }),
         }
     }
 }
@@ -166,7 +214,30 @@ mod tests {
             mounts,
             time_s: 2.0,
             height_px: 1200.0,
+            fullscreen: true,
+            callouts: [
+                Some(Callout {
+                    at: [0.6, 0.5],
+                    open: true,
+                }),
+                None,
+                None,
+                None,
+            ],
         }
+    }
+
+    /// A model point ahead of the camera projects to where the pane puts
+    /// it: the origin lands on the pane's centre, a point to the camera's
+    /// right lands right of it, and a point behind the eye is None.
+    #[test]
+    fn the_camera_projects_into_the_pane() {
+        let c = HologramCamera::orbit(0.0, 0.0, 20.0, 0.5);
+        let centre = c.project(Vec3::ZERO, 1.6, [0.2, -0.1], 0.3).unwrap();
+        assert!((centre[0] - 0.2).abs() < 1e-5 && (centre[1] + 0.1).abs() < 1e-5);
+        let right = c.project(c.right * 5.0, 1.6, [0.2, -0.1], 0.3).unwrap();
+        assert!(right[0] > 0.2 && (right[1] + 0.1).abs() < 1e-5);
+        assert!(c.project(c.eye - c.fwd, 1.6, [0.0, 0.0], 0.3).is_none());
     }
 
     /// The uniform block is a wire format for hologram.wgsl: pin the lanes.
@@ -175,8 +246,11 @@ mod tests {
         let u = HologramUniforms::new(&scene());
         assert_eq!(
             std::mem::size_of::<HologramUniforms>(),
-            16 * (7 + HARDPOINTS)
+            16 * (7 + 2 * HARDPOINTS)
         );
+        assert_eq!(u.misc[2], 1.0, "fullscreen");
+        assert_eq!(u.rows[0], [0.6, 0.5, 1.0, 1.0], "a callout, open");
+        assert_eq!(u.rows[1][2], 0.0, "no callout");
         assert_eq!(u.eye[3], 0.8, "visibility rides eye.w");
         assert_eq!(u.fwd[3], 0.45, "tan half fov rides fwd.w");
         assert_eq!(u.pane, [0.1, -0.2, 0.3, 1.6]);

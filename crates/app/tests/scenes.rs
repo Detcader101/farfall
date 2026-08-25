@@ -304,28 +304,30 @@ fn the_menu_and_the_dials_draw() {
     assert!(lit > 0.01, "dials on the dash: {lit}");
 }
 
-/// The SHIP bay (B): a screen-fixed pane upper right with the fighter's
-/// own hologram in it, cyan on the pane's dark ground, and its card.
+/// The SHIP bay (B): the whole screen, the fighter's hologram big on the
+/// left over a deep backdrop, leader lines to its card on the right, and
+/// the pointer over it.
 #[test]
-fn the_ship_bay_shows_the_fighter_as_a_cyan_hologram_in_its_pane() {
+fn the_ship_bay_fills_the_screen_with_the_hologram_its_callouts_and_a_pointer() {
     if !enabled() {
         return;
     }
     let f = capture("ship", &[("FARFALL_BENCH_SHIP", "1")]);
-    // The pane: centred at anchor (0.30, 0.45), 0.28 half-wide.
-    let cyan = f.share(0.55, 0.12, 0.75, 0.42, |c| {
+    // The hologram, left of centre: cyan over the backdrop.
+    let cyan = f.share(0.15, 0.35, 0.65, 0.75, |c| {
         c[1] > 0.45 && c[2] > 0.5 && c[0] < 0.5 && c[2] > c[0] + 0.15
     });
-    assert!(
-        cyan > 0.02,
-        "the hologram and its turntable are lit: {cyan}"
-    );
-    // The pane dims what is behind it: the ground inside is dark.
-    let dark = f.share(0.55, 0.12, 0.75, 0.42, |c| lum(c) < 0.30);
-    assert!(dark > 0.4, "the pane's ground is dark: {dark}");
-    // Nothing of it down on the dash.
-    let below = f.share(0.55, 0.6, 0.75, 0.9, |c| {
-        c[1] > 0.45 && c[2] > 0.5 && c[0] < 0.5 && c[2] > c[0] + 0.15
+    assert!(cyan > 0.03, "the hologram is lit: {cyan}");
+    // The backdrop is deep everywhere the hologram is not: the cockpit
+    // behind it is gone.
+    let dark = f.share(0.02, 0.02, 0.98, 0.2, |c| lum(c) < 0.25);
+    assert!(dark > 0.85, "the bay's backdrop covers the screen: {dark}");
+    // The card, top right, has its cyan text.
+    let card = f.share(0.80, 0.03, 0.99, 0.16, |c| {
+        c[1] > 0.45 && c[2] > 0.5 && c[0] < 0.5
     });
-    assert!(below < cyan, "the bay stays in its pane: {below}");
+    assert!(card > 0.01, "the card is up: {card}");
+    // The pointer: a bright arrow with a dark edge at 62%, 36%.
+    let pointer = f.share(0.60, 0.34, 0.66, 0.42, |c| lum(c) > 0.6);
+    assert!(pointer > 0.001, "the pointer is drawn: {pointer}");
 }

@@ -22,6 +22,7 @@ pub mod hologram;
 pub mod hud;
 pub mod instrument;
 pub mod planet;
+pub mod pointer;
 pub mod shaders;
 pub mod shield;
 pub mod starfield;

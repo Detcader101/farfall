@@ -107,9 +107,9 @@ impl Mount {
 pub const STOCK: [Mount; 4] = [Mount::Rail, Mount::Cannon, Mount::Cannon, Mount::Empty];
 
 /// The orbit camera's reach, ship metres from the hull's middle.
-pub const DIST_MIN: f32 = 14.0;
-pub const DIST_MAX: f32 = 60.0;
-pub const DIST_STOCK: f32 = 26.0;
+pub const DIST_MIN: f32 = 22.0;
+pub const DIST_MAX: f32 = 110.0;
+pub const DIST_STOCK: f32 = 48.0;
 /// The bay's slow yaw when nobody is turning it, rad/s.
 pub const SPIN_RADPS: f32 = 0.25;
 /// How long a drag holds the spin off, seconds.

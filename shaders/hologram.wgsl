@@ -26,11 +26,14 @@ struct Hologram {
     // x: hologram hue 0..1, y: saturation 0..1, z: scanline density
     // (lines per pane height), w: chosen hardpoint (-1 none)
     look: vec4<f32>,
-    // x: time (s), y: surface height px, zw: unused
+    // x: time (s), y: surface height px, z: fullscreen (no pane frame,
+    // a deep backdrop), w: unused
     misc: vec4<f32>,
     // xyz: each hardpoint, model frame (ship m); w: 0 empty, 1 cannon,
     // 2 rail
     pts: array<vec4<f32>, 4>,
+    // xy: each hardpoint's label point (NDC), z: drawn, w: dropdown open
+    rows: array<vec4<f32>, 4>,
 }
 
 @group(0) @binding(0) var<uniform> holo: Hologram;
@@ -128,11 +131,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let half = vec2<f32>(holo.pane.z * aspect);
     let box_d = max(abs(local.x) - half.x, abs(local.y) - half.y);
     let aa_ndc = max(fwidth(local.x), 1e-4) * 1.2;
-    let inside = 1.0 - smoothstep(0.0, aa_ndc, box_d);
+    let full = holo.misc.z > 0.5;
+    var inside = 1.0 - smoothstep(0.0, aa_ndc, box_d);
     let frame_w = 0.004;
     let edge = 1.0 - smoothstep(0.0, aa_ndc, abs(box_d) - frame_w);
     let corner = step(0.82, min(abs(local.x) / half.x, abs(local.y) / half.y));
-    let frame = edge * (0.35 + 0.65 * corner);
+    var frame = edge * (0.35 + 0.65 * corner);
+    if (full) {
+        inside = 1.0;
+        frame = 0.0;
+    }
     if (inside < 0.001 && frame < 0.001) {
         return vec4<f32>(vec3<f32>(0.0), DIM_ALPHA * vis);
     }
@@ -242,8 +250,56 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         colour += pip * behind;
     }
 
-    let ground = vec3<f32>(0.01, 0.02, 0.04);
-    let alpha = mix(DIM_ALPHA, PANE_ALPHA, inside) * vis;
+    // The callouts: a leader from each hardpoint's pip to its label —
+    // straight to a knee level with the label, then across to it — with
+    // a bead at the pip and a bar under an open dropdown.
+    let sndc = in.ndc * vec2<f32>(aspect, 1.0);
+    let line_w = 0.0022;
+    for (var i = 0u; i < 4u; i += 1u) {
+        let row = holo.rows[i];
+        if (row.z < 0.5) {
+            continue;
+        }
+        let rel = holo.pts[i].xyz - eye;
+        let z = dot(rel, holo.fwd.xyz);
+        if (z <= 1e-3) {
+            continue;
+        }
+        let u = dot(rel, holo.right.xyz) / (z * tan_half);
+        let v = dot(rel, holo.up.xyz) / (z * tan_half);
+        let pip = (holo.pane.xy + vec2<f32>(u * half.y / aspect, v * half.y)) * vec2<f32>(aspect, 1.0);
+        let lab = row.xy * vec2<f32>(aspect, 1.0);
+        let knee = vec2<f32>(mix(pip.x, lab.x, 0.55), lab.y);
+        let d = min(seg_dist(sndc, pip, knee), seg_dist(sndc, knee, lab));
+        let chosen = i32(i) == sel;
+        let strength = select(0.35, 0.9, chosen);
+        let line = (1.0 - smoothstep(line_w * 0.5, line_w * 1.5, d)) * strength;
+        let bead = 1.0 - smoothstep(0.006, 0.010, length(sndc - pip));
+        let tip = 1.0 - smoothstep(0.004, 0.008, length(sndc - lab));
+        var lc = cyan;
+        if (chosen) {
+            lc = mix(cyan, amber, 0.6);
+        }
+        colour += lc * (line + bead * strength + tip * strength);
+        if (row.w > 0.5) {
+            // The dropdown's bar: a hairline down from the label.
+            let bar = seg_dist(sndc, lab, lab + vec2<f32>(0.0, -0.09));
+            colour += amber * (1.0 - smoothstep(line_w * 0.5, line_w * 1.5, bar)) * 0.5;
+        }
+    }
+
+    // The ground: the pane's dark glass, or in the bay a deep backdrop —
+    // a cold vignette with a faint horizon glow low down.
+    var ground = vec3<f32>(0.01, 0.02, 0.04);
+    var alpha = mix(DIM_ALPHA, PANE_ALPHA, inside) * vis;
+    if (full) {
+        let r = length(in.ndc * vec2<f32>(aspect * 0.7, 1.0));
+        let vignette = 1.0 - smoothstep(0.3, 1.6, r);
+        let horizon = exp(-abs(in.ndc.y + 0.55) * 4.0) * 0.5;
+        ground = mix(vec3<f32>(0.004, 0.006, 0.012), vec3<f32>(0.02, 0.05, 0.09), vignette)
+            + cyan * horizon * 0.06;
+        alpha = 0.995 * vis;
+    }
     let lit = (colour * flick * scan * inside + cyan * frame * 0.9) * vis;
     return vec4<f32>(ground * alpha * inside + lit, alpha);
 }
