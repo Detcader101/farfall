@@ -11,12 +11,14 @@
 //! cancels). Every change is applied at once and written to the settings
 //! file; there is no "save" — the file is the state.
 
+use crate::bay::Hardpoint;
 use crate::cockpit::Instrument;
 use crate::input::{is_reserved, key_name, Action, Named};
 use crate::settings::{
     Settings, COCKPIT_RES_CHOICES, FOV_MAX, FOV_MIN, FPS_FLOOR_CHOICES, HOOP_SIZE_MAX,
     HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
 };
+use crate::settings::{BAY_SCANLINES_MAX, BAY_SIZE_MAX, BAY_SIZE_MIN};
 use farfall_render::text::TextBitmap;
 use winit::keyboard::KeyCode;
 
@@ -28,6 +30,8 @@ pub enum Page {
     Gauges,
     Arms,
     Map,
+    /// The SHIP bay: the hologram's own panel (B), not a page.
+    Ship,
 }
 
 impl Page {
@@ -48,6 +52,7 @@ impl Page {
             Page::Gauges => "GAUGES",
             Page::Arms => "ARMS",
             Page::Map => "MAP",
+            Page::Ship => "SHIP",
         }
     }
 
@@ -59,6 +64,7 @@ impl Page {
             Page::Gauges => "GAUGES",
             Page::Arms => "ARMS",
             Page::Map => "MAP",
+            Page::Ship => "SHIP",
         }
     }
 }
@@ -131,6 +137,14 @@ enum Item {
     ArmsSight,
     /// The camera on the head: sway, tremor, jolts.
     CamShake,
+    /// The SHIP bay: what each hardpoint carries, and the hologram's look.
+    Mount(Hardpoint),
+    BayHue,
+    BaySaturation,
+    BayScanlines,
+    BaySize,
+    BaySpin,
+    PointerSize,
 }
 
 impl Item {
@@ -169,6 +183,13 @@ impl Item {
             Item::ArmsShardLife => "DEBRIS LIFE",
             Item::ArmsScarSize => "SCARS",
             Item::ArmsScarCool => "SCAR COOLING",
+            Item::Mount(h) => h.name(),
+            Item::BayHue => "HOLO HUE",
+            Item::BaySaturation => "HOLO COLOUR",
+            Item::BayScanlines => "SCANLINES",
+            Item::BaySize => "HOLO SIZE",
+            Item::BaySpin => "HOLO SPIN",
+            Item::PointerSize => "POINTER SIZE",
             Item::DialSelect => "DIAL",
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
@@ -287,6 +308,13 @@ impl Item {
                     "OFF".to_string()
                 }
             }
+            Item::Mount(h) => s.mounts[h as usize].name().to_string(),
+            Item::BayHue => format!("{:.0}", s.bay_hue * 360.0),
+            Item::BaySaturation => format!("{:.0}%", s.bay_saturation * 100.0),
+            Item::BayScanlines => format!("{:.0}", s.bay_scanlines),
+            Item::BaySize => format!("{:.0}%", s.bay_size * 100.0),
+            Item::BaySpin => if s.bay_spin { "ON" } else { "OFF" }.to_string(),
+            Item::PointerSize => format!("{:.0}%", s.pointer_size / 0.045 * 100.0),
         }
     }
 
@@ -357,6 +385,12 @@ impl Menu {
                 Item::Camera,
                 Item::HoloView,
                 Item::HoloSize,
+                Item::BayHue,
+                Item::BaySaturation,
+                Item::BayScanlines,
+                Item::BaySize,
+                Item::BaySpin,
+                Item::PointerSize,
                 Item::CockpitRes,
                 Item::FpsFloor,
                 Item::Sky,
@@ -426,6 +460,7 @@ impl Menu {
                 Item::MapRings,
                 Item::MapGrid,
             ],
+            Page::Ship => Hardpoint::ALL.iter().map(|&h| Item::Mount(h)).collect(),
         }
     }
 
@@ -451,6 +486,23 @@ impl Menu {
         }
     }
 
+    /// The SHIP bay's panel: the fit and the trim, beside the hologram.
+    pub fn ship_panel() -> Self {
+        Self {
+            standalone: true,
+            page: Page::Ship,
+            ..Self::default()
+        }
+    }
+
+    /// The hardpoint the cursor is on, for the hologram to light.
+    pub fn bay_selected(&self) -> Option<usize> {
+        match self.items().get(self.cursor) {
+            Some(Item::Mount(h)) => Some(*h as usize),
+            _ => None,
+        }
+    }
+
     pub fn toggle(&mut self) {
         self.open = !self.open;
         self.rebinding = false;
@@ -464,6 +516,30 @@ impl Menu {
     }
 
     /// A key press while the menu is open.
+    /// A click on the panel's row `row` (0 is the header): the cursor
+    /// goes there and the item is adjusted forward — the pointer's way
+    /// through a menu.
+    pub fn click(&mut self, row: usize, settings: &mut Settings) -> MenuEvent {
+        let items = self.items();
+        if row == 0 || row > VISIBLE_ITEMS {
+            return MenuEvent::Nothing;
+        }
+        let idx = self.scroll + row - 1;
+        if idx >= items.len() {
+            return MenuEvent::Nothing;
+        }
+        self.cursor = idx;
+        self.key(KeyCode::Enter, settings)
+    }
+
+    /// Put the cursor on this item, if the page has it.
+    pub fn set_cursor(&mut self, idx: usize) {
+        if idx < self.items().len() {
+            self.cursor = idx;
+            self.keep_cursor_visible();
+        }
+    }
+
     pub fn key(&mut self, key: KeyCode, settings: &mut Settings) -> MenuEvent {
         let items = self.items();
         let item = items[self.cursor.min(items.len() - 1)];
@@ -723,6 +799,58 @@ impl Menu {
                 s.arms_scar_cool = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::Mount(h) => {
+                let i = h as usize;
+                s.mounts[i] = s.mounts[i].next(forward);
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::BayHue => {
+                s.bay_hue =
+                    (s.bay_hue + if forward { 1.0 / 24.0 } else { -1.0 / 24.0 }).rem_euclid(1.0);
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::BaySaturation => {
+                let before = s.bay_saturation;
+                s.bay_saturation = (before + if forward { 0.1 } else { -0.1 }).clamp(0.0, 1.0);
+                if (s.bay_saturation - before).abs() < 1e-6 {
+                    MenuEvent::Nothing
+                } else {
+                    MenuEvent::Changed(Change::Layout)
+                }
+            }
+            Item::BayScanlines => {
+                let before = s.bay_scanlines;
+                s.bay_scanlines =
+                    (before + if forward { 20.0 } else { -20.0 }).clamp(0.0, BAY_SCANLINES_MAX);
+                if (s.bay_scanlines - before).abs() < 1e-6 {
+                    MenuEvent::Nothing
+                } else {
+                    MenuEvent::Changed(Change::Layout)
+                }
+            }
+            Item::BaySize => {
+                let before = s.bay_size;
+                s.bay_size =
+                    (before + if forward { 0.02 } else { -0.02 }).clamp(BAY_SIZE_MIN, BAY_SIZE_MAX);
+                if (s.bay_size - before).abs() < 1e-6 {
+                    MenuEvent::Nothing
+                } else {
+                    MenuEvent::Changed(Change::Layout)
+                }
+            }
+            Item::BaySpin => {
+                s.bay_spin = !s.bay_spin;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::PointerSize => {
+                let before = s.pointer_size;
+                s.pointer_size = (before + if forward { 0.005 } else { -0.005 }).clamp(0.02, 0.1);
+                if (s.pointer_size - before).abs() < 1e-6 {
+                    MenuEvent::Nothing
+                } else {
+                    MenuEvent::Changed(Change::Layout)
+                }
+            }
             Item::Shield => {
                 let step = if forward { 0.25 } else { -0.25 };
                 let next = (s.shield + step).clamp(0.0, 2.0);
@@ -909,7 +1037,11 @@ impl Menu {
     fn header(&self) -> String {
         let mut header = String::new();
         if self.standalone {
-            header.push_str(&format!("[{}]  WORMHOLE DRIVE", self.page.name()));
+            let title = match self.page {
+                Page::Ship => "SHIP BAY",
+                _ => "WORMHOLE DRIVE",
+            };
+            header.push_str(&format!("[{}]  {title}", self.page.name()));
         } else {
             // Short names, so four pages fit the row.
             for p in Page::ALL {
@@ -944,6 +1076,7 @@ impl Menu {
             match self.page {
                 Page::Controls => "TAB PAGE  ENTER BIND  ESC BACK",
                 Page::Map => "< > SET  ENTER ENGAGE  M CLOSE",
+                Page::Ship => "CLICK A SLOT  DRAG TURN  B CLOSE",
                 _ => "TAB PAGE  < > ADJUST  ESC BACK",
             }
         }
@@ -1099,9 +1232,7 @@ mod tests {
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
         m.key(KeyCode::Tab, &mut s); // on to ARMS
         m.key(KeyCode::Tab, &mut s); // and back round to graphics
-                                     // QUIT is the last row; the walk must cross CAMERA and both HOLO
-                                     // rows on the way down.
-        for _ in 0..11 {
+        for _ in 0..m.items().len() - 1 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Quit);
@@ -1131,7 +1262,7 @@ mod tests {
     #[test]
     fn every_row_of_every_page_fits_the_panel() {
         for s in [Settings::default(), widest_settings()] {
-            for mut m in [Menu::new(), Menu::map_panel()] {
+            for mut m in [Menu::new(), Menu::map_panel(), Menu::ship_panel()] {
                 m.toggle();
                 for _ in 0..Page::ALL.len() {
                     assert!(
@@ -1226,7 +1357,7 @@ mod tests {
                     assert!(on(Item::ArmsSight));
                     assert!(items.len() >= 2);
                 }
-                Page::Map => unreachable!(),
+                Page::Map | Page::Ship => unreachable!(),
             }
         }
         // The map's own page has the drive and its look, nothing else.
@@ -1235,6 +1366,83 @@ mod tests {
             i,
             Item::Destination | Item::SafeDist | Item::Engage | Item::MapRings | Item::MapGrid
         )));
+    }
+
+    #[test]
+    fn the_ship_panel_fits_the_hardpoints_and_never_pages() {
+        let mut s = Settings::default();
+        let mut m = Menu::ship_panel();
+        m.toggle();
+        assert!(m.open && m.page == Page::Ship);
+        assert_eq!(m.items().len(), Hardpoint::ALL.len());
+        assert_eq!(m.bay_selected(), Some(0), "the nose first");
+        // Tab is nothing here: the bay is one panel.
+        m.key(KeyCode::Tab, &mut s);
+        assert_eq!(m.page, Page::Ship);
+        // Round the nose's mounts: rail -> empty -> cannon.
+        let before = s.mounts[0];
+        assert_eq!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::Changed(Change::Layout)
+        );
+        assert_ne!(s.mounts[0], before);
+        m.key(KeyCode::ArrowLeft, &mut s);
+        assert_eq!(s.mounts[0], before);
+        // Down to the belly: the hologram's chosen pip follows.
+        m.key(KeyCode::ArrowDown, &mut s);
+        m.key(KeyCode::ArrowDown, &mut s);
+        m.key(KeyCode::ArrowDown, &mut s);
+        assert_eq!(m.bay_selected(), Some(3));
+        // A click on a row is the cursor there and a step forward; the
+        // header and rows past the list are nothing.
+        assert_eq!(m.click(0, &mut s), MenuEvent::Nothing);
+        assert_eq!(m.click(9, &mut s), MenuEvent::Nothing);
+        let before = s.mounts[1];
+        assert_eq!(m.click(2, &mut s), MenuEvent::Changed(Change::Layout));
+        assert_eq!(m.bay_selected(), Some(1));
+        assert_ne!(s.mounts[1], before);
+        assert!(m.header().contains("SHIP BAY"));
+        assert_eq!(m.key(KeyCode::Escape, &mut s), MenuEvent::Closed);
+        // The look rows live on the GFX page and light no pip: hue wraps,
+        // the rest clamp, spin flips, the pointer sizes.
+        let mut m = Menu::new();
+        m.page = Page::Graphics;
+        let at = m.items().iter().position(|&i| i == Item::BayHue).unwrap();
+        m.set_cursor(at);
+        assert_eq!(m.bay_selected(), None);
+        let hue = s.bay_hue;
+        for _ in 0..24 {
+            m.key(KeyCode::ArrowRight, &mut s);
+        }
+        assert!(
+            (s.bay_hue - hue).abs() < 1e-4,
+            "hue wraps round: {}",
+            s.bay_hue
+        );
+        m.key(KeyCode::ArrowDown, &mut s);
+        assert_eq!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::Nothing,
+            "saturation is full"
+        );
+        m.key(KeyCode::ArrowLeft, &mut s);
+        assert!((s.bay_saturation - 0.9).abs() < 1e-6);
+        m.key(KeyCode::ArrowDown, &mut s);
+        m.key(KeyCode::ArrowLeft, &mut s);
+        assert_eq!(s.bay_scanlines, 100.0);
+        m.key(KeyCode::ArrowDown, &mut s);
+        for _ in 0..40 {
+            m.key(KeyCode::ArrowRight, &mut s);
+        }
+        assert_eq!(s.bay_size, BAY_SIZE_MAX);
+        m.key(KeyCode::ArrowDown, &mut s);
+        m.key(KeyCode::ArrowRight, &mut s);
+        assert!(!s.bay_spin);
+        m.key(KeyCode::ArrowDown, &mut s);
+        for _ in 0..40 {
+            m.key(KeyCode::ArrowRight, &mut s);
+        }
+        assert_eq!(s.pointer_size, 0.1);
     }
 
     #[test]

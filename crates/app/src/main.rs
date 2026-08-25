@@ -9,6 +9,7 @@
 //! flight assist is toggleable. Planet, HUD, and sun arrive in M1 tasks 4-6.
 
 mod arms;
+mod bay;
 mod belt;
 mod capture;
 mod cockpit;
@@ -55,10 +56,15 @@ use farfall_render::{
     },
     ghost::{ghost_pass, GhostPass, GhostUniforms, GHOST_LIFE_S},
     holo::{holo_centre, holo_pass, HoloPass, HoloScene, HoloUniforms, HOLO_RADIUS_M},
+    hologram::{
+        hologram_pass, Callout, HologramCamera, HologramPass, HologramScene, HologramUniforms,
+        MountView,
+    },
     hud::HudPass,
     instrument::InstrumentPass,
     jet::{jet_pass, JetPass, JetUniforms},
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
+    pointer::{pointer_pass, PointerPass, PointerUniforms},
     shield::{shield_pass, Impact, ShieldPass, ShieldUniforms},
     starfield::StarfieldPass,
     text::TextBitmap,
@@ -82,6 +88,49 @@ const STAR_DENSITY: f64 = 1.0;
 /// concern (planet rotation, orbit) and does not belong in the renderer.
 /// Chosen so the terminator crosses the visible face at spawn.
 /// How often the frame-time window is summarised to the log.
+/// A row of the SHIP bay's card.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BayRow {
+    Header,
+    Slot(usize),
+    Option(usize, bay::Mount),
+    Footer,
+}
+
+/// What a panel's answer does: settings saved and applied, the drive
+/// fired, or the game left.
+fn apply_menu_event(
+    game: &mut Game,
+    gpu: &mut Gpu,
+    event_loop: &winit::event_loop::ActiveEventLoop,
+    ev: MenuEvent,
+) {
+    match ev {
+        MenuEvent::Changed(change) => {
+            game.settings.save();
+            match change {
+                Change::Bindings => {
+                    game.input.set_bindings(game.settings.bindings);
+                    game.look.sensitivity = game.settings.look_sensitivity;
+                }
+                Change::Graphics => gpu.apply_graphics(&game.settings),
+                Change::Layout => game.arms.mounts = game.settings.mounts,
+            }
+        }
+        MenuEvent::Quit => {
+            game.log_exit("menu quit");
+            event_loop.exit();
+        }
+        MenuEvent::Engage => {
+            game.settings.save();
+            game.engage_warp();
+        }
+        MenuEvent::Closed | MenuEvent::Nothing => {}
+    }
+}
+
+/// The bay camera's field of view: tan of half of it.
+const BAY_TAN_HALF_FOV: f32 = 0.42;
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
 /// A glass anchor as the turned head sees it: the glass is a sphere about
 /// the pilot, so every element is re-projected, not slid (look.rs). The
@@ -200,6 +249,8 @@ enum Dragged {
     MapPanel,
     /// The holo3PP panel.
     HoloPanel,
+    /// The SHIP bay's hologram pane with its card.
+    BayPanel,
 }
 
 impl Dragged {
@@ -210,6 +261,7 @@ impl Dragged {
             Dragged::Readout => "READOUT",
             Dragged::MapPanel => "MAP",
             Dragged::HoloPanel => "HOLO3PP",
+            Dragged::BayPanel => "SHIP BAY",
         }
     }
 }
@@ -262,6 +314,7 @@ const MACH1_MPS: f64 = 340.0;
 ///                           (else at rest) and FARFALL_BENCH_LOOK=x,y,z
 ///   FARFALL_BENCH_ROLL=rad (benchmark only: rolled about the look axis)
 ///                           for where the nose points (else the planet)
+///   FARFALL_BENCH_SHIP=1   (benchmark only: open the SHIP bay for a capture)
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
@@ -528,6 +581,10 @@ struct Gpu {
     hud: HudPass,
     /// The system map pane, native resolution like the text.
     map: InstrumentPass,
+    /// The SHIP bay's hologram pane.
+    hologram: HologramPass,
+    /// The panels' mouse pointer.
+    pointer: PointerPass,
     text: TextBitmap,
     cfg: Config,
     perf: Perf,
@@ -946,6 +1003,13 @@ struct Game {
     drag: Option<(Dragged, [f32; 2])>,
     /// The map's orbiting camera.
     map_view: map::MapView,
+    /// The SHIP bay: its card and its orbiting camera.
+    bay_panel: Menu,
+    bay_view: bay::BayView,
+    /// The bay card's open dropdown, by hardpoint.
+    bay_dropdown: Option<usize>,
+    /// The pointer's click flash, 1 on a press, fading.
+    press_flash: f32,
     /// Jumps made, for the drive's crack.
     jumps: u32,
     /// Bench: thrust and RCS demands forced for a capture.
@@ -1066,6 +1130,10 @@ impl Game {
             look: Look::new(),
             drag: None,
             map_view: map::MapView::default(),
+            bay_panel: Menu::ship_panel(),
+            bay_view: bay::BayView::default(),
+            bay_dropdown: None,
+            press_flash: 0.0,
             jumps: 0,
             bench_thrust: std::env::var("FARFALL_BENCH_THRUST").ok().and_then(|v| {
                 let xs: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -1108,6 +1176,8 @@ impl Game {
         self.settings = settings;
         self.input.set_bindings(settings.bindings);
         self.look.sensitivity = settings.look_sensitivity;
+        // The guns fire from whatever the bay mounted.
+        self.arms.mounts = settings.mounts;
     }
 
     /// The Sun and the Moon as the camera sees them: where the sim has them
@@ -1199,9 +1269,19 @@ impl Game {
         self.map_panel.open
     }
 
+    /// The SHIP bay (and its card) is up.
+    fn bay_open(&self) -> bool {
+        self.bay_panel.open
+    }
+
+    /// A pane with a picture is up: the map or the bay.
+    fn pane_open(&self) -> bool {
+        self.map_open() || self.bay_open()
+    }
+
     /// Any panel is up: the world waits and the keys go to it.
     fn panel_open(&self) -> bool {
-        self.menu.open || self.map_panel.open || self.design
+        self.menu.open || self.map_panel.open || self.bay_panel.open || self.design
     }
 
     /// M: the map up or down. One panel at a time.
@@ -1209,6 +1289,17 @@ impl Game {
         self.map_panel.toggle();
         if self.map_panel.open {
             self.menu.open = false;
+            self.bay_panel.open = false;
+        }
+        self.input.release_all();
+    }
+
+    /// B: the SHIP bay up or down. One panel at a time.
+    fn toggle_bay(&mut self) {
+        self.bay_panel.toggle();
+        if self.bay_panel.open {
+            self.menu.open = false;
+            self.map_panel.open = false;
         }
         self.input.release_all();
     }
@@ -1218,8 +1309,206 @@ impl Game {
         self.menu.toggle();
         if self.menu.open {
             self.map_panel.open = false;
+            self.bay_panel.open = false;
         }
         self.input.release_all();
+    }
+
+    /// The bay takes the whole screen: the hologram's centre sits left of
+    /// the middle (the card is on the right) and the "pane" covers it all.
+    /// The anchor is where the card hangs; HOLO SIZE scales the picture.
+    fn bay_pane(&self) -> [f32; 3] {
+        [
+            -0.22,
+            -0.05,
+            1.3 * self.settings.bay_size / settings::BAY_SIZE_DEFAULT,
+        ]
+    }
+
+    /// Where the bay's card starts: its top-right at the anchor. A flat
+    /// block's width on the screen is `text_w` over the aspect.
+    fn bay_text_anchor(&self, aspect: f32, text_w: f32) -> [f32; 2] {
+        let a = self.settings.bay_anchor;
+        let w = text_w / aspect;
+        [(a[0] - w).clamp(-0.98, 0.98 - w), a[1].clamp(-0.5, 0.95)]
+    }
+
+    /// The card's rows, top to bottom: the header, a row per hardpoint
+    /// (its dropdown's options under the open one), the footer.
+    fn bay_rows(&self) -> Vec<BayRow> {
+        let mut rows = vec![BayRow::Header];
+        for i in 0..bay::Hardpoint::ALL.len() {
+            rows.push(BayRow::Slot(i));
+            if self.bay_dropdown == Some(i) {
+                for m in bay::Mount::ALL {
+                    rows.push(BayRow::Option(i, m));
+                }
+            }
+        }
+        rows.push(BayRow::Footer);
+        rows
+    }
+
+    /// The card: a diagram's labels, not a menu — one line per slot with
+    /// its mount, the open slot's options under it.
+    fn render_bay_card(&self, text: &mut TextBitmap) {
+        text.clear();
+        let selected = self.bay_panel.bay_selected();
+        for (row, r) in self.bay_rows().iter().enumerate() {
+            let line = match *r {
+                BayRow::Header => "SHIP BAY                    FIT".to_string(),
+                BayRow::Slot(i) => {
+                    let h = bay::Hardpoint::ALL[i];
+                    let open = self.bay_dropdown == Some(i);
+                    let mark = if open { "^" } else { "v" };
+                    let cur = if selected == Some(i) { ">" } else { " " };
+                    format!(
+                        "{cur}{:<9}{:>18} {mark}",
+                        h.name(),
+                        self.settings.mounts[i].name()
+                    )
+                }
+                BayRow::Option(i, m) => {
+                    let on = self.settings.mounts[i] == m;
+                    format!("   {} {}", if on { "*" } else { " " }, m.name())
+                }
+                BayRow::Footer => "CLICK A SLOT  DRAG TURN  B CLOSE".to_string(),
+            };
+            text.draw(0, row * 6, &line);
+        }
+    }
+
+    /// The card's chosen slot row, for the highlight band.
+    fn bay_highlight_row(&self) -> Option<(f32, f32)> {
+        let sel = self.bay_panel.bay_selected()?;
+        self.bay_rows()
+            .iter()
+            .position(|r| *r == BayRow::Slot(sel))
+            .map(|row| ((row * 6) as f32, 6.0))
+    }
+
+    /// A click in the bay, at `at` (NDC): a card row (a slot opens or
+    /// closes its dropdown; an option fits it), or a pip on the hologram
+    /// (its slot is chosen). True when the click was taken.
+    fn bay_click(&mut self, at: [f32; 2], aspect: f32, text_w: f32, px: f32) -> bool {
+        let anchor = self.bay_text_anchor(aspect, text_w);
+        let rows = self.bay_rows();
+        let w = text_w / aspect;
+        let on_card = at[0] >= anchor[0] - 0.01 && at[0] <= anchor[0] + w + 0.01;
+        if on_card && at[1] <= anchor[1] {
+            let row = ((anchor[1] - at[1]) / (6.0 * px)).floor() as usize;
+            match rows.get(row).copied() {
+                Some(BayRow::Slot(i)) => {
+                    self.bay_panel.set_cursor(i);
+                    self.bay_dropdown = if self.bay_dropdown == Some(i) {
+                        None
+                    } else {
+                        Some(i)
+                    };
+                    return true;
+                }
+                Some(BayRow::Option(i, m)) => {
+                    self.settings.mounts[i] = m;
+                    self.arms.mounts = self.settings.mounts;
+                    self.settings.save();
+                    self.bay_dropdown = None;
+                    return true;
+                }
+                Some(BayRow::Header) | Some(BayRow::Footer) => return true,
+                None => {}
+            }
+        }
+        // A pip: the nearest hardpoint on the screen, if close.
+        let [cx, cy, hw] = self.bay_pane();
+        let v = &self.bay_view;
+        let cam = HologramCamera::orbit(v.yaw, v.pitch, v.dist, BAY_TAN_HALF_FOV);
+        let mut best: Option<(usize, f32)> = None;
+        for (i, h) in bay::Hardpoint::ALL.iter().enumerate() {
+            if let Some(p) = cam.project(h.pos().as_vec3(), aspect, [cx, cy], hw) {
+                let d = ((p[0] - at[0]) * aspect).hypot(p[1] - at[1]);
+                if d < 0.05 && best.is_none_or(|b| d < b.1) {
+                    best = Some((i, d));
+                }
+            }
+        }
+        if let Some((i, _)) = best {
+            self.bay_panel.set_cursor(i);
+            self.bay_dropdown = Some(i);
+            return true;
+        }
+        false
+    }
+
+    /// The bay's hologram this frame. `text`: the card's anchor (NDC) and
+    /// font pixel, for the callouts' label points.
+    fn hologram_uniforms(
+        &self,
+        aspect: f32,
+        time_s: f32,
+        height_px: f32,
+        text: ([f32; 2], f32),
+    ) -> HologramUniforms {
+        let [cx, cy, hw] = self.bay_pane();
+        let rows = self.bay_rows();
+        let mut callouts = [None; farfall_render::hologram::HARDPOINTS];
+        for (i, c) in callouts.iter_mut().enumerate() {
+            if let Some(row) = rows.iter().position(|r| *r == BayRow::Slot(i)) {
+                *c = Some(Callout {
+                    at: [
+                        text.0[0] - 0.012,
+                        text.0[1] - (row as f32 + 0.5) * 6.0 * text.1,
+                    ],
+                    open: self.bay_dropdown == Some(i),
+                });
+            }
+        }
+        let v = &self.bay_view;
+        let mut mounts = [MountView {
+            at: Vec3::ZERO,
+            kind: 0,
+        }; farfall_render::hologram::HARDPOINTS];
+        for ((m, h), fit) in mounts
+            .iter_mut()
+            .zip(bay::Hardpoint::ALL.iter())
+            .zip(self.settings.mounts.iter())
+        {
+            *m = MountView {
+                at: h.pos().as_vec3(),
+                kind: fit.kind(),
+            };
+        }
+        HologramUniforms::new(&HologramScene {
+            camera: HologramCamera::orbit(v.yaw, v.pitch, v.dist, BAY_TAN_HALF_FOV),
+            pane_centre: [cx, cy],
+            pane_half_w: hw,
+            aspect,
+            visibility: if self.bay_open() { 1.0 } else { 0.0 },
+            hue: self.settings.bay_hue,
+            saturation: self.settings.bay_saturation,
+            scanlines: self.settings.bay_scanlines,
+            selected: self.bay_panel.bay_selected(),
+            mounts,
+            time_s,
+            height_px,
+            fullscreen: true,
+            callouts,
+        })
+    }
+
+    /// The pointer this frame: at the cursor whenever a panel is up.
+    fn pointer_uniforms(&self, aspect: f32, time_s: f32) -> PointerUniforms {
+        let tip = if self.panel_open() {
+            self.cursor_screen()
+        } else {
+            None
+        };
+        PointerUniforms::new(
+            tip,
+            self.settings.pointer_size,
+            aspect,
+            self.press_flash,
+            time_s,
+        )
     }
 
     /// The map pane's geometry this frame.
@@ -1249,6 +1538,8 @@ impl Game {
         }
         if self.map_open() {
             self.drive_text_anchor(aspect, text_w)
+        } else if self.bay_open() {
+            self.bay_text_anchor(aspect, text_w)
         } else if self.menu.open {
             self.settings.menu_anchor
         } else {
@@ -1360,7 +1651,7 @@ impl Game {
     /// design card are on the glass, re-projected like a dial.
     fn text_screen_anchor(&self, cam: &CameraFrame, text_w: f32) -> [f32; 2] {
         let a = self.text_anchor(cam.aspect, text_w);
-        if self.menu.open || self.map_open() {
+        if self.menu.open || self.pane_open() {
             a
         } else {
             on_glass(&self.look, cam, self.ref_tan(), a)
@@ -1374,6 +1665,8 @@ impl Game {
             Some(self.menu.cursor_row_px())
         } else if self.map_panel.open {
             Some(self.map_panel.cursor_row_px())
+        } else if self.bay_panel.open {
+            self.bay_highlight_row()
         } else {
             None
         }
@@ -1457,6 +1750,7 @@ impl Game {
         if self.design {
             self.menu.open = false;
             self.map_panel.open = false;
+            self.bay_panel.open = false;
         } else {
             self.settings.save();
         }
@@ -2317,6 +2611,7 @@ impl Game {
             self.arms.shard_life_s = self.settings.arms_shard_life;
             self.arms.scar_size = self.settings.arms_scar_size;
             self.arms.scar_cool_s = self.settings.arms_scar_cool;
+            self.arms.mounts = self.settings.mounts;
             let trigger = self.fire_held && !self.menu.open && !self.map_open() && !self.design;
             let kick = self.arms.step(
                 self.state.time_s,
@@ -2658,6 +2953,23 @@ impl Game {
             }
             return false;
         }
+        if self.bay_open() {
+            let [cx, cy, hw] = self.bay_pane();
+            let hh = hw * cam.aspect;
+            let inside = (gaze[0] - cx).abs() <= hw + 0.02 && (gaze[1] - cy).abs() <= hh + 0.02;
+            let text = self.bay_text_anchor(cam.aspect, text_w);
+            let on_text = gaze[0] >= text[0] - 0.02
+                && gaze[0] <= text[0] + text_w + 0.02
+                && gaze[1] <= text[1] + 0.02
+                && gaze[1] >= text[1] - 0.5;
+            if inside || on_text {
+                let a = self.settings.bay_anchor;
+                self.drag = Some((Dragged::BayPanel, [a[0] - gaze[0], a[1] - gaze[1]]));
+                log::info!("drag: picked up the ship bay");
+                return true;
+            }
+            return false;
+        }
         if self.menu.open {
             let a = self.settings.menu_anchor;
             let on_text = gaze[0] >= a[0] - 0.02
@@ -2745,6 +3057,7 @@ impl Game {
             Dragged::Readout => self.settings.readout_anchor = glass(at),
             Dragged::MapPanel => self.settings.map_anchor = clamp(at),
             Dragged::HoloPanel => self.settings.holo_anchor = clamp(at),
+            Dragged::BayPanel => self.settings.bay_anchor = clamp(at),
         }
     }
 
@@ -3046,6 +3359,8 @@ impl App {
             farfall_render::shaders::MAP,
             map::UNIFORM_BYTES,
         );
+        let hologram = hologram_pass(&device, config.format, 1);
+        let pointer = pointer_pass(&device, config.format, 1);
 
         window.request_redraw();
         // Audio: live synthesis, muted for benchmarks (a frozen sim droning
@@ -3074,6 +3389,8 @@ impl App {
             baked,
             hud,
             map,
+            hologram,
+            pointer,
             text: TextBitmap::new(),
             cfg,
             perf: Perf::new(),
@@ -3088,6 +3405,16 @@ impl App {
         game.menu.set_msaa_supported(&msaa_supported);
         if game.frozen && std::env::var("FARFALL_BENCH_MAP").is_ok() {
             game.toggle_map();
+        }
+        if game.frozen && std::env::var("FARFALL_BENCH_SHIP").is_ok() {
+            game.toggle_bay();
+            game.bay_dropdown = Some(0);
+            // A pointer in the picture, over the hologram.
+            let (w, h) = self.gpu.as_ref().map_or((1600.0, 1200.0), |g| {
+                (g.config.width as f32, g.config.height as f32)
+            });
+            game.window_size = (w, h);
+            game.cursor = Some((w * 0.62, h * 0.36));
         }
         if game.frozen && std::env::var("FARFALL_BENCH_DESIGN").is_ok() {
             game.toggle_design();
@@ -3384,47 +3711,38 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if game.panel_open() {
-                    // M closes the map from anywhere in it.
+                    // M closes the map from anywhere in it; B the bay.
                     if pressed && !event.repeat && code == game.bind(Named::Map) {
                         game.toggle_map();
                         return;
                     }
-                    // Map zoom from the keyboard, for a mouse with no wheel.
-                    if pressed && game.map_open() {
-                        match code {
-                            KeyCode::Equal | KeyCode::NumpadAdd => game.map_view.zoom_by(1.0),
-                            KeyCode::Minus | KeyCode::NumpadSubtract => game.map_view.zoom_by(-1.0),
-                            _ => {}
+                    if pressed && !event.repeat && code == KeyCode::KeyB {
+                        game.toggle_bay();
+                        return;
+                    }
+                    // Pane zoom from the keyboard, for a mouse with no wheel.
+                    if pressed && game.pane_open() {
+                        let notches = match code {
+                            KeyCode::Equal | KeyCode::NumpadAdd => 1.0,
+                            KeyCode::Minus | KeyCode::NumpadSubtract => -1.0,
+                            _ => 0.0,
+                        };
+                        if game.map_open() {
+                            game.map_view.zoom_by(notches);
+                        } else {
+                            game.bay_view.zoom_by(notches);
                         }
                     }
                     if pressed && !event.repeat {
                         let panel = if game.map_open() {
                             &mut game.map_panel
+                        } else if game.bay_open() {
+                            &mut game.bay_panel
                         } else {
                             &mut game.menu
                         };
-                        match panel.key(code, &mut game.settings) {
-                            MenuEvent::Changed(change) => {
-                                game.settings.save();
-                                match change {
-                                    Change::Bindings => {
-                                        game.input.set_bindings(game.settings.bindings);
-                                        game.look.sensitivity = game.settings.look_sensitivity;
-                                    }
-                                    Change::Graphics => gpu.apply_graphics(&game.settings),
-                                    Change::Layout => {}
-                                }
-                            }
-                            MenuEvent::Quit => {
-                                game.log_exit("menu quit");
-                                event_loop.exit();
-                            }
-                            MenuEvent::Engage => {
-                                game.settings.save();
-                                game.engage_warp();
-                            }
-                            MenuEvent::Closed | MenuEvent::Nothing => {}
-                        }
+                        let ev = panel.key(code, &mut game.settings);
+                        apply_menu_event(game, gpu, event_loop, ev);
                     }
                     return;
                 }
@@ -3438,6 +3756,7 @@ impl ApplicationHandler for App {
                     // is what the keyboard does. Edge-triggered, and
                     // `repeat` is filtered: holding a key must not strobe
                     // a toggle.
+                    KeyCode::KeyB if pressed && !event.repeat => game.toggle_bay(),
                     c if pressed && !event.repeat && c == game.bind(Named::Map) => {
                         game.toggle_map()
                     }
@@ -3547,6 +3866,36 @@ impl ApplicationHandler for App {
                     let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                     let cam = game.camera(aspect);
                     let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
+                    let px = hud_scale * 2.0 / gpu.config.height as f32 * game.text_fov_scale(&cam);
+                    let text_w = text_width_ndc(px);
+                    game.press_flash = 1.0;
+                    // The pointer first: a row of the bay's card or a pip,
+                    // or a row of a text panel, is a click.
+                    if let Some(at) = game.cursor_screen() {
+                        if game.bay_open() && game.bay_click(at, aspect, text_w, px) {
+                            game.left_down = false;
+                            return;
+                        }
+                        if game.menu.open || game.map_open() {
+                            let anchor = game.text_anchor(aspect, text_w);
+                            let on = at[0] >= anchor[0] - 0.01
+                                && at[0] <= anchor[0] + text_w / aspect + 0.01
+                                && at[1] <= anchor[1];
+                            if on {
+                                let row = ((anchor[1] - at[1]) / (6.0 * px)).floor() as usize;
+                                let ev = if game.map_open() {
+                                    game.map_panel.click(row, &mut game.settings)
+                                } else {
+                                    game.menu.click(row, &mut game.settings)
+                                };
+                                if ev != MenuEvent::Nothing {
+                                    apply_menu_event(game, gpu, event_loop, ev);
+                                    game.left_down = false;
+                                    return;
+                                }
+                            }
+                        }
+                    }
                     // The glass first: a dial or a panel under the gaze is
                     // picked up. Nothing there, and the button is the
                     // trigger.
@@ -3554,7 +3903,8 @@ impl ApplicationHandler for App {
                         &cam,
                         text_width_ndc(hud_scale * 2.0 / gpu.config.height as f32),
                     );
-                    game.fire_held = !picked && !game.menu.open && !game.map_open() && !game.design;
+                    game.fire_held =
+                        !picked && !game.menu.open && !game.pane_open() && !game.design;
                 } else {
                     game.fire_held = false;
                     game.end_drag();
@@ -3569,6 +3919,9 @@ impl ApplicationHandler for App {
                     if game.left_down && game.map_open() && game.drag.is_none() {
                         game.map_view.drag(now.0 - last.0, now.1 - last.1);
                     }
+                    if game.left_down && game.bay_open() && game.drag.is_none() {
+                        game.bay_view.drag(now.0 - last.0, now.1 - last.1);
+                    }
                 }
                 game.cursor = Some(now);
             }
@@ -3579,6 +3932,13 @@ impl ApplicationHandler for App {
                         winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                     };
                     game.map_view.zoom_by(notches);
+                }
+                if game.bay_open() {
+                    let notches = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+                    };
+                    game.bay_view.zoom_by(notches);
                 }
             }
             // A key held while the window loses focus never sees its release
@@ -3701,6 +4061,25 @@ impl ApplicationHandler for App {
                                     }
                                 } else if capture_text && game.map_open() {
                                     game.map_panel.render(&mut gpu.text, &game.settings);
+                                } else if capture_text && game.bay_open() {
+                                    game.render_bay_card(&mut gpu.text);
+                                    let sh = gpu.scene.size().1 as f32;
+                                    let px = (sh / 260.0).clamp(2.0, 8.0).floor() * 2.0 / sh
+                                        * game.text_fov_scale(&cam);
+                                    let anchor = game.bay_text_anchor(aspect, text_width_ndc(px));
+                                    gpu.hologram.update(
+                                        &gpu.queue,
+                                        &game.hologram_uniforms(
+                                            aspect,
+                                            cam.time_s,
+                                            sh,
+                                            (anchor, px),
+                                        ),
+                                    );
+                                    gpu.pointer.update(
+                                        &gpu.queue,
+                                        &game.pointer_uniforms(aspect, cam.time_s),
+                                    );
                                 } else if capture_text && game.menu.open {
                                     game.menu.render(&mut gpu.text, &game.settings);
                                 } else if capture_text {
@@ -3736,7 +4115,7 @@ impl ApplicationHandler for App {
                                         aspect,
                                         sh as f32,
                                         game.holo_sway.sway(),
-                                        game.menu.open || game.map_open(),
+                                        game.menu.open || game.pane_open(),
                                         game.highlight_row(),
                                     );
                                 }
@@ -3824,8 +4203,12 @@ impl ApplicationHandler for App {
                                     if capture_text && game.map_open() {
                                         gpu.map.draw(&mut pass);
                                     }
+                                    if capture_text && game.bay_open() {
+                                        gpu.hologram.draw(&mut pass);
+                                    }
                                     if capture_text {
                                         gpu.hud.draw(&mut pass);
+                                        gpu.pointer.draw(&mut pass);
                                     }
                                 }
                                 let capture = gpu.scene.colour_texture().map(|tex| {
@@ -3964,6 +4347,21 @@ impl ApplicationHandler for App {
                     gpu.map
                         .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
                 }
+                game.press_flash = (game.press_flash - game.frame_dt * 5.0).max(0.0);
+                if game.bay_open() {
+                    // The bay turns by itself when the hand is off it.
+                    game.bay_view.tick(game.frame_dt, game.settings.bay_spin);
+                    let sh = gpu.config.height as f32;
+                    let px =
+                        (sh / 260.0).clamp(2.0, 8.0).floor() * 2.0 / sh * game.text_fov_scale(&cam);
+                    let anchor = game.bay_text_anchor(aspect, text_width_ndc(px));
+                    gpu.hologram.update(
+                        &gpu.queue,
+                        &game.hologram_uniforms(aspect, cam.time_s, sh, (anchor, px)),
+                    );
+                }
+                gpu.pointer
+                    .update(&gpu.queue, &game.pointer_uniforms(aspect, cam.time_s));
                 gpu.hud.update(
                     &gpu.queue,
                     &gpu.text,
@@ -3972,7 +4370,7 @@ impl ApplicationHandler for App {
                     aspect,
                     gpu.config.height as f32,
                     game.holo_sway.sway(),
-                    game.menu.open || game.map_open(),
+                    game.menu.open || game.pane_open(),
                     game.highlight_row(),
                 );
 
@@ -4078,9 +4476,13 @@ impl ApplicationHandler for App {
                     if game.map_open() {
                         gpu.map.draw(&mut pass);
                     }
+                    if game.bay_open() {
+                        gpu.hologram.draw(&mut pass);
+                    }
                     if gpu.cfg.draws("hud") {
                         gpu.hud.draw(&mut pass);
                     }
+                    gpu.pointer.draw(&mut pass);
                 }
                 // Screenshot: recorded into the same command buffer, so it
                 // captures exactly the frame that was just drawn.
@@ -4170,6 +4572,8 @@ impl ApplicationHandler for App {
                 } else if game.map_open() {
                     gpu.text.clear();
                     game.map_panel.render(&mut gpu.text, &game.settings);
+                } else if game.bay_open() {
+                    game.render_bay_card(&mut gpu.text);
                 } else if game.menu.open {
                     gpu.text.clear();
                     game.menu.render(&mut gpu.text, &game.settings);

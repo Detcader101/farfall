@@ -6,6 +6,7 @@
 //! that the defaults can't cover — unknown keys are ignored, bad values
 //! fall back, missing lines mean default.
 
+use crate::bay::{Mount, STOCK};
 use crate::cockpit::{Instrument, Layout, Slot};
 use crate::input::{key_from_name, key_name, Action, Bindings, Named};
 use crate::warp::{Destination, Plan};
@@ -23,6 +24,15 @@ fn parse_pair(v: &str) -> Option<[f32; 2]> {
 /// until the pilot drags them.
 pub const MENU_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
 pub const MAP_ANCHOR_DEFAULT: [f32; 2] = [0.42, 0.12];
+/// The SHIP bay's panel: right of the hologram, up.
+pub const BAY_ANCHOR_DEFAULT: [f32; 2] = [0.95, 0.90];
+pub const BAY_HUE_DEFAULT: f32 = 0.52;
+pub const POINTER_SIZE_DEFAULT: f32 = 0.045;
+pub const BAY_SCANLINES_DEFAULT: f32 = 120.0;
+pub const BAY_SIZE_DEFAULT: f32 = 0.28;
+pub const BAY_SIZE_MIN: f32 = 0.14;
+pub const BAY_SIZE_MAX: f32 = 0.45;
+pub const BAY_SCANLINES_MAX: f32 = 400.0;
 pub const READOUT_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
 
 fn clamp_anchor(a: [f32; 2]) -> [f32; 2] {
@@ -246,6 +256,20 @@ pub struct Settings {
     /// The camera on the pilot's head: sway under load, tremor under
     /// thrust, jolts from the guns. 0 off .. 2 double.
     pub cam_shake: f32,
+    /// The ship's fit: what each hardpoint carries, by [`Hardpoint`] index.
+    pub mounts: [Mount; 4],
+    /// The bay's hologram: its hue 0..1 and saturation 0..1, scanlines
+    /// per pane height, the pane's half width (NDC), and whether it yaws
+    /// by itself.
+    pub bay_hue: f32,
+    pub bay_saturation: f32,
+    pub bay_scanlines: f32,
+    pub bay_size: f32,
+    pub bay_spin: bool,
+    /// The pointer's height, a fraction of the screen's.
+    pub pointer_size: f32,
+    /// Where the SHIP bay's panel sits (top-left, canopy NDC).
+    pub bay_anchor: [f32; 2],
 }
 
 impl Default for Settings {
@@ -291,6 +315,14 @@ impl Default for Settings {
             arms_scar_cool: 12.0,
             arms_sight: 1.0,
             cam_shake: 1.0,
+            mounts: STOCK,
+            bay_hue: BAY_HUE_DEFAULT,
+            bay_saturation: 1.0,
+            bay_scanlines: BAY_SCANLINES_DEFAULT,
+            bay_size: BAY_SIZE_DEFAULT,
+            bay_spin: true,
+            pointer_size: POINTER_SIZE_DEFAULT,
+            bay_anchor: BAY_ANCHOR_DEFAULT,
         }
     }
 }
@@ -401,6 +433,51 @@ impl Settings {
                         s.map_anchor = clamp_anchor(a);
                     }
                 }
+                "ui.panel-bay-card" => {
+                    if let Some(a) = parse_pair(v) {
+                        s.bay_anchor = clamp_anchor(a);
+                    }
+                }
+                "ship.holo-hue" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.bay_hue = f.rem_euclid(1.0);
+                        }
+                    }
+                }
+                "ship.holo-saturation" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.bay_saturation = f.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                "ship.holo-scanlines" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.bay_scanlines = f.clamp(0.0, BAY_SCANLINES_MAX);
+                        }
+                    }
+                }
+                "ship.holo-size" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.bay_size = f.clamp(BAY_SIZE_MIN, BAY_SIZE_MAX);
+                        }
+                    }
+                }
+                "ui.pointer-size" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.pointer_size = f.clamp(0.02, 0.1);
+                        }
+                    }
+                }
+                "ship.holo-spin" => match v {
+                    "on" => s.bay_spin = true,
+                    "off" => s.bay_spin = false,
+                    _ => {}
+                },
                 "cockpit.frame" => match v {
                     "on" => s.cockpit_frame = true,
                     "off" => s.cockpit_frame = false,
@@ -591,6 +668,14 @@ impl Settings {
                         s.bindings.bind_named(n, key);
                     }
                 }
+                k if k.starts_with("ship.hardpoint.") => {
+                    let n = k["ship.hardpoint.".len()..].parse::<usize>().ok();
+                    if let (Some(n), Some(m)) =
+                        (n.filter(|&n| n < s.mounts.len()), Mount::from_key(v))
+                    {
+                        s.mounts[n] = m;
+                    }
+                }
                 _ => {
                     if let Some(name) = k.strip_prefix("control.") {
                         if let (Some(action), Some(key)) = (
@@ -750,6 +835,28 @@ impl Settings {
             "ui.panel-holo = {:.3},{:.3}\n",
             self.holo_anchor[0], self.holo_anchor[1]
         ));
+        for (n, m) in self.mounts.iter().enumerate() {
+            out.push_str(&format!("ship.hardpoint.{n} = {}\n", m.key()));
+        }
+        out.push_str(&format!("ship.holo-hue = {:.3}\n", self.bay_hue));
+        out.push_str(&format!(
+            "ship.holo-saturation = {:.2}\n",
+            self.bay_saturation
+        ));
+        out.push_str(&format!(
+            "ship.holo-scanlines = {:.0}\n",
+            self.bay_scanlines
+        ));
+        out.push_str(&format!("ship.holo-size = {:.3}\n", self.bay_size));
+        out.push_str(&format!(
+            "ship.holo-spin = {}\n",
+            if self.bay_spin { "on" } else { "off" }
+        ));
+        out.push_str(&format!("ui.pointer-size = {:.3}\n", self.pointer_size));
+        out.push_str(&format!(
+            "ui.panel-bay-card = {:.3},{:.3}\n",
+            self.bay_anchor[0], self.bay_anchor[1]
+        ));
         out.push_str(&format!(
             "sound.hull = {}\n",
             if self.hull_sound { "on" } else { "off" }
@@ -865,6 +972,14 @@ mod tests {
         s.dials[Instrument::Gyro as usize].stay = Some(false);
         s.menu_anchor = [-0.25, 0.5];
         s.map_anchor = [0.125, -0.125];
+        s.bay_anchor = [0.5, -0.25];
+        s.mounts = [Mount::Cannon, Mount::Empty, Mount::Rail, Mount::Cannon];
+        s.bay_hue = 0.11;
+        s.bay_saturation = 0.5;
+        s.bay_scanlines = 60.0;
+        s.bay_size = 0.2;
+        s.bay_spin = false;
+        s.pointer_size = 0.06;
         s.readout_anchor = [-0.5, 0.25];
         s.map_grid = false;
         s.camera_chase = true;

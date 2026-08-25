@@ -23,6 +23,8 @@ pub const JET: &str = include_str!("../../../shaders/jet.wgsl");
 pub const HOLO: &str = include_str!("../../../shaders/holo.wgsl");
 pub const SCAR: &str = include_str!("../../../shaders/scar.wgsl");
 pub const SIGHT: &str = include_str!("../../../shaders/sight.wgsl");
+pub const HOLOGRAM: &str = include_str!("../../../shaders/hologram.wgsl");
+pub const POINTER: &str = include_str!("../../../shaders/pointer.wgsl");
 pub const BELT: &str = include_str!("../../../shaders/belt.wgsl");
 pub const HORIZON: &str = include_str!("../../../shaders/horizon.wgsl");
 pub const BODIES: &str = include_str!("../../../shaders/bodies.wgsl");
@@ -63,6 +65,8 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("holo", HOLO, &["vs_main", "fs_main"]),
     ("scar", SCAR, &["vs_main", "fs_main"]),
     ("sight", SIGHT, &["vs_main", "fs_main"]),
+    ("hologram", HOLOGRAM, &["vs_main", "fs_main"]),
+    ("pointer", POINTER, &["vs_main", "fs_main"]),
     ("belt", BELT, &["vs_main", "fs_main"]),
     ("horizon", HORIZON, &["vs_main", "fs_main"]),
     ("bodies", BODIES, &["vs_main", "fs_main"]),

@@ -415,3 +415,24 @@ features:
   - id: arms-ship-damage
     name: Ship damage model — hull and subsystem hp, deterministic and pure for later lockstep multiplayer; own-ship hits feed the shield impacts
     state: planned
+
+  - id: ship-holo
+    name: "The SHIP bay (B): the whole screen becomes the bay — a deep cold backdrop with a faint horizon glow, the fighter's own exterior SDF (sd_fighter_exterior, shared with the cabin, the map dart and the after-image) big on the left as a hologram seen by an orbit camera: rim glow, bands of light nose to tail, a scan plane sweeping the height, scanlines on the eye, a turntable of rings and slow spokes; a slow yaw by itself (HOLO SPIN) that a drag holds off, orbit with the mouse like the map camera, wheel or +/- to zoom. No text menu: a diagram — leader lines run from each hardpoint's pip (straight to a knee, then across) to its label on a small card top right, the card dragged by the cursor (ui.panel-bay-card). Knobs on the GFX page: HOLO HUE (ship.holo-hue), HOLO COLOUR (ship.holo-saturation), SCANLINES (ship.holo-scanlines), HOLO SIZE (ship.holo-size), HOLO SPIN (ship.holo-spin)"
+    state: complete
+    settings: [ui.panel-bay-card, ship.holo-hue, ship.holo-saturation, ship.holo-scanlines, ship.holo-size, ship.holo-spin]
+    tests: [crates/render/src/hologram.rs, crates/app/src/bay.rs::the_orbit_turns_tilts_zooms_and_spins_when_left_alone, crates/app/src/menu.rs::the_ship_panel_fits_the_hardpoints_and_never_pages, crates/app/src/settings.rs::edits_round_trip, crates/render/tests/shader_validation.rs, crates/app/tests/scenes.rs::the_ship_bay_fills_the_screen_with_the_hologram_its_callouts_and_a_pointer]
+    e2e: FARFALL_BENCH_SHIP=1 capture — the cyan fighter three-quarter from the front left over the deep backdrop, leader lines from the nose (amber, chosen), both wings and the belly to the card top right, the pointer over the hull (scene test)
+
+  - id: ship-hardpoints
+    name: "The four hardpoints — NOSE, WING L, WING R, BELLY — as pips on the hologram (a filled point for a mount, a hollow ring for an empty slot, violet for the rail; the card's chosen slot pulses amber; dimmer behind the hull), with what is mounted drawn on the hull (the twin cannon, the long rail with its coils). The card is a diagram's labels: click a slot (its row, or its pip on the hologram) and a dropdown opens under it — EMPTY / CANNON / RAIL, the fitted one starred — click one to fit it; the keys still work (up/down, left/right); saved as ship.hardpoint.<n> (n = 0..3) and the arms system reads it on load and on every change — the cannon fires from every slot carrying one in turn, the rail from its slot, and a weapon with no mount will not fire (NO MOUNT on the readout). Stock: rail on the nose, cannon on each wing, belly empty"
+    state: complete
+    settings: [ship.hardpoint.0, ship.hardpoint.1, ship.hardpoint.2, ship.hardpoint.3]
+    tests: [crates/app/src/bay.rs::mounts_cycle_and_name_their_keys, crates/app/src/arms.rs::the_guns_fire_from_whatever_the_bay_mounted_and_not_at_all_when_nothing_is, crates/app/src/menu.rs::the_ship_panel_fits_the_hardpoints_and_never_pages, crates/app/src/settings.rs::edits_round_trip, crates/render/src/hologram.rs::hologram_lanes_hold_their_places]
+    e2e: FARFALL_BENCH_SHIP=1 capture — pips on the nose (amber, chosen), both wings (cannon, filled) and the belly (hollow, empty); the rail's coils on the nose (same capture as ship-holo)
+
+  - id: ui-pointer
+    name: "A mouse pointer for the panels (pointer.wgsl): an arrow of the cluster's light with a dark edge so it reads over anything, a soft halo that swells on a click, drawn last and screen-fixed whenever a panel is up (settings menu, map, bay, design). Clicks work everywhere: a row of the settings menu or the DRIVE card is the cursor there and a step forward (Enter); the bay's card and pips open dropdowns and fit mounts. POINTER SIZE on the GFX page (ui.pointer-size)"
+    state: complete
+    settings: [ui.pointer-size]
+    tests: [crates/render/src/pointer.rs, crates/app/src/menu.rs::the_ship_panel_fits_the_hardpoints_and_never_pages, crates/app/src/settings.rs::edits_round_trip, crates/render/tests/shader_validation.rs, crates/app/tests/scenes.rs::the_ship_bay_fills_the_screen_with_the_hologram_its_callouts_and_a_pointer]
+    e2e: FARFALL_BENCH_SHIP=1 capture — the arrow over the hologram at 62%,36% (scene test); clicked through the GFX page by hand
