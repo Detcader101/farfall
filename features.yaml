@@ -361,9 +361,12 @@ features:
     e2e: FARFALL_BENCH_ARMS=debris capture at the ring looked at — a cloud of tumbling shards 70 m ahead, the fresh ones glowing, the break's burst behind; a live break not yet flown
 
   - id: arms-scars
-    name: Scars — glowing crater decals on rocks and bodies that cool from white through orange to dull red
-    state: planned
-
+    name: Scars — a hit that does not break its rock leaves a crater on the face, riding with the rock, sized by the blow; a scar pass paints it as light over the belt (a hot floor, cracks running out, a rim, a halo on the stone), cooling white to orange to dull red to nothing on a curve, hidden behind nearer rocks; capped at 32, gone with the rock; SCARS and SCAR COOLING on the ARMS page
+    state: complete
+    tests: [crates/app/src/arms.rs::a_hit_leaves_a_scar_that_cools_away_and_goes_with_its_rock, crates/render/src/scar.rs, crates/app/tests/scenes.rs::the_scars_glow_on_the_rock_ahead]
+    settings: [arms.scar-size, arms.scar-cool]
+    e2e: FARFALL_BENCH_ARMS=scars capture at the ring looked at — three craters on a rock 140 m ahead, white, orange, near cold; not yet struck in flight
+    note: scars on bodies (planets, moons) are still to come with the ship damage model
   - id: arms-railgun-lance
     name: Railgun (charge, rail glow, hypervelocity slug, plasma wake, bass crack) and Lance (continuous cutting beam that slices rocks along the sweep)
     state: planned

@@ -18,6 +18,8 @@ pub const MAX_SLUGS: usize = 32;
 pub const MAX_BURSTS: usize = 16;
 /// Shards in the air at once (the debris pass's array).
 pub const MAX_SHARDS: usize = 64;
+/// Scars kept on the rocks (the scar pass's array).
+pub const MAX_SCARS: usize = 32;
 /// The railgun's time to charge at full power, s.
 pub const RAIL_CHARGE_S: f64 = 1.1;
 /// Past this heat a weapon jams; it clears below half.
@@ -136,6 +138,17 @@ pub struct Shard {
     pub seed: f32,
 }
 
+/// A crater on a rock that held: where, how big, how hot it started.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Scar {
+    pub rock: crate::belt::RockId,
+    /// From the rock's centre, a unit direction, planet frame.
+    pub dir: DVec3,
+    pub born_s: f64,
+    pub size_m: f32,
+    pub seed: f32,
+}
+
 impl Burst {
     pub fn life_s(kind: u8) -> f64 {
         match kind {
@@ -181,6 +194,11 @@ pub struct Arms {
     pub shards: Vec<Shard>,
     pub shards_per_break: u32,
     pub shard_life_s: f32,
+    /// The scars on the rocks, their size (a multiplier, 0 none) and how
+    /// long one takes to cool, seconds (the settings').
+    pub scars: Vec<Scar>,
+    pub scar_size: f32,
+    pub scar_cool_s: f32,
     next_shot_s: f64,
     left_next: bool,
     trigger_was: bool,
@@ -206,6 +224,9 @@ impl Default for Arms {
             shards: Vec::new(),
             shards_per_break: 24,
             shard_life_s: 5.0,
+            scars: Vec::new(),
+            scar_size: 1.0,
+            scar_cool_s: 12.0,
             next_shot_s: 0.0,
             left_next: true,
             trigger_was: false,
@@ -373,6 +394,22 @@ impl Arms {
                     self.shards_per_break / 6
                 };
                 self.throw_shards(t_s, at, rock, rel.normalize_or_zero(), count, d.destroyed);
+                if !d.destroyed && self.scar_size > 0.0 {
+                    // A crater the size of the blow, within reason.
+                    let size_m = ((0.6 + energy.sqrt() / 900.0) * self.scar_size as f64)
+                        .min(rock.radius_m * 0.45) as f32;
+                    let seed = self.unit();
+                    if self.scars.len() >= MAX_SCARS {
+                        self.scars.remove(0);
+                    }
+                    self.scars.push(Scar {
+                        rock: rock.id,
+                        dir: (at - rock.pos).normalize_or_zero(),
+                        born_s: t_s,
+                        size_m,
+                        seed,
+                    });
+                }
                 self.push_burst(Burst {
                     pos: at,
                     vel: rock.vel,
@@ -397,6 +434,10 @@ impl Arms {
             sh.pos += sh.vel * dt;
         }
         self.shards.retain(|sh| t_s - sh.born_s < sh.life_s as f64);
+        // Scars cool away, and go with their rock.
+        let cool = self.scar_cool_s as f64;
+        self.scars
+            .retain(|sc| t_s - sc.born_s < cool && belt.rocks.iter().any(|r| r.id == sc.rock));
         recoil
     }
 
@@ -769,5 +810,71 @@ mod tests {
             arms.step(t, 0.01, &ship, false, &mut belt);
         }
         assert!(arms.shards.is_empty());
+    }
+
+    #[test]
+    fn a_hit_leaves_a_scar_that_cools_away_and_goes_with_its_rock() {
+        let mut arms = Arms {
+            scar_cool_s: 3.0,
+            ..Default::default()
+        };
+        let mut belt = Belt::default();
+        belt.rocks.push(crate::belt::Rock {
+            id: (0, 0, 0, 0),
+            pos: DVec3::new(0.0, 0.0, -300.0),
+            vel: DVec3::ZERO,
+            radius_m: 30.0,
+            seed: 0.2,
+            spin: 0.0,
+        });
+        let ship = Ship {
+            pos: DVec3::ZERO,
+            vel: DVec3::ZERO,
+            orient: DQuat::IDENTITY,
+            aim: DVec3::NEG_Z,
+        };
+        let mut t = 0.0;
+        arms.step(t, 0.01, &ship, true, &mut belt);
+        for _ in 0..60 {
+            t += 0.01;
+            arms.step(t, 0.01, &ship, false, &mut belt);
+        }
+        assert_eq!(arms.scars.len(), 1);
+        let sc = arms.scars[0];
+        assert_eq!(sc.rock, (0, 0, 0, 0));
+        assert!(sc.dir.z > 0.9, "on the face toward the gun: {:?}", sc.dir);
+        assert!(sc.size_m > 0.6 && sc.size_m < 13.5, "{}", sc.size_m);
+        // Gone once cool.
+        for _ in 0..310 {
+            t += 0.01;
+            arms.step(t, 0.01, &ship, false, &mut belt);
+        }
+        assert!(arms.scars.is_empty());
+        // And gone with the rock.
+        arms.step(t, 0.01, &ship, true, &mut belt);
+        for _ in 0..60 {
+            t += 0.01;
+            arms.step(t, 0.01, &ship, false, &mut belt);
+        }
+        assert_eq!(arms.scars.len(), 1);
+        belt.rocks.clear();
+        arms.step(t, 0.01, &ship, false, &mut belt);
+        assert!(arms.scars.is_empty());
+        // None with the size off.
+        arms.scar_size = 0.0;
+        belt.rocks.push(crate::belt::Rock {
+            id: (0, 0, 0, 1),
+            pos: DVec3::new(0.0, 0.0, -300.0),
+            vel: DVec3::ZERO,
+            radius_m: 30.0,
+            seed: 0.2,
+            spin: 0.0,
+        });
+        arms.step(t, 0.01, &ship, true, &mut belt);
+        for _ in 0..60 {
+            t += 0.01;
+            arms.step(t, 0.01, &ship, false, &mut belt);
+        }
+        assert!(arms.scars.is_empty());
     }
 }

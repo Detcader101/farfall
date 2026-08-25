@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use capture::Capture;
 use farfall_audio::Audio;
 use farfall_render::debris::{debris_pass, DebrisPass, DebrisScene, DebrisUniforms, ShardView};
+use farfall_render::scar::{scar_heat, scar_pass, ScarPass, ScarScene, ScarUniforms, ScarView};
 use farfall_render::tracer::{
     tracer_pass, BurstView, Occluder, SlugView, TracerPass, TracerScene, TracerUniforms,
 };
@@ -261,6 +262,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
 ///                           many seconds old, ahead and a little banked)
+///   FARFALL_BENCH_ARMS=scars (benchmark only: three craters, hot to cold, on
+///                           the nearest rock ahead)
 ///   FARFALL_BENCH_ARMS=debris (benchmark only: a rock's shards ahead, fresh
 ///                           ones glowing, with the break's burst)
 ///   FARFALL_BENCH_ARMS=1   (benchmark only: tracers from both guns, a muzzle
@@ -438,6 +441,8 @@ struct Passes {
     tracer: TracerPass,
     /// The arms' debris: shards off the rocks.
     debris: DebrisPass,
+    /// The arms' scars: craters glowing on the rocks.
+    scar: ScarPass,
 }
 
 impl Passes {
@@ -470,6 +475,7 @@ impl Passes {
             belt: belt_pass(device, format, msaa),
             tracer: tracer_pass(device, format, msaa),
             debris: debris_pass(device, format, msaa),
+            scar: scar_pass(device, format, msaa),
         }
     }
 }
@@ -1789,6 +1795,52 @@ impl Game {
         )
     }
 
+    /// The scars this frame, each on its rock, in the ship's frame.
+    fn scar_uniforms(&self, cam: &CameraFrame) -> ScarUniforms {
+        let head = self.look.rotation();
+        if self.arms.scars.is_empty() {
+            return ScarUniforms::none(cam, head);
+        }
+        let ship_inv = self.state.ship.orient.inverse();
+        let ship_pos = self.state.ship.pos_m;
+        let t = self.state.time_s;
+        let to_ship = |p: DVec3| (ship_inv * (p - ship_pos)).as_vec3();
+        let scars: Vec<ScarView> = self
+            .arms
+            .scars
+            .iter()
+            .filter_map(|sc| {
+                let rock = self.belt.rocks.iter().find(|r| r.id == sc.rock)?;
+                Some(ScarView {
+                    centre: to_ship(rock.pos),
+                    radius_m: rock.radius_m as f32,
+                    dir: (ship_inv * sc.dir).as_vec3(),
+                    size_m: sc.size_m,
+                    heat: scar_heat((t - sc.born_s) as f32, self.settings.arms_scar_cool),
+                    seed: sc.seed,
+                })
+            })
+            .collect();
+        let rocks: Vec<farfall_render::scar::Occluder> = self
+            .belt
+            .rocks
+            .iter()
+            .map(|r| farfall_render::scar::Occluder {
+                centre: to_ship(r.pos),
+                radius_m: r.radius_m as f32,
+            })
+            .collect();
+        ScarUniforms::new(
+            cam,
+            head,
+            self.settings.arms_glow,
+            &ScarScene {
+                scars: &scars,
+                rocks: &rocks,
+            },
+        )
+    }
+
     /// The shards this frame, in the ship's frame, with the rocks that
     /// can hide them.
     fn debris_uniforms(&self, cam: &CameraFrame) -> DebrisUniforms {
@@ -2088,6 +2140,8 @@ impl Game {
             self.arms.power = self.settings.arms_power;
             self.arms.shards_per_break = self.settings.arms_shards;
             self.arms.shard_life_s = self.settings.arms_shard_life;
+            self.arms.scar_size = self.settings.arms_scar_size;
+            self.arms.scar_cool_s = self.settings.arms_scar_cool;
             let trigger = self.fire_held && !self.menu.open && !self.map_open() && !self.design;
             let kick = self.arms.step(
                 self.state.time_s,
@@ -2802,6 +2856,39 @@ impl App {
             });
         }
         let bench_arms = std::env::var("FARFALL_BENCH_ARMS").unwrap_or_default();
+        if game.frozen && bench_arms == "scars" {
+            // A rock of our own a little way ahead, wearing three craters
+            // on the face toward us: one just struck, one cooling, one
+            // nearly cold.
+            let o = game.state.ship.orient;
+            let p = game.state.ship.pos_m;
+            let v = game.state.ship.vel_mps;
+            let t = game.state.time_s;
+            let rock = belt::Rock {
+                id: (0, 0, 0, 250),
+                pos: p + o * DVec3::new(6.0, -4.0, -140.0),
+                vel: v,
+                radius_m: 30.0,
+                seed: 0.6,
+                spin: 0.0,
+            };
+            game.belt.rocks.push(rock);
+            let toward = (p - rock.pos).normalize_or_zero();
+            let side = toward.cross(DVec3::Y).normalize_or_zero();
+            let up = side.cross(toward);
+            for (k, (age, ox, oy)) in [(0.3, -0.55, 0.1), (4.0, 0.05, -0.35), (10.0, 0.5, 0.3)]
+                .iter()
+                .enumerate()
+            {
+                game.arms.scars.push(arms::Scar {
+                    rock: rock.id,
+                    dir: (toward + side * *ox + up * *oy).normalize_or_zero(),
+                    born_s: t - *age,
+                    size_m: 5.0,
+                    seed: 0.2 + 0.3 * k as f32,
+                });
+            }
+        }
         if game.frozen && bench_arms == "debris" {
             // A rock just broken ahead: its shards spread out in a cloud,
             // the freshest still glowing, a few chips nearer; the break's
@@ -3272,6 +3359,9 @@ impl ApplicationHandler for App {
                                 gpu.passes
                                     .debris
                                     .update(&gpu.queue, &game.debris_uniforms(&cam));
+                                gpu.passes
+                                    .scar
+                                    .update(&gpu.queue, &game.scar_uniforms(&cam));
                                 let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
                                 // The capture should show what the pilot
@@ -3385,6 +3475,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.bodies.draw(&mut pass);
                                     gpu.passes.planet.draw(&mut pass);
                                     gpu.passes.belt.draw(&mut pass);
+                                    gpu.passes.scar.draw(&mut pass);
                                     gpu.passes.debris.draw(&mut pass);
                                     gpu.passes.tracer.draw(&mut pass);
                                     gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
@@ -3487,6 +3578,9 @@ impl ApplicationHandler for App {
                 gpu.passes
                     .debris
                     .update(&gpu.queue, &game.debris_uniforms(&cam));
+                gpu.passes
+                    .scar
+                    .update(&gpu.queue, &game.scar_uniforms(&cam));
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,
@@ -3582,6 +3676,9 @@ impl ApplicationHandler for App {
                     }
                     if gpu.cfg.draws("belt") {
                         gpu.passes.belt.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("scar") {
+                        gpu.passes.scar.draw(&mut pass);
                     }
                     if gpu.cfg.draws("debris") {
                         gpu.passes.debris.draw(&mut pass);

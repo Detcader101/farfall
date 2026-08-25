@@ -223,6 +223,10 @@ pub struct Settings {
     /// long they last, seconds.
     pub arms_shards: u32,
     pub arms_shard_life: f32,
+    /// The craters a hit leaves: their size (0 none .. 2), and how long
+    /// one takes to cool, seconds.
+    pub arms_scar_size: f32,
+    pub arms_scar_cool: f32,
 }
 
 impl Default for Settings {
@@ -260,6 +264,8 @@ impl Default for Settings {
             arms_glow: 1.0,
             arms_shards: 24,
             arms_shard_life: 5.0,
+            arms_scar_size: 1.0,
+            arms_scar_cool: 12.0,
         }
     }
 }
@@ -404,6 +410,20 @@ impl Settings {
                 "arms.shards" => {
                     if let Ok(n) = v.parse::<u32>() {
                         s.arms_shards = n.min(ARMS_SHARDS_MAX);
+                    }
+                }
+                "arms.scar-size" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_scar_size = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "arms.scar-cool" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_scar_cool = f.clamp(2.0, 60.0);
+                        }
                     }
                 }
                 "arms.shard-life" => {
@@ -676,6 +696,8 @@ impl Settings {
         out.push_str(&format!("arms.glow = {:.2}\n", self.arms_glow));
         out.push_str(&format!("arms.shards = {}\n", self.arms_shards));
         out.push_str(&format!("arms.shard-life = {:.1}\n", self.arms_shard_life));
+        out.push_str(&format!("arms.scar-size = {:.2}\n", self.arms_scar_size));
+        out.push_str(&format!("arms.scar-cool = {:.0}\n", self.arms_scar_cool));
         out.push_str(&format!(
             "sound.hull = {}\n",
             if self.hull_sound { "on" } else { "off" }
@@ -764,6 +786,8 @@ mod tests {
         s.arms_glow = 1.5;
         s.arms_shards = 40;
         s.arms_shard_life = 8.0;
+        s.arms_scar_size = 1.5;
+        s.arms_scar_cool = 30.0;
         s.hoop_size = 2.5;
         s.map_rings = 2;
         s.landing_spacing_m = 500.0;

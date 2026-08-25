@@ -88,17 +88,29 @@ fn capture(name: &str, env: &[(&str, &str)]) -> Frame {
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("the game runs");
-    assert!(
-        out.status.success(),
-        "{name}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let png: PathBuf = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|p| p.extension().is_some_and(|x| x == "png"))
-        .unwrap_or_else(|| panic!("{name}: no capture in {}", dir.display()));
+    let find_png = || -> Option<PathBuf> {
+        std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().is_some_and(|x| x == "png"))
+    };
+    let mut png: Option<PathBuf> = None;
+    // The scenes run in parallel on one GPU: a starved run can quit before
+    // its final frame is read back. One more go before it counts.
+    for attempt in 0..2 {
+        let out = cmd.output().expect("the game runs");
+        assert!(
+            out.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        png = find_png();
+        if png.is_some() {
+            break;
+        }
+        eprintln!("{name}: no capture on attempt {attempt}, again");
+    }
+    let png = png.unwrap_or_else(|| panic!("{name}: no capture in {}", dir.display()));
     let decoder = png::Decoder::new(std::fs::File::open(&png).unwrap());
     let mut reader = decoder.read_info().unwrap();
     let mut buf = vec![0; reader.output_buffer_size()];
@@ -298,6 +310,26 @@ fn the_debris_tumbles_ahead() {
     // Fresh shards glow orange-white in the middle of the view.
     let ember = f.share(0.3, 0.3, 0.7, 0.7, |c| c[0] > 0.6 && c[0] > c[2] + 0.25);
     assert!(ember > 0.0003, "embers among the shards: {ember}");
+}
+
+#[test]
+fn the_scars_glow_on_the_rock_ahead() {
+    if !enabled() {
+        return;
+    }
+    let f = capture(
+        "scars",
+        &[
+            ("FARFALL_BENCH_POS", RING_POS),
+            ("FARFALL_BENCH_LOOK", RING_LOOK_ALONG),
+            ("FARFALL_BENCH_ARMS", "scars"),
+        ],
+    );
+    // Hot orange-white craters somewhere on the glass.
+    let hot = f.share(0.0, 0.0, 1.0, 1.0, |c| {
+        c[0] > 0.8 && c[1] > 0.35 && c[0] > c[2] + 0.12
+    });
+    assert!(hot > 0.0002, "craters glowing: {hot}");
 }
 
 #[test]

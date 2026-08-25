@@ -22,6 +22,7 @@ pub mod ghost;
 pub mod hud;
 pub mod instrument;
 pub mod planet;
+pub mod scar;
 pub mod shaders;
 pub mod shield;
 pub mod starfield;

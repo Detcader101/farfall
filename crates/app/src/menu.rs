@@ -127,6 +127,8 @@ enum Item {
     ArmsGlow,
     ArmsShards,
     ArmsShardLife,
+    ArmsScarSize,
+    ArmsScarCool,
 }
 
 impl Item {
@@ -162,6 +164,8 @@ impl Item {
             Item::ArmsGlow => "MUZZLE LIGHT",
             Item::ArmsShards => "DEBRIS",
             Item::ArmsShardLife => "DEBRIS LIFE",
+            Item::ArmsScarSize => "SCARS",
+            Item::ArmsScarCool => "SCAR COOLING",
             Item::DialSelect => "DIAL",
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
@@ -252,6 +256,14 @@ impl Item {
                 }
             }
             Item::ArmsShardLife => format!("{:.0} S", s.arms_shard_life),
+            Item::ArmsScarSize => {
+                if s.arms_scar_size > 0.0 {
+                    format!("{:.0}%", s.arms_scar_size * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::ArmsScarCool => format!("{:.0} S", s.arms_scar_cool),
         }
     }
 
@@ -386,6 +398,8 @@ impl Menu {
                 Item::ArmsGlow,
                 Item::ArmsShards,
                 Item::ArmsShardLife,
+                Item::ArmsScarSize,
+                Item::ArmsScarCool,
             ],
             Page::Map => vec![
                 Item::Destination,
@@ -657,6 +671,24 @@ impl Menu {
                     return MenuEvent::Nothing;
                 }
                 s.arms_shard_life = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsScarSize => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.arms_scar_size + step).clamp(0.0, 2.0);
+                if (next - s.arms_scar_size).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_scar_size = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsScarCool => {
+                let step = if forward { 4.0 } else { -4.0 };
+                let next = (s.arms_scar_cool + step).clamp(2.0, 60.0);
+                if (next - s.arms_scar_cool).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_scar_cool = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Shield => {
@@ -1133,6 +1165,7 @@ mod tests {
                 Page::Arms => {
                     assert!(on(Item::ArmsPower) && on(Item::ArmsGlow));
                     assert!(on(Item::ArmsShards) && on(Item::ArmsShardLife));
+                    assert!(on(Item::ArmsScarSize) && on(Item::ArmsScarCool));
                     assert!(items.len() >= 2);
                 }
                 Page::Map => unreachable!(),
