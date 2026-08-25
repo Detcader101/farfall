@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 
 use capture::Capture;
 use farfall_audio::Audio;
+use farfall_render::debris::{debris_pass, DebrisPass, DebrisScene, DebrisUniforms, ShardView};
 use farfall_render::tracer::{
     tracer_pass, BurstView, Occluder, SlugView, TracerPass, TracerScene, TracerUniforms,
 };
@@ -260,6 +261,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
 ///                           many seconds old, ahead and a little banked)
+///   FARFALL_BENCH_ARMS=debris (benchmark only: a rock's shards ahead, fresh
+///                           ones glowing, with the break's burst)
 ///   FARFALL_BENCH_ARMS=1   (benchmark only: tracers from both guns, a muzzle
 ///                           flash and every kind of burst ahead)
 ///   FARFALL_BENCH_STRIKES=n (benchmark only: n strikes on the shield at
@@ -433,6 +436,8 @@ struct Passes {
     belt: BeltPass,
     /// The arms' light: tracers, flashes, bursts.
     tracer: TracerPass,
+    /// The arms' debris: shards off the rocks.
+    debris: DebrisPass,
 }
 
 impl Passes {
@@ -464,6 +469,7 @@ impl Passes {
             ghost: ghost_pass(device, format, msaa),
             belt: belt_pass(device, format, msaa),
             tracer: tracer_pass(device, format, msaa),
+            debris: debris_pass(device, format, msaa),
         }
     }
 }
@@ -1783,6 +1789,56 @@ impl Game {
         )
     }
 
+    /// The shards this frame, in the ship's frame, with the rocks that
+    /// can hide them.
+    fn debris_uniforms(&self, cam: &CameraFrame) -> DebrisUniforms {
+        let head = self.look.rotation();
+        if self.arms.shards.is_empty() {
+            return DebrisUniforms::none(cam, head);
+        }
+        let ship_inv = self.state.ship.orient.inverse();
+        let ship_pos = self.state.ship.pos_m;
+        let t = self.state.time_s;
+        let to_ship = |p: DVec3| (ship_inv * (p - ship_pos)).as_vec3();
+        let shards: Vec<ShardView> = self
+            .arms
+            .shards
+            .iter()
+            .map(|sh| {
+                let age = (t - sh.born_s).max(0.0);
+                ShardView {
+                    at: to_ship(sh.pos),
+                    size: sh.size,
+                    axis: (ship_inv * sh.axis).as_vec3(),
+                    angle: (sh.spin * age) as f32,
+                    age01: (age / sh.life_s.max(0.01) as f64) as f32,
+                    seed: sh.seed,
+                }
+            })
+            .collect();
+        let rocks: Vec<farfall_render::debris::Occluder> = self
+            .belt
+            .rocks
+            .iter()
+            .map(|r| farfall_render::debris::Occluder {
+                centre: to_ship(r.pos),
+                radius_m: r.radius_m as f32,
+            })
+            .collect();
+        let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        DebrisUniforms::new(
+            cam,
+            head,
+            1.0,
+            self.settings.arms_glow,
+            sun_ship,
+            &DebrisScene {
+                shards: &shards,
+                rocks: &rocks,
+            },
+        )
+    }
+
     /// The after-image this frame, if one is still showing.
     fn ghost_uniforms(&self, cam: &CameraFrame) -> GhostUniforms {
         let head = self.look.rotation();
@@ -2030,6 +2086,8 @@ impl Game {
             }
             // The arms: slugs fly, land on rocks, and the guns kick.
             self.arms.power = self.settings.arms_power;
+            self.arms.shards_per_break = self.settings.arms_shards;
+            self.arms.shard_life_s = self.settings.arms_shard_life;
             let trigger = self.fire_held && !self.menu.open && !self.map_open() && !self.design;
             let kick = self.arms.step(
                 self.state.time_s,
@@ -2743,7 +2801,60 @@ impl App {
                 at_s: 1.0 - age,
             });
         }
-        if game.frozen && std::env::var("FARFALL_BENCH_ARMS").is_ok() {
+        let bench_arms = std::env::var("FARFALL_BENCH_ARMS").unwrap_or_default();
+        if game.frozen && bench_arms == "debris" {
+            // A rock just broken ahead: its shards spread out in a cloud,
+            // the freshest still glowing, a few chips nearer; the break's
+            // own burst behind them.
+            let o = game.state.ship.orient;
+            let p = game.state.ship.pos_m;
+            let v = game.state.ship.vel_mps;
+            let t = game.state.time_s;
+            let mut h = 0.37f32;
+            let mut unit = || {
+                h = (h * 9.731 + 0.173).fract();
+                h
+            };
+            for i in 0..48 {
+                let age = 0.05 + 2.4 * unit();
+                let dir = DVec3::new(
+                    unit() as f64 - 0.5,
+                    unit() as f64 - 0.5,
+                    unit() as f64 - 0.5,
+                )
+                .normalize_or_zero();
+                let speed = 4.0 + 14.0 * unit() as f64;
+                let at = DVec3::new(0.0, -1.0, -70.0) + dir * speed * age as f64;
+                let axis = DVec3::new(
+                    unit() as f64 - 0.5,
+                    unit() as f64 - 0.5,
+                    unit() as f64 - 0.5,
+                )
+                .normalize_or_zero();
+                let spin = 0.5 + 3.0 * unit() as f64;
+                let size = if i % 8 == 0 { 3.5 } else { 0.6 + 1.6 * unit() };
+                let seed = unit();
+                game.arms.shards.push(arms::Shard {
+                    pos: p + o * at,
+                    vel: v + o * dir * speed,
+                    axis,
+                    spin,
+                    size,
+                    born_s: t - age as f64,
+                    life_s: 5.0,
+                    seed,
+                });
+            }
+            game.arms.bursts.push(arms::Burst {
+                pos: p + o * DVec3::new(0.0, -1.0, -70.0),
+                vel: v,
+                at_s: t - 0.9,
+                kind: 2,
+                size: 1.2,
+                seed: 0.4,
+            });
+        }
+        if game.frozen && (bench_arms == "1" || bench_arms == "guns") {
             // Both guns in the air and every kind of burst at once, ahead:
             // cannon tracers from both wings a little way out, a rail slug
             // further, a muzzle flash on the right wing, hits and a rock
@@ -3158,6 +3269,9 @@ impl ApplicationHandler for App {
                                 gpu.passes
                                     .tracer
                                     .update(&gpu.queue, &game.tracer_uniforms(&cam));
+                                gpu.passes
+                                    .debris
+                                    .update(&gpu.queue, &game.debris_uniforms(&cam));
                                 let (altitude_m, _) = game.altitude_vspeed();
                                 gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
                                 // The capture should show what the pilot
@@ -3271,6 +3385,7 @@ impl ApplicationHandler for App {
                                     gpu.passes.bodies.draw(&mut pass);
                                     gpu.passes.planet.draw(&mut pass);
                                     gpu.passes.belt.draw(&mut pass);
+                                    gpu.passes.debris.draw(&mut pass);
                                     gpu.passes.tracer.draw(&mut pass);
                                     gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                                     gpu.passes.trajectory.draw(&mut pass);
@@ -3369,6 +3484,9 @@ impl ApplicationHandler for App {
                 gpu.passes
                     .tracer
                     .update(&gpu.queue, &game.tracer_uniforms(&cam));
+                gpu.passes
+                    .debris
+                    .update(&gpu.queue, &game.debris_uniforms(&cam));
                 let thermal_in = game.thermal_inputs(game.frame_dt);
                 gpu.passes.plasma.update(
                     &gpu.queue,
@@ -3464,6 +3582,9 @@ impl ApplicationHandler for App {
                     }
                     if gpu.cfg.draws("belt") {
                         gpu.passes.belt.draw(&mut pass);
+                    }
+                    if gpu.cfg.draws("debris") {
+                        gpu.passes.debris.draw(&mut pass);
                     }
                     if gpu.cfg.draws("tracer") {
                         gpu.passes.tracer.draw(&mut pass);

@@ -354,10 +354,11 @@ features:
     e2e: FARFALL_BENCH_ARMS=1 capture at the ring looked at — tracers, sparks, the wake; not yet fired in flight
 
   - id: arms-debris
-    name: Rocks break — a rock past its toughness splits into 3-5 ray-traced fragments in the belt's live set, flung from the far side of the hit, never brought back from the hash; a flash, a swelling cloud of grit and embers, chunks as streaks, a shock ring
-    state: tests-pass
-    tests: [crates/app/src/belt.rs, crates/app/src/arms.rs::a_slug_hits_a_rock_wounds_it_and_a_rail_slug_breaks_a_small_one]
-    e2e: the break burst in the FARFALL_BENCH_ARMS capture; a live break not yet flown
+    name: Rocks break — a rock past its toughness splits into 2-4 ray-traced fragments in the belt's live set with its mass and momentum shared out (less a dust share), flung from the far side of the hit, never brought back from the hash; shards (a debris pass of tumbling, sun-lit, ray-traced slabs of the same stone) chip off every hit and pour out of a break carrying the rock's velocity, their fresh faces cooling white to orange to dull red, thinning out at the end of their life, hidden behind rocks; a flash, a swelling cloud of grit and embers, a shock ring
+    state: complete
+    tests: [crates/app/src/belt.rs::a_rock_is_shoved_and_wounded_then_breaks_into_fragments_and_stays_dead, crates/app/src/arms.rs::shards_fly_off_a_hit_carry_the_rock_along_and_die_in_their_time, crates/render/src/debris.rs, crates/app/tests/scenes.rs::the_debris_tumbles_ahead]
+    settings: [arms.shards, arms.shard-life]
+    e2e: FARFALL_BENCH_ARMS=debris capture at the ring looked at — a cloud of tumbling shards 70 m ahead, the fresh ones glowing, the break's burst behind; a live break not yet flown
 
   - id: arms-scars
     name: Scars — glowing crater decals on rocks and bodies that cool from white through orange to dull red

@@ -283,6 +283,24 @@ fn the_arms_light_the_belt() {
 }
 
 #[test]
+fn the_debris_tumbles_ahead() {
+    if !enabled() {
+        return;
+    }
+    let f = capture(
+        "debris",
+        &[
+            ("FARFALL_BENCH_POS", RING_POS),
+            ("FARFALL_BENCH_LOOK", RING_LOOK_ALONG),
+            ("FARFALL_BENCH_ARMS", "debris"),
+        ],
+    );
+    // Fresh shards glow orange-white in the middle of the view.
+    let ember = f.share(0.3, 0.3, 0.7, 0.7, |c| c[0] > 0.6 && c[0] > c[2] + 0.25);
+    assert!(ember > 0.0003, "embers among the shards: {ember}");
+}
+
+#[test]
 fn the_menu_and_the_dials_draw() {
     if !enabled() {
         return;

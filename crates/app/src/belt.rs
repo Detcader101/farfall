@@ -33,6 +33,9 @@ pub const TOUGH_J_PER_M2: f64 = 2.0e4;
 pub const FRAG_MIN_M: f64 = 4.0;
 /// Fragments' ids use this slot range, above the cell's own 0..3.
 const FRAG_SLOT0: u8 = 8;
+/// The share of a broken rock's volume that goes to dust and shards
+/// rather than to pieces big enough to stay rocks.
+pub const DUST_SHARE: f64 = 0.12;
 
 /// A rock's identity: its cell and its slot in it.
 pub type RockId = (i64, i64, i64, u8);
@@ -362,33 +365,52 @@ impl Belt {
         }
         let seq = self.frag_seq;
         let h = |salt: u32| unit(hash(rock.id.0, rock.id.1, rock.id.2, salt ^ seq));
-        let n = 3 + (hash(rock.id.0, rock.id.1, rock.id.2, 99 ^ seq) % 3) as usize;
+        let n = 2 + (hash(rock.id.0, rock.id.1, rock.id.2, 99 ^ seq) % 3) as usize;
+        let n = n.min(LIVE - self.rocks.len());
+        if n == 0 {
+            return 0;
+        }
         let away = (rock.pos - at).normalize_or_zero();
-        let mut made = 0;
+        // Mass is conserved: the pieces share the rock's volume (less the
+        // dust) by random weights, and their flings sum to nothing so the
+        // rock's momentum is theirs together.
+        let weights: Vec<f64> = (0..n).map(|k| 0.5 + h(16 * k as u32 + 1)).collect();
+        let wsum: f64 = weights.iter().sum();
+        let volume = rock.radius_m.powi(3) * (1.0 - DUST_SHARE);
+        let radii: Vec<f64> = weights.iter().map(|w| (volume * w / wsum).cbrt()).collect();
+        let flings: Vec<DVec3> = (0..n)
+            .map(|k| {
+                let s = 16 * k as u32;
+                let dir =
+                    DVec3::new(h(s + 2) - 0.5, h(s + 3) - 0.5, h(s + 4) - 0.5).normalize_or_zero();
+                // Pieces leave from the far side of the hit, mostly.
+                (dir + away * 0.8).normalize_or_zero() * (2.0 + 6.0 * h(s + 5))
+            })
+            .collect();
+        let masses: Vec<f64> = radii.iter().map(|r| r.powi(3)).collect();
+        let msum: f64 = masses.iter().sum();
+        let drift: DVec3 = flings
+            .iter()
+            .zip(masses.iter())
+            .map(|(f, m)| *f * *m)
+            .sum::<DVec3>()
+            / msum;
         for k in 0..n {
-            if self.rocks.len() >= LIVE {
-                break;
-            }
             let s = 16 * k as u32;
-            let radius_m = rock.radius_m * (0.32 + 0.2 * h(s + 1));
-            let dir =
-                DVec3::new(h(s + 2) - 0.5, h(s + 3) - 0.5, h(s + 4) - 0.5).normalize_or_zero();
-            // Pieces leave from the far side of the hit, mostly.
-            let fling = (dir + away * 0.8).normalize_or_zero();
-            let speed = 2.0 + 6.0 * h(s + 5);
+            let radius_m = radii[k];
+            let fling = flings[k] - drift;
             let slot = FRAG_SLOT0.wrapping_add((self.frag_seq % 240) as u8);
             self.frag_seq = self.frag_seq.wrapping_add(1);
             self.rocks.push(Rock {
                 id: (rock.id.0, rock.id.1, rock.id.2, slot),
-                pos: rock.pos + fling * (rock.radius_m - radius_m) * 0.9,
-                vel: rock.vel + fling * speed,
+                pos: rock.pos + fling.normalize_or_zero() * (rock.radius_m - radius_m) * 0.9,
+                vel: rock.vel + fling,
                 radius_m: radius_m.max(1.0),
                 seed: h(s + 6) as f32,
                 spin: ((h(s + 7) - 0.5) * 2.0) as f32,
             });
-            made += 1;
         }
-        made
+        n
     }
 }
 
@@ -419,16 +441,41 @@ mod tests {
         assert!(!d.destroyed && d.fragments == 0);
         assert!(b.rocks[0].vel.x > 0.0, "shoved along the slug");
         assert!((b.wound(0) - 0.4).abs() < 1e-9, "{}", b.wound(0));
+        let mass_kg = 2_000.0 * (4.0 / 3.0) * std::f64::consts::PI * 20.0f64.powi(3);
+        let rock_vel_after = b.rocks[0].vel + DVec3::X * (1.0e6 / mass_kg);
         let d = b.strike(0, tough * 0.7, 1.0e6, at, DVec3::X);
         assert!(d.destroyed);
-        assert!((3..=5).contains(&d.fragments), "{d:?}");
+        assert!((2..=4).contains(&d.fragments), "{d:?}");
         assert_eq!(b.rocks.len(), d.fragments);
+        // Mass and momentum are the rock's, less the dust.
+        let volume: f64 = b.rocks.iter().map(|r| r.radius_m.powi(3)).sum();
+        assert!(
+            (volume / (20.0f64.powi(3) * (1.0 - DUST_SHARE)) - 1.0).abs() < 1e-9,
+            "{volume}"
+        );
+        let mass: f64 = volume;
+        let momentum: DVec3 = b
+            .rocks
+            .iter()
+            .map(|r| r.vel * r.radius_m.powi(3))
+            .sum::<DVec3>()
+            / mass;
+        assert!(
+            (momentum - rock_vel_after).length() < 1e-6,
+            "{momentum} vs {rock_vel_after}"
+        );
+        assert!(
+            b.rocks
+                .iter()
+                .any(|r| (r.vel - rock_vel_after).length() > 1.0),
+            "they fly apart"
+        );
         assert!(b.dead.contains(&(1, 2, 3, 0)));
         assert!(b.wounds.is_empty());
         let mut ids = std::collections::HashSet::new();
         for r in &b.rocks {
             assert!(
-                r.radius_m < 20.0 * 0.55 && r.radius_m > 20.0 * 0.3,
+                r.radius_m < 20.0 * 0.96 && r.radius_m > 20.0 * 0.3,
                 "{}",
                 r.radius_m
             );

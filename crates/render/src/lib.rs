@@ -16,6 +16,7 @@ pub mod belt;
 pub mod blit;
 pub mod bodies;
 pub mod cabin;
+pub mod debris;
 pub mod gauge;
 pub mod ghost;
 pub mod hud;

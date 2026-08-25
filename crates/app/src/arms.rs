@@ -16,6 +16,8 @@ pub const SLUG_LIFE_S: f64 = 4.0;
 pub const MAX_SLUGS: usize = 32;
 /// Bursts kept for the pass (the newest win).
 pub const MAX_BURSTS: usize = 16;
+/// Shards in the air at once (the debris pass's array).
+pub const MAX_SHARDS: usize = 64;
 /// The railgun's time to charge at full power, s.
 pub const RAIL_CHARGE_S: f64 = 1.1;
 /// Past this heat a weapon jams; it clears below half.
@@ -119,6 +121,21 @@ pub struct Burst {
     pub seed: f32,
 }
 
+/// A shard of rock: a chip off a hit, a piece of a break. Tumbles, cools.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shard {
+    pub pos: DVec3,
+    pub vel: DVec3,
+    /// The tumble: an axis and a rate (rad/s).
+    pub axis: DVec3,
+    pub spin: f64,
+    /// Half its longest side, metres.
+    pub size: f32,
+    pub born_s: f64,
+    pub life_s: f32,
+    pub seed: f32,
+}
+
 impl Burst {
     pub fn life_s(kind: u8) -> f64 {
         match kind {
@@ -159,6 +176,11 @@ pub struct Arms {
     pub bangs: u32,
     pub bang_size: f32,
     pub breaks: u32,
+    /// The debris: shards in the air, how many a break throws, how long
+    /// they last (the settings').
+    pub shards: Vec<Shard>,
+    pub shards_per_break: u32,
+    pub shard_life_s: f32,
     next_shot_s: f64,
     left_next: bool,
     trigger_was: bool,
@@ -181,6 +203,9 @@ impl Default for Arms {
             bangs: 0,
             bang_size: 0.0,
             breaks: 0,
+            shards: Vec::new(),
+            shards_per_break: 24,
+            shard_life_s: 5.0,
             next_shot_s: 0.0,
             left_next: true,
             trigger_was: false,
@@ -341,6 +366,13 @@ impl Arms {
                 } else {
                     1
                 };
+                // Chips off a hit; a break throws its dust and chunks out.
+                let count = if d.destroyed {
+                    self.shards_per_break
+                } else {
+                    self.shards_per_break / 6
+                };
+                self.throw_shards(t_s, at, rock, rel.normalize_or_zero(), count, d.destroyed);
                 self.push_burst(Burst {
                     pos: at,
                     vel: rock.vel,
@@ -359,9 +391,70 @@ impl Arms {
             self.slugs[k].pos = b;
             k += 1;
         }
-        // Old bursts go.
+        // Old bursts go; shards fly, then go.
         self.bursts.retain(|b| t_s - b.at_s < Burst::life_s(b.kind));
+        for sh in self.shards.iter_mut() {
+            sh.pos += sh.vel * dt;
+        }
+        self.shards.retain(|sh| t_s - sh.born_s < sh.life_s as f64);
         recoil
+    }
+
+    /// Shards leave the strike: chips spray back off the face; a break's
+    /// pieces go every way, the bigger the rock the bigger and faster.
+    fn throw_shards(
+        &mut self,
+        t_s: f64,
+        at: DVec3,
+        rock: crate::belt::Rock,
+        along: DVec3,
+        count: u32,
+        broke: bool,
+    ) {
+        let life = self.shard_life_s;
+        for _ in 0..count {
+            let dir = DVec3::new(
+                self.unit() as f64 - 0.5,
+                self.unit() as f64 - 0.5,
+                self.unit() as f64 - 0.5,
+            )
+            .normalize_or_zero();
+            // A hit sprays back toward the shooter; a break goes outward
+            // from the rock's heart.
+            let fling = if broke {
+                (dir + (at - rock.pos).normalize_or_zero() * 0.4).normalize_or_zero()
+            } else {
+                (dir - along * 1.2).normalize_or_zero()
+            };
+            let speed =
+                if broke { 3.0 } else { 6.0 } + (rock.radius_m.sqrt() * 4.0) * self.unit() as f64;
+            let size =
+                (rock.radius_m * (if broke { 0.08 } else { 0.03 }) * (0.5 + self.unit() as f64))
+                    .clamp(0.2, 8.0) as f32;
+            let axis = DVec3::new(
+                self.unit() as f64 - 0.5,
+                self.unit() as f64 - 0.5,
+                self.unit() as f64 - 0.5,
+            )
+            .normalize_or_zero();
+            let spin =
+                (0.5 + 3.0 * self.unit() as f64) * if self.unit() > 0.5 { 1.0 } else { -1.0 };
+            let life_s = life * (0.6 + 0.8 * self.unit());
+            let seed = self.unit();
+            if self.shards.len() >= MAX_SHARDS {
+                self.shards.remove(0);
+            }
+            self.shards.push(Shard {
+                pos: at + fling * size as f64,
+                vel: rock.vel + fling * speed,
+                axis,
+                spin,
+                size,
+                born_s: t_s,
+                life_s,
+                seed,
+            });
+        }
     }
 
     fn push_burst(&mut self, b: Burst) {
@@ -609,5 +702,72 @@ mod tests {
             arms.step(t, dt, &ship(), false, &mut belt);
         }
         assert!(arms.bursts.is_empty());
+    }
+
+    #[test]
+    fn shards_fly_off_a_hit_carry_the_rock_along_and_die_in_their_time() {
+        let mut arms = Arms {
+            shards_per_break: 24,
+            shard_life_s: 2.0,
+            ..Default::default()
+        };
+        let mut belt = Belt::default();
+        belt.rocks.push(crate::belt::Rock {
+            id: (0, 0, 0, 0),
+            pos: DVec3::new(0.0, 0.0, -300.0),
+            vel: DVec3::new(0.0, 0.0, 40.0),
+            radius_m: 30.0,
+            seed: 0.2,
+            spin: 0.0,
+        });
+        let ship = Ship {
+            pos: DVec3::ZERO,
+            vel: DVec3::ZERO,
+            orient: DQuat::IDENTITY,
+            aim: DVec3::NEG_Z,
+        };
+        arms.select(Weapon::Cannon);
+        let mut t = 0.0;
+        // One shot, then wait for it to land.
+        arms.step(t, 0.01, &ship, true, &mut belt);
+        for _ in 0..60 {
+            t += 0.01;
+            arms.step(t, 0.01, &ship, false, &mut belt);
+        }
+        assert_eq!(
+            arms.shards.len(),
+            4,
+            "a hit chips a sixth of a break's worth"
+        );
+        // They carry the rock's own velocity, spray back toward the gun,
+        // and tumble.
+        assert!(
+            arms.shards.iter().all(|s| s.vel.z > 0.0),
+            "{:?}",
+            arms.shards[0]
+        );
+        assert!(arms.shards.iter().any(|s| s.spin.abs() > 0.4));
+        assert!(arms.shards.iter().all(|s| s.size >= 0.2 && s.size <= 8.0));
+        let p0 = arms.shards[0].pos;
+        t += 0.01;
+        arms.step(t, 0.01, &ship, false, &mut belt);
+        assert!((arms.shards[0].pos - p0).length() > 0.0, "they move");
+        for _ in 0..400 {
+            t += 0.01;
+            arms.step(t, 0.01, &ship, false, &mut belt);
+        }
+        assert!(
+            arms.shards.is_empty(),
+            "gone after their life: {}",
+            arms.shards.len()
+        );
+        // None thrown when the setting is off.
+        arms.shards_per_break = 0;
+        arms.step(t, 0.01, &ship, true, &mut belt);
+        for _ in 0..60 {
+            t += 0.01;
+            arms.step(t, 0.01, &ship, false, &mut belt);
+        }
+        assert!(arms.shards.is_empty());
     }
 }

@@ -125,6 +125,8 @@ enum Item {
     /// The ARMS page: the reactor's share, and the light.
     ArmsPower,
     ArmsGlow,
+    ArmsShards,
+    ArmsShardLife,
 }
 
 impl Item {
@@ -158,6 +160,8 @@ impl Item {
             Item::Shield => "SHIELD",
             Item::ArmsPower => "REACTOR TO ARMS",
             Item::ArmsGlow => "MUZZLE LIGHT",
+            Item::ArmsShards => "DEBRIS",
+            Item::ArmsShardLife => "DEBRIS LIFE",
             Item::DialSelect => "DIAL",
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
@@ -240,6 +244,14 @@ impl Item {
                     "OFF".to_string()
                 }
             }
+            Item::ArmsShards => {
+                if s.arms_shards > 0 {
+                    s.arms_shards.to_string()
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::ArmsShardLife => format!("{:.0} S", s.arms_shard_life),
         }
     }
 
@@ -369,7 +381,12 @@ impl Menu {
                 );
                 v
             }
-            Page::Arms => vec![Item::ArmsPower, Item::ArmsGlow],
+            Page::Arms => vec![
+                Item::ArmsPower,
+                Item::ArmsGlow,
+                Item::ArmsShards,
+                Item::ArmsShardLife,
+            ],
             Page::Map => vec![
                 Item::Destination,
                 Item::SafeDist,
@@ -619,6 +636,27 @@ impl Menu {
                     return MenuEvent::Nothing;
                 }
                 s.arms_glow = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsShards => {
+                let next = if forward {
+                    (s.arms_shards + 8).min(crate::settings::ARMS_SHARDS_MAX)
+                } else {
+                    s.arms_shards.saturating_sub(8)
+                };
+                if next == s.arms_shards {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_shards = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsShardLife => {
+                let step = if forward { 1.0 } else { -1.0 };
+                let next = (s.arms_shard_life + step).clamp(1.0, 12.0);
+                if (next - s.arms_shard_life).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_shard_life = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Shield => {
@@ -1094,6 +1132,7 @@ mod tests {
                 }
                 Page::Arms => {
                     assert!(on(Item::ArmsPower) && on(Item::ArmsGlow));
+                    assert!(on(Item::ArmsShards) && on(Item::ArmsShardLife));
                     assert!(items.len() >= 2);
                 }
                 Page::Map => unreachable!(),
