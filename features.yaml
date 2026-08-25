@@ -11,346 +11,400 @@
 # `e2e:` names what was looked at. Keep this file honest; update it per chunk.
 
 rules:
-  gpu_only: every visual thing is a WGSL shader
-  customisable: every applicable feature ships with a setting (menu + ~/.farfall/settings.cfg)
+  gpu_only: every visual thing is a WGSL shader (shaders/*.wgsl, composed with common.wgsl; registered in crates/render/src/shaders.rs and validated by crates/render/tests/shader_validation.rs)
+  customisable: every applicable feature ships with a setting (menu row + ~/.farfall/settings.cfg key), never asked for
+  panels_draggable: every panel (settings, map, readout, holo3PP) is dragged by the cursor/gaze and its anchor saved
+  performance: 60 fps floor at 2880x1800; the cabin governs its own detail to hold it (graphics.fps-floor)
+  sound: no wind-like noise beds in space, no chimes; the hull's voices are structure-borne
+  ledger: complete = tests through the gate + the workflow + an e2e capture or flight looked at (e2e names it)
+  deferred_by_owner: crash / ship loss (see id crash)
+
+# Every control the game answers to. All are rebindable on the KEYS page and
+# persisted as control.<key>; the menu lists every one (id complete-key-menu).
+controls:
+  axes: {thrust-forward: W, thrust-back: S, strafe-left: A, strafe-right: D, thrust-up: R, thrust-down: F, pitch-up: Up, pitch-down: Down, yaw-left: Left, yaw-right: Right, roll-left: Q, roll-right: E}
+  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P}
+  fixed: {menu: Esc, page: Tab, capture-alt: F12, map-zoom: "+ / -"}
+  mouse: freelook while the right button is held; left drag turns the map or moves a panel; wheel zooms the map
+
+# Every key ~/.farfall/settings.cfg may hold, by group (crates/app/src/settings.rs).
+settings_keys:
+  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare]
+  camera: [camera.chase, holo.view, holo.size]
+  cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
+  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
+  map: [map.rings, map.grid]
+  warp: [warp.destination, warp.safe-radii]
+  sound: [sound.hull]
+  controls: ["control.<axis>", "control.<named>", control.look-sens]
+
+# The bench harness (documented in crates/app/src/main.rs). All FARFALL_BENCH_*
+# are benchmark-only; the capture is the presented frame.
+bench:
+  run: "FARFALL_BENCH=1 FARFALL_BENCH_SECONDS=s FARFALL_CAPTURE=final FARFALL_MSAA=1 TMPDIR=dir target/release/farfall"
+  perf: "RUST_LOG=info FARFALL_BENCH_FULL=1 FARFALL_VSYNC=off — a 'perf 2880x1800' line every 5 s; pass FARFALL_BENCH_POS (the default spawn logs no perf line and exits at its screenshot); interleave A/B runs, one at a time, no other farfall running"
+  reference_scene: "FARFALL_BENCH_POS=16706357148.3,3498039023.8,-24797998372.8 FARFALL_BENCH_LOOK=0.0206,-0.9998,0.0042 (above the ring) — base 11.0 ms, chase 8.5 ms, holo3PP on 11.1 ms (2026-08-25)"
+  knobs:
+    FARFALL_BENCH_SECONDS: how long a run lasts (20)
+    FARFALL_BENCH_FULL: borderless fullscreen at the real resolution
+    FARFALL_BENCH_POS / _VEL / _LOOK: park the ship at x,y,z with a velocity, looking along a direction
+    FARFALL_BENCH_ROLL: rolled about the look axis, radians
+    FARFALL_BENCH_ALT: frozen altitude in metres over the planet
+    FARFALL_BENCH_HEAD: head yaw,pitch in degrees
+    FARFALL_BENCH_SPIN: the head turns a full circle over the run, n times
+    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND: the map, the settings menu (paged n times), DESIGN mode, LANDING mode up
+    FARFALL_BENCH_CHASE / _HOLO: the chase camera, the holo3PP
+    FARFALL_BENCH_HYPER / _WARP=s / _GHOST=age: the chaos drive's field up; the wormhole drive engaged at s; a WARP STOP after-image this old
+    FARFALL_BENCH_STRIKES=n / _G=x,y,z / _THRUST=m,p,y,r: n shield strikes; a felt load in g; forced thrust demands
+    FARFALL_CAPTURE=final / FARFALL_MSAA / FARFALL_VSYNC / FARFALL_SCALE / FARFALL_MUTE / FARFALL_SKIP=a,b: capture the presented frame; renderer overrides; leave passes out for profiling
+  scene_tests: "crates/app/tests/scenes.rs, gated by FARFALL_SCENE_TESTS=1 (the pre-commit gate sets it; FARFALL_NO_SCENES=1 skips) — 9 captures measured"
 
 features:
   - id: sim-core
-    name: Deterministic f64 fixed-step sim with golden hash
+    name: "Deterministic f64 fixed-step sim with golden hash"
     state: complete
     tests: [crates/sim/tests/invariants.rs, crates/sim/tests/aero.rs, crates/sim/tests/contact.rs]
-    e2e: flown since M1
+    e2e: "flown since M1"
 
   - id: planet-render
-    name: Analytic planet with atmosphere, clouds, night lights
+    name: "Analytic planet with atmosphere, clouds, night lights"
     state: complete
-    e2e: many captures
+    e2e: "many captures"
 
   - id: thermal-plasma
-    name: GPU hull heat field and plasma sheath on entry
+    name: "GPU hull heat field and plasma sheath on entry"
     state: complete
-    e2e: entry captures; tear artefact fixed
+    e2e: "entry captures; tear artefact fixed"
 
   - id: aero-attitude
-    name: Attitude-dependent drag, lift, CoP/CoG torque, aero damping
+    name: "Attitude-dependent drag, lift, CoP/CoG torque, aero damping"
     state: complete
+    settings: [control.pitch-up, control.pitch-down, control.yaw-left, control.yaw-right, control.roll-left, control.roll-right]
     tests: [crates/sim/tests/aero.rs]
-    e2e: dives reach mach 1 on gravity alone
+    e2e: "dives reach mach 1 on gravity alone"
 
   - id: trajectory-hoops
-    name: GPU-integrated predicted path; world-fixed hoops/dashes/dots; hoops astern fade red
+    name: "GPU-integrated predicted path; world-fixed hoops/dashes/dots; hoops astern fade red"
     state: complete
     tests: [crates/render/src/trajectory.rs]
-    e2e: captures fore and aft (FARFALL_BENCH_LOOK)
+    e2e: "captures fore and aft (FARFALL_BENCH_LOOK)"
     settings: [ui.path, ui.hoops, ui.hoop-sound, ui.hoop-size]
 
   - id: gauges
-    name: Speed / altitude / G / gyro / horizon+ladder instruments on the canopy
+    name: "Speed / altitude / G / gyro / horizon+ladder instruments on the canopy"
     state: complete
     settings: [ui.speed, ui.altitude, ui.g-meter, ui.gyro, ui.horizon, ui.ladder, ui.safe-edge]
     e2e: captures
 
   - id: menu-settings
-    name: In-game menu — GFX / KEYS / CABIN / GAUGES pages, settings grouped by topic (the ship, then every path/hoop setting in one run on CABIN; dials on GAUGES), a flat framed card on the screen with the chosen row banded; every row proven to fit; settings file
+    name: "In-game menu — GFX / KEYS / CABIN / GAUGES pages, settings grouped by topic (the ship, then every path/hoop setting in one run on CABIN; dials on GAUGES), a flat framed card on the screen with the chosen row banded; every row proven to fit; settings file"
     state: complete
-    tests: [crates/app/src/menu.rs::every_row_of_every_page_fits_the_panel, crates/app/src/menu.rs::the_pages_are_categories_that_make_sense, crates/app/src/settings.rs]
-    e2e: FARFALL_BENCH_MENU=3 capture — GAUGES page, rows aligned, card framed
+    settings: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.sky, graphics.flare, ui.panel-menu]
+    tests: ["crates/app/src/menu.rs::every_row_of_every_page_fits_the_panel", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense", crates/app/src/settings.rs]
+    e2e: "FARFALL_BENCH_MENU=3 capture — GAUGES page, rows aligned, card framed"
 
   - id: relativity
-    name: Light limit above 9,500 m/s; mouldable speed units
+    name: "Light limit above 9,500 m/s; mouldable speed units"
     state: complete
     tests: [crates/sim/tests/relativity.rs]
 
   - id: bodies
-    name: Moon and Sun rendered at 1:100; finder tags
+    name: "Moon and Sun rendered at 1:100; finder tags"
     state: complete
     settings: [ui.body-tags]
     e2e: captures
 
   - id: multi-body-sim
-    name: Moon and Sun pull (tidal, planet frame) and are solid; contact in the body's frame
+    name: "Moon and Sun pull (tidal, planet frame) and are solid; contact in the body's frame"
     state: complete
     tests: [crates/sim/tests/bodies.rs]
-    e2e: warp to Moon/Sun flown by user
+    e2e: "warp to Moon/Sun flown by user"
 
   - id: occlusion
-    name: Moon and Sun hide the planet
+    name: "Moon and Sun hide the planet"
     state: complete
     tests: [crates/render/src/planet.rs]
-    e2e: captures from behind the Moon (full and partial)
+    e2e: "captures from behind the Moon (full and partial)"
 
   - id: freelook
-    name: Head look (right mouse / L); glass re-projected as a sphere about the head
+    name: "Head look (right mouse / L); glass re-projected as a sphere about the head"
     state: complete
+    settings: [control.look-sens, control.look-lock]
     tests: [crates/app/src/look.rs]
-    e2e: FARFALL_BENCH_HEAD capture
+    e2e: "FARFALL_BENCH_HEAD capture"
 
   - id: gaze-drag-dials
-    name: Left-click while looking drags a dial; free anchors saved
+    name: "Left-click while looking drags a dial; free anchors saved"
     state: complete
     tests: [crates/app/src/cockpit.rs, crates/app/src/settings.rs]
-    e2e: user dragged the speed dial (settings file shows `at x,y`)
+    e2e: "user dragged the speed dial (settings file shows `at x,y`)"
 
   - id: warp-drive
     name: "Wormhole jump with charge / flip / arrive post effects and sound; arrival in a circular orbit of the destination, in the body's own frame (the body's velocity is added, so the Moon and Uranus are arrived at riding along with them). Uranus is arrived at IN THE ASTEROID BELT whatever the safe distance says (the menu shows IN THE BELT): on the ring's middle radius (1.80 R), in the ring's plane, on the side you came from, going round with the rocks at exactly their speed and way — a perfect orbit of the belt, the rocks about you hanging still"
     state: complete
-    tests: [crates/app/src/warp.rs::uranus_is_arrived_at_in_the_belt_riding_with_the_rocks, crates/app/src/warp.rs::every_body_is_arrived_at_in_a_circular_orbit, crates/app/src/warp.rs, crates/audio/src/synth.rs]
-    e2e: FARFALL_BENCH_WARP captures; flown — ENGAGE DRIVE with URANUS set drops you among the rocks at rest relative to them
+    settings: [warp.destination, warp.safe-radii, control.engage]
+    tests: ["crates/app/src/warp.rs::uranus_is_arrived_at_in_the_belt_riding_with_the_rocks", "crates/app/src/warp.rs::every_body_is_arrived_at_in_a_circular_orbit", crates/app/src/warp.rs, crates/audio/src/synth.rs]
+    e2e: "FARFALL_BENCH_WARP captures; flown — ENGAGE DRIVE with URANUS set drops you among the rocks at rest relative to them"
 
   - id: warp-crack
-    name: The warp-barrier crack at the jump (bassier, heavier than the sonic boom)
+    name: "The warp-barrier crack at the jump (bassier, heavier than the sonic boom)"
     state: tests-pass
-    tests: [crates/audio/src/synth.rs::the_warp_crack_is_a_heavier_deeper_boom]
-    e2e: not yet heard in flight
+    tests: ["crates/audio/src/synth.rs::the_warp_crack_is_a_heavier_deeper_boom"]
+    e2e: "not yet heard in flight"
 
   - id: map-3d
-    name: 3D log-radial system map — grid plane, poles, ship dart, orbit camera, BODY RINGS / GRID
+    name: "3D log-radial system map — grid plane, poles, ship dart, orbit camera, BODY RINGS / GRID"
     state: complete
     tests: [crates/app/src/map.rs]
     settings: [map.rings, map.grid]
-    e2e: FARFALL_BENCH_MAP capture
+    e2e: "FARFALL_BENCH_MAP capture"
 
   - id: warp-mode-pane
-    name: Map as a framed pane with full-screen dim
+    name: "Map as a framed pane with full-screen dim"
     state: complete
     e2e: capture
 
   - id: landing-mode
-    name: G toggles LANDING — close gates down the path coloured by predicted touchdown; readout
+    name: "G toggles LANDING — close gates down the path coloured by predicted touchdown; readout"
     state: complete
     tests: [crates/app/src/landing.rs, crates/render/src/trajectory.rs]
     settings: [ui.landing-hoops]
-    e2e: FARFALL_BENCH_LAND capture (HARD verdict, red gates)
+    e2e: "FARFALL_BENCH_LAND capture (HARD verdict, red gates)"
 
   - id: ladder-on-nose
-    name: Pitch ladder stays on the boresight under freelook
+    name: "Pitch ladder stays on the boresight under freelook"
     state: complete
     tests: [crates/render/src/attitude.rs]
-    e2e: FARFALL_BENCH_HEAD=25,0 capture with ui.ladder on — bars sit on the nose, left of view
+    e2e: "FARFALL_BENCH_HEAD=25,0 capture with ui.ladder on — bars sit on the nose, left of view"
 
   - id: uranus
-    name: Uranus as a body and destination (1:100, 19.2 AU, rings); altitude over nearest body. (A uniform-lane bug briefly hid it — the bodies block's field order is now pinned by a test and a scene test)
+    name: "Uranus as a body and destination (1:100, 19.2 AU, rings); altitude over nearest body. (A uniform-lane bug briefly hid it — the bodies block's field order is now pinned by a test and a scene test)"
     state: complete
-    tests: [crates/sim/tests/bodies.rs::uranus_is_far_large_and_pulls_like_uranus, crates/app/src/map.rs]
-    e2e: FARFALL_BENCH_WARP arrival capture — ice giant overhead, 939 m/s circular orbit, tag ring
+    tests: ["crates/sim/tests/bodies.rs::uranus_is_far_large_and_pulls_like_uranus", crates/app/src/map.rs]
+    e2e: "FARFALL_BENCH_WARP arrival capture — ice giant overhead, 939 m/s circular orbit, tag ring"
 
   - id: map-panel-m
-    name: Map as its own UI feature on M with its own DRIVE panel
+    name: "Map as its own UI feature on M with its own DRIVE panel"
     state: complete
-    tests: [crates/app/src/menu.rs::the_drive_panel_sets_the_plan_and_engages_and_never_pages, crates/app/src/map.rs]
+    tests: ["crates/app/src/menu.rs::the_drive_panel_sets_the_plan_and_engages_and_never_pages", crates/app/src/map.rs]
     settings: [ui.panel-map]
-    e2e: FARFALL_BENCH_MAP capture — DRIVE panel beside the pane, settings menu has no MAP page
+    e2e: "FARFALL_BENCH_MAP capture — DRIVE panel beside the pane, settings menu has no MAP page"
 
   - id: panels-gaze-drag
-    name: Settings and map panels gaze-draggable like dials (anchors saved)
-    state: tests-pass
-    tests: [crates/app/src/settings.rs::defaults_round_trip, crates/app/src/map.rs::the_pane_is_a_square_where_the_pilot_put_it]
+    name: "Settings and map panels gaze-draggable like dials (anchors saved)"
+    state: superseded
+    superseded_by: "panels-screen-fixed — the panels are cursor-dragged and screen-fixed now; the gaze still takes dials"
+    tests: ["crates/app/src/settings.rs::defaults_round_trip", "crates/app/src/map.rs::the_pane_is_a_square_where_the_pilot_put_it"]
     settings: [ui.panel-menu, ui.panel-map]
-    e2e: needs a flight — pick up the panel with the gaze and drop it
+    e2e: "needs a flight — pick up the panel with the gaze and drop it"
 
   - id: cockpit-solid
-    name: Solid ray-marched fighter cockpit — fuselage with carved cabin (real wall thickness), nose and swept wings through the glass, arches and rails, metal dash and consoles, sockets with beams under each dial; rendered at a fraction of the scene and composited
+    name: "Solid ray-marched fighter cockpit — fuselage with carved cabin (real wall thickness), nose and swept wings through the glass, arches and rails, metal dash and consoles, sockets with beams under each dial; rendered at a fraction of the scene and composited"
     state: complete
     tests: [crates/render/src/cabin.rs]
     settings: [cockpit.frame, cockpit.glow, cockpit.hull (CABIN METAL), cockpit.res (CABIN DETAIL)]
-    e2e: FARFALL_BENCH_SPIN=8 — forward (dash, arch, nose), 90° (wing leading edge), 200° (spine, fin); ~2 ms at half res
-    notes: map dart replaced by the same fighter SDF (common.wgsl sd_fighter_exterior)
+    e2e: "FARFALL_BENCH_SPIN=8 — forward (dash, arch, nose), 90° (wing leading edge), 200° (spine, fin); ~2 ms at half res"
+    notes: "map dart replaced by the same fighter SDF (common.wgsl sd_fighter_exterior)"
 
   - id: gauges-unending
-    name: Gauges never cap — 1-2-5 decade ranging with ×mEk multiplier, scientific readouts past three digits, SI altitude text
+    name: "Gauges never cap — 1-2-5 decade ranging with ×mEk multiplier, scientific readouts past three digits, SI altitude text"
     state: complete
-    tests: [crates/render/src/gauge.rs::ranges_climb_the_1_2_5_ladder_and_never_pin, crates/render/src/gauge.rs::sci_readout_never_caps]
-    e2e: captures — speedo ×2 at Uranus (939 m/s); altimeter 1.14E3 km at ×1E2 sinking toward the Moon
+    tests: ["crates/render/src/gauge.rs::ranges_climb_the_1_2_5_ladder_and_never_pin", "crates/render/src/gauge.rs::sci_readout_never_caps"]
+    e2e: "captures — speedo ×2 at Uranus (939 m/s); altimeter 1.14E3 km at ×1E2 sinking toward the Moon"
 
   - id: thrusters
-    name: Engine nozzles on the nacelles, exhaust plumes with the throttle, RCS puffs at nose and wingtips with the demands; hoops go red only once clear astern
+    name: "Engine nozzles on the nacelles, exhaust plumes with the throttle, RCS puffs at nose and wingtips with the demands; hoops go red only once clear astern"
     state: complete
+    settings: [control.boost, control.thrust-forward, control.thrust-back, control.strafe-left, control.strafe-right, control.thrust-up, control.thrust-down]
     tests: [crates/render/src/cabin.rs]
-    e2e: FARFALL_BENCH_THRUST=1,1,0,1 looking aft — twin blue plumes over the spine, roll puff at the left tip
+    e2e: "FARFALL_BENCH_THRUST=1,1,0,1 looking aft — twin blue plumes over the spine, roll puff at the left tip"
 
   - id: cockpit-detail
-    name: Cockpit detail — stick and grip, throttle, switch banks, instrument hood, panel seams, environment reflections and contact shadows on the metal
+    name: "Cockpit detail — stick and grip, throttle, switch banks, instrument hood, panel seams, environment reflections and contact shadows on the metal"
     state: complete
-    e2e: FARFALL_BENCH_HEAD=-40,-30 capture; fullscreen spin still 16.6 ms
+    e2e: "FARFALL_BENCH_HEAD=-40,-30 capture; fullscreen spin still 16.6 ms"
 
   - id: gauge-styles
-    name: GAUGE STYLE tron/jet/dial (jet — spherical bowls hollowed into the dash with bezels, glass glints; dial — real instruments set flush into the dash, the face drawn in the dash's plane with true perspective), GAUGES fade/stay, GUIDE overlay, FOV setting, placement past the locked view
+    name: "GAUGE STYLE tron/jet/dial (jet — spherical bowls hollowed into the dash with bezels, glass glints; dial — real instruments set flush into the dash, the face drawn in the dash's plane with true perspective), GAUGES fade/stay, GUIDE overlay, FOV setting, placement past the locked view"
     state: complete
-    tests: [crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense, crates/render/src/cabin.rs, crates/app/src/settings.rs, crates/app/src/menu.rs]
+    tests: ["crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense", crates/render/src/cabin.rs, crates/app/src/settings.rs, crates/app/src/menu.rs]
     settings: [ui.gauge-style, ui.gauges, ui.guide, graphics.fov]
-    e2e: FARFALL_BENCH_HEAD=10,-22 capture with jet + guide on — bowls, bezels, dials inside, ruled glass, reach rings, gaze reticle; FARFALL_BENCH_HEAD=8,-24 with dial — flush wells, bezels, faces foreshortened in the dash
+    e2e: "FARFALL_BENCH_HEAD=10,-22 capture with jet + guide on — bowls, bezels, dials inside, ruled glass, reach rings, gaze reticle; FARFALL_BENCH_HEAD=8,-24 with dial — flush wells, bezels, faces foreshortened in the dash"
 
   - id: ship-fixed-glass
-    name: Glass anchors laid out in a FIXED 70° reference projection and shown through the live FOV — dials stay fixed to the ship through the FOV setting, throttle flare and warp, and scale like objects
+    name: "Glass anchors laid out in a FIXED 70° reference projection and shown through the live FOV — dials stay fixed to the ship through the FOV setting, throttle flare and warp, and scale like objects"
     state: tests-pass
-    tests: [crates/app/src/look.rs::a_wider_fov_pulls_a_ship_fixed_point_toward_the_centre, crates/app/src/look.rs::a_screen_point_maps_back_to_the_glass_it_came_from]
-    e2e: needs a flight under throttle / an FOV change (bench cannot flare the FOV)
+    tests: ["crates/app/src/look.rs::a_wider_fov_pulls_a_ship_fixed_point_toward_the_centre", "crates/app/src/look.rs::a_screen_point_maps_back_to_the_glass_it_came_from"]
+    e2e: "needs a flight under throttle / an FOV change (bench cannot flare the FOV)"
 
   - id: design-mode
-    name: DESIGN mode (K) — guide on, the mouse cursor as pointer (hover, click-drag, the readout too), a card of the hovered dial's own settings; per-dial SIZE / STYLE / FADE / TILT saved individually (ui.<dial>.size/style/fade/tilt); the same block on the menu's GAUGES page; every style open to every dial; DIAL in a period palette
+    name: "DESIGN mode (K) — guide on, the mouse cursor as pointer (hover, click-drag, the readout too), a card of the hovered dial's own settings; per-dial SIZE / STYLE / FADE / TILT saved individually (ui.<dial>.size/style/fade/tilt); the same block on the menu's GAUGES page; every style open to every dial; DIAL in a period palette"
     state: complete
-    tests: [crates/app/src/settings.rs::edits_round_trip, crates/app/src/settings.rs::dials_stay_lit_by_default_and_every_style_is_open_to_every_dial, crates/render/src/cabin.rs]
-    settings: [ui.<dial>.size, ui.<dial>.style, ui.<dial>.fade, ui.<dial>.tilt]
-    e2e: FARFALL_BENCH_DESIGN=1 capture — per-dial bowls/wells at their own sizes, reach rings, gaze reticle
+    tests: ["crates/app/src/settings.rs::edits_round_trip", "crates/app/src/settings.rs::dials_stay_lit_by_default_and_every_style_is_open_to_every_dial", crates/render/src/cabin.rs]
+    settings: ["ui.<dial>.size", "ui.<dial>.style", "ui.<dial>.fade", "ui.<dial>.tilt"]
+    e2e: "FARFALL_BENCH_DESIGN=1 capture — per-dial bowls/wells at their own sizes, reach rings, gaze reticle"
 
   - id: dial-tilt
-    name: Dials lean toward the pilot (±60°) — a DIAL's face plane turns on its horizontal axis in a housing that rises from the dash, the well cut clear through; a hologram foreshortens; the face plate is opaque matte black so the well shows nothing of the dash's inside
+    name: "Dials lean toward the pilot (±60°) — a DIAL's face plane turns on its horizontal axis in a housing that rises from the dash, the well cut clear through; a hologram foreshortens; the face plate is opaque matte black so the well shows nothing of the dash's inside"
     state: complete
-    tests: [crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin, crates/app/src/settings.rs::a_tilt_is_held_within_reach, crates/app/src/menu.rs::cockpit_page_cycles_slots_and_quit_quits]
-    settings: [ui.<dial>.tilt]
-    e2e: FARFALL_BENCH_HEAD=20,-26 capture — speedo at +40° in its pod, black face, readable; altimeter at -30° in the left console
+    tests: ["crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin", "crates/app/src/settings.rs::a_tilt_is_held_within_reach", "crates/app/src/menu.rs::cockpit_page_cycles_slots_and_quit_quits"]
+    settings: ["ui.<dial>.tilt"]
+    e2e: "FARFALL_BENCH_HEAD=20,-26 capture — speedo at +40° in its pod, black face, readable; altimeter at -30° in the left console"
 
   - id: despin
-    name: Emergency gyro (Z, rebindable DESPIN) — kills any spin on a fixed time constant in the sim
+    name: "Emergency gyro (Z, rebindable DESPIN) — kills any spin on a fixed time constant in the sim"
     state: complete
-    tests: [crates/sim/tests/assist.rs::despin_kills_a_tumble_nothing_else_would]
-    e2e: deterministic sim; key wired like boost/brake
+    settings: [control.despin]
+    tests: ["crates/sim/tests/assist.rs::despin_kills_a_tumble_nothing_else_would"]
+    e2e: "deterministic sim; key wired like boost/brake"
 
   - id: panels-screen-fixed
-    name: Pause panels (settings, map/DRIVE) fixed to the screen, flat (no canopy warp), dragged with the cursor; the readout a glass element with no safe area
+    name: "Pause panels (settings, map/DRIVE) fixed to the screen, flat (no canopy warp), dragged with the cursor; the readout a glass element with no safe area"
     state: complete
-    e2e: FARFALL_BENCH_MENU=3 capture — values on their own rows, card flat over the arch
+    e2e: "FARFALL_BENCH_MENU=3 capture — values on their own rows, card flat over the arch"
 
   - id: cabin-cached
-    name: The cabin is re-marched only when the head, the light or a socket changes — small while moving, sharpened in four strips once still; thruster light drawn by the composite
+    name: "The cabin is re-marched only when the head, the light or a socket changes — small while moving, sharpened in four strips once still; thruster light drawn by the composite"
     state: complete
     tests: [crates/render/src/cabin.rs]
-    e2e: FARFALL_BENCH_FULL at 2880x1800 — 11 ms flying, 17 ms turning the head (was 31 ms)
+    e2e: "FARFALL_BENCH_FULL at 2880x1800 — 11 ms flying, 17 ms turning the head (was 31 ms)"
 
   - id: bench-menu
-    name: FARFALL_BENCH_MENU=n — the settings menu open on page n in a capture (headless captures now carry any panel's text at 1x MSAA)
+    name: "FARFALL_BENCH_MENU=n — the settings menu open on page n in a capture (headless captures now carry any panel's text at 1x MSAA)"
     state: complete
-    e2e: the menu captures above
+    e2e: "the menu captures above"
 
   - id: g-vector
-    name: G VECTOR instrument (gvec.wgsl) — the felt load in the ship's frame on a cross-plot, hub-to-dot line and dot, quarter rings, 1-2-5 ranging from 2 g with the ×mEk multiplier, |G| readout, longitudinal bar, red past 6 g; its own slot (MID LEFT stock) and every per-dial setting; six sockets and guide anchors now
+    name: "G VECTOR instrument (gvec.wgsl) — the felt load in the ship's frame on a cross-plot, hub-to-dot line and dot, quarter rings, 1-2-5 ranging from 2 g with the ×mEk multiplier, |G| readout, longitudinal bar, red past 6 g; its own slot (MID LEFT stock) and every per-dial setting; six sockets and guide anchors now"
     state: complete
-    tests: [crates/render/src/gauge.rs::the_g_vector_ranges_on_the_plane_and_reads_the_total, crates/render/tests/shader_validation.rs]
+    tests: ["crates/render/src/gauge.rs::the_g_vector_ranges_on_the_plane_and_reads_the_total", crates/render/tests/shader_validation.rs]
     settings: [ui.g-vector, ui.g-vector.size/style/fade/tilt]
-    e2e: FARFALL_BENCH_G=-2.5,6.5,-1.0 capture as a tilted DIAL — dot up-left, ×5, 7.04, red rim, brake mark
+    e2e: "FARFALL_BENCH_G=-2.5,6.5,-1.0 capture as a tilted DIAL — dot up-left, ×5, 7.04, red rim, brake mark"
 
   - id: scene-tests
-    name: Scene tests (crates/app/tests/scenes.rs) — the game run headless through its bench knobs, captures read back and measured: Uranus fills the sky from its ring with rocks in front, the belt's rocks and haze, the Sun's surface and spots, the blue sky over lit ground, shield ripples and the after-image, the menu and the dials. In the pre-commit gate (FARFALL_SCENE_TESTS=1; FARFALL_NO_SCENES=1 skips). Caught the Uranus lane bug
+    name: "Scene tests (crates/app/tests/scenes.rs) — the game run headless through its bench knobs, captures read back and measured: Uranus fills the sky from its ring with rocks in front, the belt's rocks and haze, the Sun's surface and spots, the blue sky over lit ground, shield ripples and the after-image, the menu and the dials. In the pre-commit gate (FARFALL_SCENE_TESTS=1; FARFALL_NO_SCENES=1 skips). Caught the Uranus lane bug"
     state: complete
-    tests: [crates/app/tests/scenes.rs, crates/render/src/bodies.rs::uranus_and_the_planet_land_in_their_own_lanes]
-    e2e: the tests are the look
+    tests: [crates/app/tests/scenes.rs, "crates/render/src/bodies.rs::uranus_and_the_planet_land_in_their_own_lanes"]
+    e2e: "the tests are the look"
 
   - id: star-stretch
-    name: The stars stretch at speed — every star drawn out into a streak away from the centre of the view, the old Star Trek exposure drag, with the Chaos Drive and past a third of the way to the wall; the lens flare halved
+    name: "The stars stretch at speed — every star drawn out into a streak away from the centre of the view, the old Star Trek exposure drag, with the Chaos Drive and past a third of the way to the wall; the lens flare halved"
     state: complete
     tests: [crates/render/tests/shader_validation.rs]
-    e2e: FARFALL_BENCH_HYPER=1 capture — streaks radiating
+    e2e: "FARFALL_BENCH_HYPER=1 capture — streaks radiating"
 
   - id: drive-look-v2
-    name: The drive effects reworked — the quantum superstate as a liquid: four drifting vortices with fine ripples (analytic, no noise — the old fbm particles cost 18 ms at 2880×1800), chromatic splitting, radial speed streaks, a cold bloom on the charge and a cool vignette at speed; the FOV barely moves now (charge ×1.35, Chaos Drive ×1.12) — the speed is in the picture. The drive's voice is bassy and cinematic: a sub that swells with the charge under a saturated hum an octave and a fifth up, throbbing faster as it charges, a thread of dark noise only at the top. The readout scales with the view like a dial, so it never grows across the screen
+    name: "The drive effects reworked — the quantum superstate as a liquid: four drifting vortices with fine ripples (analytic, no noise — the old fbm particles cost 18 ms at 2880×1800), chromatic splitting, radial speed streaks, a cold bloom on the charge and a cool vignette at speed; the FOV barely moves now (charge ×1.35, Chaos Drive ×1.12) — the speed is in the picture. The drive's voice is bassy and cinematic: a sub that swells with the charge under a saturated hum an octave and a fifth up, throbbing faster as it charges, a thread of dark noise only at the top. The readout scales with the view like a dial, so it never grows across the screen"
     state: complete
-    tests: [crates/render/tests/shader_validation.rs, crates/app/src/warp.rs, crates/audio/src/synth.rs::warp_swells_with_charge]
-    e2e: FARFALL_BENCH_HYPER=1 capture — streaks, vortex rings, cool rim, the cockpit intact
+    tests: [crates/render/tests/shader_validation.rs, crates/app/src/warp.rs, "crates/audio/src/synth.rs::warp_swells_with_charge"]
+    e2e: "FARFALL_BENCH_HYPER=1 capture — streaks, vortex rings, cool rim, the cockpit intact"
 
   - id: perf-60-v2
-    name: 60 fps at 2880×1800 again after the new passes — starfield 2×2 cells (stars kept inside their cell, tighter support), dial quads trimmed, the cabin's FOV quantised so an easing FOV does not re-march it, the post's streaks gated to real speed
+    name: "60 fps at 2880×1800 again after the new passes — starfield 2×2 cells (stars kept inside their cell, tighter support), dial quads trimmed, the cabin's FOV quantised so an easing FOV does not re-march it, the post's streaks gated to real speed"
     state: complete
-    e2e: FARFALL_BENCH_FULL uncapped — rest 13.4 ms (74 fps), head spin 12.3 ms (81), Chaos Drive 16.5 ms (60.6)
+    e2e: "FARFALL_BENCH_FULL uncapped — rest 13.4 ms (74 fps), head spin 12.3 ms (81), Chaos Drive 16.5 ms (60.6)"
 
   - id: sun-surface-and-flare
-    name: The Sun resolved (after a jump, or close) — limb darkening, granulation, sunspots in two bands turning with the Sun over its month (dark umbra in a grey penumbra), prominences standing off the limb, and a slow coronal mass ejection that swells out and away on a four-minute cycle; the lens flare — starburst, anamorphic streak, a train of rainbow ghosts down the centre line — occluded by the planet, the Moon and Uranus, fading at the screen's edge and with a huge disc; LENS FLARE setting (graphics.flare)
+    name: "The Sun resolved (after a jump, or close) — limb darkening, granulation, sunspots in two bands turning with the Sun over its month (dark umbra in a grey penumbra), prominences standing off the limb, and a slow coronal mass ejection that swells out and away on a four-minute cycle; the lens flare — starburst, anamorphic streak, a train of rainbow ghosts down the centre line — occluded by the planet, the Moon and Uranus, fading at the screen's edge and with a huge disc; LENS FLARE setting (graphics.flare)"
     state: complete
     tests: [crates/render/tests/shader_validation.rs, crates/app/src/menu.rs, crates/app/src/settings.rs]
     settings: [graphics.flare]
-    e2e: captures at 4 Sun radii (spots, limb, prominence) and from orbit (starburst, streak, ghosts)
+    e2e: "captures at 4 Sun radii (spots, limb, prominence) and from orbit (starburst, streak, ghosts)"
 
   - id: brake-despin
-    name: The air brake kills spin too, three times harder than the gyro
+    name: "The air brake kills spin too, three times harder than the gyro"
     state: complete
-    tests: [crates/sim/tests/assist.rs::the_brake_kills_spin_harder_than_the_gyro]
+    settings: [control.brake, control.despin]
+    tests: ["crates/sim/tests/assist.rs::the_brake_kills_spin_harder_than_the_gyro"]
 
   - id: asteroid-belt
-    name: The asteroid belt is Uranus' ring — one universe, no separate level: drive to URANUS and fly on into the ring (1.6–2.0 radii, in the plane of its spin axis) and it is there. A procedural population through the ring's volume (hashed cells of 1.4 km, 0–3 rocks each, 5–300 m, rigid ring rotation plus a drift of a few m/s so they meet); the nearest 48 are live on the CPU — rock on rock (mass by volume, restitution 0.4) and rock on ship (an impulse on the ship, a shield ripple, grit in the sound); belt.wgsl ray-traces them with noise-bumped silhouettes and normals, Sun-lit with the ring's dust-light for fill, each turning on its axis. From afar the ring resolves into the belt itself: bodies.wgsl draws the same hashed population (same cells, same hash, the ring's rotation phase in a uniform lane) as Sun-lit specks on the sheet out to where a rock is under a pixel, the dust veil grained by the belt's hash and opaque to the stars behind it; from inside it thins to a faint haze and the live rocks take over
+    name: "The asteroid belt is Uranus' ring — one universe, no separate level: drive to URANUS and fly on into the ring (1.6–2.0 radii, in the plane of its spin axis) and it is there. A procedural population through the ring's volume (hashed cells of 1.4 km, 0–3 rocks each, 5–300 m, rigid ring rotation plus a drift of a few m/s so they meet); the nearest 48 are live on the CPU — rock on rock (mass by volume, restitution 0.4) and rock on ship (an impulse on the ship, a shield ripple, grit in the sound); belt.wgsl ray-traces them with noise-bumped silhouettes and normals, Sun-lit with the ring's dust-light for fill, each turning on its axis. From afar the ring resolves into the belt itself: bodies.wgsl draws the same hashed population (same cells, same hash, the ring's rotation phase in a uniform lane) as Sun-lit specks on the sheet out to where a rock is under a pixel, the dust veil grained by the belt's hash and opaque to the stars behind it; from inside it thins to a faint haze and the live rocks take over"
     state: complete
     tests: [crates/app/src/belt.rs, crates/render/src/belt.rs, crates/render/tests/shader_validation.rs, crates/app/tests/scenes.rs]
-    e2e: capture parked in the ring — craggy rocks ahead, the ring's haze behind; capture 9 km above the plane — the sheet is a field of rocks receding to the horizon, no stars through it (scene test the_far_ring_resolves_into_rocks_and_hides_the_stars)
+    e2e: "capture parked in the ring — craggy rocks ahead, the ring's haze behind; capture 9 km above the plane — the sheet is a field of rocks receding to the horizon, no stars through it (scene test the_far_ring_resolves_into_rocks_and_hides_the_stars)"
 
   - id: complete-key-menu
     name: "Every in-game bind lives in the KEYS menu and the settings file: the twelve axis actions plus sixteen named controls (boost, air brake, despin, chaos drive, warp stop, map, atmosphere, engage drive, landing mode, design mode, look lock, trajectory, flight assist, chase cam, holo3PP, capture) — one Named table with one uniform swap-on-conflict rule instead of five bespoke bind functions, all rebindable, all persisted as control.<name>. Tests pin that no two defaults share a key (the holo3PP briefly sat on H, the chaos drive) and that the KEYS page lists every single bind"
     state: complete
     settings: [control.map, control.atmosphere, control.engage, control.landing, control.design, control.look-lock, control.trajectory, control.assist, control.chase, control.holo, control.capture]
-    tests: [crates/app/src/input.rs::no_two_default_binds_share_a_key, crates/app/src/input.rs::rebinding_swaps_uniformly_across_actions_and_named_controls, crates/app/src/menu.rs, crates/app/src/settings.rs]
-    e2e: menu capture — the KEYS page walks every bind
+    tests: ["crates/app/src/input.rs::no_two_default_binds_share_a_key", "crates/app/src/input.rs::rebinding_swaps_uniformly_across_actions_and_named_controls", crates/app/src/menu.rs, crates/app/src/settings.rs]
+    e2e: "menu capture — the KEYS page walks every bind"
 
   - id: holo3pp
     name: "The holo3PP (N, holo.view — clear of H, which is the chaos drive), and the chase camera it is measured against (Y, camera.chase): third person without ever leaving first person, and not a screen. holo.wgsl marches a real 3D hologram over an emitter in the dash — the fighter itself (the same SDF as cabin/map/ghost/jet) in miniature at its true attitude, translucent cyan with rim light, a Sun-lit side so its shape reads, scanlines drifting up through the volume, the nozzles glowing with effort/hyper; around it the things the canopy cannot show: the velocity vector (relative to the nearest body; a rod as long as the log of the speed), the nearest body as an amber wire globe at its true bearing and TRUE angular size (the ground swells up under the little ship as it descends), the Sun's bearing as a bead. It is a real object in the ship's frame: turn the head and it has parallax, look down on it. Light, not glass — it adds over the cabin. Its emitter is a glass anchor whose direction meets the dash at the socket (the same placement as the dials), draggable along the dash, sized by HOLO SIZE; default lower right, out of the forward view. Every world pass draws from a ViewPose (camera + a head rotation + an eye seat in the ship's frame), so the chase view is only a camera — the ship-attached shaders (shield shell, after-image, belt) fold the eye offset through with_eye lanes and stay glued to the hull; jet.wgsl draws the ship itself from outside. Chase (Y) swings the whole screen behind the ship; cockpit passes skip. GFX menu: CAMERA, HOLO VIEW, HOLO SIZE"
     state: complete
     settings: [camera.chase, holo.view, holo.size, ui.panel-holo]
-    tests: [crates/render/src/jet.rs, crates/render/src/holo.rs, crates/app/src/main.rs::the_chase_eye_sits_behind_the_ship_and_the_world_measures_from_it, crates/render/tests/shader_validation.rs, crates/app/tests/scenes.rs::the_holo3pp_stands_as_a_3d_hologram_over_the_dash, crates/app/tests/scenes.rs::the_chase_view_shows_the_ship_and_no_cockpit]
-    e2e: FARFALL_BENCH_HOLO=1 capture at the ring-above scene — the little cyan ship over its emitter ring right of the dash, Uranus as an amber wire globe under its nose, the Sun bead (scene test); FARFALL_BENCH_CHASE=1 capture — the fighter from behind, no cockpit (scene test). Perf 2880x1800 uncapped at the ring-above scene, base 11.0 ms; the old screen-holo 11.8 ms; chase 8.5 ms; the 3D hologram 11.1 ms — free within noise (interleaved A/B, two rounds: base 11.16/11.08, holo 11.09/11.08)
+    tests: [crates/render/src/jet.rs, crates/render/src/holo.rs, "crates/app/src/main.rs::the_chase_eye_sits_behind_the_ship_and_the_world_measures_from_it", crates/render/tests/shader_validation.rs, "crates/app/tests/scenes.rs::the_holo3pp_stands_as_a_3d_hologram_over_the_dash", "crates/app/tests/scenes.rs::the_chase_view_shows_the_ship_and_no_cockpit"]
+    e2e: "FARFALL_BENCH_HOLO=1 capture at the ring-above scene — the little cyan ship over its emitter ring right of the dash, Uranus as an amber wire globe under its nose, the Sun bead (scene test); FARFALL_BENCH_CHASE=1 capture — the fighter from behind, no cockpit (scene test). Perf 2880x1800 uncapped at the ring-above scene, base 11.0 ms; the old screen-holo 11.8 ms; chase 8.5 ms; the 3D hologram 11.1 ms — free within noise (interleaved A/B, two rounds: base 11.16/11.08, holo 11.09/11.08)"
     notes: "The first holo3PP (ad36105) was a screen: the chase view rendered to a 512x288 texture and projected on the glass. Replaced 2026-08-25 at the user's ask for 3D geometric holograms inside the ship."
 
   - id: warp-stop
-    name: WARP STOP (V, rebindable) — all speed and spin taken out of the ship at once (warped in place to rest against the nearest body); the quantum after-image (ghost.wgsl) — the ship's own geometry, ray-marched from the same fighter SDF at the attitude it had — slides on down the old vector ahead, in the field's blue with a glowing rim and bands flowing down its length, fading over 1.8 s; the warp crack sounds
+    name: "WARP STOP (V, rebindable) — all speed and spin taken out of the ship at once (warped in place to rest against the nearest body); the quantum after-image (ghost.wgsl) — the ship's own geometry, ray-marched from the same fighter SDF at the attitude it had — slides on down the old vector ahead, in the field's blue with a glowing rim and bands flowing down its length, fading over 1.8 s; the warp crack sounds"
     state: complete
-    tests: [crates/render/src/ghost.rs, crates/render/tests/shader_validation.rs, crates/app/src/main.rs::the_hyper_drive_strains_slips_somewhere_else_and_collapses_to_a_crawl]
+    tests: [crates/render/src/ghost.rs, crates/render/tests/shader_validation.rs, "crates/app/src/main.rs::the_hyper_drive_strains_slips_somewhere_else_and_collapses_to_a_crawl"]
     settings: [control.warp-stop]
-    e2e: FARFALL_BENCH_GHOST=0.35 capture — the banked jet ahead, receding
+    e2e: "FARFALL_BENCH_GHOST=0.35 capture — the banked jet ahead, receding"
 
   - id: hyper-drive
-    name: CHAOS DRIVE (H, rebindable; "fuelled by entropy") — the wormhole drive half-engaged, a field that moves space (past the relativity wall, it is not the ship moving); held, the speed climbs with the charge — ENTROPY on the readout — from a tenth of 1.2e8 m/s to all of it (0.4 c, the Sun in a dozen seconds) as the entropy runs up; a skill game, because past a limit drawn fresh each time (28–40 s of full run) the drive SLIPS, and from halfway there the flight goes unstable — the drive jostles stick and throttle, a little, then a lot (CHAOS on the readout). Let go and you are launched at whatever speed you had (WARP STOP to kill it). The slip — the whole wormhole fires uncharged and drops the ship into an unstable orbit of a random body (planet/Moon/Sun/Uranus), at 1.8–6 radii, going a random way at 0.5–1.4× circular. The view opens, the glow and hum climb with the strain
+    name: "CHAOS DRIVE (H, rebindable; \"fuelled by entropy\") — the wormhole drive half-engaged, a field that moves space (past the relativity wall, it is not the ship moving); held, the speed climbs with the charge — ENTROPY on the readout — from a tenth of 1.2e8 m/s to all of it (0.4 c, the Sun in a dozen seconds) as the entropy runs up; a skill game, because past a limit drawn fresh each time (28–40 s of full run) the drive SLIPS, and from halfway there the flight goes unstable — the drive jostles stick and throttle, a little, then a lot (CHAOS on the readout). Let go and you are launched at whatever speed you had (WARP STOP to kill it). The slip — the whole wormhole fires uncharged and drops the ship into an unstable orbit of a random body (planet/Moon/Sun/Uranus), at 1.8–6 radii, going a random way at 0.5–1.4× circular. The view opens, the glow and hum climb with the strain"
     state: complete
-    tests: [crates/sim/tests/assist.rs::hyper_drive_crosses_an_astronomical_unit_in_a_minute, crates/app/src/warp.rs::the_hyper_drive_is_half_a_charge, crates/app/src/warp.rs::a_slip_flips_at_once_and_jumps_at_the_peak, crates/app/src/main.rs::the_hyper_drive_strains_slips_somewhere_else_and_collapses_to_a_crawl]
+    tests: ["crates/sim/tests/assist.rs::hyper_drive_crosses_an_astronomical_unit_in_a_minute", "crates/app/src/warp.rs::the_hyper_drive_is_half_a_charge", "crates/app/src/warp.rs::a_slip_flips_at_once_and_jumps_at_the_peak", "crates/app/src/main.rs::the_hyper_drive_strains_slips_somewhere_else_and_collapses_to_a_crawl"]
     settings: [control.hyper]
-    e2e: FARFALL_BENCH_HYPER=1 capture — view opened; flight needed for the slip
+    e2e: "FARFALL_BENCH_HYPER=1 capture — view opened; flight needed for the slip"
 
   - id: hull-sounds
-    name: The hull's own voices (HULL SOUNDS, sound.hull) — structure-borne, never muted by the vacuum. Under speed toward the relativity wall the frame groans (a clean wandering low sine) and thuds (sparse pitchless knocks — no tones to ring, no noise bed, because any noise bed in space reads as wind); micrometeorite strikes are gritty 10–40 ms impacts (a Poisson process with the square of the speed, none in air; a thud under a pebble), never a bell; the hoop marker is a heartbeat — two low thumps 150 ms apart, the second softer and lower — that hushes at speed
+    name: "The hull's own voices (HULL SOUNDS, sound.hull) — structure-borne, never muted by the vacuum. Under speed toward the relativity wall the frame groans (a clean wandering low sine) and thuds (sparse pitchless knocks — no tones to ring, no noise bed, because any noise bed in space reads as wind); micrometeorite strikes are gritty 10–40 ms impacts (a Poisson process with the square of the speed, none in air; a thud under a pebble), never a bell; the hoop marker is a heartbeat — two low thumps 150 ms apart, the second softer and lower — that hushes at speed"
     state: complete
-    tests: [crates/audio/src/synth.rs::the_hull_creaks_and_crackles_with_speed_and_the_womp_hushes, crates/audio/src/synth.rs::the_hull_at_the_wall_is_low_and_never_a_hiss, crates/audio/src/synth.rs::strikes_ring_once_and_pebbles_thud, crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air]
+    tests: ["crates/audio/src/synth.rs::the_hull_creaks_and_crackles_with_speed_and_the_womp_hushes", "crates/audio/src/synth.rs::the_hull_at_the_wall_is_low_and_never_a_hiss", "crates/audio/src/synth.rs::strikes_ring_once_and_pebbles_thud", "crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air"]
     settings: [sound.hull]
-    e2e: needs a flight — listen at 3,000+ m/s in space
+    e2e: "needs a flight — listen at 3,000+ m/s in space"
 
   - id: gyro-ball
-    name: The gyro as a geometric sphere — JET gyro in the dash is a real ray-marched ball in its bowl (cabin socket style 3), painted by the gyro pass per pixel from the ray/sphere hit: the world's frame (up, east) on the ship, sky/earth through the ball as a real attitude ball, horizon, pitch lines, meridians, lamp + rim, fixed wings at the near point
+    name: "The gyro as a geometric sphere — JET gyro in the dash is a real ray-marched ball in its bowl (cabin socket style 3), painted by the gyro pass per pixel from the ray/sphere hit: the world's frame (up, east) on the ship, sky/earth through the ball as a real attitude ball, horizon, pitch lines, meridians, lamp + rim, fixed wings at the near point"
     state: complete
     tests: [crates/render/tests/shader_validation.rs, crates/render/src/cabin.rs]
-    e2e: FARFALL_BENCH_HEAD=0,-28 capture, gyro JET ×1.5 — a shaded globe in the bowl, earth up for a nose-down ship
+    e2e: "FARFALL_BENCH_HEAD=0,-28 capture, gyro JET ×1.5 — a shaded globe in the bowl, earth up for a nose-down ship"
 
   - id: fps-floor
-    name: FPS FLOOR (graphics.fps-floor, default 60) — a governor on the cabin's moving size; while turning the head costs more than the floor allows, the moving march shrinks (to 0.3 of the still size) and grows back when there is room; the sharp cabin is untouched
+    name: "FPS FLOOR (graphics.fps-floor, default 60) — a governor on the cabin's moving size; while turning the head costs more than the floor allows, the moving march shrinks (to 0.3 of the still size) and grows back when there is room; the sharp cabin is untouched"
     state: complete
-    tests: [crates/render/src/cabin.rs::the_governor_trades_moving_detail_for_the_floor_and_gives_it_back]
+    tests: ["crates/render/src/cabin.rs::the_governor_trades_moving_detail_for_the_floor_and_gives_it_back"]
     settings: [graphics.fps-floor]
-    e2e: FARFALL_BENCH_SPIN=4 FARFALL_BENCH_FULL=1 at 2880x1800, cabin detail 100% — was 49 fps avg uncapped, now 76.6 avg / 60.8 1% low; 59.1 avg under vsync
+    e2e: "FARFALL_BENCH_SPIN=4 FARFALL_BENCH_FULL=1 at 2880x1800, cabin detail 100% — was 49 fps avg uncapped, now 76.6 avg / 60.8 1% low; 59.1 avg under vsync"
 
   - id: readout-drag-freelook
-    name: The readout block is picked up by the gaze under freelook (not only in DESIGN)
+    name: "The readout block is picked up by the gaze under freelook (not only in DESIGN)"
     state: complete
-    tests: [crates/app/src/main.rs::the_readout_block_is_picked_up_by_the_gaze_while_looking]
-    e2e: needs a flight — look at the readout, left button, turn the head
+    settings: [ui.panel-readout]
+    tests: ["crates/app/src/main.rs::the_readout_block_is_picked_up_by_the_gaze_while_looking"]
+    e2e: "needs a flight — look at the readout, left button, turn the head"
 
   - id: bench-spin
-    name: FARFALL_BENCH_SPIN=n — the head turns a full circle over the bench, n captures on the way
+    name: "FARFALL_BENCH_SPIN=n — the head turns a full circle over the bench, n captures on the way"
     state: complete
-    e2e: 8 frames inspected
+    e2e: "8 frames inspected"
 
   - id: shield
-    name: The force field (shield.wgsl) — a 4.2 m shell about the hull, invisible until debris hits it (none at rest, one every couple of seconds at 1 km/s, a patter at speed, anywhere on the shell at a crawl and from ahead when fast; under the hyper drive the whole shell ablates, lit from the nose back under bands streaming aft); each strike raises a ripple of blue holographic light spreading evenly over the shell at 5 m/s with a wake, the field's honeycomb showing in a band behind the front and at the impact, fading over ~3 s; impacts come from ahead of the motion, scattered; SHIELD setting (ui.shield, 0..200%)
+    name: "The force field (shield.wgsl) — a 4.2 m shell about the hull, invisible until debris hits it (none at rest, one every couple of seconds at 1 km/s, a patter at speed, anywhere on the shell at a crawl and from ahead when fast; under the hyper drive the whole shell ablates, lit from the nose back under bands streaming aft); each strike raises a ripple of blue holographic light spreading evenly over the shell at 5 m/s with a wake, the field's honeycomb showing in a band behind the front and at the impact, fading over ~3 s; impacts come from ahead of the motion, scattered; SHIELD setting (ui.shield, 0..200%)"
     state: complete
-    tests: [crates/render/src/shield.rs, crates/render/tests/shader_validation.rs, crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air]
+    tests: [crates/render/src/shield.rs, crates/render/tests/shader_validation.rs, "crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air"]
     settings: [ui.shield]
-    e2e: FARFALL_BENCH_STRIKES=5 capture in space — rings spreading over the shell ahead
+    e2e: "FARFALL_BENCH_STRIKES=5 capture in space — rings spreading over the shell ahead"
 
   - id: landed-no-strobe
-    name: Sitting on a body no longer strobes — the eye is held at least 1.6 m above every body's surface in the planet and body shaders (the sim parks the hull at the surface and gravity dips it a few cm in before the next contact)
+    name: "Sitting on a body no longer strobes — the eye is held at least 1.6 m above every body's surface in the planet and body shaders (the sim parks the hull at the surface and gravity dips it a few cm in before the next contact)"
     state: complete
-    tests: [crates/render/src/planet.rs::the_eye_is_never_in_the_ground]
-    e2e: FARFALL_BENCH_POS 2 cm inside the surface — a clean horizon, no murk frame
+    tests: ["crates/render/src/planet.rs::the_eye_is_never_in_the_ground"]
+    e2e: "FARFALL_BENCH_POS 2 cm inside the surface — a clean horizon, no murk frame"
 
   - id: sky-dome
-    name: The daytime sky — low down the whole dome is the air's colour (blue on Earth, amber/green on the other presets) and hides the stars; it thins on a longer scale height than the weather and is black by the top of the air. SKY setting (graphics.sky, 0..200%)
+    name: "The daytime sky — low down the whole dome is the air's colour (blue on Earth, amber/green on the other presets) and hides the stars; it thins on a longer scale height than the weather and is black by the top of the air. SKY setting (graphics.sky, 0..200%)"
     state: complete
-    tests: [crates/app/src/settings.rs::edits_round_trip, crates/app/src/menu.rs]
+    tests: ["crates/app/src/settings.rs::edits_round_trip", crates/app/src/menu.rs]
     settings: [graphics.sky]
-    e2e: captures looking up at 0/3/8/15/25 km — full blue at 3, pale at 8, stars through a dim blue at 15, black at 25
+    e2e: "captures looking up at 0/3/8/15/25 km — full blue at 3, pale at 8, stars through a dim blue at 15, black at 25"
 
   - id: crash
-    name: Ship loss on hard impact / Sun contact
+    name: "Ship loss on hard impact / Sun contact"
     state: deferred
-    note: user asked to hold this until more features exist
+    note: "user asked to hold this until more features exist"
