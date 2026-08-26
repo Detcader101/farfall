@@ -508,3 +508,10 @@ features:
     tests: ["crates/app/src/main.rs::a_dial_draws_only_in_its_own_patch", "crates/render/tests/shader_validation.rs"]
     e2e: "bench.sh runs above; dials capture unchanged with the scissors"
 
+  - id: a10-warthog-style
+    name: "The A-10 Warthog cockpit, chunk 1 — the WARTHOG gauge style (ui.gauge-style = warthog, or per dial ui.<dial>.style): every dial a steam gauge set into the dash in the DIAL housing — black face, white markings and needle, the warning arc red-orange, a machined bezel ring — the accelerometer cross-plot in the same white, and the attitude ball a real ADI, brighter blue over brown. Selectable cockpit-wide on the GAUGES page or per dial through the existing size/style/fade/tilt customisation; TRON, JET and DIAL untouched. FARFALL_BENCH_STYLE=k sets the cockpit's style for a capture. Next chunks: the A-10 dash layout with more instruments (vertical speed, AoA from the aero model's alpha, engine RPM/temperature from effort and strain, heading), the warning-light panel, side-console legends"
+    state: complete
+    settings: [ui.gauge-style, "ui.<dial>.style"]
+    tests: ["crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense", "crates/app/src/settings.rs::dials_stay_lit_by_default_and_every_style_is_open_to_every_dial", "crates/render/tests/shader_validation.rs", "crates/app/tests/scenes.rs::the_warthog_dials_are_white_steam_gauges_in_the_dash"]
+    e2e: "FARFALL_BENCH_STYLE=warthog capture — three white-on-black steam gauges with bezels set into the dash, the ADI ball blue over brown (scene test)"
+

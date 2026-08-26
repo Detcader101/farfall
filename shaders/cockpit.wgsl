@@ -433,7 +433,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // The socket rims are lit from within (TRON); a JET bezel is a
         // brushed ring with a thread of light at its inner edge.
         if (hit.kind > 2.5 && hit.kind < 3.5) {
-            lit = select(cyan * 1.0 * glow_k, lit * 1.6 + cyan * 0.12 * glow_k, ck.misc.y > 0.5);
+            if (ck.misc.y > 2.5) {
+                // WARTHOG: a machined bezel, unlit — the A-10's black
+                // panel has no light of its own.
+                lit = lit * 1.4 + vec3<f32>(0.012, 0.012, 0.011) * ao;
+            } else {
+                lit = select(cyan * 1.0 * glow_k, lit * 1.6 + cyan * 0.12 * glow_k, ck.misc.y > 0.5);
+            }
         }
         // Emissive lines where the surface runs near one of the light
         // lines; a hint of the cabin light everywhere.

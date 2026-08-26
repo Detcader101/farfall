@@ -360,8 +360,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // altimeter (ground coming up).
     let warn_high = smoothstep(0.85, 1.0, frac);
     let warn_low = 1.0 - smoothstep(0.04, 0.14, frac);
-    let sense = gauge.c.z - 2.0 * floor(gauge.c.z / 2.0);
-    let jet = gauge.c.z >= 2.0;
+    // c.z packs the warning sense (bit 0), JET (+2) and WARTHOG (+4).
+    let warthog = gauge.c.z >= 4.0;
+    let cz = gauge.c.z - select(0.0, 4.0, warthog);
+    let sense = cz - 2.0 * floor(cz / 2.0);
+    let jet = cz >= 2.0;
     let warning = mix(warn_high, warn_low, clamp(sense, 0.0, 1.0));
     // JET: the glass over the dial — a soft glint arcing across the top
     // left, and a faint full-circle face ring — so the dial reads as a
@@ -377,13 +380,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The palette: hologram cyan and amber on the glass; in the dash, a
     // period instrument — ivory markings on a black face, a cream needle,
     // red for the warning arc — lit by its own small lamp, no glow.
-    let cyan = select(vec3<f32>(0.22, 0.85, 1.0), vec3<f32>(0.82, 0.78, 0.62), in_dash);
-    let amber = select(vec3<f32>(1.0, 0.62, 0.18), vec3<f32>(0.85, 0.22, 0.10), in_dash);
+    var cyan = select(vec3<f32>(0.22, 0.85, 1.0), vec3<f32>(0.82, 0.78, 0.62), in_dash);
+    var amber = select(vec3<f32>(1.0, 0.62, 0.18), vec3<f32>(0.85, 0.22, 0.10), in_dash);
+    if (warthog) {
+        // The A-10's steam gauge: white markings and needle on the black
+        // face, the warning arc in red-orange, and a machined bezel.
+        cyan = vec3<f32>(0.92, 0.92, 0.88);
+        amber = vec3<f32>(1.0, 0.36, 0.12);
+    }
     let tint = mix(cyan, amber, warning);
     if (in_dash) {
         // Markings only: the soft glow halos are hologram light.
-        glow *= 0.55;
+        glow *= select(0.55, 0.40, warthog);
         hot *= 0.85;
+    }
+    var bezel = 0.0;
+    if (warthog) {
+        let rf = length(p_face);
+        bezel = 1.0 - smoothstep(0.0, aa * 1.6, abs(rf - radius * 1.10) - 0.006);
+        bezel *= 0.35 + 0.25 * smoothstep(-0.3, 0.6, p_face.y / radius);
     }
 
     // Scanlines: static spatial modulation — hologram texture without
@@ -396,7 +411,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let surge = 1.0 + 1.1 * alert * alert;
     let hot_rgb = select(vec3<f32>(1.0), vec3<f32>(0.96, 0.92, 0.80), in_dash);
     var colour = (tint * glow + hot_rgb * hot * 0.9 + amber * warn_glow)
-        * scan * glass * vis * surge;
+        * scan * glass * vis * surge
+        + vec3<f32>(0.58, 0.57, 0.54) * bezel * vis;
 
     // Additive blend: what is black costs nothing and shows nothing.
     return vec4<f32>(colour, 1.0);

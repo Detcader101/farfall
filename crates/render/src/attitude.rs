@@ -71,6 +71,12 @@ fn oct_encode(d: Vec3) -> [f32; 2] {
 
 impl GyroUniforms {
     /// JET: a solid shaded ball in its bowl.
+    /// The WARTHOG ball: a real ADI's blue over brown, white horizon.
+    pub fn warthog(mut self, on: bool) -> Self {
+        self.d[1] = if on { 1.0 } else { 0.0 };
+        self
+    }
+
     pub fn jet(mut self, jet: bool) -> Self {
         self.d[0] = if jet { 1.0 } else { 0.0 };
         self

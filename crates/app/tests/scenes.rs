@@ -520,3 +520,27 @@ fn the_ship_bay_fills_the_screen_with_the_hologram_its_callouts_and_a_pointer() 
     let pointer = f.share(0.60, 0.34, 0.66, 0.42, |c| lum(c) > 0.6);
     assert!(pointer > 0.001, "the pointer is drawn: {pointer}");
 }
+
+/// The WARTHOG style (FARFALL_BENCH_STYLE=warthog): every dial set into
+/// the dash as an A-10 steam gauge — white markings and needles, no
+/// hologram cyan on the cluster.
+#[test]
+fn the_warthog_dials_are_white_steam_gauges_in_the_dash() {
+    if !enabled() {
+        return;
+    }
+    let f = capture("warthog", &[("FARFALL_BENCH_STYLE", "warthog")]);
+    // The cluster band across the lower dash: white markings...
+    let white = f.share(0.2, 0.6, 0.8, 0.92, |c| {
+        lum(c) > 0.6 && (c[0] - c[2]).abs() < 0.12 && (c[1] - c[2]).abs() < 0.12
+    });
+    assert!(white > 0.004, "white markings on the faces: {white}");
+    // ...and next to no hologram cyan there.
+    let cyan = f.share(0.2, 0.6, 0.8, 0.92, |c| {
+        c[2] > 0.6 && c[1] > 0.5 && c[0] < 0.35
+    });
+    assert!(
+        cyan < white * 0.5,
+        "the cluster is not cyan: {cyan} vs {white}"
+    );
+}

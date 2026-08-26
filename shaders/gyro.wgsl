@@ -128,8 +128,10 @@ fn ball_3d(ndc: vec2<f32>, aspect: f32, vis: f32) -> vec4<f32> {
     let spec = pow(max(dot(n, normalize(lamp - ray)), 0.0), 40.0);
     let rim = pow(1.0 - max(dot(n, -ray), 0.0), 3.0);
     let sky = smoothstep(-0.004, 0.004, lat);
-    let sky_rgb = vec3<f32>(0.16, 0.32, 0.58);
-    let earth_rgb = vec3<f32>(0.36, 0.22, 0.10);
+    // The WARTHOG ball is a real ADI: brighter blue over brown.
+    let warthog = gyro.d.y > 0.5;
+    let sky_rgb = select(vec3<f32>(0.16, 0.32, 0.58), vec3<f32>(0.24, 0.46, 0.78), warthog);
+    let earth_rgb = select(vec3<f32>(0.36, 0.22, 0.10), vec3<f32>(0.46, 0.26, 0.10), warthog);
     var colour = mix(earth_rgb, sky_rgb, sky) * shade * 1.6
         + vec3<f32>(0.6, 0.6, 0.55) * rim * 0.25
         + vec3<f32>(1.0, 0.97, 0.9) * spec * 0.35;

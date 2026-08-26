@@ -549,7 +549,15 @@ impl GaugeUniforms {
     /// JET style: glass glint and face ring, for a dial set in a bowl.
     pub fn jet(mut self, jet: bool) -> Self {
         let sense = self.c[2] % 2.0;
-        self.c[2] = sense + if jet { 2.0 } else { 0.0 };
+        let warthog = if self.c[2] >= 4.0 { 4.0 } else { 0.0 };
+        self.c[2] = sense + if jet { 2.0 } else { 0.0 } + warthog;
+        self
+    }
+
+    /// The WARTHOG face: rides c.z as +4, over the sense and JET bits.
+    pub fn warthog(mut self, on: bool) -> Self {
+        let low = self.c[2] % 4.0;
+        self.c[2] = low + if on { 4.0 } else { 0.0 };
         self
     }
 }
@@ -803,6 +811,13 @@ mod tests {
         let spd =
             GaugeUniforms::speed(1.0, 1.0, 0.0, 1.6, 900.0, [0.0, 0.0], [0.0, 0.0], -1.0, 0.0);
         assert_eq!(spd.jet(true).c[2], 2.0);
+        assert_eq!(alt.warthog(true).c[2], 5.0, "warthog over the sense");
+        assert_eq!(
+            alt.warthog(true).jet(true).c[2],
+            7.0,
+            "jet keeps the warthog bit"
+        );
+        assert_eq!(alt.warthog(true).warthog(false).c[2], 1.0);
     }
 
     #[test]

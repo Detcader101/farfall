@@ -111,7 +111,7 @@ impl CabinUniforms {
             // about it changes, and time would be change every frame.
             misc: [
                 cam.aspect,
-                look.style.min(2) as f32,
+                look.style.min(3) as f32,
                 if look.on { 1.0 } else { 0.0 },
                 sockets.len().min(4) as f32,
             ],

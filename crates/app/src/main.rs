@@ -344,6 +344,7 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_ROLL=rad (benchmark only: rolled about the look axis)
 ///                           for where the nose points (else the planet)
 ///   FARFALL_BENCH_SHIP=1   (benchmark only: open the SHIP bay for a capture)
+///   FARFALL_BENCH_STYLE=k  (benchmark only: the cockpit's gauge style by key — tron, jet, dial, warthog)
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
@@ -640,6 +641,7 @@ impl Gpu {
         let tweak = |i: Instrument| game.dial_tweak(i);
         let fade = |i: Instrument, level: f32| if tweak(i).stay { 1.0 } else { level };
         let jet = |i: Instrument| tweak(i).style == settings::GaugeStyle::Jet;
+        let warthog = |i: Instrument| tweak(i).style == settings::GaugeStyle::Warthog;
         // Placement: in the dash for a DIAL (under its hologram's
         // direction, at its size), else on the glass at its size — which
         // also shrinks with a wider live field of view, as a fixed object
@@ -649,7 +651,10 @@ impl Gpu {
         let fov_scale = ref_tan / t.max(1e-4);
         let placed = |i: Instrument| -> Option<farfall_render::cabin::Placement> {
             let tw = tweak(i);
-            if tw.style == settings::GaugeStyle::Dial {
+            if matches!(
+                tw.style,
+                settings::GaugeStyle::Dial | settings::GaugeStyle::Warthog
+            ) {
                 let a = layout.anchor(i)?;
                 let dir = farfall_render::cabin::anchor_direction(a, ref_tan, cam.aspect);
                 if let Some(p) =
@@ -675,6 +680,7 @@ impl Gpu {
                 game.mach_alert.level() * speed_on,
             )
             .jet(jet(Instrument::Speed))
+            .warthog(warthog(Instrument::Speed))
             .placed(placed(Instrument::Speed)),
         );
         let (alt_anchor, alt_on) = slot_of(layout, look, cam, ref_tan, Instrument::Altitude);
@@ -690,6 +696,7 @@ impl Gpu {
                 sway,
             )
             .jet(jet(Instrument::Altitude))
+            .warthog(warthog(Instrument::Altitude))
             .placed(placed(Instrument::Altitude)),
         );
         let (g_anchor, g_on) = slot_of(layout, look, cam, ref_tan, Instrument::GForce);
@@ -705,6 +712,7 @@ impl Gpu {
                 sway,
             )
             .jet(jet(Instrument::GForce))
+            .warthog(warthog(Instrument::GForce))
             .placed(placed(Instrument::GForce)),
         );
         let (gv_anchor, gv_on) = slot_of(layout, look, cam, ref_tan, Instrument::GVector);
@@ -720,6 +728,7 @@ impl Gpu {
                 sway,
             )
             .jet(jet(Instrument::GVector))
+            .warthog(warthog(Instrument::GVector))
             .placed(placed(Instrument::GVector)),
         );
         let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, ref_tan, Instrument::Gyro);
@@ -748,6 +757,7 @@ impl Gpu {
                 cam.time_s,
             )
             .jet(jet(Instrument::Gyro))
+            .warthog(warthog(Instrument::Gyro))
             .placed(placed(Instrument::Gyro))
             .ball_if(game.gyro_ball(cam, tweak(Instrument::Gyro))),
         );
@@ -1617,6 +1627,9 @@ impl Game {
                     // The gyro's JET is the ball itself.
                     style: if i == Instrument::Gyro && tw.style == settings::GaugeStyle::Jet {
                         3
+                    } else if tw.style == settings::GaugeStyle::Warthog {
+                        // The Warthog's face sits in the DIAL's housing.
+                        2
                     } else {
                         tw.style.index()
                     },
@@ -3451,6 +3464,17 @@ impl App {
         game.menu.set_msaa_supported(&msaa_supported);
         if game.frozen && std::env::var("FARFALL_BENCH_MAP").is_ok() {
             game.toggle_map();
+        }
+        if let Some(style) = std::env::var("FARFALL_BENCH_STYLE")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| settings::GaugeStyle::from_key(v.trim()))
+        {
+            // The cockpit's style, over any per-dial choice in the file.
+            game.settings.gauge_style = style;
+            for d in game.settings.dials.iter_mut() {
+                d.style = None;
+            }
         }
         if game.frozen && std::env::var("FARFALL_BENCH_SHIP").is_ok() {
             game.toggle_bay();

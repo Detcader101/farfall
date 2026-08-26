@@ -105,7 +105,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let packed = u32(max(round(gauge.c.w), 0.0));
     let mult_m = packed % 10u;
     let mult_e = packed / 10u;
-    let jet = gauge.c.z >= 2.0;
+    let warthog = gauge.c.z >= 4.0;
+    let jet = (gauge.c.z - select(0.0, 4.0, warthog)) >= 2.0;
 
     var glow = 0.0;
     var hot = 0.0;
@@ -230,8 +231,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     let period = in_dash || jet;
-    let cyan = select(vec3<f32>(0.22, 0.85, 1.0), vec3<f32>(0.82, 0.78, 0.62), period);
-    let amber = select(vec3<f32>(1.0, 0.62, 0.18), vec3<f32>(0.85, 0.22, 0.10), period);
+    var cyan = select(vec3<f32>(0.22, 0.85, 1.0), vec3<f32>(0.82, 0.78, 0.62), period);
+    var amber = select(vec3<f32>(1.0, 0.62, 0.18), vec3<f32>(0.85, 0.22, 0.10), period);
+    if (warthog) {
+        cyan = vec3<f32>(0.92, 0.92, 0.88);
+        amber = vec3<f32>(1.0, 0.36, 0.12);
+    }
     let tint = mix(cyan, amber, warning);
     if (period) {
         glow *= 0.55;

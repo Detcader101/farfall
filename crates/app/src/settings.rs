@@ -78,6 +78,7 @@ pub fn next_dial_style(
         Some(GaugeStyle::Tron),
         Some(GaugeStyle::Jet),
         Some(GaugeStyle::Dial),
+        Some(GaugeStyle::Warthog),
     ];
     let i = ring.iter().position(|&s| s == cur).unwrap_or(0);
     let n = ring.len();
@@ -106,16 +107,25 @@ pub enum GaugeStyle {
     Jet,
     /// Real instruments set flush into the dash, faces in its plane.
     Dial,
+    /// The A-10's steam gauges: black faces, white needles and numerals,
+    /// a metal bezel, set into the dash.
+    Warthog,
 }
 
 impl GaugeStyle {
-    pub const ALL: [GaugeStyle; 3] = [GaugeStyle::Tron, GaugeStyle::Jet, GaugeStyle::Dial];
+    pub const ALL: [GaugeStyle; 4] = [
+        GaugeStyle::Tron,
+        GaugeStyle::Jet,
+        GaugeStyle::Dial,
+        GaugeStyle::Warthog,
+    ];
 
     pub fn key(self) -> &'static str {
         match self {
             GaugeStyle::Tron => "tron",
             GaugeStyle::Jet => "jet",
             GaugeStyle::Dial => "dial",
+            GaugeStyle::Warthog => "warthog",
         }
     }
 
@@ -124,6 +134,7 @@ impl GaugeStyle {
             GaugeStyle::Tron => "TRON",
             GaugeStyle::Jet => "JET",
             GaugeStyle::Dial => "DIAL",
+            GaugeStyle::Warthog => "WARTHOG",
         }
     }
 
@@ -147,6 +158,8 @@ impl GaugeStyle {
             GaugeStyle::Tron => 0,
             GaugeStyle::Jet => 1,
             GaugeStyle::Dial => 2,
+            // The cabin: unlit metal bezels (the socket itself is a DIAL's).
+            GaugeStyle::Warthog => 3,
         }
     }
 }
@@ -1000,7 +1013,7 @@ mod tests {
         for i in Instrument::ALL {
             let mut cur = None;
             let mut seen = vec![cur];
-            for _ in 0..3 {
+            for _ in 0..GaugeStyle::ALL.len() {
                 cur = next_dial_style(cur, i, true);
                 seen.push(cur);
             }
@@ -1010,12 +1023,13 @@ mod tests {
                     None,
                     Some(GaugeStyle::Tron),
                     Some(GaugeStyle::Jet),
-                    Some(GaugeStyle::Dial)
+                    Some(GaugeStyle::Dial),
+                    Some(GaugeStyle::Warthog)
                 ],
                 "{i:?}"
             );
             assert_eq!(next_dial_style(cur, i, true), None, "and round");
-            assert_eq!(next_dial_style(None, i, false), Some(GaugeStyle::Dial));
+            assert_eq!(next_dial_style(None, i, false), Some(GaugeStyle::Warthog));
             assert_eq!(style_for(GaugeStyle::Jet, i), GaugeStyle::Jet);
         }
     }
