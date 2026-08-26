@@ -35,6 +35,8 @@ struct Frame {
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var sky_tex: texture_2d<f32>;
 @group(0) @binding(2) var sky_samp: sampler;
+// The nebula, baked (nebula.wgsl): rgb glow, a = how much gas is in the way.
+@group(0) @binding(3) var nebula_tex: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -138,6 +140,19 @@ fn milky_way(dir: vec3<f32>) -> vec3<f32> {
     return textureSampleGrad(sky_tex, sky_samp, uv, du, dv).rgb;
 }
 
+// The nebula: same equirect, same one fetch.
+fn nebula(dir: vec3<f32>) -> vec4<f32> {
+    let uv = vec2<f32>(
+        atan2(dir.z, dir.x) / 6.28318531 + 0.5,
+        acos(clamp(dir.y, -1.0, 1.0)) / 3.14159265,
+    );
+    var du = dpdx(uv);
+    var dv = dpdy(uv);
+    du.x = fract(du.x + 0.5) - 0.5;
+    dv.x = fract(dv.x + 0.5) - 0.5;
+    return textureSampleGrad(nebula_tex, sky_samp, uv, du, dv);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let tan_half_fov = frame.params.x;
@@ -188,7 +203,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // came from.
         star_light = acc / wsum * (1.0 + 1.5 * stretch);
     }
-    var col = tonemap(star_light + milky_way(dir), exposure);
+    // Gas in front of a star takes a little of its light; the glow of the
+    // gas adds over everything.
+    let neb = nebula(dir);
+    star_light *= 1.0 - neb.a * 0.35;
+    var col = tonemap(star_light + milky_way(dir) + neb.rgb, exposure);
     col += vec3<f32>(dither_px(in.pos.xy));
     return vec4<f32>(max(col, vec3<f32>(0.0)), 1.0);
 }

@@ -205,6 +205,21 @@ pub struct Settings {
     pub sky: f32,
     /// The lens flare's strength, 1 = stock, 0 none.
     pub flare: f32,
+    /// The nebula's glow, 0 (off) .. 3; 1 = stock.
+    pub nebula: f32,
+    /// Which nebula: the seed picks where the clouds sit and their shapes.
+    pub nebula_seed: u32,
+    /// How fine the gas is across the sky, 1 (broad veils) .. 8 (knots).
+    pub nebula_scale: f32,
+    /// How much of a cloud is gas, 0 (thin wisps) .. 1 (solid banks).
+    pub nebula_density: f32,
+    /// How many clouds there are, 1..8.
+    pub nebula_clouds: u32,
+    /// The two hues the gas drifts between, 0..1 around the wheel.
+    pub nebula_hue: f32,
+    pub nebula_hue2: f32,
+    /// How far each cloud spreads, 0.25 (a knot) .. 3 (across the sky).
+    pub nebula_spread: f32,
     /// Base field of view, degrees (vertical).
     pub fov: f32,
     /// Gauge style: TRON holograms on the glass; JET bowls hollowed into
@@ -291,6 +306,14 @@ impl Default for Settings {
             cockpit_res: 0.5,
             fps_floor: 60.0,
             sky: 1.0,
+            nebula: 1.0,
+            nebula_seed: 7,
+            nebula_scale: 3.0,
+            nebula_density: 0.55,
+            nebula_clouds: 4,
+            nebula_hue: 0.78,
+            nebula_hue2: 0.55,
+            nebula_spread: 1.5,
             flare: 1.0,
             fov: 70.0,
             gauge_style: GaugeStyle::Tron,
@@ -609,6 +632,58 @@ impl Settings {
                         }
                     }
                 }
+                "graphics.nebula" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.nebula = f.clamp(0.0, 3.0);
+                        }
+                    }
+                }
+                "graphics.nebula-seed" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        s.nebula_seed = n % 100_000;
+                    }
+                }
+                "graphics.nebula-scale" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.nebula_scale = f.clamp(1.0, 8.0);
+                        }
+                    }
+                }
+                "graphics.nebula-density" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.nebula_density = f.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                "graphics.nebula-clouds" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        s.nebula_clouds = n.clamp(1, 8);
+                    }
+                }
+                "graphics.nebula-hue" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.nebula_hue = f.rem_euclid(1.0);
+                        }
+                    }
+                }
+                "graphics.nebula-hue2" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.nebula_hue2 = f.rem_euclid(1.0);
+                        }
+                    }
+                }
+                "graphics.nebula-spread" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.nebula_spread = f.clamp(0.25, 3.0);
+                        }
+                    }
+                }
                 "graphics.fps-floor" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if FPS_FLOOR_CHOICES.contains(&f) {
@@ -803,6 +878,26 @@ impl Settings {
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
         out.push_str(&format!("graphics.flare = {:.2}\n", self.flare));
+        out.push_str(&format!("graphics.nebula = {:.2}\n", self.nebula));
+        out.push_str(&format!("graphics.nebula-seed = {}\n", self.nebula_seed));
+        out.push_str(&format!(
+            "graphics.nebula-scale = {:.2}\n",
+            self.nebula_scale
+        ));
+        out.push_str(&format!(
+            "graphics.nebula-density = {:.2}\n",
+            self.nebula_density
+        ));
+        out.push_str(&format!(
+            "graphics.nebula-clouds = {}\n",
+            self.nebula_clouds
+        ));
+        out.push_str(&format!("graphics.nebula-hue = {:.3}\n", self.nebula_hue));
+        out.push_str(&format!("graphics.nebula-hue2 = {:.3}\n", self.nebula_hue2));
+        out.push_str(&format!(
+            "graphics.nebula-spread = {:.2}\n",
+            self.nebula_spread
+        ));
         out.push_str(&format!("graphics.fov = {:.0}\n", self.fov));
         out.push_str(&format!("ui.gauge-style = {}\n", self.gauge_style.key()));
         out.push_str(&format!(
@@ -925,6 +1020,24 @@ mod tests {
     }
 
     #[test]
+    fn nebula_keys_clamp_and_wrap() {
+        let s = Settings::parse(
+            "graphics.nebula = 9\ngraphics.nebula-seed = 123456\ngraphics.nebula-scale = 0\n\
+             graphics.nebula-density = 2\ngraphics.nebula-clouds = 0\ngraphics.nebula-hue = 1.25\n\
+             graphics.nebula-hue2 = -0.25\ngraphics.nebula-spread = 10\n",
+        );
+        assert_eq!(s.nebula, 3.0);
+        assert_eq!(s.nebula_seed, 23456);
+        assert_eq!(s.nebula_scale, 1.0);
+        assert_eq!(s.nebula_density, 1.0);
+        assert_eq!(s.nebula_clouds, 1);
+        assert!((s.nebula_hue - 0.25).abs() < 1e-6);
+        assert!((s.nebula_hue2 - 0.75).abs() < 1e-6);
+        assert_eq!(s.nebula_spread, 3.0);
+        assert_eq!(Settings::parse("").nebula, 1.0, "on by default");
+    }
+
+    #[test]
     fn edits_round_trip() {
         let mut s = Settings {
             msaa: 2,
@@ -959,6 +1072,14 @@ mod tests {
         s.fps_floor = 90.0;
         s.sky = 1.5;
         s.flare = 0.5;
+        s.nebula = 2.0;
+        s.nebula_seed = 42;
+        s.nebula_scale = 5.0;
+        s.nebula_density = 0.25;
+        s.nebula_clouds = 6;
+        s.nebula_hue = 0.125;
+        s.nebula_hue2 = 0.375;
+        s.nebula_spread = 2.0;
         s.fov = 85.0;
         s.gauge_style = GaugeStyle::Dial;
         s.gauges_stay = false;

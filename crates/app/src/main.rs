@@ -63,6 +63,7 @@ use farfall_render::{
     hud::HudPass,
     instrument::InstrumentPass,
     jet::{jet_pass, JetPass, JetUniforms},
+    nebula::{NebulaBake, NebulaKnobs, NebulaParams},
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
     pointer::{pointer_pass, PointerPass, PointerUniforms},
     shield::{shield_pass, Impact, ShieldPass, ShieldUniforms},
@@ -97,6 +98,21 @@ enum BayRow {
     Footer,
 }
 
+/// The nebula's bake, from its knobs.
+fn nebula_params(s: &Settings) -> NebulaParams {
+    NebulaParams::new(NebulaKnobs {
+        enabled: s.nebula > 0.0,
+        seed: s.nebula_seed,
+        scale: s.nebula_scale,
+        density: s.nebula_density,
+        clouds: s.nebula_clouds,
+        intensity: s.nebula,
+        hue_a_deg: s.nebula_hue * 360.0,
+        hue_b_deg: s.nebula_hue2 * 360.0,
+        softness: s.nebula_spread,
+    })
+}
+
 /// What a panel's answer does: settings saved and applied, the drive
 /// fired, or the game left.
 fn apply_menu_event(
@@ -116,6 +132,9 @@ fn apply_menu_event(
                 Change::Graphics => gpu.apply_graphics(&game.settings),
                 Change::Layout => game.arms.mounts = game.settings.mounts,
             }
+            // A no-op unless a nebula knob moved.
+            gpu.nebula
+                .bake(&gpu.device, &gpu.queue, nebula_params(&game.settings));
         }
         MenuEvent::Quit => {
             game.log_exit("menu quit");
@@ -321,6 +340,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
 ///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times)
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
+///   FARFALL_BENCH_NEBULA=1|off (benchmark only: a full sky of nebula at
+///                           twice the stock glow, or off for a baseline)
 ///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
 ///                           many seconds old, ahead and a little banked)
 ///   FARFALL_BENCH_ARMS=nosight (benchmark only: the sight off, for a baseline)
@@ -524,12 +545,13 @@ impl Passes {
         format: wgpu::TextureFormat,
         msaa: u32,
         baked: &BakedMaps,
+        nebula: &wgpu::TextureView,
         cabin_res: f32,
     ) -> Self {
         let thermal = ThermalPass::new(device);
         let plasma = PlasmaPass::new(device, format, msaa, &thermal, baked);
         Self {
-            starfield: StarfieldPass::new(device, format, msaa, STAR_DENSITY, baked),
+            starfield: StarfieldPass::new(device, format, msaa, STAR_DENSITY, baked, nebula),
             bodies: BodiesPass::new(device, format, msaa),
             planet: PlanetPass::new(device, format, msaa, baked),
             gauge: gauge_pass(device, format, msaa),
@@ -578,6 +600,9 @@ struct Gpu {
     passes: Passes,
     /// Owns the baked textures the passes sample.
     baked: BakedMaps,
+    /// The nebula's bake: re-rendered when its knobs change, sampled by the
+    /// starfield.
+    nebula: NebulaBake,
     hud: HudPass,
     /// The system map pane, native resolution like the text.
     map: InstrumentPass,
@@ -821,6 +846,7 @@ impl Gpu {
                 self.config.format,
                 settings.msaa,
                 &self.baked,
+                &self.nebula.view,
                 settings.cockpit_res,
             );
             self.perf.stats.skip_next_frame();
@@ -3340,11 +3366,15 @@ impl App {
         // Bake the static world fields before the first frame. Everything the
         // planet pass reads per pixel is generated here, by shader, once.
         let baked = BakedMaps::bake(&device, &queue);
+        let mut nebula = NebulaBake::new(&device);
+        // Baked properly once the game (and its bench knobs) exists, below.
+        nebula.bake(&device, &queue, nebula_params(&settings));
         let passes = Passes::new(
             &device,
             config.format,
             cfg.msaa,
             &baked,
+            &nebula.view,
             settings.cockpit_res,
         );
         // The HUD draws straight onto the swapchain, after the upscale, so it
@@ -3387,6 +3417,7 @@ impl App {
             blit,
             passes,
             baked,
+            nebula,
             hud,
             map,
             hologram,
@@ -3424,6 +3455,20 @@ impl App {
         }
         if game.frozen && std::env::var("FARFALL_BENCH_HOLO").is_ok() {
             game.settings.holo_view = true;
+        }
+        // The nebula: "off" for a baseline, anything else a full sky of it —
+        // the stock glow doubled, every cloud, spread wide — so a capture
+        // sees it whichever way it looks (hues and seed from the settings).
+        if let Ok(v) = std::env::var("FARFALL_BENCH_NEBULA") {
+            if game.frozen {
+                if v.trim() == "off" {
+                    game.settings.nebula = 0.0;
+                } else {
+                    game.settings.nebula = 2.0;
+                    game.settings.nebula_clouds = 8;
+                    game.settings.nebula_spread = 3.0;
+                }
+            }
         }
         if game.frozen && std::env::var("FARFALL_BENCH_HYPER").is_ok() {
             game.hyper = 1.0;
@@ -3656,6 +3701,12 @@ impl App {
             })
         {
             game.look.aim(head.0.to_radians(), head.1.to_radians());
+        }
+        // The nebula, from the game's settings: a no-op unless a bench knob
+        // moved them.
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.nebula
+                .bake(&gpu.device, &gpu.queue, nebula_params(&game.settings));
         }
         self.game = Some(game);
     }
