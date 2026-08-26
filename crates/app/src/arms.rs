@@ -162,6 +162,15 @@ impl Burst {
     }
 }
 
+/// A slug that landed on a rock this step, for whoever wants to know
+/// (the haul chips ore off it; a mimic in that rock shows itself).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Landed {
+    pub rock: crate::belt::Rock,
+    pub energy_j: f64,
+    pub destroyed: bool,
+}
+
 /// The arms this fixed step: what the ship is told.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ship {
@@ -186,6 +195,8 @@ pub struct Arms {
     pub charge: f32,
     pub slugs: Vec<Slug>,
     pub bursts: Vec<Burst>,
+    /// What landed on a rock this step.
+    pub landed: Vec<Landed>,
     /// Counts for the sound: shots and the last one's kind; rock hits
     /// and the last one's size; breaks.
     pub shots: u32,
@@ -224,6 +235,7 @@ impl Default for Arms {
             charge: 0.0,
             slugs: Vec::new(),
             bursts: Vec::new(),
+            landed: Vec::new(),
             shots: 0,
             shot_kind: 0,
             bangs: 0,
@@ -311,6 +323,7 @@ impl Arms {
         trigger: bool,
         belt: &mut Belt,
     ) -> DVec3 {
+        self.landed.clear();
         let power = self.power.clamp(0.0, 1.0);
         // Cool, and clear jams.
         for (i, w) in Weapon::ALL.iter().enumerate() {
@@ -382,6 +395,11 @@ impl Arms {
                 let momentum = s.weapon.slug_kg() * rel.length();
                 let size = (rock.radius_m / 20.0) as f32;
                 let d = belt.strike(ri, energy, momentum, at, rel.normalize_or_zero());
+                self.landed.push(Landed {
+                    rock,
+                    energy_j: energy,
+                    destroyed: d.destroyed,
+                });
                 // A rock near breaking throws more off with every hit.
                 let cracked = if d.destroyed {
                     0.0
@@ -455,7 +473,7 @@ impl Arms {
 
     /// Shards leave the strike: chips spray back off the face; a break's
     /// pieces go every way, the bigger the rock the bigger and faster.
-    fn throw_shards(
+    pub fn throw_shards(
         &mut self,
         t_s: f64,
         at: DVec3,
@@ -510,7 +528,7 @@ impl Arms {
         }
     }
 
-    fn push_burst(&mut self, b: Burst) {
+    pub fn push_burst(&mut self, b: Burst) {
         self.bursts.insert(0, b);
         self.bursts.truncate(MAX_BURSTS);
     }

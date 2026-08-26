@@ -93,6 +93,14 @@ pub struct Levels {
     pub bang_size: f32,
     /// The rail's charge 0..1: a rising whine while it is held.
     pub rail: f32,
+    /// Mimics: how many rocks have shown themselves as ships, as a count.
+    /// The synth plays the shroud going on every increment — a deep
+    /// structure-borne thrum falling away with a crackle, heard through
+    /// the frame like everything else out here.
+    pub reveals: f32,
+    /// How many ships have hailed, as a count: the comms relay knocking
+    /// in twice as it takes the carrier — a mechanism, not a chime.
+    pub hails: f32,
 }
 
 impl Default for Levels {
@@ -117,6 +125,8 @@ impl Default for Levels {
             bangs: 0.0,
             bang_size: 0.0,
             rail: 0.0,
+            reveals: 0.0,
+            hails: 0.0,
         }
     }
 }
@@ -293,6 +303,15 @@ pub struct Synth {
     shot_lp: f32,
     shot_ring_phase: f32,
     last_bangs: u32,
+    last_reveals: u32,
+    reveal_t: f32,
+    reveal_env: f32,
+    reveal_phase: f32,
+    reveal_lp: f32,
+    last_hails: u32,
+    hail_t: f32,
+    hail_env: f32,
+    hail_lp: f32,
     bang_t: f32,
     bang_env: f32,
     bang_size: f32,
@@ -384,6 +403,15 @@ impl Synth {
             shot_lp: 0.0,
             shot_ring_phase: 0.0,
             last_bangs: 0,
+            last_reveals: 0,
+            reveal_t: 0.0,
+            reveal_env: 0.0,
+            reveal_phase: 0.0,
+            reveal_lp: 0.0,
+            last_hails: 0,
+            hail_t: 0.0,
+            hail_env: 0.0,
+            hail_lp: 0.0,
             bang_t: 10.0,
             bang_env: 0.0,
             bang_size: 0.0,
@@ -430,6 +458,8 @@ impl Synth {
             self.last_strikes = levels.strikes.max(0.0) as u32;
             self.last_shots = levels.shots.max(0.0) as u32;
             self.last_bangs = levels.bangs.max(0.0) as u32;
+            self.last_reveals = levels.reveals.max(0.0) as u32;
+            self.last_hails = levels.hails.max(0.0) as u32;
             self.stress.value = levels.stress.clamp(0.0, 1.0);
         }
 
@@ -867,6 +897,54 @@ impl Synth {
             rail_out = whine + hum;
         }
 
+        // A shroud going: a deep thrum in the frame that falls away over a
+        // second with a crackle over it — the projector's field letting go
+        // of the rock, felt more than heard.
+        let reveals = levels.reveals.max(0.0) as u32;
+        if reveals != self.last_reveals {
+            self.last_reveals = reveals;
+            self.reveal_t = 0.0;
+            self.reveal_env = 1.0;
+        }
+        let mut reveal_out = 0.0;
+        if self.reveal_env > 1e-3 {
+            let dt = 1.0 / self.rate;
+            self.reveal_t += dt;
+            let t = self.reveal_t;
+            let f = 70.0 * (-t * 1.1).exp() + 26.0;
+            self.reveal_phase += TAU * f * dt;
+            if self.reveal_phase > TAU {
+                self.reveal_phase -= TAU;
+            }
+            let thrum = self.reveal_phase.sin() * (-t * 3.0).exp();
+            let n = self.rng_l.white();
+            let lp = self.lp_coeff(600.0);
+            self.reveal_lp += (n - self.reveal_lp) * lp;
+            let crackle = self.reveal_lp * (0.5 + 0.5 * (t * 37.0).sin()) * (-t * 3.5).exp() * 0.35;
+            reveal_out = (thrum * 0.5 + crackle) * 0.8;
+            self.reveal_env = (-t * 3.0).exp();
+        }
+        // A hail: the relay knocks in — two dull clunks a fifth of a second
+        // apart, low-passed noise with a fast decay. Through the frame.
+        let hails = levels.hails.max(0.0) as u32;
+        if hails != self.last_hails {
+            self.last_hails = hails;
+            self.hail_t = 0.0;
+            self.hail_env = 1.0;
+        }
+        let mut hail_out = 0.0;
+        if self.hail_env > 1e-3 {
+            let dt = 1.0 / self.rate;
+            self.hail_t += dt;
+            let t = self.hail_t;
+            let since = if t < 0.2 { t } else { t - 0.2 };
+            let n = self.rng_r.white();
+            let lp = self.lp_coeff(320.0);
+            self.hail_lp += (n - self.hail_lp) * lp;
+            hail_out = self.hail_lp * (-since * 45.0).exp() * 2.2;
+            self.hail_env = (-(t - 0.2).max(0.0) * 30.0).exp();
+        }
+
         // ---- mix --------------------------------------------------------
         let master = self.master.next(levels.master.clamp(0.0, 1.0));
         // Silence multiplies everything the SHIP makes: past the atmosphere
@@ -877,8 +955,16 @@ impl Synth {
         // would silence the build-up at exactly the altitudes where it
         // happens (which is why the old mix was barely audible on entry).
         let mono = engine + hiss + rcs_out;
-        let frame_borne =
-            womp + warp_out + crack_out + hull_out + strike_out + shot_out + bang_out + rail_out;
+        let frame_borne = womp
+            + warp_out
+            + crack_out
+            + hull_out
+            + strike_out
+            + shot_out
+            + bang_out
+            + rail_out
+            + reveal_out
+            + hail_out;
         let l = (((mono + wind.0) * silence + entry_out + frame_borne) * master).tanh();
         let r = (((mono + wind.1) * silence + entry_out + frame_borne) * master).tanh();
 
@@ -956,6 +1042,8 @@ mod tests {
                 bangs: 0.0,
                 bang_size: 0.0,
                 rail: 0.0,
+                reveals: 0.0,
+                hails: 0.0,
             },
             Levels {
                 effort: 55.0,
@@ -977,6 +1065,8 @@ mod tests {
                 bangs: 0.0,
                 bang_size: 0.0,
                 rail: 0.0,
+                reveals: 0.0,
+                hails: 0.0,
             },
         ];
         for levels in cases {
@@ -1726,6 +1816,48 @@ mod tests {
     }
 
     #[test]
+    fn a_reveal_thrums_low_once_and_a_hail_knocks_twice() {
+        let quiet = Levels::default();
+        let mut s = Synth::new(48_000.0, 1);
+        // Interleaved stereo: 96k floats is a second.
+        let mut buf = vec![0.0; 96_000];
+        s.render(&quiet, &mut buf);
+        assert!(rms(&buf) < 1e-4, "space is silent: {}", rms(&buf));
+        let revealed = Levels {
+            reveals: 1.0,
+            ..quiet
+        };
+        s.render(&revealed, &mut buf);
+        let loud = rms(&buf);
+        assert!(loud > 0.02, "the shroud going is heard: {loud}");
+        assert!(
+            low_share(&buf) > 0.5,
+            "and it is low, structure-borne: {}",
+            low_share(&buf)
+        );
+        s.render(&revealed, &mut buf);
+        s.render(&revealed, &mut buf);
+        assert!(
+            rms(&buf) < loud * 0.1,
+            "once, then quiet: {} vs {loud}",
+            rms(&buf)
+        );
+        let hailed = Levels {
+            reveals: 1.0,
+            hails: 1.0,
+            ..quiet
+        };
+        s.render(&hailed, &mut buf);
+        // Two knocks: energy in the first 100 ms and again about 200 ms in,
+        // little between and none after half a second.
+        let win = |a: f32, b: f32| rms(&buf[(a * 96_000.0) as usize..(b * 96_000.0) as usize]);
+        assert!(win(0.0, 0.08) > 0.01, "{}", win(0.0, 0.08));
+        assert!(win(0.2, 0.28) > 0.01, "{}", win(0.2, 0.28));
+        assert!(win(0.12, 0.19) < win(0.0, 0.08) * 0.3);
+        assert!(win(0.6, 1.0) < 1e-3);
+    }
+
+    #[test]
     fn rendering_is_deterministic() {
         let levels = Levels {
             effort: 0.6,
@@ -1747,6 +1879,8 @@ mod tests {
             bangs: 0.0,
             bang_size: 0.0,
             rail: 0.0,
+            reveals: 0.0,
+            hails: 0.0,
         };
         let a = render_secs(levels, 0.25);
         let b = render_secs(levels, 0.25);

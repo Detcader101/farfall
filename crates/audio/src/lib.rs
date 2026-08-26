@@ -39,6 +39,8 @@ struct Shared {
     bangs: AtomicU32,
     bang_size: AtomicU32,
     rail: AtomicU32,
+    reveals: AtomicU32,
+    hails: AtomicU32,
 }
 
 impl Shared {
@@ -66,6 +68,8 @@ impl Shared {
         self.bang_size
             .store(l.bang_size.to_bits(), Ordering::Relaxed);
         self.rail.store(l.rail.to_bits(), Ordering::Relaxed);
+        self.reveals.store(l.reveals.to_bits(), Ordering::Relaxed);
+        self.hails.store(l.hails.to_bits(), Ordering::Relaxed);
     }
     fn load(&self) -> Levels {
         Levels {
@@ -88,6 +92,8 @@ impl Shared {
             bangs: f32::from_bits(self.bangs.load(Ordering::Relaxed)),
             bang_size: f32::from_bits(self.bang_size.load(Ordering::Relaxed)),
             rail: f32::from_bits(self.rail.load(Ordering::Relaxed)),
+            reveals: f32::from_bits(self.reveals.load(Ordering::Relaxed)),
+            hails: f32::from_bits(self.hails.load(Ordering::Relaxed)),
         }
     }
 }
