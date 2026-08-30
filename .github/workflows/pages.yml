@@ -4,7 +4,7 @@
 name: Pages
 
 on:
-  push: { branches: [web, main] }
+  push: { branches: [m1-planet, web, main] }
   workflow_dispatch:
 
 permissions:
