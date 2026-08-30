@@ -8,7 +8,8 @@ wasm-bindgen --target web --no-typescript \
   --out-dir web/dist --out-name farfall \
   target/wasm32-unknown-unknown/web/farfall_app.wasm
 if command -v wasm-opt >/dev/null 2>&1; then
-  wasm-opt -O3 -o web/dist/farfall_bg.wasm web/dist/farfall_bg.wasm
+  wasm-opt -O3 --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals \
+    -o web/dist/farfall_bg.wasm web/dist/farfall_bg.wasm
 fi
 cp web/index.html web/xr.js web/dist/
 touch web/dist/.nojekyll
