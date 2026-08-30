@@ -155,6 +155,8 @@ const RING_ABOVE_POS: &str = "16706357148.3,3498039023.8,-24797998372.8";
 const RING_ABOVE_LOOK: &str = "0.0206,-0.9998,0.0042";
 const SUN_NEAR_POS: &str = "911880426.7,617725450.3,-970711421.9";
 const SUN_LOOK: &str = "0.6211,0.4208,-0.6612";
+// Deep space, away from the planet, the sun off to the right.
+const NEBULA_LOOK: &str = "0,0.2,-1";
 
 #[test]
 fn uranus_fills_the_sky_from_its_ring_with_rocks_in_front() {
@@ -543,4 +545,46 @@ fn the_warthog_dials_are_white_steam_gauges_in_the_dash() {
         cyan < white * 0.5,
         "the cluster is not cyan: {cyan} vs {white}"
     );
+}
+
+#[test]
+fn the_nebula_colours_the_sky_and_goes_away_when_off() {
+    if !enabled() {
+        return;
+    }
+    // Deep space, looking away from the planet: sky wall to wall.
+    let on = capture(
+        "nebula",
+        &[
+            ("FARFALL_BENCH_POS", "0,0,-400000"),
+            ("FARFALL_BENCH_LOOK", NEBULA_LOOK),
+            ("FARFALL_BENCH_NEBULA", "1"),
+        ],
+    );
+    let off = capture(
+        "nebula-off",
+        &[
+            ("FARFALL_BENCH_POS", "0,0,-400000"),
+            ("FARFALL_BENCH_LOOK", NEBULA_LOOK),
+            ("FARFALL_BENCH_NEBULA", "off"),
+        ],
+    );
+    // Coloured gas over the glass, clear of the sun's flare on the right:
+    // lit, clearly not grey, and blue-heavy like both stock hues.
+    let gas = |f: &Frame| {
+        f.share(0.15, 0.0, 0.7, 0.45, |c| {
+            let mx = c[0].max(c[1]).max(c[2]);
+            let mn = c[0].min(c[1]).min(c[2]);
+            mx > 0.08 && mx - mn > 0.04 && c[2] > c[1] + 0.02
+        })
+    };
+    let on_gas = gas(&on);
+    let off_gas = gas(&off);
+    assert!(on_gas > 0.05, "the nebula's gas across the sky: {on_gas}");
+    assert!(
+        on_gas > off_gas * 3.0 + 0.03,
+        "off is black sky again: on {on_gas} vs off {off_gas}"
+    );
+    let d = on.diff(&off);
+    assert!(d > 0.004, "the knob changes the picture: {d}");
 }

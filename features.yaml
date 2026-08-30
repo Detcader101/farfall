@@ -30,7 +30,7 @@ controls:
 
 # Every key ~/.farfall/settings.cfg may hold, by group (crates/app/src/settings.rs).
 settings_keys:
-  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare]
+  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread]
   camera: [camera.chase, holo.view, holo.size, cam.shake]
   cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
   ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
@@ -57,10 +57,11 @@ bench:
     FARFALL_BENCH_SPIN: the head turns a full circle over the run, n times
     FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND: the map, the settings menu (paged n times), DESIGN mode, LANDING mode up
     FARFALL_BENCH_CHASE / _HOLO: the chase camera, the holo3PP
+    FARFALL_BENCH_NEBULA=1|off: a full sky of nebula at twice the stock glow, or off for a baseline
     FARFALL_BENCH_HYPER / _WARP=s / _GHOST=age: the chaos drive's field up; the wormhole drive engaged at s; a WARP STOP after-image this old
     FARFALL_BENCH_STRIKES=n / _G=x,y,z / _THRUST=m,p,y,r: n shield strikes; a felt load in g; forced thrust demands
     FARFALL_CAPTURE=final / FARFALL_MSAA / FARFALL_VSYNC / FARFALL_SCALE / FARFALL_MUTE / FARFALL_SKIP=a,b: capture the presented frame; renderer overrides; leave passes out for profiling
-  scene_tests: "crates/app/tests/scenes.rs, gated by FARFALL_SCENE_TESTS=1 (the pre-commit gate sets it; FARFALL_NO_SCENES=1 skips) — 9 captures measured"
+  scene_tests: "crates/app/tests/scenes.rs, gated by FARFALL_SCENE_TESTS=1 (the pre-commit gate sets it; FARFALL_NO_SCENES=1 skips) — 11 captures measured"
 
 features:
 
@@ -407,6 +408,13 @@ features:
     tests: [crates/render/src/shield.rs, crates/render/tests/shader_validation.rs, "crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air"]
     settings: [ui.shield]
     e2e: "FARFALL_BENCH_STRIKES=5 capture in space — rings spreading over the shell ahead"
+
+  - id: nebula
+    name: "The nebula (nebula.wgsl) — coloured gas across the sky: a few soft clouds placed by a seed, each a domain-warped fbm of banks with ridged filaments lit as emission cores and dark dust lanes cut through, two hues drifting into each other; baked once into a 1024x512 equirect with mips whenever a knob moves and fetched once per pixel by the starfield, which also dims stars a little behind thick gas; NEBULA block on the GRAPHICS page: glow (0..300%, OFF), seed, scale, density, clouds, hue, hue 2, spread"
+    state: tests-pass
+    tests: [crates/render/src/nebula.rs, crates/render/tests/shader_validation.rs, "crates/app/src/settings.rs::nebula_keys_clamp_and_wrap", "crates/app/src/menu.rs::the_nebula_knobs_step_clamp_and_wrap", "crates/app/tests/scenes.rs::the_nebula_colours_the_sky_and_goes_away_when_off"]
+    settings: [graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread]
+    e2e: "FARFALL_BENCH_NEBULA=1 capture in deep space (0,0,-400000 looking 0,0.2,-1) looked at 2026-08-26 — purple banks with filaments over the top of the glass, cyan-white emission cores low over the dash, dark lanes through it, stars dimmed a touch behind the thick gas; the off capture is the plain sky; not flown live yet; per-frame cost is one equirect fetch in the starfield (the bench took the headless path on 2026-08-26 and logged no perf line)"
 
   - id: landed-no-strobe
     name: "Sitting on a body no longer strobes — the eye is held at least 1.6 m above every body's surface in the planet and body shaders (the sim parks the hull at the surface and gravity dips it a few cm in before the next contact)"

@@ -107,6 +107,15 @@ enum Item {
     FpsFloor,
     Sky,
     Flare,
+    /// The nebula block: glow, then which one and its shape and colours.
+    Nebula,
+    NebulaSeed,
+    NebulaScale,
+    NebulaDensity,
+    NebulaClouds,
+    NebulaHue,
+    NebulaHue2,
+    NebulaSpread,
     Fov,
     GaugeStyle,
     GaugesStay,
@@ -168,6 +177,14 @@ impl Item {
             Item::FpsFloor => "FPS FLOOR",
             Item::Sky => "SKY",
             Item::Flare => "LENS FLARE",
+            Item::Nebula => "NEBULA",
+            Item::NebulaSeed => "NEBULA SEED",
+            Item::NebulaScale => "NEBULA SCALE",
+            Item::NebulaDensity => "NEBULA DENSITY",
+            Item::NebulaClouds => "NEBULA CLOUDS",
+            Item::NebulaHue => "NEBULA HUE",
+            Item::NebulaHue2 => "NEBULA HUE 2",
+            Item::NebulaSpread => "NEBULA SPREAD",
             Item::Camera => "CAMERA",
             Item::HoloView => "HOLO VIEW",
             Item::HoloSize => "HOLO SIZE",
@@ -226,6 +243,20 @@ impl Item {
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
             Item::Sky => format!("{:.0}%", s.sky * 100.0),
+            Item::Nebula => {
+                if s.nebula > 0.0 {
+                    format!("{:.0}%", s.nebula * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::NebulaSeed => format!("{}", s.nebula_seed),
+            Item::NebulaScale => format!("{:.1}", s.nebula_scale),
+            Item::NebulaDensity => format!("{:.0}%", s.nebula_density * 100.0),
+            Item::NebulaClouds => format!("{}", s.nebula_clouds),
+            Item::NebulaHue => format!("{:.0}", s.nebula_hue * 360.0),
+            Item::NebulaHue2 => format!("{:.0}", s.nebula_hue2 * 360.0),
+            Item::NebulaSpread => format!("{:.2}x", s.nebula_spread),
             Item::Flare => {
                 if s.flare > 0.0 {
                     format!("{:.0}%", s.flare * 100.0)
@@ -373,6 +404,16 @@ impl Default for Menu {
     }
 }
 
+/// Step a clamped float knob; `Nothing` at the end of its range.
+fn step_f32(v: &mut f32, forward: bool, step: f32, lo: f32, hi: f32) -> MenuEvent {
+    let next = (*v + if forward { step } else { -step }).clamp(lo, hi);
+    if (next - *v).abs() < 1e-6 {
+        return MenuEvent::Nothing;
+    }
+    *v = next;
+    MenuEvent::Changed(Change::Layout)
+}
+
 impl Menu {
     pub fn new() -> Self {
         Self::default()
@@ -399,6 +440,14 @@ impl Menu {
                 Item::FpsFloor,
                 Item::Sky,
                 Item::Flare,
+                Item::Nebula,
+                Item::NebulaSeed,
+                Item::NebulaScale,
+                Item::NebulaDensity,
+                Item::NebulaClouds,
+                Item::NebulaHue,
+                Item::NebulaHue2,
+                Item::NebulaSpread,
                 Item::Quit,
             ],
             Page::Controls => {
@@ -972,6 +1021,41 @@ impl Menu {
                 s.sky = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::Nebula => step_f32(&mut s.nebula, forward, 0.25, 0.0, 3.0),
+            Item::NebulaSeed => {
+                // Wraps: there is always another nebula.
+                s.nebula_seed = if forward {
+                    (s.nebula_seed + 1) % 100_000
+                } else {
+                    (s.nebula_seed + 100_000 - 1) % 100_000
+                };
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::NebulaScale => step_f32(&mut s.nebula_scale, forward, 0.5, 1.0, 8.0),
+            Item::NebulaDensity => step_f32(&mut s.nebula_density, forward, 0.05, 0.0, 1.0),
+            Item::NebulaClouds => {
+                let next = if forward {
+                    (s.nebula_clouds + 1).min(8)
+                } else {
+                    (s.nebula_clouds - 1).max(1)
+                };
+                if next == s.nebula_clouds {
+                    return MenuEvent::Nothing;
+                }
+                s.nebula_clouds = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::NebulaHue => {
+                s.nebula_hue =
+                    (s.nebula_hue + if forward { 1.0 / 24.0 } else { -1.0 / 24.0 }).rem_euclid(1.0);
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::NebulaHue2 => {
+                s.nebula_hue2 = (s.nebula_hue2 + if forward { 1.0 / 24.0 } else { -1.0 / 24.0 })
+                    .rem_euclid(1.0);
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::NebulaSpread => step_f32(&mut s.nebula_spread, forward, 0.25, 0.25, 3.0),
             Item::FpsFloor => {
                 let n = FPS_FLOOR_CHOICES.len();
                 let i = FPS_FLOOR_CHOICES
@@ -1301,6 +1385,39 @@ mod tests {
     }
 
     #[test]
+    fn the_nebula_knobs_step_clamp_and_wrap() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        // Glow steps down to OFF and stops there.
+        for _ in 0..4 {
+            m.adjust(Item::Nebula, false, &mut s);
+        }
+        assert_eq!(s.nebula, 0.0);
+        assert_eq!(Item::Nebula.value(&s), "OFF");
+        assert_eq!(m.adjust(Item::Nebula, false, &mut s), MenuEvent::Nothing);
+        // Seed wraps both ways; hue wraps around the wheel.
+        s.nebula_seed = 0;
+        m.adjust(Item::NebulaSeed, false, &mut s);
+        assert_eq!(s.nebula_seed, 99_999);
+        m.adjust(Item::NebulaSeed, true, &mut s);
+        assert_eq!(s.nebula_seed, 0);
+        s.nebula_hue = 0.0;
+        m.adjust(Item::NebulaHue, false, &mut s);
+        assert!(s.nebula_hue > 0.9);
+        // Clouds hold at 1..8.
+        s.nebula_clouds = 8;
+        assert_eq!(
+            m.adjust(Item::NebulaClouds, true, &mut s),
+            MenuEvent::Nothing
+        );
+        s.nebula_clouds = 1;
+        assert_eq!(
+            m.adjust(Item::NebulaClouds, false, &mut s),
+            MenuEvent::Nothing
+        );
+    }
+
+    #[test]
     fn the_pages_are_categories_that_make_sense() {
         let mut m = Menu::new();
         m.toggle();
@@ -1318,6 +1435,11 @@ mod tests {
                 Page::Graphics => {
                     assert!(on(Item::Msaa) && on(Item::Fov) && on(Item::CockpitRes));
                     assert!(on(Item::FpsFloor));
+                    // The nebula block sits together, after the sky knobs.
+                    let at = |it: Item| items.iter().position(|i| *i == it).unwrap();
+                    assert!(at(Item::Nebula) > at(Item::Flare));
+                    assert_eq!(at(Item::NebulaSeed), at(Item::Nebula) + 1);
+                    assert_eq!(at(Item::NebulaSpread), at(Item::Nebula) + 7);
                     assert_eq!(*items.last().unwrap(), Item::Quit, "QUIT is the last thing");
                 }
                 Page::Controls => {
