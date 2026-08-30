@@ -285,6 +285,22 @@ pub struct Settings {
     pub bay_anchor: [f32; 2],
 }
 
+impl Settings {
+    /// The browser's first run: the same game on a slower, single-threaded
+    /// build under a compositor, so it starts cheap — no MSAA and the
+    /// world at half scale (the HUD and dials stay native) — and the
+    /// menu raises it from there. Saved settings override this.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn web_default() -> Self {
+        Self {
+            msaa: 1,
+            scale: 0.5,
+            cockpit_res: 0.35,
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -353,7 +369,7 @@ impl Settings {
         {
             return match crate::web::storage_get("farfall.settings") {
                 Some(text) => Self::parse(&text),
-                None => Self::default(),
+                None => Self::web_default(),
             };
         }
         #[allow(unreachable_code)]

@@ -3384,7 +3384,15 @@ async fn request_gpu(
         })
         .await
         .expect("request device");
-    let size = window.inner_size();
+    #[allow(unused_mut)]
+    let mut size = window.inner_size();
+    #[cfg(target_arch = "wasm32")]
+    {
+        // CSS pixels, as in the Resized handler.
+        let dpr = window.scale_factor().max(1.0);
+        size.width = (size.width as f64 / dpr) as u32;
+        size.height = (size.height as f64 / dpr) as u32;
+    }
     let mut config = surface
         .get_default_config(&adapter, size.width.max(1), size.height.max(1))
         .expect("surface unsupported by adapter");
@@ -4833,6 +4841,17 @@ impl ApplicationHandler for App {
                 game.end_drag();
             }
             WindowEvent::Resized(size) => {
+                // The browser: the canvas is drawn at CSS pixels, not the
+                // display's — a Retina Mac would otherwise be asked for four
+                // times the pixels of the same window on a slower build.
+                #[cfg(target_arch = "wasm32")]
+                let size = {
+                    let dpr = gpu.window.scale_factor().max(1.0);
+                    winit::dpi::PhysicalSize::new(
+                        (size.width as f64 / dpr) as u32,
+                        (size.height as f64 / dpr) as u32,
+                    )
+                };
                 gpu.config.width = size.width.max(1);
                 gpu.config.height = size.height.max(1);
                 gpu.surface.configure(&gpu.device, &gpu.config);
