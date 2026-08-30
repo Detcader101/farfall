@@ -23,7 +23,7 @@ rules:
 # persisted as control.<key>; the menu lists every one (id complete-key-menu).
 controls:
   axes: {thrust-forward: W, thrust-back: S, strafe-left: A, strafe-right: D, thrust-up: R, thrust-down: F, pitch-up: Up, pitch-down: Down, yaw-left: Left, yaw-right: Right, roll-left: Q, roll-right: E}
-  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P, bay: B, next-weapon: U, weapon-1: 1, weapon-2: 2, scale-down: "[", scale-up: "]"}
+  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P, bay: B, next-weapon: U, weapon-1: 1, weapon-2: 2, scale-down: "[", scale-up: "]", hold: O}
   fixed: {menu: Esc, page: Tab, capture-alt: F12, pane-zoom: "+ / -", fire: "left mouse", freelook: "right mouse"}
   rule: every key the game answers to is a Named bind on the KEYS page; only the menu keys, the pane zoom and the mouse buttons are fixed
   mouse: freelook while the right button is held; left drag turns the map or moves a panel; wheel zooms the map
@@ -38,7 +38,9 @@ settings_keys:
   warp: [warp.destination, warp.safe-radii]
   sound: [sound.hull]
   controls: ["control.<axis>", "control.<named>", control.look-sens]
-  arms: [arms.power, arms.glow]
+  arms: [arms.power, arms.glow, arms.sight, arms.shards, arms.shard-life, arms.scar-size, arms.scar-cool, arms.ore]
+  mimics: [mimics.chance, mimics.hostility]
+  hold: [hold.gain, hold.face]
   ship: ["ship.hardpoint.<n>", ship.holo-hue, ship.holo-saturation, ship.holo-scanlines, ship.holo-size, ship.holo-spin, ui.panel-bay-card, ui.pointer-size]
 
 # The bench harness (documented in crates/app/src/main.rs). All FARFALL_BENCH_*
@@ -60,6 +62,7 @@ bench:
     FARFALL_BENCH_NEBULA=1|off: a full sky of nebula at twice the stock glow, or off for a baseline
     FARFALL_BENCH_HYPER / _WARP=s / _GHOST=age: the chaos drive's field up; the wormhole drive engaged at s; a WARP STOP after-image this old
     FARFALL_BENCH_STRIKES=n / _G=x,y,z / _THRUST=m,p,y,r: n shield strikes; a felt load in g; forced thrust demands
+    FARFALL_BENCH_MIMIC=reveal|hail|attack|wreck: a ship out of a rock ahead-left, mid-reveal, hailing, attacking (fire in the air, a hit on the shell) or a wreck
     FARFALL_CAPTURE=final / FARFALL_MSAA / FARFALL_VSYNC / FARFALL_SCALE / FARFALL_MUTE / FARFALL_SKIP=a,b: capture the presented frame; renderer overrides; leave passes out for profiling
   scene_tests: "crates/app/tests/scenes.rs, gated by FARFALL_SCENE_TESTS=1 (the pre-commit gate sets it; FARFALL_NO_SCENES=1 skips) — 11 captures measured"
 
@@ -261,6 +264,7 @@ features:
     tests: ["crates/app/src/settings.rs::edits_round_trip", "crates/app/src/settings.rs::dials_stay_lit_by_default_and_every_style_is_open_to_every_dial", crates/render/src/cabin.rs]
     settings: ["ui.<dial>.size", "ui.<dial>.style", "ui.<dial>.fade", "ui.<dial>.tilt"]
     e2e: "FARFALL_BENCH_DESIGN=1 capture — per-dial bowls/wells at their own sizes, reach rings, gaze reticle"
+    note: "2026-08-30: the dials are picked up ONLY in DESIGN mode (crates/app/src/main.rs::the_dials_are_only_picked_up_in_design_mode) — freelook with the button down never rearranges the dash; the panels (map, menu, bay, holo, readout) are still gaze-dragged"
 
   - id: dial-tilt
     name: "Dials lean toward the pilot (±60°) — a DIAL's face plane turns on its horizontal axis in a housing that rises from the dash, the well cut clear through; a hologram foreshortens; the face plate is opaque matte black so the well shows nothing of the dash's inside"
@@ -479,6 +483,29 @@ features:
     tests: [crates/app/src/shake.rs, "crates/app/tests/scenes.rs::the_helmet_camera_moves_the_whole_view_together", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense"]
     settings: [cam.shake]
     e2e: "FARFALL_BENCH_SHAKE=4,3,6 capture looked at with FARFALL_BENCH_HEAD=0,-26 — the whole cockpit rolled and nodded together, dials on their dash; the live sway and the guns' jolt not yet flown"
+
+  - id: arms-ore
+    name: "Ore — the rocks give up material under the guns: every hit chips a mass off its rock by the slug's energy (30 kJ a kilogram, capped by the rock), a break leaves a lump of the rock as well, a wreck is salvage; the stone's kind by its seed (ice, silicate, iron), tallied in tonnes as the HAUL, shown on the readout for a few seconds after every gain once the guns are cool; ORE YIELD on the ARMS page (arms.ore, 0 off .. 200%). Nothing is persisted yet and nothing is spent: the ledger of what was mined, for the economy to come"
+    state: tests-pass
+    tests: ["crates/app/src/mimic.rs::the_haul_grows_with_energy_by_kind_and_a_break_leaves_a_lump", "crates/app/src/settings.rs::edits_round_trip", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense"]
+    settings: [arms.ore]
+    note: "a cargo hold with mass, a market and persistence are still to come"
+
+  - id: mimics
+    name: "Mimics — some of the ring's rocks are ships in a holographic shroud shaped like a stone, keyed on the rock's identity (MIMICS, mimics.chance: the share of rocks, 0..100%, 100% stock at the user's ask so every rock is a ship until turned down; fragments never). A slug on one is the reveal: the ship glows through the stone as a cyan hologram (bands running its length, a scan plane, a projector's flicker), the rock winks off (taken out of the belt for good, so it never comes back from the hash), the hologram hardens into a sun-lit hull over 2.6 s; a thrum through the frame; CONTACT on the readout. Then by its mood (HOSTILITY, mimics.hostility: the share that shoot, 50% stock): a HAILER comes about to face us, matches velocity at a courteous range, and talks — one of six lines on the readout, a white beacon pulsing at its nose, the relay knocking in twice — then burns away; a HOSTILE (darker hull, a rust belly stripe, amber engines) comes about, holds ~500 m weaving, leads us and fires its cannon in bursts (red tracers) — hits ring the shield, kick the helmet camera and cost HULL (35 % a slug on the readout: HULL 65%  UNDER FIRE; no ship loss, crash is deferred). Ours land on it too: bursts on the hull, scorch spreading with the wound, past 2.4 MJ it is a WRECK — dark, tumbling, embers guttering in the damage, shards off the break, salvage into the HAUL — and a hostile hurt past half breaks off and runs; a hailer shot at goes hostile or runs. Up to four in the air; mimic.wgsl draws them from the shared fighter SDF at their own poses, hidden behind nearer rocks; their tracers ride the tracer pass"
+    state: tests-pass
+    tests: ["crates/app/src/mimic.rs::a_share_of_rocks_are_ships_and_fragments_never", "crates/app/src/mimic.rs::a_struck_mimic_reveals_once_then_hails_and_leaves", "crates/app/src/mimic.rs::a_hostile_mimic_comes_about_fires_and_hits_the_hull", "crates/app/src/mimic.rs::our_slugs_wreck_it_and_the_wreck_is_salvage", crates/render/src/mimic.rs, crates/render/tests/shader_validation.rs, "crates/audio/src/synth.rs::a_reveal_thrums_low_once_and_a_hail_knocks_twice", "crates/app/tests/scenes.rs::a_mimic_drops_its_shroud_and_a_hostile_one_opens_fire"]
+    settings: [mimics.chance, mimics.hostility]
+    e2e: "FARFALL_BENCH_MIMIC=reveal|attack|hail|wreck captures at the ring looked at (2026-08-26) — the cyan hologram of the fighter banded and rimmed 40 m ahead-left with the hull just hardening; the hostile hull sun-lit with amber nozzles and its tracers in the air; the hailer facing us; the wreck dark and scorched with embers in patches (scene test measures reveal and attack). Not yet met in flight: a live reveal, the hail line on the readout, being shot at"
+    note: "targeting/lock, a lead marker, threat arrows and a proper ship damage model (arms-targeting, arms-ship-damage) are still planned; a hail is one line, not a conversation"
+
+  - id: hold
+    name: "HOLD (O) — the smart lock on the flight controls, a VTOL gun mode: pressed with something under the gun sight (a rock, a ship out of a rock; anything trackable later), the flight computer takes the throttle — it matches the target's velocity and keeps the relative position it was engaged at, so the ship hangs off a drifting, tumbling stone as if hovering and the guns can work; the stick still speaks — thrust moves the hold point at up to 25 m/s (a commanded relative velocity, the ship trailing a little and closing when it stops), the pilot's torque adds over the computer's; HOLD FACING keeps the nose on the target (a damped axis-angle loop, verified against the real integrator); the assist, brake and overdrive are off under the hold; pressed again it lets go, and the lock drops by itself when the target is gone (HOLD LOST). HOLD ROCK 300 M  +0 M/S on the readout; the engines' voice and the helmet camera follow the computer's thrust. HOLD GAIN and HOLD FACING on the ARMS page"
+    state: tests-pass
+    tests: ["crates/app/src/hold.rs::the_lock_takes_what_is_under_the_aim_and_nothing_out_of_the_cone", "crates/app/src/hold.rs::the_hold_matches_a_drifting_rock_and_keeps_its_station", "crates/app/src/hold.rs::the_stick_moves_the_hold_point_and_the_nose_finds_a_target_off_axis", "crates/app/src/settings.rs::edits_round_trip", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense"]
+    settings: [hold.gain, hold.face, control.hold]
+    e2e: "not yet flown; no capture shows it (it is a control law, the picture is the same ship hanging still)"
+    note: "a lock bracket on the glass (a sight-pass hologram round the target) and a lead marker are the arms-targeting work still to come"
 
   - id: arms-targeting
     name: "Targeting — lock, lead marker on the glass from target velocity and slug speed, threat arrows at the glass edge, turret mode where freelook gimbals the guns"

@@ -24,6 +24,7 @@ pub mod hologram;
 pub mod hud;
 pub mod instrument;
 pub mod jet;
+pub mod mimic;
 pub mod nebula;
 pub mod planet;
 pub mod pointer;

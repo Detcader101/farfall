@@ -13,11 +13,13 @@ mod bay;
 mod belt;
 mod capture;
 mod cockpit;
+mod hold;
 mod input;
 mod landing;
 mod look;
 mod map;
 mod menu;
+mod mimic;
 mod settings;
 mod shake;
 mod warp;
@@ -38,6 +40,7 @@ use web_time::{Duration, Instant};
 use capture::Capture;
 use farfall_audio::Audio;
 use farfall_render::debris::{debris_pass, DebrisPass, DebrisScene, DebrisUniforms, ShardView};
+use farfall_render::mimic::{mimic_pass, MimicPass, MimicUniforms, MimicView};
 use farfall_render::scar::{scar_heat, scar_pass, ScarPass, ScarScene, ScarUniforms, ScarView};
 use farfall_render::sight::{sight_pass, SightPass, SightScene, SightUniforms};
 use farfall_render::tracer::{
@@ -576,6 +579,8 @@ struct Passes {
     scar: ScarPass,
     /// The gun sight on the glass.
     sight: SightPass,
+    /// The mimics: ships out of the rocks.
+    mimic: MimicPass,
 }
 
 impl Passes {
@@ -613,6 +618,7 @@ impl Passes {
             debris: debris_pass(device, format, msaa),
             scar: scar_pass(device, format, msaa),
             sight: sight_pass(device, format, msaa),
+            mimic: mimic_pass(device, format, msaa),
         }
     }
 }
@@ -1194,6 +1200,11 @@ struct Game {
     /// The arms, and the trigger.
     arms: arms::Arms,
     fire_held: bool,
+    /// The mimics — ships in the rocks — and what the guns bring in.
+    mimics: mimic::Mimics,
+    haul: mimic::Haul,
+    /// HOLD: the smart lock on the flight controls.
+    hold: hold::Hold,
     /// Was the field up last frame (to feel its collapse).
     hyper_was: bool,
     /// The bench holding the field up.
@@ -1309,6 +1320,9 @@ impl Game {
             belt: belt::Belt::default(),
             arms: arms::Arms::default(),
             fire_held: false,
+            mimics: mimic::Mimics::default(),
+            haul: mimic::Haul::default(),
+            hold: hold::Hold::default(),
             hyper_was: false,
             bench_hyper: false,
             hyper_strain: 0.0,
@@ -1568,6 +1582,9 @@ impl Game {
                 Some(BayRow::Option(i, m)) => {
                     self.settings.mounts[i] = m;
                     self.arms.mounts = self.settings.mounts;
+                    self.mimics.chance = self.settings.mimics_chance;
+                    self.mimics.hostility = self.settings.mimics_hostility;
+                    self.haul.yield_ = self.settings.arms_ore;
                     self.settings.save();
                     self.bay_dropdown = None;
                     return true;
@@ -2118,6 +2135,159 @@ impl Game {
         .with_eye(pose.eye_ship.as_vec3())
     }
 
+    /// The mimics and the haul, one fixed step, after the arms: what
+    /// landed on a rock chips ore off it and may show a ship; our slugs
+    /// meet the ships; the ships fly, talk or shoot; their slugs ring the
+    /// shield.
+    fn step_mimics(&mut self) {
+        let t = self.state.time_s;
+        let own = arms::Ship {
+            pos: self.state.ship.pos_m,
+            vel: self.state.ship.vel_mps,
+            orient: self.state.ship.orient,
+            aim: self.aim_world(),
+        };
+        let landed: Vec<arms::Landed> = self.arms.landed.clone();
+        for l in landed {
+            self.haul.on_hit(&l.rock, l.energy_j, l.destroyed, t);
+            if !l.destroyed {
+                self.mimics.on_rock_struck(&l.rock, t, own.pos);
+            }
+        }
+        // A shroud that has gone takes its rock out of the belt for good.
+        for id in self.mimics.shroud_off(t) {
+            if let Some(i) = self.belt.rocks.iter().position(|r| r.id == id) {
+                self.belt.rocks.swap_remove(i);
+            }
+            self.belt.wounds.remove(&id);
+            self.belt.dead.insert(id);
+        }
+        let breaks = self
+            .mimics
+            .take_fire(&mut self.arms, &mut self.haul, t, sim::DT);
+        for (at, vel, seed) in breaks {
+            // A wreck comes apart like a rock does: shards off the break.
+            let rock = belt::Rock {
+                id: (0, 0, 0, 255),
+                pos: at,
+                vel,
+                radius_m: 6.0,
+                seed,
+                spin: 0.0,
+            };
+            let n = self.arms.shards_per_break;
+            self.arms
+                .throw_shards(t, at, rock, (own.pos - at).normalize_or_zero(), n, true);
+        }
+        self.mimics.step(t, sim::DT, &own);
+        let hits: Vec<mimic::OwnHit> = self.mimics.own_hits.clone();
+        for h in hits {
+            let ship_inv = self.state.ship.orient.inverse();
+            let dir = (ship_inv * h.from).as_vec3().normalize_or_zero();
+            self.strikes = self.strikes.wrapping_add(1);
+            self.strike_size = h.size;
+            self.shake.kick(0.9, 0.0);
+            self.impacts.insert(
+                0,
+                Impact {
+                    dir,
+                    at_s: self.started.elapsed().as_secs_f32(),
+                    size: h.size,
+                },
+            );
+            self.impacts.truncate(farfall_render::shield::IMPACTS);
+        }
+    }
+
+    /// HOLD (O): take the lock on what is under the sight, or let it go.
+    fn toggle_hold(&mut self) {
+        if self.hold.engaged() {
+            self.hold.release();
+            log::info!("hold: released");
+            return;
+        }
+        let own = arms::Ship {
+            pos: self.state.ship.pos_m,
+            vel: self.state.ship.vel_mps,
+            orient: self.state.ship.orient,
+            aim: self.aim_world(),
+        };
+        if self.hold.engage(&own, own.aim, &self.belt, &self.mimics) {
+            let (t, off) = self.hold.target.unwrap();
+            log::info!("hold: locked on a {} at {:.0} m", t.name(), off.length());
+        } else {
+            self.mimics.line = Some((
+                "HOLD: NOTHING UNDER THE SIGHT".to_string(),
+                self.state.time_s + 2.0,
+            ));
+        }
+    }
+
+    /// The hold's line for the readout.
+    fn hold_text(&self) -> Option<String> {
+        self.hold.text()
+    }
+
+    /// The engines' effort under the hold: the computer's demand.
+    fn hold_effort(&self) -> f64 {
+        if self.hold.engaged() {
+            self.hold.demand.abs().max_element().clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// The haul's line for the readout, while a gain is fresh.
+    fn haul_text(&self) -> Option<String> {
+        self.haul.text(self.state.time_s, 6.0)
+    }
+
+    /// The mimics' line: what was said, what is happening, the hull.
+    fn mimic_text(&self) -> Option<String> {
+        self.mimics.text()
+    }
+
+    /// The ships out of the rocks, relative to the eye, the rocks along
+    /// to hide them.
+    fn mimic_uniforms(&self, pose: &ViewPose) -> MimicUniforms {
+        let cam = &pose.cam;
+        let head = pose.head;
+        if self.mimics.ships.is_empty() {
+            return MimicUniforms::none(cam, head);
+        }
+        let ship_inv = self.state.ship.orient.inverse();
+        let eye = self.eye_m(pose);
+        let t = self.state.time_s;
+        let now = self.started.elapsed().as_secs_f32();
+        let to_ship = |p: DVec3| (ship_inv * (p - eye)).as_vec3();
+        let ships: Vec<MimicView> = self
+            .mimics
+            .ships
+            .iter()
+            .filter(|m| !m.shrouded(t) || m.reveal(t) > 0.0)
+            .map(|m| MimicView {
+                at: to_ship(m.pos),
+                rot: (ship_inv * m.orient).as_quat(),
+                reveal: m.reveal(t),
+                effort: m.effort,
+                kind: m.kind(),
+                wound: m.wound(),
+                seed: m.seed,
+            })
+            .collect();
+        let rocks: Vec<Occluder> = self
+            .belt
+            .rocks
+            .iter()
+            .map(|r| Occluder {
+                centre: to_ship(r.pos),
+                radius_m: r.radius_m as f32,
+            })
+            .collect();
+        let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        MimicUniforms::new(cam, head, now, sun_ship, &ships, &rocks)
+    }
+
     /// The entropy line for the readout, once there is any.
     fn strain_text(&self) -> Option<String> {
         (self.hyper_strain > 0.02).then(|| {
@@ -2287,7 +2457,8 @@ impl Game {
     fn tracer_uniforms(&self, pose: &ViewPose) -> TracerUniforms {
         let cam = &pose.cam;
         let head = pose.head;
-        if self.arms.slugs.is_empty() && self.arms.bursts.is_empty() {
+        if self.arms.slugs.is_empty() && self.arms.bursts.is_empty() && self.mimics.slugs.is_empty()
+        {
             return TracerUniforms::none(cam, head);
         }
         let ship_inv = self.state.ship.orient.inverse();
@@ -2310,6 +2481,16 @@ impl Game {
                     age_s: age as f32,
                 }
             })
+            .chain(self.mimics.slugs.iter().map(|sl| {
+                let age = (t - sl.born_s).max(0.0);
+                let trail = (sl.vel - ship_vel) * age.min(TRACER_TRAIL_S);
+                SlugView {
+                    head: to_ship(sl.pos),
+                    tail: to_ship(sl.pos - trail),
+                    kind: 2,
+                    age_s: age as f32,
+                }
+            }))
             .collect();
         let bursts: Vec<BurstView> = self
             .arms
@@ -2757,7 +2938,37 @@ impl Game {
             self.roll_for_strikes();
             let before = self.state.ship;
             let before_t = self.state.time_s;
-            self.state = sim::step(&self.params, &self.state, controls);
+            // HOLD: the computer's thrust replaces the pilot's on the way
+            // in, its torque adds; the lock drops when the target is gone.
+            let mut step_controls = controls;
+            if self.hold.engaged() {
+                self.hold.gain = self.settings.hold_gain;
+                self.hold.face = self.settings.hold_face;
+                match self.hold.track(&self.belt, &self.mimics) {
+                    Some(tracked) => {
+                        let own = arms::Ship {
+                            pos: self.state.ship.pos_m,
+                            vel: self.state.ship.vel_mps,
+                            orient: self.state.ship.orient,
+                            aim: self.aim_world(),
+                        };
+                        self.hold.apply(
+                            &mut step_controls,
+                            &own,
+                            self.state.ship.ang_vel_radps,
+                            &tracked,
+                            self.params.ship.max_thrust_mps2,
+                            sim::DT,
+                        );
+                    }
+                    None => {
+                        self.hold.release();
+                        self.mimics.line = Some(("HOLD LOST".to_string(), self.state.time_s + 2.0));
+                        log::info!("hold: the target is gone");
+                    }
+                }
+            }
+            self.state = sim::step(&self.params, &self.state, step_controls);
             // The belt: rocks move, knock each other, and knock the ship
             // — an impulse on its state, a bump on the shield, grit in
             // the sound.
@@ -2795,6 +3006,7 @@ impl Game {
                 self.shake.kick(kick.length() as f32, self.arms.last_side);
                 self.state.ship.vel_mps += kick;
             }
+            self.step_mimics();
             let hits: Vec<belt::Hit> = self.belt.hits.clone();
             for h in hits {
                 let ship_inv = self.state.ship.orient.inverse();
@@ -2834,7 +3046,10 @@ impl Game {
         // framerate-independent: at 30 fps and at 240 fps the view opens up over
         // the same wall-clock time, so the ship's weight is a property of the
         // ship and not of the machine.
-        let target = self.input.thrust_effort(self.params.ship.boost_multiplier) as f32;
+        let target = self
+            .input
+            .thrust_effort(self.params.ship.boost_multiplier)
+            .max(self.hold_effort()) as f32;
         let alpha = 1.0 - (-(frame_dt as f32) / FOV_RESPONSE_S).exp();
         self.effort += (target - self.effort) * alpha;
     }
@@ -2993,7 +3208,10 @@ impl Game {
         let entry = (air_wide * (1.0 - air) * dive * mach_bite).clamp(0.0, 1.0);
 
         farfall_audio::Levels {
-            effort: self.input.thrust_effort(self.params.ship.boost_multiplier) as f32,
+            effort: self
+                .input
+                .thrust_effort(self.params.ship.boost_multiplier)
+                .max(self.hold_effort()) as f32,
             wind_q: ((q / q_ref) as f32).clamp(0.0, 1.0),
             vacuum: 1.0 - ((rho_ratio * 12.0) as f32).clamp(0.0, 1.0),
             brake: if controls.brake { 1.0 } else { 0.0 },
@@ -3026,6 +3244,8 @@ impl Game {
             } else {
                 0.0
             },
+            reveals: self.mimics.reveals as f32,
+            hails: self.mimics.hails as f32,
         }
     }
 
@@ -3174,6 +3394,11 @@ impl Game {
                 log::info!("drag: picked up the readout");
                 return true;
             }
+        }
+        // The dials move only in DESIGN mode: looking round the cabin with
+        // the button down is flying, and must not rearrange the dash.
+        if !self.design {
+            return false;
         }
         let layout = &self.settings.layout;
         let mut best: Option<(Instrument, f32, [f32; 2])> = None;
@@ -3766,6 +3991,60 @@ impl App {
             });
         }
         let bench_arms = std::env::var("FARFALL_BENCH_ARMS").unwrap_or_default();
+        let bench_mimic = std::env::var("FARFALL_BENCH_MIMIC").unwrap_or_default();
+        if game.frozen && !bench_mimic.is_empty() {
+            // A ship out of a rock a little way ahead and left, turned
+            // three-quarters to us: mid-reveal (hologram over hardening
+            // hull), hailing, attacking (with its fire in the air and a
+            // hit on the shell), or a wreck.
+            let o = game.state.ship.orient;
+            let p = game.state.ship.pos_m;
+            let v = game.state.ship.vel_mps;
+            let t = game.state.time_s;
+            let at = p + o * DVec3::new(-9.0, 2.5, -40.0);
+            let orient = o * DQuat::from_rotation_y(1.15) * DQuat::from_rotation_x(0.10);
+            use mimic::{Mood, Phase, REVEAL_S};
+            let (born, phase, mood) = match bench_mimic.as_str() {
+                "hail" => (t - REVEAL_S - 1.0, Phase::Hailing, Mood::Hail),
+                "attack" => (t - REVEAL_S - 1.0, Phase::Attacking, Mood::Hostile),
+                "wreck" => (t - REVEAL_S - 1.0, Phase::Wreck, Mood::Hostile),
+                _ => (t - REVEAL_S * 0.55, Phase::Revealing, Mood::Hostile),
+            };
+            let mut m = mimic::Mimic::planted(at, v, orient, born, phase, mood, 0.37);
+            match phase {
+                Phase::Hailing => {
+                    m.effort = 0.2;
+                    game.mimics.line = Some((mimic::hail_text(0.37).to_string(), t + 30.0));
+                }
+                Phase::Attacking => {
+                    m.effort = 0.85;
+                    game.mimics.line = Some(("HULL 93%  UNDER FIRE".to_string(), t + 30.0));
+                    for i in 0..4 {
+                        let dir =
+                            (p + o * DVec3::new(0.6 * i as f64 - 1.0, -0.4, 0.0) - at).normalize();
+                        let dist = 12.0 + 15.0 * i as f64;
+                        game.mimics.slugs.push(mimic::FoeSlug {
+                            pos: at + dir * dist,
+                            vel: v + dir * arms::Weapon::Cannon.muzzle_mps(),
+                            born_s: t - dist / arms::Weapon::Cannon.muzzle_mps(),
+                        });
+                    }
+                    game.impacts.insert(
+                        0,
+                        Impact {
+                            dir: Vec3::new(-0.2, 0.1, -1.0).normalize(),
+                            at_s: game.started.elapsed().as_secs_f32() - 0.4,
+                            size: 0.55,
+                        },
+                    );
+                }
+                Phase::Wreck => {
+                    m.wound_j = mimic::MIMIC_TOUGH_J;
+                }
+                _ => {}
+            }
+            game.mimics.ships.push(m);
+        }
         if game.frozen && bench_arms == "sight" {
             game.arms.heat[0] = 0.55;
         }
@@ -4068,6 +4347,9 @@ fn redraw(
                         .belt
                         .update(&gpu.queue, &game.belt_uniforms(&pose));
                     gpu.passes
+                        .mimic
+                        .update(&gpu.queue, &game.mimic_uniforms(&pose));
+                    gpu.passes
                         .tracer
                         .update(&gpu.queue, &game.tracer_uniforms(&pose));
                     gpu.passes
@@ -4198,6 +4480,7 @@ fn redraw(
                         gpu.passes.bodies.draw(&mut pass);
                         gpu.passes.planet.draw(&mut pass);
                         gpu.passes.belt.draw(&mut pass);
+                        gpu.passes.mimic.draw(&mut pass);
                         gpu.passes.scar.draw(&mut pass);
                         gpu.passes.debris.draw(&mut pass);
                         gpu.passes.tracer.draw(&mut pass);
@@ -4334,6 +4617,9 @@ fn redraw(
             .belt
             .update(&gpu.queue, &game.belt_uniforms(&pose));
         gpu.passes
+            .mimic
+            .update(&gpu.queue, &game.mimic_uniforms(&pose));
+        gpu.passes
             .tracer
             .update(&gpu.queue, &game.tracer_uniforms(&pose));
         gpu.passes
@@ -4456,6 +4742,9 @@ fn redraw(
             }
             if gpu.cfg.draws("belt") {
                 gpu.passes.belt.draw(&mut pass);
+            }
+            if gpu.cfg.draws("mimic") {
+                gpu.passes.mimic.draw(&mut pass);
             }
             if gpu.cfg.draws("scar") {
                 gpu.passes.scar.draw(&mut pass);
@@ -4634,8 +4923,11 @@ fn redraw(
             show: game.settings.layout.shown(Instrument::Readout) || game.landing,
             landing: game
                 .landing_text()
+                .or_else(|| game.hold_text())
+                .or_else(|| game.mimic_text())
                 .or_else(|| game.strain_text())
-                .or_else(|| game.arms_text()),
+                .or_else(|| game.arms_text())
+                .or_else(|| game.haul_text()),
         },
     );
     if game.design {
@@ -4755,6 +5047,9 @@ impl ApplicationHandler for App {
                     // a toggle.
                     c if pressed && !event.repeat && c == game.bind(Named::Bay) => {
                         game.toggle_bay()
+                    }
+                    c if pressed && !event.repeat && c == game.bind(Named::Hold) => {
+                        game.toggle_hold()
                     }
                     c if pressed && !event.repeat && c == game.bind(Named::Map) => {
                         game.toggle_map()
@@ -5113,6 +5408,33 @@ mod tests {
     /// pilot's point of view. Comments lie; this is what caught the frame being
     /// declared left-handed while the rotation math was right-handed, which
     /// silently mirrored yaw, roll, and strafe.
+    #[test]
+    fn the_dials_are_only_picked_up_in_design_mode() {
+        let mut game = Game::new();
+        let cam = game.camera(1.5);
+        let text_w = 0.4;
+        // The readout out of the way; aim the head at the speed dial.
+        game.settings.readout_anchor = [-0.9, 0.9];
+        let a = game.settings.layout.anchor(Instrument::Speed).unwrap();
+        let t = game.ref_tan();
+        game.look
+            .aim((a[0] * t * 1.5_f32).atan(), (a[1] * t).atan());
+        assert!(!game.begin_drag(&cam, text_w), "freelook leaves the dials");
+        assert!(game.drag.is_none());
+        // In DESIGN mode the pointer is the cursor: head straight, the
+        // cursor on the dial through the live FOV.
+        game.design = true;
+        game.look.aim(0.0, 0.0);
+        game.window_size = (1500.0, 1000.0);
+        let k = t / (cam.fov_y * 0.5).tan();
+        game.cursor = Some(((a[0] * k + 1.0) * 750.0, (1.0 - a[1] * k) * 500.0));
+        assert!(game.begin_drag(&cam, text_w), "design mode picks it up");
+        assert!(matches!(
+            game.drag,
+            Some((Dragged::Dial(Instrument::Speed), _))
+        ));
+    }
+
     #[test]
     fn the_readout_block_is_picked_up_by_the_gaze_while_looking() {
         let mut game = Game::new();

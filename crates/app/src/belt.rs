@@ -32,7 +32,7 @@ pub const TOUGH_J_PER_M2: f64 = 2.0e4;
 /// Below this radius a broken rock is dust: no fragments.
 pub const FRAG_MIN_M: f64 = 4.0;
 /// Fragments' ids use this slot range, above the cell's own 0..3.
-const FRAG_SLOT0: u8 = 8;
+pub const FRAG_SLOT0: u8 = 8;
 /// The share of a broken rock's volume that goes to dust and shards
 /// rather than to pieces big enough to stay rocks.
 pub const DUST_SHARE: f64 = 0.12;
@@ -64,7 +64,7 @@ pub struct Hit {
     pub radius_m: f64,
 }
 
-fn hash(x: i64, y: i64, z: i64, k: u32) -> u32 {
+pub fn hash(x: i64, y: i64, z: i64, k: u32) -> u32 {
     let mut h = (x as u32).wrapping_mul(0x8da6_b343)
         ^ (y as u32).wrapping_mul(0xd816_3841)
         ^ (z as u32).wrapping_mul(0xcb1a_b31f)
@@ -77,7 +77,7 @@ fn hash(x: i64, y: i64, z: i64, k: u32) -> u32 {
     h
 }
 
-fn unit(h: u32) -> f64 {
+pub fn unit(h: u32) -> f64 {
     (h >> 8) as f64 / (1u64 << 24) as f64
 }
 

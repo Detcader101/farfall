@@ -282,6 +282,16 @@ pub struct Settings {
     /// one takes to cool, seconds.
     pub arms_scar_size: f32,
     pub arms_scar_cool: f32,
+    /// ORE YIELD: what the guns bring in off the rocks, 0 (off) .. 2.
+    pub arms_ore: f32,
+    /// MIMICS: the share of rocks that are ships in a shroud, 0..0.5, and
+    /// HOSTILITY: the share of those that shoot rather than hail, 0..1.
+    pub mimics_chance: f32,
+    pub mimics_hostility: f32,
+    /// HOLD GAIN: how hard the lock holds, 0.2..3; HOLD FACING: the nose
+    /// kept on the target.
+    pub hold_gain: f32,
+    pub hold_face: bool,
     /// The gun sight on the glass: 0 off .. 2 bright.
     pub arms_sight: f32,
     /// The camera on the pilot's head: sway under load, tremor under
@@ -366,6 +376,11 @@ impl Default for Settings {
             arms_shard_life: 5.0,
             arms_scar_size: 1.0,
             arms_scar_cool: 12.0,
+            arms_ore: 1.0,
+            mimics_chance: 1.0,
+            mimics_hostility: 0.5,
+            hold_gain: 1.0,
+            hold_face: true,
             arms_sight: 1.0,
             cam_shake: 1.0,
             mounts: STOCK,
@@ -615,6 +630,35 @@ impl Settings {
                         }
                     }
                 }
+                "arms.ore" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.arms_ore = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "mimics.chance" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.mimics_chance = f.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                "mimics.hostility" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.mimics_hostility = f.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                "hold.gain" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.hold_gain = f.clamp(0.2, 3.0);
+                        }
+                    }
+                }
+                "hold.face" => s.hold_face = v == "on",
                 "arms.shard-life" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -964,6 +1008,17 @@ impl Settings {
         out.push_str(&format!("arms.shard-life = {:.1}\n", self.arms_shard_life));
         out.push_str(&format!("arms.scar-size = {:.2}\n", self.arms_scar_size));
         out.push_str(&format!("arms.scar-cool = {:.0}\n", self.arms_scar_cool));
+        out.push_str(&format!("arms.ore = {:.2}\n", self.arms_ore));
+        out.push_str(&format!("mimics.chance = {:.3}\n", self.mimics_chance));
+        out.push_str(&format!(
+            "mimics.hostility = {:.2}\n",
+            self.mimics_hostility
+        ));
+        out.push_str(&format!("hold.gain = {:.2}\n", self.hold_gain));
+        out.push_str(&format!(
+            "hold.face = {}\n",
+            if self.hold_face { "on" } else { "off" }
+        ));
         out.push_str(&format!("arms.sight = {:.2}\n", self.arms_sight));
         out.push_str(&format!("cam.shake = {:.2}\n", self.cam_shake));
         out.push_str(&format!(
@@ -1110,6 +1165,11 @@ mod tests {
         s.arms_shard_life = 8.0;
         s.arms_scar_size = 1.5;
         s.arms_scar_cool = 30.0;
+        s.arms_ore = 1.5;
+        s.mimics_chance = 0.25;
+        s.mimics_hostility = 0.75;
+        s.hold_gain = 1.75;
+        s.hold_face = false;
         s.arms_sight = 0.5;
         s.cam_shake = 1.75;
         s.hoop_size = 2.5;

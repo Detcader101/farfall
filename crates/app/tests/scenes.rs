@@ -316,6 +316,46 @@ fn the_arms_light_the_belt() {
 }
 
 #[test]
+fn a_mimic_drops_its_shroud_and_a_hostile_one_opens_fire() {
+    if !enabled() {
+        return;
+    }
+    // Mid-reveal: the ship glowing cyan as a hologram over its hardening
+    // hull, left of the nose.
+    let f = capture(
+        "mimic-reveal",
+        &[
+            ("FARFALL_BENCH_POS", RING_POS),
+            ("FARFALL_BENCH_LOOK", RING_LOOK_ALONG),
+            ("FARFALL_BENCH_MIMIC", "reveal"),
+        ],
+    );
+    let holo = f.share(0.2, 0.2, 0.55, 0.65, |c| {
+        c[2] > 0.5 && c[1] > 0.4 && c[2] > c[0] + 0.15
+    });
+    assert!(holo > 0.0015, "the hologram out of the rock: {holo}");
+    // Attacking: a solid hull with amber engines, red tracers coming at
+    // us, a ripple on the shield.
+    let g = capture(
+        "mimic-attack",
+        &[
+            ("FARFALL_BENCH_POS", RING_POS),
+            ("FARFALL_BENCH_LOOK", RING_LOOK_ALONG),
+            ("FARFALL_BENCH_MIMIC", "attack"),
+        ],
+    );
+    let hull = g.share(0.2, 0.2, 0.55, 0.65, |c| {
+        let m = (c[0] + c[1] + c[2]) / 3.0;
+        m > 0.12 && (c[0] - c[2]).abs() < 0.12 && (c[1] - m).abs() < 0.06
+    });
+    assert!(hull > 0.001, "a grey hull in the sun: {hull}");
+    // Its fire: hot heads and warm tails between it and us.
+    let fire = g.share(0.1, 0.2, 0.9, 0.9, |c| c[0] > 0.7 && c[0] > c[2] + 0.2);
+    assert!(fire > 0.0002, "its fire in the air: {fire}");
+    assert!(g.diff(&f) > 0.002, "the two scenes differ");
+}
+
+#[test]
 fn the_debris_tumbles_ahead() {
     if !enabled() {
         return;

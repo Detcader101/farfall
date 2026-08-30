@@ -144,6 +144,11 @@ enum Item {
     ArmsShardLife,
     ArmsScarSize,
     ArmsScarCool,
+    ArmsOre,
+    MimicsChance,
+    MimicsHostility,
+    HoldGain,
+    HoldFace,
     ArmsSight,
     /// The camera on the head: sway, tremor, jolts.
     CamShake,
@@ -202,6 +207,11 @@ impl Item {
             Item::ArmsShardLife => "DEBRIS LIFE",
             Item::ArmsScarSize => "SCARS",
             Item::ArmsScarCool => "SCAR COOLING",
+            Item::ArmsOre => "ORE YIELD",
+            Item::MimicsChance => "MIMICS",
+            Item::MimicsHostility => "HOSTILITY",
+            Item::HoldGain => "HOLD GAIN",
+            Item::HoldFace => "HOLD FACING",
             Item::Mount(h) => h.name(),
             Item::BayHue => "HOLO HUE",
             Item::BaySaturation => "HOLO COLOUR",
@@ -328,6 +338,23 @@ impl Item {
                 }
             }
             Item::ArmsScarCool => format!("{:.0} S", s.arms_scar_cool),
+            Item::ArmsOre => {
+                if s.arms_ore > 0.0 {
+                    format!("{:.0}%", s.arms_ore * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::MimicsChance => {
+                if s.mimics_chance > 0.0 {
+                    format!("{:.0}%", s.mimics_chance * 100.0)
+                } else {
+                    "NONE".to_string()
+                }
+            }
+            Item::MimicsHostility => format!("{:.0}%", s.mimics_hostility * 100.0),
+            Item::HoldGain => format!("{:.0}%", s.hold_gain * 100.0),
+            Item::HoldFace => if s.hold_face { "ON" } else { "OFF" }.to_string(),
             Item::ArmsSight => {
                 if s.arms_sight > 0.0 {
                     format!("{:.0}%", s.arms_sight * 100.0)
@@ -505,6 +532,11 @@ impl Menu {
                 Item::ArmsShardLife,
                 Item::ArmsScarSize,
                 Item::ArmsScarCool,
+                Item::ArmsOre,
+                Item::MimicsChance,
+                Item::MimicsHostility,
+                Item::HoldGain,
+                Item::HoldFace,
             ],
             Page::Map => vec![
                 Item::Destination,
@@ -854,6 +886,46 @@ impl Menu {
                     return MenuEvent::Nothing;
                 }
                 s.arms_scar_cool = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ArmsOre => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.arms_ore + step).clamp(0.0, 2.0);
+                if (next - s.arms_ore).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.arms_ore = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::MimicsChance => {
+                let step = if forward { 0.05 } else { -0.05 };
+                let next = (s.mimics_chance + step).clamp(0.0, 1.0);
+                if (next - s.mimics_chance).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.mimics_chance = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::MimicsHostility => {
+                let step = if forward { 0.1 } else { -0.1 };
+                let next = (s.mimics_hostility + step).clamp(0.0, 1.0);
+                if (next - s.mimics_hostility).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.mimics_hostility = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::HoldGain => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.hold_gain + step).clamp(0.2, 3.0);
+                if (next - s.hold_gain).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.hold_gain = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::HoldFace => {
+                s.hold_face = !s.hold_face;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Mount(h) => {
@@ -1484,6 +1556,10 @@ mod tests {
                     assert!(on(Item::ArmsPower) && on(Item::ArmsGlow));
                     assert!(on(Item::ArmsShards) && on(Item::ArmsShardLife));
                     assert!(on(Item::ArmsScarSize) && on(Item::ArmsScarCool));
+                    assert!(
+                        on(Item::ArmsOre) && on(Item::MimicsChance) && on(Item::MimicsHostility)
+                    );
+                    assert!(on(Item::HoldGain) && on(Item::HoldFace));
                     assert!(on(Item::ArmsSight));
                     assert!(items.len() >= 2);
                 }
