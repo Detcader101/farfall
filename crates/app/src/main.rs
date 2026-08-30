@@ -3151,6 +3151,11 @@ impl Game {
                 return true;
             }
         }
+        // The dials move only in DESIGN mode: looking round the cabin with
+        // the button down is flying, and must not rearrange the dash.
+        if !self.design {
+            return false;
+        }
         let layout = &self.settings.layout;
         let mut best: Option<(Instrument, f32, [f32; 2])> = None;
         for i in Instrument::ALL.iter().copied().filter(|i| i.slotted()) {
@@ -4910,6 +4915,33 @@ mod tests {
     /// pilot's point of view. Comments lie; this is what caught the frame being
     /// declared left-handed while the rotation math was right-handed, which
     /// silently mirrored yaw, roll, and strafe.
+    #[test]
+    fn the_dials_are_only_picked_up_in_design_mode() {
+        let mut game = Game::new();
+        let cam = game.camera(1.5);
+        let text_w = 0.4;
+        // The readout out of the way; aim the head at the speed dial.
+        game.settings.readout_anchor = [-0.9, 0.9];
+        let a = game.settings.layout.anchor(Instrument::Speed).unwrap();
+        let t = game.ref_tan();
+        game.look
+            .aim((a[0] * t * 1.5_f32).atan(), (a[1] * t).atan());
+        assert!(!game.begin_drag(&cam, text_w), "freelook leaves the dials");
+        assert!(game.drag.is_none());
+        // In DESIGN mode the pointer is the cursor: head straight, the
+        // cursor on the dial through the live FOV.
+        game.design = true;
+        game.look.aim(0.0, 0.0);
+        game.window_size = (1500.0, 1000.0);
+        let k = t / (cam.fov_y * 0.5).tan();
+        game.cursor = Some(((a[0] * k + 1.0) * 750.0, (1.0 - a[1] * k) * 500.0));
+        assert!(game.begin_drag(&cam, text_w), "design mode picks it up");
+        assert!(matches!(
+            game.drag,
+            Some((Dragged::Dial(Instrument::Speed), _))
+        ));
+    }
+
     #[test]
     fn the_readout_block_is_picked_up_by_the_gaze_while_looking() {
         let mut game = Game::new();

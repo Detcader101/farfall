@@ -247,6 +247,7 @@ features:
     tests: ["crates/app/src/settings.rs::edits_round_trip", "crates/app/src/settings.rs::dials_stay_lit_by_default_and_every_style_is_open_to_every_dial", crates/render/src/cabin.rs]
     settings: ["ui.<dial>.size", "ui.<dial>.style", "ui.<dial>.fade", "ui.<dial>.tilt"]
     e2e: "FARFALL_BENCH_DESIGN=1 capture — per-dial bowls/wells at their own sizes, reach rings, gaze reticle"
+    note: "2026-08-30: the dials are picked up ONLY in DESIGN mode (crates/app/src/main.rs::the_dials_are_only_picked_up_in_design_mode) — freelook with the button down never rearranges the dash; the panels (map, menu, bay, holo, readout) are still gaze-dragged"
 
   - id: dial-tilt
     name: "Dials lean toward the pilot (±60°) — a DIAL's face plane turns on its horizontal axis in a housing that rises from the dash, the well cut clear through; a hologram foreshortens; the face plate is opaque matte black so the well shows nothing of the dash's inside"
