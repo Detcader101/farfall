@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>FARFALL</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #9fd; font-family: ui-monospace, Menlo, Consolas, monospace; overflow: hidden; }
+  #farfall { display: block; width: 100vw; height: 100vh; outline: none; touch-action: none; }
+  #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.2em; background: radial-gradient(ellipse at center, #061018 0%, #000 70%); text-align: center; padding: 2em; z-index: 10; }
+  #overlay h1 { font-weight: 300; letter-spacing: .6em; margin: 0; font-size: 2.4em; color: #cfe; }
+  #overlay p { max-width: 42em; line-height: 1.5; margin: 0; color: #7ba; font-size: .9em; }
+  button { font: inherit; letter-spacing: .3em; padding: .8em 2em; background: transparent; color: #9fd; border: 1px solid #4a8; cursor: pointer; }
+  button:hover { background: #0a2a20; }
+  button:disabled { opacity: .35; cursor: default; }
+  #vr { position: fixed; right: 1em; bottom: 1em; z-index: 5; display: none; }
+  #status { color: #f96; min-height: 1.4em; }
+  kbd { color: #cfe; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="farfall" tabindex="0"></canvas>
+<div id="overlay">
+  <h1>FARFALL</h1>
+  <p>A shader-driven space game at planetary scale. Single-player sandbox: fly an orbit, land, ride the wormhole drive to the belt.</p>
+  <p><kbd>WASD</kbd> translate · <kbd>R/F</kbd> up/down · <kbd>arrows</kbd> pitch/yaw · <kbd>Q/E</kbd> roll · <kbd>Shift</kbd> boost · <kbd>H</kbd> chaos drive · <kbd>V</kbd> warp stop · <kbd>Space</kbd> brake · <kbd>M</kbd> map · <kbd>Esc</kbd> menu · <kbd>right mouse</kbd> look</p>
+  <p>Needs WebGPU: Chrome or Edge 113+, Safari 26+, or the Meta Quest Browser. In a headset the ENTER VR button appears once the ship is up.</p>
+  <button id="start">CLICK TO FLY</button>
+  <div id="status"></div>
+</div>
+<button id="vr">ENTER VR</button>
+<script type="module">
+  import init, { run, ready, xr_begin, xr_end, xr_frame } from './farfall.js';
+  import { enterVR, vrSupported } from './xr.js';
+  const status = document.getElementById('status');
+  const start = document.getElementById('start');
+  const vrButton = document.getElementById('vr');
+  const canvas = document.getElementById('farfall');
+  if (!navigator.gpu) {
+    status.textContent = 'This browser has no WebGPU. Try Chrome, Edge, Safari 26 or the Quest Browser.';
+    start.disabled = true;
+  }
+  // ?autostart: no click, for headless checks (audio may stay suspended).
+  if (new URLSearchParams(location.search).has('autostart')) setTimeout(() => start.click(), 0);
+  start.addEventListener('click', async () => {
+    start.disabled = true;
+    status.textContent = 'loading…';
+    try {
+      await init();
+      const wasm = { xr_begin, xr_end, xr_frame };
+      run();
+      document.getElementById('overlay').classList.add('hidden');
+      canvas.focus();
+      if (await vrSupported()) {
+        const poll = setInterval(() => {
+          if (ready()) { clearInterval(poll); vrButton.style.display = 'block'; }
+        }, 250);
+      }
+      // ?stereo: a fake headset, for checking the stereo pair without one.
+      if (new URLSearchParams(location.search).has('stereo')) {
+        const v = new Float32Array(22);
+        const eye = (i, x) => v.set([0, 0.0, 0, 1, x, 0, 0, 0.9, 0.7, 0.8, 0.8], i * 11);
+        eye(0, -0.032); eye(1, 0.032);
+        wasm.xr_begin();
+        const loop = () => { requestAnimationFrame(loop); wasm.xr_frame(v, 640, 720); };
+        loop();
+      }
+      vrButton.addEventListener('click', async () => {
+        vrButton.disabled = true;
+        try { await enterVR(wasm, canvas); }
+        catch (e) { console.error(e); alert('VR failed: ' + e.message); }
+        vrButton.disabled = false;
+      });
+    } catch (e) {
+      console.error(e);
+      status.textContent = 'could not start: ' + (e && e.message ? e.message : e);
+    }
+  });
+</script>
+</body>
+</html>

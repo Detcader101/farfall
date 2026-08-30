@@ -37,6 +37,9 @@ struct Cockpit {
     pad3: vec4<f32>,
     pad4: vec4<f32>,
     pad5: vec4<f32>,
+    // xyz: the eye's seat, metres from the pilot's head origin (ship
+    // frame) — a headset's two eyes sit either side of it. w: unused.
+    eye: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> ck: Cockpit;
@@ -331,10 +334,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let bmin = vec3<f32>(-0.95, -0.55, -1.85);
         let bmax = vec3<f32>(0.95, 1.45, 0.95);
         let inv = 1.0 / ray;
-        let t1 = (bmin - vec3<f32>(0.0)) * inv;
-        let t2 = (bmax - vec3<f32>(0.0)) * inv;
+        let t1 = (bmin - ck.eye.xyz) * inv;
+        let t2 = (bmax - ck.eye.xyz) * inv;
         let tfar = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
-        let exit = ray * tfar;
+        let exit = ck.eye.xyz + ray * tfar;
         let through_top = exit.y > 1.4;
         let over_brow = exit.y > -0.05 && (exit.z < -1.8 || abs(exit.x) > 0.9 || exit.z > 0.9);
         if (through_top || over_brow) {
@@ -359,7 +362,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var hit = Hit(1e9, -1.0);
     var beams = 0.0;
     for (var i = 0u; i < MARCH_STEPS; i += 1u) {
-        let p = ray * t;
+        let p = ck.eye.xyz + ray * t;
         let h = sd_cabin(p);
         // Gather the beams' light on the way (only close to the head,
         // where the beams are).
@@ -390,9 +393,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // the ray took, shows as contours in the shading unless removed.
         var tt = hit.d;
         for (var k = 0; k < 2; k += 1) {
-            tt += sd_cabin(ray * tt).d;
+            tt += sd_cabin(ck.eye.xyz + ray * tt).d;
         }
-        let p = ray * tt;
+        let p = ck.eye.xyz + ray * tt;
         let n = cabin_normal(p);
         // Dark metal: graphite with a cool sheen, lit by the Sun through
         // the glass, a fill from the cabin's own light, a fresnel rim.

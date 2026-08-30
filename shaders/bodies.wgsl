@@ -47,7 +47,7 @@ const RING_INNER: f32 = 1.62;
 const RING_OUTER: f32 = 1.98;
 
 fn belt_hash(x: i32, y: i32, z: i32, k: u32) -> u32 {
-    var h = u32(x) * 0x8da6b343u ^ u32(y) * 0xd8163841u ^ u32(z) * 0xcb1ab31fu ^ k * 0x9e3779b9u;
+    var h = (u32(x) * 0x8da6b343u) ^ (u32(y) * 0xd8163841u) ^ (u32(z) * 0xcb1ab31fu) ^ (k * 0x9e3779b9u);
     h ^= h >> 15u;
     h = h * 0x2c1b3c6du;
     h ^= h >> 12u;

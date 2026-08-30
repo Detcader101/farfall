@@ -1,0 +1,43 @@
+# The playable link: build the web version and publish it on GitHub Pages.
+# Every push to the deployed branch ships; the page is the game, no
+# account needed to fly it (or to put a headset on: WebXR is in the page).
+name: Pages
+
+on:
+  push: { branches: [web, main] }
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency: { group: pages, cancel-in-progress: true }
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup show
+      - name: wasm-bindgen (the version Cargo.lock pins)
+        run: |
+          V=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep version | cut -d'"' -f2)
+          curl -sL "https://github.com/rustwasm/wasm-bindgen/releases/download/$V/wasm-bindgen-$V-x86_64-unknown-linux-musl.tar.gz" | tar xz
+          sudo mv "wasm-bindgen-$V-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/
+      - name: binaryen (wasm-opt)
+        run: |
+          curl -sL https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz | tar xz
+          sudo mv binaryen-version_123/bin/wasm-opt /usr/local/bin/
+      - run: ./web/build.sh
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: web/dist }
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: { name: github-pages, url: ${{ steps.deployment.outputs.page_url }} }
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

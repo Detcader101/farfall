@@ -23,3 +23,12 @@ naga = { version = "30.0", features = ["wgsl-in"] }
 opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
+
+# The web build: one big unit, fully inlined, so the wasm is small and the
+# sim runs at speed in the browser.
+[profile.web]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = true

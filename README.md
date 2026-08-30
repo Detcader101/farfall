@@ -68,6 +68,25 @@ Frame stats appear on-screen and are summarised to the log every 5 s at
 `RUST_LOG=info`. The number that matters is the **1% low**, not the average —
 an average hides the stutter that a 90 Hz headset would not.
 
+## Play in the browser (and in VR)
+
+**https://detcader101.github.io/farfall/** — the same game as a WebGPU page: nothing to
+install, no account. Chrome / Edge 113+, Safari 26+, or the Meta Quest Browser. Click to
+fly; in a headset an **ENTER VR** button appears (WebXR — Quest standalone in its browser,
+or Index / Quest Link through SteamVR + Chrome on a PC). Controllers: left stick translates,
+right stick pitches and yaws, triggers boost and brake, grips roll, X chaos drive, Y warp
+stop, A flight computer, B menu.
+
+```sh
+./web/build.sh                      # wasm + page into web/dist (needs wasm-bindgen-cli)
+python3 -m http.server -d web/dist  # then open http://localhost:8000
+```
+
+The app crate is a library (`crates/app/src/lib.rs`) that the native binary and the wasm
+module share; `crates/app/src/web.rs` is the browser shell and the WebXR frame entry,
+`web/xr.js` the session, compositor and controllers. Pushes to `web` (and `main`) deploy
+through `.github/workflows/pages.yml`.
+
 ## Layout
 
 ```

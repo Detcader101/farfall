@@ -1,3 +1,8 @@
+// The browser's WGSL (Tint) refuses a derivative in a branch it cannot
+// prove uniform; the marching shaders take them deliberately, on quads
+// that are uniform in practice. Native naga never minded.
+diagnostic(off, derivative_uniformity);
+
 // common.wgsl — shader prelude, prepended to every pass (see render/src/shaders.rs).
 //
 // WGSL has no #include, so composition happens in Rust. Everything here is

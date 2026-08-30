@@ -24,15 +24,15 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
-  # The web target must never rot (SPEC P4): sim + render stay wasm-clean.
-  # The app's wasm entry point is an M2 task (TASKS.md).
+  # The web target must never rot (SPEC P4): the whole game builds for
+  # the browser (web/), and Pages deploys it (pages.yml).
   wasm:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - run: rustup show
-      - run: cargo check -p farfall-sim -p farfall-render --target wasm32-unknown-unknown
+      - run: cargo check --workspace --target wasm32-unknown-unknown
 
   # License audit (SPEC §10): no copyleft in the tree, ever.
   licenses:

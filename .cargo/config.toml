@@ -1,0 +1,5 @@
+# The browser build: a bigger shadow stack. The frame function is one big
+# unit after LTO and the default 1 MB is a trap ("memory access out of
+# bounds") the moment it is entered from the page's own frame loop.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=16777216"]

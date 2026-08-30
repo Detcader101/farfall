@@ -63,6 +63,19 @@ bench:
   scene_tests: "crates/app/tests/scenes.rs, gated by FARFALL_SCENE_TESTS=1 (the pre-commit gate sets it; FARFALL_NO_SCENES=1 skips) — 9 captures measured"
 
 features:
+
+  - id: web-build
+    name: "The game in the browser: the app crate is a library the wasm module and the native binary share; WebGPU; settings in localStorage; async device; web/ page, build.sh and the Pages workflow (the playable link)"
+    state: tests-pass
+    tests: [crates/render/tests/shader_validation.rs, .github/workflows/ci.yml wasm job]
+    e2e: "headless Chrome (chrome-headless-shell 152, Metal) capture of the cockpit at 1280x720 matched native; not yet flown by hand in a browser"
+    notes: "Tint (the browser's WGSL) is stricter than naga: derivatives in branches need diagnostic(off, derivative_uniformity) in common.wgsl; * and ^ need parentheses"
+
+  - id: webxr-vr
+    name: "VR through the same link (WebXR): the page owns the session and a WebGL2 compositor, the module draws the stereo pair side by side from each eye's seat (cabin eye offset, symmetric frustum wide enough for the headset's, cut back out per eye); controllers drive the keyboard binds"
+    state: in-progress
+    e2e: "stereo pair verified headless with a synthetic headset (?stereo); not yet worn — needs a Quest (Quest Browser) or Index (SteamVR + Chrome) pass"
+    notes: "gauges and HUD sit at the same place in both eyes (infinity); the cabin has parallax. Recentre, per-eye gauge parallax, and controller pointing are follow-ups"
   - id: sim-core
     name: "Deterministic f64 fixed-step sim with golden hash"
     state: complete

@@ -349,6 +349,14 @@ impl Settings {
 
     /// Read the file, or defaults if there is none.
     pub fn load() -> Self {
+        #[cfg(target_arch = "wasm32")]
+        {
+            return match crate::web::storage_get("farfall.settings") {
+                Some(text) => Self::parse(&text),
+                None => Self::default(),
+            };
+        }
+        #[allow(unreachable_code)]
         let Some(path) = Self::path() else {
             return Self::default();
         };
@@ -365,6 +373,12 @@ impl Settings {
     /// Write the file. Failure is logged, never fatal: a read-only home
     /// must not stop the game.
     pub fn save(&self) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            crate::web::storage_set("farfall.settings", &self.render());
+            return;
+        }
+        #[allow(unreachable_code)]
         let Some(path) = Self::path() else {
             return;
         };

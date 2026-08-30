@@ -14,6 +14,8 @@ pub struct CabinUniforms {
     misc: [f32; 4],
     sun: [f32; 4],
     pads: [[f32; 4]; 6],
+    /// xyz: the eye's seat, metres from the head origin (ship frame).
+    eye: [f32; 4],
 }
 
 /// What the composite needs each frame: the head's basis for the thruster
@@ -120,7 +122,14 @@ impl CabinUniforms {
             // slowly in orbit must not count as change every frame.
             sun: v4(quantise(sun_ship.normalize_or_zero(), 0.02), cam.exposure),
             pads,
+            eye: [0.0; 4],
         }
+    }
+
+    /// Seat the eye off the head's origin: a headset's left and right.
+    pub fn with_eye(mut self, eye: Vec3) -> Self {
+        self.eye = [eye.x, eye.y, eye.z, 0.0];
+        self
     }
 
     /// The composite's share: the rays and the throttle.
@@ -886,9 +895,9 @@ mod tests {
         assert_eq!(Placement::glass_sized(1.5).right[3], 1.5);
         assert_eq!(Placement::glass_sized(1.0).tilted(0.5).up[3], 0.5);
         assert_eq!(Placement::glass_sized(1.0).tilted(9.0).up[3], TILT_MAX);
-        assert_eq!(UNIFORM_BYTES, 11 * 16);
-        // Unchanged inputs compare equal (no clock inside), a turned head
-        // is a moved view, a changed socket is not.
+        assert_eq!(UNIFORM_BYTES, 12 * 16); // the eye vec4 joined the pads
+                                            // Unchanged inputs compare equal (no clock inside), a turned head
+                                            // is a moved view, a changed socket is not.
         let again = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
         assert_eq!(still, again);
         assert!(still.view_moved(&turned));

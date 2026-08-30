@@ -8,3 +8,6 @@ description = "Live-synthesised ship audio. No samples, no files: every sound is
 [dependencies]
 cpal = "0.18"
 log = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+cpal = { version = "0.18", features = ["wasm-bindgen"] }
