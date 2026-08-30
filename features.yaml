@@ -69,7 +69,8 @@ features:
     state: tests-pass
     tests: [crates/render/tests/shader_validation.rs, .github/workflows/ci.yml wasm job]
     e2e: "headless Chrome (chrome-headless-shell 152, Metal) capture of the cockpit at 1280x720 matched native; not yet flown by hand in a browser"
-    notes: "Tint (the browser's WGSL) is stricter than naga: derivatives in branches need diagnostic(off, derivative_uniformity) in common.wgsl; * and ^ need parentheses"
+    settings: [graphics.auto-scale]
+    notes: "Tint (the browser's WGSL) is stricter than naga: derivatives in branches need diagnostic(off, derivative_uniformity) in common.wgsl; * and ^ need parentheses. AUTO SCALE (on by default in the browser, off native) governs the world's render scale to the FPS floor at full canvas resolution; RENDER SCALE is its ceiling"
 
   - id: webxr-vr
     name: "VR through the same link (WebXR): the page owns the session and a WebGL2 compositor, the module draws the stereo pair side by side from each eye's seat (cabin eye offset, symmetric frustum wide enough for the headset's, cut back out per eye); controllers drive the keyboard binds"

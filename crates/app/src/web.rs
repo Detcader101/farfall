@@ -97,6 +97,26 @@ pub fn ready() -> bool {
     })
 }
 
+/// The smoothed frame rate and its recent 1% low, for the page.
+#[wasm_bindgen]
+pub fn fps() -> Vec<f32> {
+    APP.with(|a| {
+        a.borrow()
+            .as_ref()
+            .and_then(|app| {
+                app.borrow().gpu.as_ref().map(|g| {
+                    vec![
+                        g.perf.stats.smoothed_fps() as f32,
+                        g.perf.stats.recent_low_1pct_fps() as f32,
+                        g.config.width as f32,
+                        g.config.height as f32,
+                    ]
+                })
+            })
+            .unwrap_or_default()
+    })
+}
+
 /// The headset took the frame loop.
 #[wasm_bindgen]
 pub fn xr_begin() {

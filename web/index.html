@@ -31,7 +31,7 @@
 </div>
 <button id="vr">ENTER VR</button>
 <script type="module">
-  import init, { run, ready, xr_begin, xr_end, xr_frame } from './farfall.js';
+  import init, { run, ready, fps, xr_begin, xr_end, xr_frame } from './farfall.js';
   import { enterVR, vrSupported } from './xr.js';
   const status = document.getElementById('status');
   const start = document.getElementById('start');
@@ -57,6 +57,8 @@
           if (ready()) { clearInterval(poll); vrButton.style.display = 'block'; }
         }, 250);
       }
+      // ?fps: the frame rate to the console every few seconds.
+      if (new URLSearchParams(location.search).has('fps')) setInterval(() => console.log('fps', Array.from(fps()).map(x => x.toFixed(0)).join(' ')), 4000);
       // ?stereo: a fake headset, for checking the stereo pair without one.
       if (new URLSearchParams(location.search).has('stereo')) {
         const v = new Float32Array(22);

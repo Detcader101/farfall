@@ -163,6 +163,13 @@ fn dial_scissor(
 /// The bay camera's field of view: tan of half of it.
 const BAY_TAN_HALF_FOV: f32 = 0.42;
 const PERF_LOG_EVERY: Duration = Duration::from_secs(5);
+/// AUTO SCALE's floor on the world's scale: past this the picture is
+/// mush, and a machine that cannot hold the floor here is told so.
+const AUTO_SCALE_MIN: f32 = 0.35;
+/// The least time between the governor's moves: the rate must settle.
+const AUTO_SCALE_STEP_S: f32 = 0.75;
+/// How long the rate must sit on the floor before the scale is raised.
+const AUTO_SCALE_RAISE_S: f32 = 3.0;
 /// A glass anchor as the turned head sees it: the glass is a sphere about
 /// the pilot, so every element is re-projected, not slid (look.rs). The
 /// anchors are laid out in a REFERENCE projection — the pilot's base field
@@ -623,6 +630,11 @@ struct Gpu {
     text: TextBitmap,
     cfg: Config,
     perf: Perf,
+    /// AUTO SCALE's factor on the world's scale, 0.35..1: lowered when the
+    /// frame misses the floor, raised back when there is room.
+    auto_scale: f32,
+    /// When the governor last moved.
+    auto_scale_at: Instant,
     /// Set by a key press; consumed by the next frame.
     capture_requested: bool,
     bench_captured: bool,
@@ -856,8 +868,9 @@ impl Gpu {
             self.passes.cabin.set_fraction(settings.cockpit_res);
             log::info!("cabin at {:.0}% of the scene", settings.cockpit_res * 100.0);
         }
-        if (self.scene.scale() - settings.scale).abs() > 1e-4 {
-            self.scene.set_scale(settings.scale);
+        let target = self.scale_target(settings);
+        if (self.scene.scale() - target).abs() > 1e-4 {
+            self.scene.set_scale(target);
             log::info!("render scale {:.0}%", self.scene.scale() * 100.0);
         }
         if self.cfg.vsync != settings.vsync {
@@ -887,6 +900,62 @@ impl Gpu {
 
     /// Close out the frame: record its duration, refresh the live readout in
     /// the title bar, and periodically summarise the window to the log.
+    /// The world's scale this frame: the setting, or under AUTO SCALE
+    /// the setting as a ceiling on the governor's factor.
+    fn scale_target(&self, settings: &Settings) -> f32 {
+        if settings.auto_scale {
+            (settings.scale * self.auto_scale).clamp(AUTO_SCALE_MIN, 1.0)
+        } else {
+            settings.scale
+        }
+    }
+
+    /// AUTO SCALE: hold the FPS floor with the world's resolution — the
+    /// one cost that scales with every pass at once — leaving the HUD,
+    /// the dials and the text at native size. A miss drops the scale a
+    /// step at a time; room above the floor, held for a while, brings
+    /// it back. Vsync pins the rate at the floor, so "room" is the rate
+    /// sitting on the floor with no slow frames under it.
+    fn govern_scale(&mut self, settings: &Settings, fps_floor: f32) {
+        if !settings.auto_scale || fps_floor <= 0.0 {
+            return;
+        }
+        let now = Instant::now();
+        let since = now.duration_since(self.auto_scale_at).as_secs_f32();
+        if since < AUTO_SCALE_STEP_S {
+            return;
+        }
+        let fps = self.perf.stats.smoothed_fps() as f32;
+        let low = self.perf.stats.recent_low_1pct_fps() as f32;
+        if fps <= 0.0 {
+            return;
+        }
+        let before = self.auto_scale;
+        if fps < fps_floor - 3.0 {
+            // How far short, in pixels: the cost is the area.
+            let ratio = (fps / fps_floor).clamp(0.5, 1.0).sqrt();
+            self.auto_scale = (self.auto_scale * ratio.max(0.85)).max(AUTO_SCALE_MIN);
+        } else if since >= AUTO_SCALE_RAISE_S && fps >= fps_floor - 1.0 && low >= fps_floor * 0.8 {
+            self.auto_scale = (self.auto_scale * 1.08).min(1.0);
+        } else {
+            return;
+        }
+        if (self.auto_scale - before).abs() > 1e-4 {
+            self.auto_scale_at = now;
+            let target = self.scale_target(settings);
+            if (self.scene.scale() - target).abs() > 1e-4 {
+                self.scene.set_scale(target);
+                log::info!(
+                    "auto scale: {:.1} fps (1% low {:.1}) against a floor of {:.0}: render scale {:.0}%",
+                    fps,
+                    low,
+                    fps_floor,
+                    target * 100.0
+                );
+            }
+        }
+    }
+
     fn frame_timing(
         &mut self,
         cpu_seconds: f64,
@@ -3384,15 +3453,7 @@ async fn request_gpu(
         })
         .await
         .expect("request device");
-    #[allow(unused_mut)]
-    let mut size = window.inner_size();
-    #[cfg(target_arch = "wasm32")]
-    {
-        // CSS pixels, as in the Resized handler.
-        let dpr = window.scale_factor().max(1.0);
-        size.width = (size.width as f64 / dpr) as u32;
-        size.height = (size.height as f64 / dpr) as u32;
-    }
+    let size = window.inner_size();
     let mut config = surface
         .get_default_config(&adapter, size.width.max(1), size.height.max(1))
         .expect("surface unsupported by adapter");
@@ -3597,6 +3658,8 @@ impl App {
             text: TextBitmap::new(),
             cfg,
             perf: Perf::new(),
+            auto_scale: 1.0,
+            auto_scale_at: Instant::now(),
             capture_requested: false,
             bench_captured: false,
             bench_spin_taken: 0,
@@ -4508,6 +4571,7 @@ fn redraw(
             }
         }
     }
+    gpu.govern_scale(&game.settings, game.settings.fps_floor);
     gpu.frame_timing(
         cpu_seconds,
         wait_seconds,
@@ -4841,17 +4905,6 @@ impl ApplicationHandler for App {
                 game.end_drag();
             }
             WindowEvent::Resized(size) => {
-                // The browser: the canvas is drawn at CSS pixels, not the
-                // display's — a Retina Mac would otherwise be asked for four
-                // times the pixels of the same window on a slower build.
-                #[cfg(target_arch = "wasm32")]
-                let size = {
-                    let dpr = gpu.window.scale_factor().max(1.0);
-                    winit::dpi::PhysicalSize::new(
-                        (size.width as f64 / dpr) as u32,
-                        (size.height as f64 / dpr) as u32,
-                    )
-                };
                 gpu.config.width = size.width.max(1);
                 gpu.config.height = size.height.max(1);
                 gpu.surface.configure(&gpu.device, &gpu.config);

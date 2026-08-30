@@ -92,6 +92,7 @@ pub enum Change {
 enum Item {
     Msaa,
     Scale,
+    AutoScale,
     Vsync,
     Quit,
     Bind(Action),
@@ -152,6 +153,7 @@ impl Item {
         match self {
             Item::Msaa => "MSAA",
             Item::Scale => "RENDER SCALE",
+            Item::AutoScale => "AUTO SCALE",
             Item::Vsync => "VSYNC",
             Item::Quit => "QUIT GAME",
             Item::Bind(a) => a.name(),
@@ -208,6 +210,7 @@ impl Item {
         match self {
             Item::Msaa => format!("{}X", s.msaa),
             Item::Scale => format!("{:.0}%", s.scale * 100.0),
+            Item::AutoScale => (if s.auto_scale { "ON" } else { "OFF" }).to_string(),
             Item::Vsync => (if s.vsync { "ON" } else { "OFF" }).to_string(),
             Item::Quit => String::new(),
             Item::Bind(a) => key_name(s.bindings.key_for(a)).to_string(),
@@ -380,6 +383,7 @@ impl Menu {
             Page::Graphics => vec![
                 Item::Msaa,
                 Item::Scale,
+                Item::AutoScale,
                 Item::Vsync,
                 Item::Fov,
                 Item::Camera,
@@ -631,6 +635,10 @@ impl Menu {
                 let step = if forward { 0.05 } else { -0.05 };
                 s.scale = ((s.scale + step) * 100.0).round() / 100.0;
                 s.scale = s.scale.clamp(0.25, 1.0);
+                MenuEvent::Changed(Change::Graphics)
+            }
+            Item::AutoScale => {
+                s.auto_scale = !s.auto_scale;
                 MenuEvent::Changed(Change::Graphics)
             }
             Item::Vsync => {

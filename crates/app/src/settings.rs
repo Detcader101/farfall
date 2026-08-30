@@ -191,6 +191,9 @@ pub const ARMS_SHARDS_MAX: u32 = 48;
 pub struct Settings {
     pub msaa: u32,
     pub scale: f32,
+    /// The world's scale governs itself to hold the FPS floor: RENDER
+    /// SCALE is then the ceiling, never the floor.
+    pub auto_scale: bool,
     pub vsync: bool,
     pub bindings: Bindings,
     pub layout: Layout,
@@ -286,16 +289,13 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// The browser's first run: the same game on a slower, single-threaded
-    /// build under a compositor, so it starts cheap — no MSAA and the
-    /// world at half scale (the HUD and dials stay native) — and the
-    /// menu raises it from there. Saved settings override this.
+    /// The browser's first run: the same picture as native, with the
+    /// world's scale governing itself to the FPS floor on whatever
+    /// machine opened the link. Saved settings override this.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn web_default() -> Self {
         Self {
-            msaa: 1,
-            scale: 0.5,
-            cockpit_res: 0.35,
+            auto_scale: true,
             ..Self::default()
         }
     }
@@ -306,6 +306,7 @@ impl Default for Settings {
         Self {
             msaa: 4,
             scale: 1.0,
+            auto_scale: false,
             vsync: true,
             bindings: Bindings::default(),
             layout: Layout::default(),
@@ -433,6 +434,7 @@ impl Settings {
                     }
                 }
                 "graphics.vsync" => s.vsync = matches!(v, "on" | "true" | "1"),
+                "graphics.auto-scale" => s.auto_scale = matches!(v, "on" | "true" | "1"),
                 "ui.safe-edge" => {
                     if let Ok(f) = v.trim_end_matches('%').parse::<f32>() {
                         s.layout.set_safe_edge(f / 100.0);
@@ -805,6 +807,10 @@ impl Settings {
             "graphics.vsync = {}\n",
             if self.vsync { "on" } else { "off" }
         ));
+        out.push_str(&format!(
+            "graphics.auto-scale = {}\n",
+            if self.auto_scale { "on" } else { "off" }
+        ));
         for a in Action::ALL {
             out.push_str(&format!(
                 "control.{} = {}\n",
@@ -972,6 +978,7 @@ mod tests {
         let mut s = Settings {
             msaa: 2,
             scale: 0.75,
+            auto_scale: true,
             vsync: false,
             ..Default::default()
         };

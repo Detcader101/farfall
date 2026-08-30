@@ -72,7 +72,8 @@ an average hides the stutter that a 90 Hz headset would not.
 
 **https://detcader101.github.io/farfall/** — the same game as a WebGPU page: nothing to
 install, no account. Chrome / Edge 113+, Safari 26+, or the Meta Quest Browser. Click to
-fly; in a headset an **ENTER VR** button appears (WebXR — Quest standalone in its browser,
+fly (the world's render scale governs itself to hold 60 fps at your screen's full resolution —
+AUTO SCALE on the GFX page; the HUD and dials are always native); in a headset an **ENTER VR** button appears (WebXR — Quest standalone in its browser,
 or Index / Quest Link through SteamVR + Chrome on a PC). Controllers: left stick translates,
 right stick pitches and yaws, triggers boost and brake, grips roll, X chaos drive, Y warp
 stop, A flight computer, B menu.
