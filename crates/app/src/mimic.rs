@@ -265,7 +265,7 @@ impl Haul {
 pub struct Mimics {
     pub ships: Vec<Mimic>,
     pub slugs: Vec<FoeSlug>,
-    /// MIMICS: the share of rocks that are ships, 0..0.5.
+    /// MIMICS: the share of rocks that are ships, 0..1.
     pub chance: f32,
     /// HOSTILITY: the share of mimics that shoot, 0..1.
     pub hostility: f32,
@@ -290,7 +290,7 @@ impl Default for Mimics {
         Self {
             ships: Vec::new(),
             slugs: Vec::new(),
-            chance: 0.08,
+            chance: 1.0,
             hostility: 0.5,
             revealed: HashSet::new(),
             reveals: 0,
@@ -312,7 +312,7 @@ pub fn is_mimic(id: RockId, chance: f32) -> bool {
         return false;
     }
     let h = belt::hash(id.0, id.1, id.2, 0xA11C_E000 ^ (id.3 as u32 * 977));
-    belt::unit(h) < chance.clamp(0.0, 0.5) as f64
+    belt::unit(h) < chance.clamp(0.0, 1.0) as f64
 }
 
 /// What a mimic does once seen, keyed the same way.
@@ -705,7 +705,11 @@ mod tests {
             (0..4000).filter(|&i| is_mimic((i, 1, 1, 0), 0.0)).count(),
             0
         );
-        assert!(!(0..4000).any(|i| is_mimic((i, 1, 1, FRAG_SLOT0), 0.5)));
+        assert!(!(0..4000).any(|i| is_mimic((i, 1, 1, FRAG_SLOT0), 1.0)));
+        assert!(
+            (0..400).all(|i| is_mimic((i, 1, 1, 0), 1.0)),
+            "every rock at 100%"
+        );
         let id = a_mimic_id(0.1);
         assert_eq!(is_mimic(id, 0.1), is_mimic(id, 0.1), "keyed, not rolled");
         let hostile = (0..4000)

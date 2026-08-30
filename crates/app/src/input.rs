@@ -136,10 +136,11 @@ pub enum Named {
     NextWeapon,
     Weapon1,
     Weapon2,
+    Hold,
 }
 
 impl Named {
-    pub const COUNT: usize = 20;
+    pub const COUNT: usize = 21;
     pub const ALL: [Named; Named::COUNT] = [
         Named::Boost,
         Named::Brake,
@@ -161,6 +162,7 @@ impl Named {
         Named::NextWeapon,
         Named::Weapon1,
         Named::Weapon2,
+        Named::Hold,
     ];
 
     /// Menu label.
@@ -186,6 +188,7 @@ impl Named {
             Named::NextWeapon => "NEXT WEAPON",
             Named::Weapon1 => "CANNON",
             Named::Weapon2 => "RAIL",
+            Named::Hold => "HOLD",
         }
     }
 
@@ -212,6 +215,7 @@ impl Named {
             Named::NextWeapon => "next-weapon",
             Named::Weapon1 => "weapon-1",
             Named::Weapon2 => "weapon-2",
+            Named::Hold => "hold",
         }
     }
 
@@ -240,6 +244,7 @@ impl Named {
             Named::NextWeapon => KeyCode::KeyU,
             Named::Weapon1 => KeyCode::Digit1,
             Named::Weapon2 => KeyCode::Digit2,
+            Named::Hold => KeyCode::KeyO,
         }
     }
 }

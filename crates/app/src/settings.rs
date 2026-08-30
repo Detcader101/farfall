@@ -257,6 +257,10 @@ pub struct Settings {
     /// HOSTILITY: the share of those that shoot rather than hail, 0..1.
     pub mimics_chance: f32,
     pub mimics_hostility: f32,
+    /// HOLD GAIN: how hard the lock holds, 0.2..3; HOLD FACING: the nose
+    /// kept on the target.
+    pub hold_gain: f32,
+    pub hold_face: bool,
     /// The gun sight on the glass: 0 off .. 2 bright.
     pub arms_sight: f32,
     /// The camera on the pilot's head: sway under load, tremor under
@@ -320,8 +324,10 @@ impl Default for Settings {
             arms_scar_size: 1.0,
             arms_scar_cool: 12.0,
             arms_ore: 1.0,
-            mimics_chance: 0.08,
+            mimics_chance: 1.0,
             mimics_hostility: 0.5,
+            hold_gain: 1.0,
+            hold_face: true,
             arms_sight: 1.0,
             cam_shake: 1.0,
             mounts: STOCK,
@@ -566,7 +572,7 @@ impl Settings {
                 "mimics.chance" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
-                            s.mimics_chance = f.clamp(0.0, 0.5);
+                            s.mimics_chance = f.clamp(0.0, 1.0);
                         }
                     }
                 }
@@ -577,6 +583,14 @@ impl Settings {
                         }
                     }
                 }
+                "hold.gain" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.hold_gain = f.clamp(0.2, 3.0);
+                        }
+                    }
+                }
+                "hold.face" => s.hold_face = v == "on",
                 "arms.shard-life" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -856,6 +870,11 @@ impl Settings {
             "mimics.hostility = {:.2}\n",
             self.mimics_hostility
         ));
+        out.push_str(&format!("hold.gain = {:.2}\n", self.hold_gain));
+        out.push_str(&format!(
+            "hold.face = {}\n",
+            if self.hold_face { "on" } else { "off" }
+        ));
         out.push_str(&format!("arms.sight = {:.2}\n", self.arms_sight));
         out.push_str(&format!("cam.shake = {:.2}\n", self.cam_shake));
         out.push_str(&format!(
@@ -986,6 +1005,8 @@ mod tests {
         s.arms_ore = 1.5;
         s.mimics_chance = 0.25;
         s.mimics_hostility = 0.75;
+        s.hold_gain = 1.75;
+        s.hold_face = false;
         s.arms_sight = 0.5;
         s.cam_shake = 1.75;
         s.hoop_size = 2.5;

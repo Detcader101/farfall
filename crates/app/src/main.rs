@@ -13,6 +13,7 @@ mod bay;
 mod belt;
 mod capture;
 mod cockpit;
+mod hold;
 mod input;
 mod landing;
 mod look;
@@ -1046,6 +1047,8 @@ struct Game {
     /// The mimics — ships in the rocks — and what the guns bring in.
     mimics: mimic::Mimics,
     haul: mimic::Haul,
+    /// HOLD: the smart lock on the flight controls.
+    hold: hold::Hold,
     /// Was the field up last frame (to feel its collapse).
     hyper_was: bool,
     /// The bench holding the field up.
@@ -1161,6 +1164,7 @@ impl Game {
             fire_held: false,
             mimics: mimic::Mimics::default(),
             haul: mimic::Haul::default(),
+            hold: hold::Hold::default(),
             hyper_was: false,
             bench_hyper: false,
             hyper_strain: 0.0,
@@ -2034,6 +2038,44 @@ impl Game {
         }
     }
 
+    /// HOLD (O): take the lock on what is under the sight, or let it go.
+    fn toggle_hold(&mut self) {
+        if self.hold.engaged() {
+            self.hold.release();
+            log::info!("hold: released");
+            return;
+        }
+        let own = arms::Ship {
+            pos: self.state.ship.pos_m,
+            vel: self.state.ship.vel_mps,
+            orient: self.state.ship.orient,
+            aim: self.aim_world(),
+        };
+        if self.hold.engage(&own, own.aim, &self.belt, &self.mimics) {
+            let (t, off) = self.hold.target.unwrap();
+            log::info!("hold: locked on a {} at {:.0} m", t.name(), off.length());
+        } else {
+            self.mimics.line = Some((
+                "HOLD: NOTHING UNDER THE SIGHT".to_string(),
+                self.state.time_s + 2.0,
+            ));
+        }
+    }
+
+    /// The hold's line for the readout.
+    fn hold_text(&self) -> Option<String> {
+        self.hold.text()
+    }
+
+    /// The engines' effort under the hold: the computer's demand.
+    fn hold_effort(&self) -> f64 {
+        if self.hold.engaged() {
+            self.hold.demand.abs().max_element().clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
     /// The haul's line for the readout, while a gain is fresh.
     fn haul_text(&self) -> Option<String> {
         self.haul.text(self.state.time_s, 6.0)
@@ -2730,7 +2772,37 @@ impl Game {
             self.roll_for_strikes();
             let before = self.state.ship;
             let before_t = self.state.time_s;
-            self.state = sim::step(&self.params, &self.state, controls);
+            // HOLD: the computer's thrust replaces the pilot's on the way
+            // in, its torque adds; the lock drops when the target is gone.
+            let mut step_controls = controls;
+            if self.hold.engaged() {
+                self.hold.gain = self.settings.hold_gain;
+                self.hold.face = self.settings.hold_face;
+                match self.hold.track(&self.belt, &self.mimics) {
+                    Some(tracked) => {
+                        let own = arms::Ship {
+                            pos: self.state.ship.pos_m,
+                            vel: self.state.ship.vel_mps,
+                            orient: self.state.ship.orient,
+                            aim: self.aim_world(),
+                        };
+                        self.hold.apply(
+                            &mut step_controls,
+                            &own,
+                            self.state.ship.ang_vel_radps,
+                            &tracked,
+                            self.params.ship.max_thrust_mps2,
+                            sim::DT,
+                        );
+                    }
+                    None => {
+                        self.hold.release();
+                        self.mimics.line = Some(("HOLD LOST".to_string(), self.state.time_s + 2.0));
+                        log::info!("hold: the target is gone");
+                    }
+                }
+            }
+            self.state = sim::step(&self.params, &self.state, step_controls);
             // The belt: rocks move, knock each other, and knock the ship
             // — an impulse on its state, a bump on the shield, grit in
             // the sound.
@@ -2808,7 +2880,10 @@ impl Game {
         // framerate-independent: at 30 fps and at 240 fps the view opens up over
         // the same wall-clock time, so the ship's weight is a property of the
         // ship and not of the machine.
-        let target = self.input.thrust_effort(self.params.ship.boost_multiplier) as f32;
+        let target = self
+            .input
+            .thrust_effort(self.params.ship.boost_multiplier)
+            .max(self.hold_effort()) as f32;
         let alpha = 1.0 - (-(frame_dt as f32) / FOV_RESPONSE_S).exp();
         self.effort += (target - self.effort) * alpha;
     }
@@ -2967,7 +3042,10 @@ impl Game {
         let entry = (air_wide * (1.0 - air) * dive * mach_bite).clamp(0.0, 1.0);
 
         farfall_audio::Levels {
-            effort: self.input.thrust_effort(self.params.ship.boost_multiplier) as f32,
+            effort: self
+                .input
+                .thrust_effort(self.params.ship.boost_multiplier)
+                .max(self.hold_effort()) as f32,
             wind_q: ((q / q_ref) as f32).clamp(0.0, 1.0),
             vacuum: 1.0 - ((rho_ratio * 12.0) as f32).clamp(0.0, 1.0),
             brake: if controls.brake { 1.0 } else { 0.0 },
@@ -3960,6 +4038,9 @@ impl ApplicationHandler for App {
                     c if pressed && !event.repeat && c == game.bind(Named::Bay) => {
                         game.toggle_bay()
                     }
+                    c if pressed && !event.repeat && c == game.bind(Named::Hold) => {
+                        game.toggle_hold()
+                    }
                     c if pressed && !event.repeat && c == game.bind(Named::Map) => {
                         game.toggle_map()
                     }
@@ -4772,6 +4853,7 @@ impl ApplicationHandler for App {
                         show: game.settings.layout.shown(Instrument::Readout) || game.landing,
                         landing: game
                             .landing_text()
+                            .or_else(|| game.hold_text())
                             .or_else(|| game.mimic_text())
                             .or_else(|| game.strain_text())
                             .or_else(|| game.arms_text())
