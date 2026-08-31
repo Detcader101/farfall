@@ -152,6 +152,7 @@ enum Item {
     ArmsSight,
     /// The camera on the head: sway, tremor, jolts.
     CamShake,
+    DriveShake,
     /// The SHIP bay: what each hardpoint carries, and the hologram's look.
     Mount(Hardpoint),
     BayHue,
@@ -203,6 +204,7 @@ impl Item {
             Item::ArmsGlow => "MUZZLE LIGHT",
             Item::ArmsSight => "GUN SIGHT",
             Item::CamShake => "CAMERA SHAKE",
+            Item::DriveShake => "DRIVE SHAKE",
             Item::ArmsShards => "DEBRIS",
             Item::ArmsShardLife => "DEBRIS LIFE",
             Item::ArmsScarSize => "SCARS",
@@ -369,6 +371,13 @@ impl Item {
                     "OFF".to_string()
                 }
             }
+            Item::DriveShake => {
+                if s.drive_shake > 0.0 {
+                    format!("{:.0}%", s.drive_shake * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
             Item::Mount(h) => s.mounts[h as usize].name().to_string(),
             Item::BayHue => format!("{:.0}", s.bay_hue * 360.0),
             Item::BaySaturation => format!("{:.0}%", s.bay_saturation * 100.0),
@@ -500,6 +509,7 @@ impl Menu {
                 Item::HoopSize,
                 Item::LandingHoops,
                 Item::CamShake,
+                Item::DriveShake,
             ],
             // The gauges: the cockpit-wide look, then one dial's own
             // numbers, then where each instrument sits (or OFF) — the
@@ -859,6 +869,15 @@ impl Menu {
                     return MenuEvent::Nothing;
                 }
                 s.cam_shake = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::DriveShake => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.drive_shake + step).clamp(0.0, 2.0);
+                if (next - s.drive_shake).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.drive_shake = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::ArmsSight => {

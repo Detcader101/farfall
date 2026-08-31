@@ -31,7 +31,7 @@ controls:
 # Every key ~/.farfall/settings.cfg may hold, by group (crates/app/src/settings.rs).
 settings_keys:
   graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread]
-  camera: [camera.chase, holo.view, holo.size, cam.shake]
+  camera: [camera.chase, holo.view, holo.size, cam.shake, cam.drive-shake]
   cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
   ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
   map: [map.rings, map.grid]

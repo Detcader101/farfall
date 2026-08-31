@@ -297,6 +297,10 @@ pub struct Settings {
     /// The camera on the pilot's head: sway under load, tremor under
     /// thrust, jolts from the guns. 0 off .. 2 double.
     pub cam_shake: f32,
+    /// How hard the chaos drive jostles the ship (and so the camera) on
+    /// the way to the slip, 0..2 of the stock. The warning stays; the
+    /// violence is the pilot's to choose.
+    pub drive_shake: f32,
     /// The ship's fit: what each hardpoint carries, by [`Hardpoint`] index.
     pub mounts: [Mount; 4],
     /// The bay's hologram: its hue 0..1 and saturation 0..1, scanlines
@@ -383,6 +387,7 @@ impl Default for Settings {
             hold_face: true,
             arms_sight: 1.0,
             cam_shake: 1.0,
+            drive_shake: 0.4,
             mounts: STOCK,
             bay_hue: BAY_HUE_DEFAULT,
             bay_saturation: 1.0,
@@ -606,6 +611,13 @@ impl Settings {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.cam_shake = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "cam.drive-shake" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.drive_shake = f.clamp(0.0, 2.0);
                         }
                     }
                 }
@@ -1021,6 +1033,7 @@ impl Settings {
         ));
         out.push_str(&format!("arms.sight = {:.2}\n", self.arms_sight));
         out.push_str(&format!("cam.shake = {:.2}\n", self.cam_shake));
+        out.push_str(&format!("cam.drive-shake = {:.2}\n", self.drive_shake));
         out.push_str(&format!(
             "camera.chase = {}\n",
             if self.camera_chase { "on" } else { "off" }
@@ -1172,6 +1185,7 @@ mod tests {
         s.hold_face = false;
         s.arms_sight = 0.5;
         s.cam_shake = 1.75;
+        s.drive_shake = 0.8;
         s.hoop_size = 2.5;
         s.map_rings = 2;
         s.landing_spacing_m = 500.0;

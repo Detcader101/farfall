@@ -163,11 +163,13 @@ impl Slot {
     /// overlay states.
     pub fn anchor(self) -> Option<[f32; 2]> {
         match self {
-            Slot::BottomLeft => Some([-0.78, -0.64]),
-            Slot::BottomCentre => Some([0.0, -0.74]),
-            Slot::BottomRight => Some([0.78, -0.64]),
-            Slot::MidLeft => Some([-0.88, 0.02]),
-            Slot::MidRight => Some([0.88, 0.02]),
+            // A cluster stacked about the centre of the dash — an arc
+            // under the horizon, not dials flung to the corners.
+            Slot::BottomLeft => Some([-0.36, -0.70]),
+            Slot::BottomCentre => Some([0.0, -0.76]),
+            Slot::BottomRight => Some([0.36, -0.70]),
+            Slot::MidLeft => Some([-0.68, -0.58]),
+            Slot::MidRight => Some([0.68, -0.58]),
             Slot::TopCentre => Some([0.0, 0.74]),
             Slot::On | Slot::Off => None,
         }
@@ -386,16 +388,29 @@ mod tests {
         assert_eq!(l.safe_edge, 0.0);
     }
 
+    /// The dial slots are a cluster under the horizon: in the lower band
+    /// of the glass and inside its sides, none flung to a corner — save
+    /// the top slot, which is the one place above the horizon.
     #[test]
-    fn dials_sit_near_the_rim() {
+    fn dials_cluster_under_the_horizon() {
         for s in Slot::DIALS {
             if let Some(a) = s.anchor() {
-                assert!(
-                    a[0].abs().max(a[1].abs()) >= 0.74,
-                    "{s:?} is too central: {a:?}"
-                );
+                if s == Slot::TopCentre {
+                    assert!(a[0] == 0.0 && a[1] > 0.5, "{s:?}: {a:?}");
+                    continue;
+                }
+                assert!(a[1] <= -0.55, "{s:?} is not under the horizon: {a:?}");
+                assert!(a[0].abs() <= 0.7, "{s:?} is out at the side: {a:?}");
             }
         }
+        // Left and right are mirrored pairs, and the centre is lowest.
+        let (bl, br) = (
+            Slot::BottomLeft.anchor().unwrap(),
+            Slot::BottomRight.anchor().unwrap(),
+        );
+        assert_eq!(bl[0], -br[0]);
+        assert_eq!(bl[1], br[1]);
+        assert!(Slot::BottomCentre.anchor().unwrap()[1] < bl[1]);
     }
 
     #[test]

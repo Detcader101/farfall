@@ -2902,7 +2902,7 @@ impl Game {
         // the stick and the throttle jostled by the drive, a little, then
         // a lot, until it goes.
         let chaos = if controls.hyper {
-            chaos_level(self.hyper_strain, self.slip_at)
+            chaos_level(self.hyper_strain, self.slip_at) * self.settings.drive_shake.clamp(0.0, 2.0)
         } else {
             0.0
         };
