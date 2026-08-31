@@ -32,8 +32,13 @@ struct Holo {
     // xyz: the Sun's bearing in ship frame. w: shown (0 skips)
     sun: vec4<f32>,
     // x: engine effort 0..1, y: hyper field 0..1, z: socket height above
-    // the dash (m), w: unused
+    // the dash (m), w: HOLO RANGE — the ship is drawn 1/w its size so
+    // the scene round it stands for w times the space
     misc: vec4<f32>,
+    // Other ships: xyz their direction times their share of the reach
+    // (1: on the rim), w their kind + 1 (1 hail, 2 hostile, 3 wreck; 0
+    // none).
+    marks: array<vec4<f32>, 8>,
 }
 
 @group(0) @binding(0) var<uniform> holo: Holo;
@@ -66,11 +71,24 @@ const KIND_SHIP: f32 = 0.0;
 const KIND_VEL: f32 = 1.0;
 const KIND_BODY: f32 = 2.0;
 const KIND_SUN: f32 = 3.0;
+const KIND_HAIL: f32 = 4.0;
+const KIND_HOSTILE: f32 = 5.0;
+const KIND_WRECK: f32 = 6.0;
+const KIND_TETHER: f32 = 7.0;
+// A mark sits this far out at full reach (ship units).
+const MARK_R: f32 = 12.0;
+
+// A small octahedron: the mark for another ship.
+fn sd_octa(p: vec3<f32>, s: f32) -> f32 {
+    return (abs(p.x) + abs(p.y) + abs(p.z) - s) * 0.57735;
+}
 
 // The miniature, in ship units about the hologram's centre. Returns
 // (distance, kind).
 fn holo_scene(q: vec3<f32>) -> vec2<f32> {
-    var best = vec2<f32>(sd_fighter_exterior(q), KIND_SHIP);
+    // The ship, shrunk by the range so the scene round it grows.
+    let range = max(holo.misc.w, 0.25);
+    var best = vec2<f32>(sd_fighter_exterior(q * range) / range, KIND_SHIP);
     // The velocity vector: a rod from the ship's heart, as long as the
     // speed's log, tipped with a bead.
     let len = SHIP_R * 1.15 * holo.vel.w;
@@ -93,6 +111,19 @@ fn holo_scene(q: vec3<f32>) -> vec2<f32> {
     // The Sun: a bead on its bearing.
     let sun_d = length(q - holo.sun.xyz * SCENE_R * 0.92) - 0.45;
     if (sun_d < best.x) { best = vec2<f32>(sun_d, KIND_SUN); }
+    // Other ships: a small mark at each one's true bearing, as far out as
+    // its share of the reach, on a hair of a tether to the ship.
+    for (var i = 0u; i < 8u; i += 1u) {
+        let m = holo.marks[i];
+        if (m.w < 0.5) {
+            continue;
+        }
+        let at = m.xyz * MARK_R;
+        let d = sd_octa(q - at, 0.55);
+        if (d < best.x) { best = vec2<f32>(d, KIND_HAIL + (m.w - 1.0)); }
+        let tether = sd_capsule_ab(q, vec3<f32>(0.0), at, 0.05);
+        if (tether < best.x) { best = vec2<f32>(tether, KIND_TETHER); }
+    }
     return best;
 }
 
@@ -191,8 +222,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 // in the hologram's own cyan; the nozzles by the engines.
                 let diff = max(dot(n, normalize(holo.sun.xyz)), 0.0);
                 lit = cyan * (0.18 + 0.30 * diff + 0.75 * rim);
-                let eq = vec3<f32>(abs(q.x) - 0.62, q.y + 0.85, q.z);
-                let nozzle = (1.0 - smoothstep(0.30, 0.75, length(eq.xy))) * smoothstep(6.9, 7.4, q.z);
+                let qs = q * max(holo.misc.w, 0.25);
+                let eq = vec3<f32>(abs(qs.x) - 0.62, qs.y + 0.85, qs.z);
+                let nozzle = (1.0 - smoothstep(0.30, 0.75, length(eq.xy))) * smoothstep(6.9, 7.4, qs.z);
                 lit += (amber * holo.misc.x * 1.6 + vec3<f32>(0.35, 0.65, 1.0) * holo.misc.y * 2.0) * nozzle;
             } else if (hit.y == KIND_VEL) {
                 lit = vec3<f32>(0.75, 1.0, 1.0) * (0.55 + 0.6 * rim);
@@ -206,8 +238,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                     1.0 - smoothstep(0.0, 0.045, abs(fract(lat * 5.73) - 0.5) * 0.35),
                     1.0 - smoothstep(0.0, 0.045, abs(fract(lon * 3.82) - 0.5) * 0.35));
                 lit = amber * (0.05 + 0.10 * rim + 0.55 * wire);
-            } else {
+            } else if (hit.y == KIND_SUN) {
                 lit = vec3<f32>(1.0, 0.95, 0.80) * 1.4;
+            } else if (hit.y == KIND_HAIL) {
+                // A hailing ship: amber, steady.
+                lit = amber * (0.9 + 0.5 * rim);
+            } else if (hit.y == KIND_HOSTILE) {
+                // A hostile: red, and it beats.
+                let beat = 0.7 + 0.3 * sin(time * 9.0);
+                lit = vec3<f32>(1.0, 0.18, 0.12) * (1.1 + 0.6 * rim) * beat;
+            } else if (hit.y == KIND_WRECK) {
+                lit = vec3<f32>(0.55, 0.62, 0.70) * (0.35 + 0.3 * rim);
+            } else {
+                // The tether: a hair of the hologram's light.
+                lit = cyan * 0.22;
             }
             rgb += lit * scan * mix(1.0, 0.45, f32(passes));
             passes += 1u;

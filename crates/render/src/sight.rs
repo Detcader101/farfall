@@ -234,7 +234,10 @@ mod tests {
         // Ahead and a touch right: on the glass, over the ship.
         let (pos, _, mode) = edge_mark(Vec3::new(0.2, 0.0, -1.0), tan, aspect);
         assert_eq!(mode, 1.0);
-        assert!(pos[0] > 0.0 && pos[0] < MARK_EDGE && pos[1] == 0.0, "{pos:?}");
+        assert!(
+            pos[0] > 0.0 && pos[0] < MARK_EDGE && pos[1] == 0.0,
+            "{pos:?}"
+        );
         // Hard right, past the glass: pinned to the right edge, arrow
         // pointing right (angle +90 degrees, shader convention).
         let (pos, ang, mode) = edge_mark(Vec3::new(1.0, 0.0, -0.1), tan, aspect);

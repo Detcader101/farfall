@@ -1,15 +1,22 @@
-//! The in-game menu — GFX / KEYS / CABIN / GAUGES — a flat panel on the
-//! screen while the sim is paused.
+//! The in-game menu — GFX / KEYS / CABIN / DIALS / ARMS / MAP / SHIP /
+//! HELP — a flat card on the screen while the sim is paused.
 //!
 //! Rendered through the HUD text pass (a bit mask the GPU draws on the
 //! canopy), driven by the keyboard, editing [`Settings`] in place. Esc
 //! opens it and closes it; while it is open the sim is paused and the
 //! flight keys are released, because a pilot reading a menu is not flying.
 //!
-//! Four pages, Tab between them. Up/Down moves, Left/Right changes a
+//! Eight pages, Tab between them. Up/Down moves, Left/Right changes a
 //! value, Enter starts a key rebind (the next key pressed takes it; Esc
 //! cancels). Every change is applied at once and written to the settings
 //! file; there is no "save" — the file is the state.
+//!
+//! The card is laid out here in font pixels, under test: every tab fits
+//! the header, every row is exactly the card's width with its full value,
+//! the list scrolls with a bar and a `ROW n / m` count, and the chosen
+//! row's one-line description sits in the footer — a stranger can read
+//! it at 800x600 and at 2880x1800, because the card is the same size in
+//! canopy units on both.
 
 use crate::bay::Hardpoint;
 use crate::cockpit::Instrument;
@@ -19,7 +26,10 @@ use crate::settings::{
     HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
 };
 use crate::settings::{BAY_SCANLINES_MAX, BAY_SIZE_MAX, BAY_SIZE_MIN};
-use farfall_render::text::TextBitmap;
+use farfall_render::hud::Scrollbar;
+use farfall_render::text::{
+    block_height, block_width, wrap, TextBitmap, LINE, MENU_COLS, PANEL_COLS,
+};
 use winit::keyboard::KeyCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,19 +39,27 @@ pub enum Page {
     Cockpit,
     Gauges,
     Arms,
+    /// The wormhole drive's plan and the map's look. Also the DRIVE
+    /// panel beside the map (M), standalone.
     Map,
-    /// The SHIP bay: the hologram's own panel (B), not a page.
+    /// The ship's fit and the bay hologram's look. Also the SHIP bay's
+    /// own card (B), standalone, with the fit alone.
     Ship,
+    /// Every control by group, with what it does.
+    Help,
 }
 
 impl Page {
-    /// The settings menu's pages. The MAP is its own panel (M), not a page.
-    const ALL: [Page; 5] = [
+    /// The settings menu's pages, in tab order.
+    pub const ALL: [Page; 8] = [
         Page::Graphics,
         Page::Controls,
         Page::Cockpit,
         Page::Gauges,
         Page::Arms,
+        Page::Map,
+        Page::Ship,
+        Page::Help,
     ];
 
     fn short(self) -> &'static str {
@@ -49,10 +67,11 @@ impl Page {
             Page::Graphics => "GFX",
             Page::Controls => "KEYS",
             Page::Cockpit => "CABIN",
-            Page::Gauges => "GAUGES",
+            Page::Gauges => "DIALS",
             Page::Arms => "ARMS",
             Page::Map => "MAP",
             Page::Ship => "SHIP",
+            Page::Help => "HELP",
         }
     }
 
@@ -61,10 +80,11 @@ impl Page {
             Page::Graphics => "GRAPHICS",
             Page::Controls => "CONTROLS",
             Page::Cockpit => "COCKPIT",
-            Page::Gauges => "GAUGES",
+            Page::Gauges => "DIALS",
             Page::Arms => "ARMS",
             Page::Map => "MAP",
             Page::Ship => "SHIP",
+            Page::Help => "HELP",
         }
     }
 }
@@ -86,6 +106,307 @@ pub enum Change {
     Graphics,
     Bindings,
     Layout,
+}
+
+/// A control as the HELP page lists it: an axis, a named control, or one
+/// of the few fixed keys the menu keeps for itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    Axis(Action),
+    Named(Named),
+    /// (key, name) of a control that cannot be rebound.
+    Fixed(&'static str, &'static str),
+}
+
+/// One line of the HELP page: the control, a short gloss for the row and
+/// a sentence for the footer.
+#[derive(Debug, Clone, Copy)]
+pub struct HelpEntry {
+    pub control: Control,
+    pub gloss: &'static str,
+    pub what: &'static str,
+}
+
+/// A group of controls on the HELP page.
+#[derive(Debug, Clone, Copy)]
+pub struct HelpGroup {
+    pub name: &'static str,
+    pub blurb: &'static str,
+    pub entries: &'static [HelpEntry],
+}
+
+const fn axis(a: Action, gloss: &'static str, what: &'static str) -> HelpEntry {
+    HelpEntry {
+        control: Control::Axis(a),
+        gloss,
+        what,
+    }
+}
+
+const fn named(n: Named, gloss: &'static str, what: &'static str) -> HelpEntry {
+    HelpEntry {
+        control: Control::Named(n),
+        gloss,
+        what,
+    }
+}
+
+const fn fixed(
+    key: &'static str,
+    name: &'static str,
+    gloss: &'static str,
+    what: &'static str,
+) -> HelpEntry {
+    HelpEntry {
+        control: Control::Fixed(key, name),
+        gloss,
+        what,
+    }
+}
+
+/// Every control the game answers to, by group. The tests hold this to
+/// the truth: every axis and every named bind is here exactly once.
+pub const HELP: &[HelpGroup] = &[
+    HelpGroup {
+        name: "FLIGHT",
+        blurb: "FLYING THE SHIP: THRUST, ATTITUDE, THE FLIGHT COMPUTER.",
+        entries: &[
+            axis(
+                Action::ThrustForward,
+                "MAIN ENGINES AHEAD",
+                "MAIN ENGINES: ACCELERATE ALONG THE NOSE. HOLD BOOST WITH IT FOR A FULL BURN.",
+            ),
+            axis(
+                Action::ThrustBack,
+                "THRUST ASTERN",
+                "THRUST ASTERN: SLOW DOWN, OR BACK AWAY FROM SOMETHING.",
+            ),
+            axis(
+                Action::StrafeLeft,
+                "SLIDE LEFT",
+                "SIDE THRUSTERS: SLIDE LEFT WITHOUT TURNING THE NOSE.",
+            ),
+            axis(
+                Action::StrafeRight,
+                "SLIDE RIGHT",
+                "SIDE THRUSTERS: SLIDE RIGHT WITHOUT TURNING THE NOSE.",
+            ),
+            axis(
+                Action::ThrustUp,
+                "RISE",
+                "BELLY THRUSTERS: RISE STRAIGHT UP, THE WAY THE CANOPY POINTS.",
+            ),
+            axis(
+                Action::ThrustDown,
+                "SINK",
+                "BACK THRUSTERS: PUSH STRAIGHT DOWN, THE WAY THE BELLY POINTS.",
+            ),
+            axis(Action::PitchUp, "NOSE UP", "PITCH: RAISE THE NOSE."),
+            axis(Action::PitchDown, "NOSE DOWN", "PITCH: LOWER THE NOSE."),
+            axis(Action::YawLeft, "NOSE LEFT", "YAW: SWING THE NOSE LEFT."),
+            axis(Action::YawRight, "NOSE RIGHT", "YAW: SWING THE NOSE RIGHT."),
+            axis(
+                Action::RollLeft,
+                "LEFT WING DOWN",
+                "ROLL: BANK LEFT ABOUT THE NOSE.",
+            ),
+            axis(
+                Action::RollRight,
+                "RIGHT WING DOWN",
+                "ROLL: BANK RIGHT ABOUT THE NOSE.",
+            ),
+            named(
+                Named::Boost,
+                "FULL BURN (HOLD)",
+                "HOLD WITH A THRUST KEY FOR THE ENGINES' FULL POWER. HOT, LOUD, AND FAST.",
+            ),
+            named(
+                Named::Brake,
+                "AIR BRAKE (HOLD)",
+                "HOLD TO OPEN THE AIR BRAKE AND SHED SPEED IN AN ATMOSPHERE.",
+            ),
+            named(
+                Named::Despin,
+                "KILL ANY SPIN",
+                "THE EMERGENCY GYRO: KILLS EVERY ROTATION ON A FIXED TIME, WHATEVER THE SHIP IS DOING.",
+            ),
+            named(
+                Named::Assist,
+                "FLIGHT COMPUTER",
+                "FLIGHT ASSIST ON OR OFF: THE COMPUTER DAMPS SPIN AND HOLDS ATTITUDE WITH THE KEYS UP.",
+            ),
+            named(
+                Named::Hold,
+                "HOLD A TARGET",
+                "LOCK ON THE TARGET UNDER THE SIGHT AND HOLD THE RANGE; HOLD FACING KEEPS THE NOSE ON.",
+            ),
+        ],
+    },
+    HelpGroup {
+        name: "DRIVES",
+        blurb: "THE DRIVES THAT CROSS THE SYSTEM, AND THE MAP THEY ARE PLANNED ON.",
+        entries: &[
+            named(
+                Named::Hyper,
+                "CHAOS DRIVE (HOLD)",
+                "HOLD TO CHARGE THE CHAOS DRIVE: SPEED CLIMBS WITH THE ENTROPY; THE SLIP THROWS YOU.",
+            ),
+            named(
+                Named::WarpStop,
+                "DROP OUT OF WARP",
+                "CUT THE DRIVE AT ONCE, LEAVING AN AFTER-IMAGE OF THE SHIP BEHIND.",
+            ),
+            named(
+                Named::Engage,
+                "FIRE WORMHOLE DRIVE",
+                "ENGAGE THE WORMHOLE DRIVE AT THE PLAN ON THE MAP PAGE: DESTINATION AND SAFE DISTANCE.",
+            ),
+            named(
+                Named::Map,
+                "SYSTEM MAP",
+                "OPEN THE 3D SYSTEM MAP WITH ITS DRIVE PANEL. DRAG TO TURN IT, WHEEL OR + - TO ZOOM.",
+            ),
+        ],
+    },
+    HelpGroup {
+        name: "VIEW",
+        blurb: "LOOKING ROUND THE CABIN AND OUT OF IT.",
+        entries: &[
+            fixed(
+                "RMB",
+                "FREELOOK",
+                "LOOK AROUND (HOLD)",
+                "HOLD THE RIGHT MOUSE BUTTON AND MOVE THE MOUSE TO LOOK ROUND THE CABIN.",
+            ),
+            named(
+                Named::LookLock,
+                "LOCK THE FREELOOK",
+                "KEEP THE FREELOOK ON WITHOUT HOLDING THE BUTTON. CLICK WHILE LOOKING TO DRAG A PANEL.",
+            ),
+            named(
+                Named::Chase,
+                "CHASE CAMERA",
+                "SWAP THE VIEW FOR A CAMERA OUTSIDE THE SHIP, AND BACK.",
+            ),
+            named(
+                Named::Holo,
+                "SHIP HOLOGRAM",
+                "THE HOLO3PP: A HOLOGRAM OF THE SHIP AND ITS SURROUNDINGS ON THE DASH. MARKS: OTHER SHIPS.",
+            ),
+            named(
+                Named::HoloOut,
+                "HOLOGRAM WIDER",
+                "THE HOLOGRAM SHOWS MORE SPACE ROUND THE SHIP (THE SHIP SHRINKS). THE WHEEL DOES IT TOO.",
+            ),
+            named(
+                Named::HoloIn,
+                "HOLOGRAM CLOSER",
+                "THE HOLOGRAM SHOWS LESS OF THE SPACE ROUND THE SHIP (THE SHIP GROWS).",
+            ),
+            named(
+                Named::Appearance,
+                "ATMOSPHERE LOOK",
+                "CYCLE THE PLANET'S ATMOSPHERE THROUGH ITS PRESETS: DENSITY, CLOUD COVER, CLOUD DECK.",
+            ),
+            named(
+                Named::Design,
+                "LAY OUT THE DASH",
+                "DESIGN MODE: THE MOUSE DRAGS DIALS; A CARD SHOWS THE DIAL UNDER IT AND ITS OWN KEYS.",
+            ),
+            named(
+                Named::Capture,
+                "SCREENSHOT",
+                "SAVE A SCREENSHOT OF THE FRAME TO THE TEMP FOLDER. F12 DOES THE SAME.",
+            ),
+            named(
+                Named::ScaleDown,
+                "RENDER SCALE DOWN",
+                "DRAW THE WORLD A STEP SMALLER FOR SPEED; THE GLASS AND THE TEXT STAY SHARP.",
+            ),
+            named(
+                Named::ScaleUp,
+                "RENDER SCALE UP",
+                "DRAW THE WORLD A STEP LARGER, UP TO FULL SIZE.",
+            ),
+        ],
+    },
+    HelpGroup {
+        name: "ARMS",
+        blurb: "THE GUNS, THE ROCKS, AND THE SHIPS HIDING IN THEM.",
+        entries: &[
+            fixed(
+                "LMB",
+                "FIRE",
+                "FIRE THE GUN",
+                "FIRE THE SELECTED WEAPON AT THE SIGHT. THE CANNON FIRES WHILE HELD; THE RAIL CHARGES.",
+            ),
+            named(
+                Named::Weapon1,
+                "SELECT THE CANNON",
+                "SELECT THE CANNON: FAST SLUGS FROM THE WINGS, HOT WHEN HELD.",
+            ),
+            named(
+                Named::Weapon2,
+                "SELECT THE RAIL",
+                "SELECT THE RAIL: ONE HEAVY SLUG FROM THE NOSE, CHARGED BEFORE IT GOES.",
+            ),
+            named(
+                Named::NextWeapon,
+                "NEXT WEAPON",
+                "CYCLE TO THE NEXT WEAPON THE SHIP IS FITTED WITH.",
+            ),
+        ],
+    },
+    HelpGroup {
+        name: "PANELS",
+        blurb: "THE SHIP'S OWN SCREENS AND THE MENU.",
+        entries: &[
+            fixed(
+                "ESC",
+                "MENU",
+                "SETTINGS MENU",
+                "OPEN OR CLOSE THIS MENU. EVERYTHING IN IT IS SAVED AS YOU CHANGE IT.",
+            ),
+            fixed(
+                "TAB",
+                "NEXT PAGE",
+                "NEXT MENU PAGE",
+                "STEP TO THE NEXT PAGE OF THE MENU.",
+            ),
+            fixed(
+                "F1",
+                "CONTROLS CARD",
+                "THE CONTROLS CARD",
+                "SHOW THE CONTROLS CARD AGAIN: THE ESSENTIAL KEYS ON ONE SCREEN.",
+            ),
+            named(
+                Named::Bay,
+                "SHIP BAY",
+                "OPEN THE BAY: A HOLOGRAM OF THE SHIP WHERE EACH HARDPOINT'S MOUNT IS FITTED.",
+            ),
+            named(
+                Named::Landing,
+                "LANDING MODE",
+                "THE HOOPS CLOSE UP ALONG THE PATH AND THE READOUT JUDGES THE TOUCHDOWN.",
+            ),
+            named(
+                Named::Trajectory,
+                "PATH ON / OFF",
+                "SHOW OR HIDE THE PREDICTED PATH ON THE GLASS.",
+            ),
+            fixed(
+                "+ -",
+                "PANE ZOOM",
+                "ZOOM A PANE",
+                "ZOOM THE MAP OR THE BAY FROM THE KEYBOARD, FOR A MOUSE WITH NO WHEEL.",
+            ),
+        ],
+    },
+];
+
+/// The HELP page's entries, flat, in page order.
+fn help_entries() -> Vec<&'static HelpEntry> {
+    HELP.iter().flat_map(|g| g.entries.iter()).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +443,7 @@ enum Item {
     Guide,
     HullSound,
     Shield,
-    /// The GAUGES page's per-dial block: which dial, and its own numbers.
+    /// The DIALS page's per-dial block: which dial, and its own numbers.
     DialSelect,
     DialSize,
     DialStyle,
@@ -131,6 +452,7 @@ enum Item {
     Camera,
     HoloView,
     HoloSize,
+    HoloRange,
     MapRings,
     MapGrid,
     LookSens,
@@ -161,19 +483,40 @@ enum Item {
     BaySize,
     BaySpin,
     PointerSize,
+    SafeEdge,
+    /// The HELP page: a group heading, a control, the card setting.
+    Heading(usize),
+    Help(usize),
+    ControlsCard,
 }
 
 impl Item {
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
+        match self {
+            Item::Bind(a) => a.name().to_string(),
+            Item::BindNamed(n) => n.name().to_string(),
+            Item::Slot(i) => i.name().to_string(),
+            Item::Mount(h) => h.name().to_string(),
+            Item::Heading(g) => HELP[g].name.to_string(),
+            Item::Help(i) => {
+                let e = help_entries()[i];
+                match e.control {
+                    Control::Axis(a) => a.name().to_string(),
+                    Control::Named(n) => n.name().to_string(),
+                    Control::Fixed(_, name) => name.to_string(),
+                }
+            }
+            other => other.fixed_label().to_string(),
+        }
+    }
+
+    fn fixed_label(self) -> &'static str {
         match self {
             Item::Msaa => "MSAA",
             Item::Scale => "RENDER SCALE",
             Item::AutoScale => "AUTO SCALE",
             Item::Vsync => "VSYNC",
             Item::Quit => "QUIT GAME",
-            Item::Bind(a) => a.name(),
-            Item::BindNamed(n) => n.name(),
-            Item::Slot(i) => i.name(),
             Item::HoopSize => "HOOP SIZE",
             Item::LandingHoops => "LANDING HOOPS",
             Item::CockpitFrame => "CABIN FRAME",
@@ -194,6 +537,7 @@ impl Item {
             Item::Camera => "CAMERA",
             Item::HoloView => "HOLO VIEW",
             Item::HoloSize => "HOLO SIZE",
+            Item::HoloRange => "HOLO RANGE",
             Item::Fov => "FOV",
             Item::GaugeStyle => "GAUGE STYLE",
             Item::GaugesStay => "GAUGES",
@@ -214,13 +558,13 @@ impl Item {
             Item::MimicsHostility => "HOSTILITY",
             Item::HoldGain => "HOLD GAIN",
             Item::HoldFace => "HOLD FACING",
-            Item::Mount(h) => h.name(),
             Item::BayHue => "HOLO HUE",
             Item::BaySaturation => "HOLO COLOUR",
             Item::BayScanlines => "SCANLINES",
-            Item::BaySize => "HOLO SIZE",
-            Item::BaySpin => "HOLO SPIN",
+            Item::BaySize => "BAY HOLO SIZE",
+            Item::BaySpin => "BAY HOLO SPIN",
             Item::PointerSize => "POINTER SIZE",
+            Item::SafeEdge => "SAFE EDGE",
             Item::DialSelect => "DIAL",
             Item::DialSize => "  SIZE",
             Item::DialStyle => "  STYLE",
@@ -232,6 +576,213 @@ impl Item {
             Item::Destination => "DESTINATION",
             Item::SafeDist => "SAFE DISTANCE",
             Item::Engage => "ENGAGE DRIVE",
+            Item::ControlsCard => "CARD AT START",
+            Item::Bind(_)
+            | Item::BindNamed(_)
+            | Item::Slot(_)
+            | Item::Mount(_)
+            | Item::Heading(_)
+            | Item::Help(_) => "",
+        }
+    }
+
+    /// One line on what the row does, for the footer. Every row has one:
+    /// a stranger reads the menu, not the source.
+    fn describe(self) -> String {
+        match self {
+            Item::Bind(a) => help_entries()
+                .into_iter()
+                .find(|e| e.control == Control::Axis(a))
+                .map_or(String::new(), |e| e.what.to_string()),
+            Item::BindNamed(n) => help_entries()
+                .into_iter()
+                .find(|e| e.control == Control::Named(n))
+                .map_or(String::new(), |e| e.what.to_string()),
+            Item::Help(i) => help_entries()[i].what.to_string(),
+            Item::Heading(g) => HELP[g].blurb.to_string(),
+            Item::Slot(i) => match i {
+                Instrument::Speed => "THE SPEED DIAL: WHERE ON THE DASH IT SITS, OR OFF.".to_string(),
+                Instrument::Altitude => "THE ALTIMETER: HEIGHT OVER THE NEAREST BODY. WHERE IT SITS, OR OFF.".to_string(),
+                Instrument::Gyro => "THE GYRO BALL: THE SHIP'S ATTITUDE AGAINST THE WORLD. WHERE IT SITS, OR OFF.".to_string(),
+                Instrument::GForce => "THE G METER: THE LOAD ON THE PILOT. WHERE IT SITS, OR OFF.".to_string(),
+                Instrument::GVector => "THE G VECTOR: WHICH WAY THE LOAD PULLS, ON A CROSS-PLOT. WHERE IT SITS, OR OFF.".to_string(),
+                Instrument::Horizon => "THE HORIZON LINE ON THE GLASS.".to_string(),
+                Instrument::Ladder => "THE PITCH LADDER ON THE BORESIGHT.".to_string(),
+                Instrument::Trajectory => "THE PREDICTED PATH DRAWN AHEAD OF THE SHIP.".to_string(),
+                Instrument::Hoops => "THE HOOPS ALONG THE PATH, A KILOMETRE APART.".to_string(),
+                Instrument::HoopSound => "THE WOMP A HOOP MAKES AS YOU PASS THROUGH IT.".to_string(),
+                Instrument::BodyTags => "FINDER RINGS ROUND THE MOON, THE SUN AND URANUS.".to_string(),
+                Instrument::Readout => "THE TEXT READOUT ON THE GLASS: FRAME RATE, ALTITUDE, SPEED, THE COMPUTER'S STATE.".to_string(),
+                Instrument::Map => "THE SYSTEM MAP IN MINIATURE, A SMALL PANE ON THE GLASS. M OPENS THE FULL MAP.".to_string(),
+            },
+            Item::Mount(h) => format!("{}: A CANNON, A RAIL, OR NOTHING.", h.name()),
+            other => other.fixed_description().to_string(),
+        }
+    }
+
+    fn fixed_description(self) -> &'static str {
+        match self {
+            Item::Msaa => "MULTISAMPLE ANTI-ALIASING: SMOOTHER EDGES FOR MORE GPU WORK.",
+            Item::Scale => "THE WORLD IS DRAWN AT THIS SHARE OF THE SCREEN'S SIZE; THE GLASS STAYS SHARP.",
+            Item::AutoScale => "LET THE RENDER SCALE GOVERN ITSELF DOWN TO HOLD THE FPS FLOOR.",
+            Item::Vsync => "WAIT FOR THE DISPLAY EACH FRAME: NO TEARING, A LITTLE LAG.",
+            Item::Quit => "LEAVE THE GAME. EVERYTHING IS ALREADY SAVED.",
+            Item::HoopSize => "HOW BIG THE PATH'S HOOPS ARE.",
+            Item::LandingHoops => "HOW FAR APART THE HOOPS SIT IN LANDING MODE.",
+            Item::CockpitFrame => "DRAW THE CABIN ROUND YOU AT ALL.",
+            Item::CockpitGlow => "HOW BRIGHT THE CABIN'S LIGHT LINES ARE.",
+            Item::CockpitHull => "HOW OPAQUE THE CABIN'S METAL IS.",
+            Item::CockpitRes => "THE CABIN IS DRAWN AT THIS SHARE OF THE SCENE'S SIZE.",
+            Item::FpsFloor => "THE FRAME RATE THE CABIN GIVES UP DETAIL TO HOLD; OFF FOR NO FLOOR.",
+            Item::Sky => "THE DAYTIME SKY'S STRENGTH LOW OVER A PLANET.",
+            Item::Flare => "THE SUN'S LENS FLARE ON THE GLASS.",
+            Item::Nebula => "THE NEBULA'S GLOW ACROSS THE SKY; OFF FOR NONE.",
+            Item::NebulaSeed => "WHICH NEBULA: THE SEED PICKS WHERE THE CLOUDS SIT AND THEIR SHAPES.",
+            Item::NebulaScale => "HOW FINE THE GAS IS: BROAD VEILS TO KNOTS.",
+            Item::NebulaDensity => "HOW MUCH OF A CLOUD IS GAS: THIN WISPS TO SOLID BANKS.",
+            Item::NebulaClouds => "HOW MANY CLOUDS THERE ARE.",
+            Item::NebulaHue => "THE FIRST OF THE TWO HUES THE GAS DRIFTS BETWEEN, DEGREES ROUND THE WHEEL.",
+            Item::NebulaHue2 => "THE SECOND HUE THE GAS DRIFTS BETWEEN.",
+            Item::NebulaSpread => "HOW FAR EACH CLOUD SPREADS: A KNOT TO THE WHOLE SKY.",
+            Item::Camera => "THE VIEW: FROM THE COCKPIT, OR A CHASE CAMERA OUTSIDE THE SHIP.",
+            Item::HoloView => "THE HOLO3PP: A HOLOGRAM OF THE SHIP AND ITS SURROUNDINGS ON THE DASH.",
+            Item::HoloSize => "HOW BIG THE HOLOGRAM STANDS ON THE DASH.",
+            Item::HoloRange => "HOW MUCH SPACE THE HOLOGRAM SHOWS ROUND THE SHIP. WIDER: MORE ROOM, A SMALLER SHIP.",
+            Item::Fov => "THE VERTICAL FIELD OF VIEW. THE GLASS AND ITS DIALS DO NOT CHANGE WITH IT.",
+            Item::GaugeStyle => "HOW THE DIALS ARE MADE: HOLOGRAMS, JET BOWLS, FLUSH DIALS, OR WARTHOG STEAM GAUGES.",
+            Item::GaugesStay => "GAUGES STAY LIT, OR FADE WHEN THEY HAVE NOTHING TO SAY.",
+            Item::Guide => "THE DESIGN GUIDE: THE SLOTS AND THE SAFE EDGE DRAWN ON THE GLASS.",
+            Item::HullSound => "THE HULL'S OWN VOICES: CREAK AND CRACKLE UNDER SPEED, STRIKES.",
+            Item::Shield => "HOW BRIGHT THE FORCE FIELD FLARES ON A STRIKE; OFF FOR NONE.",
+            Item::ArmsPower => "THE REACTOR'S SHARE FOR THE GUNS: MORE RATE, LESS FOR THE DRIVES.",
+            Item::ArmsGlow => "HOW BRIGHT THE MUZZLE FLASH, THE TRACERS AND THE BURSTS ARE.",
+            Item::ArmsSight => "THE GUN SIGHT ON THE GLASS: OFF, OR HOW BRIGHT.",
+            Item::CamShake => "THE CAMERA ON YOUR HEAD: SWAY UNDER LOAD, TREMOR UNDER THRUST, JOLTS FROM THE GUNS.",
+            Item::DriveShake => "HOW HARD THE CHAOS DRIVE JOSTLES THE SHIP ON THE WAY TO THE SLIP.",
+            Item::ArmsShards => "HOW MANY SHARDS A BROKEN ROCK THROWS; OFF FOR NONE.",
+            Item::ArmsShardLife => "HOW LONG THE SHARDS LAST.",
+            Item::ArmsScarSize => "THE CRATERS A HIT LEAVES ON A ROCK; OFF FOR NONE.",
+            Item::ArmsScarCool => "HOW LONG A CRATER TAKES TO COOL FROM WHITE TO DARK.",
+            Item::ArmsOre => "WHAT THE GUNS BRING IN OFF THE ROCKS; OFF FOR NONE.",
+            Item::MimicsChance => "THE SHARE OF ROCKS THAT ARE SHIPS IN A SHROUD.",
+            Item::MimicsHostility => "THE SHARE OF THOSE SHIPS THAT SHOOT RATHER THAN HAIL.",
+            Item::HoldGain => "HOW HARD THE HOLD LOCK PULLS THE SHIP TO ITS TARGET.",
+            Item::HoldFace => "THE HOLD KEEPS THE NOSE ON THE TARGET TOO.",
+            Item::BayHue => "THE BAY HOLOGRAM'S HUE, DEGREES ROUND THE WHEEL.",
+            Item::BaySaturation => "HOW COLOURED THE BAY HOLOGRAM IS.",
+            Item::BayScanlines => "HOW MANY SCANLINES THE BAY HOLOGRAM SHOWS; 0 FOR NONE.",
+            Item::BaySize => "HOW BIG THE SHIP IS DRAWN IN THE BAY.",
+            Item::BaySpin => "THE BAY HOLOGRAM TURNS BY ITSELF WHEN YOUR HAND IS OFF IT.",
+            Item::PointerSize => "THE MOUSE POINTER'S SIZE ON THE PANELS.",
+            Item::SafeEdge => "A MARGIN KEPT CLEAR AT THE RIM FOR A DISPLAY WHOSE EDGES ARE HIDDEN OR BENT.",
+            Item::DialSelect => "WHICH DIAL THE ROWS BELOW SET.",
+            Item::DialSize => "THIS DIAL'S SIZE, AS A MULTIPLE OF THE STOCK DIAL.",
+            Item::DialStyle => "THIS DIAL'S OWN STYLE, OR THE COCKPIT'S (AUTO).",
+            Item::DialFade => "THIS DIAL STAYS LIT, FADES, OR DOES AS THE COCKPIT DOES (AUTO).",
+            Item::DialTilt => "THIS DIAL LEANED TOWARD YOU ABOUT ITS OWN AXIS, DEGREES.",
+            Item::MapRings => "RINGS DRAWN ROUND EACH BODY ON THE MAP.",
+            Item::MapGrid => "THE MAP'S REFERENCE GRID.",
+            Item::LookSens => "HOW FAR THE HEAD TURNS PER MOUSE MOVEMENT.",
+            Item::Destination => "WHERE THE WORMHOLE DRIVE TAKES YOU.",
+            Item::SafeDist => "HOW FAR OUT FROM THE DESTINATION YOU ARRIVE, IN ITS RADII.",
+            Item::Engage => "CLOSE THE MENU AND FIRE THE WORMHOLE DRIVE AT THIS PLAN.",
+            Item::ControlsCard => "SHOW THE CONTROLS CARD AT EVERY START. F1 SHOWS IT ANY TIME.",
+            Item::Bind(_)
+            | Item::BindNamed(_)
+            | Item::Slot(_)
+            | Item::Mount(_)
+            | Item::Heading(_)
+            | Item::Help(_) => "",
+        }
+    }
+
+    /// The settings-file keys this row edits (none for a heading, an
+    /// action row, or a help line). The coverage test walks these.
+    #[cfg(test)]
+    fn keys(self) -> Vec<String> {
+        let one = |k: &str| vec![k.to_string()];
+        match self {
+            Item::Msaa => one("graphics.msaa"),
+            Item::Scale => one("graphics.scale"),
+            Item::AutoScale => one("graphics.auto-scale"),
+            Item::Vsync => one("graphics.vsync"),
+            Item::Bind(a) => vec![format!("control.{}", a.key())],
+            Item::BindNamed(n) => vec![format!("control.{}", n.key())],
+            Item::Slot(i) => vec![format!("ui.{}", i.key())],
+            Item::HoopSize => one("ui.hoop-size"),
+            Item::LandingHoops => one("ui.landing-hoops"),
+            Item::CockpitFrame => one("cockpit.frame"),
+            Item::CockpitGlow => one("cockpit.glow"),
+            Item::CockpitHull => one("cockpit.hull"),
+            Item::CockpitRes => one("cockpit.res"),
+            Item::FpsFloor => one("graphics.fps-floor"),
+            Item::Sky => one("graphics.sky"),
+            Item::Flare => one("graphics.flare"),
+            Item::Nebula => one("graphics.nebula"),
+            Item::NebulaSeed => one("graphics.nebula-seed"),
+            Item::NebulaScale => one("graphics.nebula-scale"),
+            Item::NebulaDensity => one("graphics.nebula-density"),
+            Item::NebulaClouds => one("graphics.nebula-clouds"),
+            Item::NebulaHue => one("graphics.nebula-hue"),
+            Item::NebulaHue2 => one("graphics.nebula-hue2"),
+            Item::NebulaSpread => one("graphics.nebula-spread"),
+            Item::Fov => one("graphics.fov"),
+            Item::GaugeStyle => one("ui.gauge-style"),
+            Item::GaugesStay => one("ui.gauges"),
+            Item::Guide => one("ui.guide"),
+            Item::HullSound => one("sound.hull"),
+            Item::Shield => one("ui.shield"),
+            Item::DialSize => Instrument::ALL
+                .iter()
+                .map(|i| format!("ui.{}.size", i.key()))
+                .collect(),
+            Item::DialStyle => Instrument::ALL
+                .iter()
+                .map(|i| format!("ui.{}.style", i.key()))
+                .collect(),
+            Item::DialFade => Instrument::ALL
+                .iter()
+                .map(|i| format!("ui.{}.fade", i.key()))
+                .collect(),
+            Item::DialTilt => Instrument::ALL
+                .iter()
+                .map(|i| format!("ui.{}.tilt", i.key()))
+                .collect(),
+            Item::Camera => one("camera.chase"),
+            Item::HoloView => one("holo.view"),
+            Item::HoloSize => one("holo.size"),
+            Item::HoloRange => one("holo.range"),
+            Item::MapRings => one("map.rings"),
+            Item::MapGrid => one("map.grid"),
+            Item::LookSens => one("control.look-sens"),
+            Item::Destination => one("warp.destination"),
+            Item::SafeDist => one("warp.safe-radii"),
+            Item::ArmsPower => one("arms.power"),
+            Item::ArmsGlow => one("arms.glow"),
+            Item::ArmsShards => one("arms.shards"),
+            Item::ArmsShardLife => one("arms.shard-life"),
+            Item::ArmsScarSize => one("arms.scar-size"),
+            Item::ArmsScarCool => one("arms.scar-cool"),
+            Item::ArmsOre => one("arms.ore"),
+            Item::MimicsChance => one("mimics.chance"),
+            Item::MimicsHostility => one("mimics.hostility"),
+            Item::HoldGain => one("hold.gain"),
+            Item::HoldFace => one("hold.face"),
+            Item::ArmsSight => one("arms.sight"),
+            Item::CamShake => one("cam.shake"),
+            Item::DriveShake => one("cam.drive-shake"),
+            Item::Mount(h) => vec![format!("ship.hardpoint.{}", h as usize)],
+            Item::BayHue => one("ship.holo-hue"),
+            Item::BaySaturation => one("ship.holo-saturation"),
+            Item::BayScanlines => one("ship.holo-scanlines"),
+            Item::BaySize => one("ship.holo-size"),
+            Item::BaySpin => one("ship.holo-spin"),
+            Item::PointerSize => one("ui.pointer-size"),
+            Item::SafeEdge => one("ui.safe-edge"),
+            Item::ControlsCard => one("ui.controls-card"),
+            Item::Quit | Item::DialSelect | Item::Engage | Item::Heading(_) | Item::Help(_) => {
+                vec![]
+            }
         }
     }
 
@@ -248,10 +799,10 @@ impl Item {
                 Some(_) => "DRAGGED".to_string(),
                 None => s.layout.get(i).name().to_string(),
             },
-            Item::HoopSize => format!("{:.2}x", s.hoop_size),
-            Item::LandingHoops => format!("{:.0}M", s.landing_spacing_m),
+            Item::HoopSize => format!("{:.2}X", s.hoop_size),
+            Item::LandingHoops => format!("{:.0} M", s.landing_spacing_m),
             Item::CockpitFrame => if s.cockpit_frame { "ON" } else { "OFF" }.to_string(),
-            Item::CockpitGlow => format!("{:.2}x", s.cockpit_glow),
+            Item::CockpitGlow => format!("{:.2}X", s.cockpit_glow),
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
             Item::Sky => format!("{:.0}%", s.sky * 100.0),
@@ -266,9 +817,9 @@ impl Item {
             Item::NebulaScale => format!("{:.1}", s.nebula_scale),
             Item::NebulaDensity => format!("{:.0}%", s.nebula_density * 100.0),
             Item::NebulaClouds => format!("{}", s.nebula_clouds),
-            Item::NebulaHue => format!("{:.0}", s.nebula_hue * 360.0),
-            Item::NebulaHue2 => format!("{:.0}", s.nebula_hue2 * 360.0),
-            Item::NebulaSpread => format!("{:.2}x", s.nebula_spread),
+            Item::NebulaHue => format!("{:.0} DEG", s.nebula_hue * 360.0),
+            Item::NebulaHue2 => format!("{:.0} DEG", s.nebula_hue2 * 360.0),
+            Item::NebulaSpread => format!("{:.2}X", s.nebula_spread),
             Item::Flare => {
                 if s.flare > 0.0 {
                     format!("{:.0}%", s.flare * 100.0)
@@ -278,15 +829,16 @@ impl Item {
             }
             Item::FpsFloor => {
                 if s.fps_floor > 0.0 {
-                    format!("{:.0}", s.fps_floor)
+                    format!("{:.0} FPS", s.fps_floor)
                 } else {
                     "OFF".to_string()
                 }
             }
             Item::Fov => format!("{:.0} DEG", s.fov),
-            Item::Camera => if s.camera_chase { "CHASE" } else { "FIRST" }.to_string(),
+            Item::Camera => if s.camera_chase { "CHASE" } else { "COCKPIT" }.to_string(),
             Item::HoloView => if s.holo_view { "ON" } else { "OFF" }.to_string(),
             Item::HoloSize => format!("{:.0}%", s.holo_size * 100.0),
+            Item::HoloRange => format!("{:.1}X", s.holo_range),
             Item::GaugeStyle => s.gauge_style.name().to_string(),
             Item::GaugesStay => if s.gauges_stay { "STAY" } else { "FADE" }.to_string(),
             Item::Guide => if s.guide { "ON" } else { "OFF" }.to_string(),
@@ -298,14 +850,14 @@ impl Item {
                     "OFF".to_string()
                 }
             }
-            Item::DialSelect => String::new(),
-            Item::DialSize => String::new(),
-            Item::DialStyle => String::new(),
-            Item::DialFade => String::new(),
-            Item::DialTilt => String::new(),
+            Item::DialSelect
+            | Item::DialSize
+            | Item::DialStyle
+            | Item::DialFade
+            | Item::DialTilt => String::new(),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
-            Item::LookSens => format!("{:.2}", s.look_sensitivity),
+            Item::LookSens => format!("{:.2}X", s.look_sensitivity),
             Item::Destination => s.plan.dest.name().to_string(),
             // Uranus is arrived at in its belt whatever the distance says.
             Item::SafeDist => {
@@ -379,12 +931,26 @@ impl Item {
                 }
             }
             Item::Mount(h) => s.mounts[h as usize].name().to_string(),
-            Item::BayHue => format!("{:.0}", s.bay_hue * 360.0),
+            Item::BayHue => format!("{:.0} DEG", s.bay_hue * 360.0),
             Item::BaySaturation => format!("{:.0}%", s.bay_saturation * 100.0),
             Item::BayScanlines => format!("{:.0}", s.bay_scanlines),
             Item::BaySize => format!("{:.0}%", s.bay_size * 100.0),
             Item::BaySpin => if s.bay_spin { "ON" } else { "OFF" }.to_string(),
             Item::PointerSize => format!("{:.0}%", s.pointer_size / 0.045 * 100.0),
+            Item::SafeEdge => {
+                if s.layout.safe_edge > 0.0 {
+                    format!("{:.0}%", s.layout.safe_edge * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::ControlsCard => if s.controls_card { "ON" } else { "OFF" }.to_string(),
+            Item::Heading(_) => String::new(),
+            Item::Help(i) => match help_entries()[i].control {
+                Control::Axis(a) => key_name(s.bindings.key_for(a)).to_string(),
+                Control::Named(n) => key_name(s.bindings.named(n)).to_string(),
+                Control::Fixed(key, _) => key.to_string(),
+            },
         }
     }
 
@@ -401,18 +967,24 @@ fn path_item(i: Instrument) -> bool {
     )
 }
 
-/// Rows of text the bitmap can hold (64 px / 6 px pitch), minus the
-/// header and the footer.
-const VISIBLE_ITEMS: usize = 8;
-const ROW_PX: usize = 6;
-/// Characters per row (128 px / 4 px advance).
-const COLS: usize = 32;
+/// Rows of items the card shows at once.
+pub const VISIBLE_ITEMS: usize = 12;
+/// Font pixels per row: the text's line pitch.
+pub const ROW_PX: usize = LINE;
+/// The card's rows: the header, the items, the footer, two lines of
+/// description.
+pub const CARD_LINES: usize = 1 + VISIBLE_ITEMS + 1 + 2;
+/// The description's lines.
+const DESCRIPTION_LINES: usize = 2;
+/// The gap the HELP page keeps for the gloss column.
+const HELP_KEY_COLS: usize = 10;
+const HELP_NAME_COLS: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Menu {
     pub open: bool,
-    /// A one-page panel (the DRIVE panel beside the map): no paging, its
-    /// own header.
+    /// A one-page panel (the DRIVE panel beside the map, the bay's
+    /// card): no paging, its own header, the narrow width.
     standalone: bool,
     page: Page,
     cursor: usize,
@@ -421,7 +993,7 @@ pub struct Menu {
     rebinding: bool,
     /// Which of MSAA_CHOICES this GPU can render at (set at start).
     msaa_ok: [bool; 4],
-    /// The dial the GAUGES page's per-dial block edits.
+    /// The dial the DIALS page's per-dial block edits.
     dial: Instrument,
 }
 
@@ -462,18 +1034,13 @@ impl Menu {
                 Item::Scale,
                 Item::AutoScale,
                 Item::Vsync,
+                Item::FpsFloor,
                 Item::Fov,
                 Item::Camera,
                 Item::HoloView,
                 Item::HoloSize,
-                Item::BayHue,
-                Item::BaySaturation,
-                Item::BayScanlines,
-                Item::BaySize,
-                Item::BaySpin,
-                Item::PointerSize,
+                Item::HoloRange,
                 Item::CockpitRes,
-                Item::FpsFloor,
                 Item::Sky,
                 Item::Flare,
                 Item::Nebula,
@@ -484,6 +1051,7 @@ impl Menu {
                 Item::NebulaHue,
                 Item::NebulaHue2,
                 Item::NebulaSpread,
+                Item::PointerSize,
                 Item::Quit,
             ],
             Page::Controls => {
@@ -496,7 +1064,7 @@ impl Menu {
             }
             // The cabin, in groups: the ship itself (frame, glow, metal,
             // shield, its sounds), then everything about the path and its
-            // hoops together. No safe edge: the glass has no margin.
+            // hoops together, the camera on the head, the safe edge.
             Page::Cockpit => vec![
                 Item::CockpitFrame,
                 Item::CockpitGlow,
@@ -510,6 +1078,7 @@ impl Menu {
                 Item::LandingHoops,
                 Item::CamShake,
                 Item::DriveShake,
+                Item::SafeEdge,
             ],
             // The gauges: the cockpit-wide look, then one dial's own
             // numbers, then where each instrument sits (or OFF) — the
@@ -555,7 +1124,34 @@ impl Menu {
                 Item::MapRings,
                 Item::MapGrid,
             ],
-            Page::Ship => Hardpoint::ALL.iter().map(|&h| Item::Mount(h)).collect(),
+            // The bay's own card is the fit alone (the hologram is the
+            // picture); the menu's SHIP page adds the hologram's look.
+            Page::Ship => {
+                let mut v: Vec<Item> = Hardpoint::ALL.iter().map(|&h| Item::Mount(h)).collect();
+                if !self.standalone {
+                    v.extend([
+                        Item::BayHue,
+                        Item::BaySaturation,
+                        Item::BayScanlines,
+                        Item::BaySize,
+                        Item::BaySpin,
+                    ]);
+                }
+                v
+            }
+            Page::Help => {
+                let mut v = Vec::new();
+                let mut n = 0;
+                for (g, group) in HELP.iter().enumerate() {
+                    v.push(Item::Heading(g));
+                    for _ in group.entries {
+                        v.push(Item::Help(n));
+                        n += 1;
+                    }
+                }
+                v.push(Item::ControlsCard);
+                v
+            }
         }
     }
 
@@ -566,9 +1162,10 @@ impl Menu {
         }
     }
 
-    /// The MAP page is showing: draw the system map under the text.
+    /// The DRIVE panel is showing (the settings menu's MAP page is not it).
+    #[cfg(test)]
     pub fn map_open(&self) -> bool {
-        self.open && self.page == Page::Map
+        self.open && self.standalone && self.page == Page::Map
     }
 
     /// The DRIVE panel: the map's own controls, a one-page menu of its own
@@ -603,6 +1200,13 @@ impl Menu {
         self.rebinding = false;
     }
 
+    /// Open on a page.
+    #[cfg(test)]
+    pub fn open_on(&mut self, page: Page) {
+        self.open = true;
+        self.set_page(page);
+    }
+
     fn set_page(&mut self, page: Page) {
         self.page = page;
         self.cursor = 0;
@@ -610,13 +1214,48 @@ impl Menu {
         self.rebinding = false;
     }
 
-    /// A key press while the menu is open.
-    /// A click on the panel's row `row` (0 is the header): the cursor
+    /// The card's width in characters: the menu's, or a side panel's.
+    pub fn cols(&self) -> usize {
+        if self.standalone {
+            PANEL_COLS
+        } else {
+            MENU_COLS
+        }
+    }
+
+    /// The rows an item may use: two characters short of the card for
+    /// the scrollbar's gutter.
+    fn item_cols(&self) -> usize {
+        self.cols() - 2
+    }
+
+    /// How many item rows the card shows: the menu's twelve, or every
+    /// row of a side panel (they are short).
+    fn visible(&self) -> usize {
+        if self.standalone {
+            self.items().len().max(1)
+        } else {
+            VISIBLE_ITEMS
+        }
+    }
+
+    /// The card's size in font pixels: fixed for the menu, so it does
+    /// not breathe as the pilot scrolls; a side panel is its rows.
+    pub fn extent(&self) -> (usize, usize) {
+        let lines = if self.standalone {
+            1 + self.visible() + 1 + DESCRIPTION_LINES
+        } else {
+            CARD_LINES
+        };
+        (block_width(self.cols()), block_height(lines))
+    }
+
+    /// A click on the card's row `row` (0 is the header): the cursor
     /// goes there and the item is adjusted forward — the pointer's way
-    /// through a menu.
+    /// through a menu. A click on the header's tabs pages.
     pub fn click(&mut self, row: usize, settings: &mut Settings) -> MenuEvent {
         let items = self.items();
-        if row == 0 || row > VISIBLE_ITEMS {
+        if row == 0 || row > self.visible() {
             return MenuEvent::Nothing;
         }
         let idx = self.scroll + row - 1;
@@ -635,6 +1274,7 @@ impl Menu {
         }
     }
 
+    /// A key press while the menu is open.
     pub fn key(&mut self, key: KeyCode, settings: &mut Settings) -> MenuEvent {
         let items = self.items();
         let item = items[self.cursor.min(items.len() - 1)];
@@ -677,6 +1317,16 @@ impl Menu {
             }
             KeyCode::ArrowDown => {
                 self.cursor = (self.cursor + 1) % items.len();
+                self.keep_cursor_visible();
+                MenuEvent::Nothing
+            }
+            KeyCode::PageUp => {
+                self.cursor = self.cursor.saturating_sub(self.visible());
+                self.keep_cursor_visible();
+                MenuEvent::Nothing
+            }
+            KeyCode::PageDown => {
+                self.cursor = (self.cursor + self.visible()).min(items.len() - 1);
                 self.keep_cursor_visible();
                 MenuEvent::Nothing
             }
@@ -1183,15 +1833,39 @@ impl Menu {
                 s.hoop_size = next;
                 MenuEvent::Changed(Change::Layout)
             }
-            Item::Quit | Item::Bind(_) | Item::BindNamed(_) => MenuEvent::Nothing,
+            Item::HoloRange => step_f32(
+                &mut s.holo_range,
+                forward,
+                crate::settings::HOLO_RANGE_STEP,
+                crate::settings::HOLO_RANGE_MIN,
+                crate::settings::HOLO_RANGE_MAX,
+            ),
+            Item::SafeEdge => {
+                let before = s.layout.safe_edge;
+                let next = (before + if forward { 0.02 } else { -0.02 })
+                    .clamp(0.0, crate::cockpit::SAFE_EDGE_MAX);
+                if (next - before).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.layout.set_safe_edge(next);
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::ControlsCard => {
+                s.controls_card = !s.controls_card;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::Quit | Item::Bind(_) | Item::BindNamed(_) | Item::Heading(_) | Item::Help(_) => {
+                MenuEvent::Nothing
+            }
         }
     }
 
     fn keep_cursor_visible(&mut self) {
+        let visible = self.visible();
         if self.cursor < self.scroll {
             self.scroll = self.cursor;
-        } else if self.cursor >= self.scroll + VISIBLE_ITEMS {
-            self.scroll = self.cursor + 1 - VISIBLE_ITEMS;
+        } else if self.cursor >= self.scroll + visible {
+            self.scroll = self.cursor + 1 - visible;
         }
     }
 
@@ -1226,12 +1900,14 @@ impl Menu {
             };
             header.push_str(&format!("[{}]  {title}", self.page.name()));
         } else {
-            // Short names, so four pages fit the row.
-            for p in Page::ALL {
-                if p == self.page {
+            for (i, p) in Page::ALL.iter().enumerate() {
+                if i > 0 {
+                    header.push(' ');
+                }
+                if *p == self.page {
                     header.push_str(&format!("[{}]", p.short()));
                 } else {
-                    header.push_str(&format!(" {} ", p.short()));
+                    header.push_str(p.short());
                 }
             }
         }
@@ -1239,30 +1915,69 @@ impl Menu {
     }
 
     /// One item's row: the cursor mark, the label, the value right-aligned
-    /// — always exactly COLS wide.
+    /// — always exactly `item_cols` wide. A HELP line is the key, the
+    /// control, and its gloss; a heading is its name alone.
     fn line(&self, item: Item, selected: bool, s: &Settings) -> String {
-        let value = if selected && self.rebinding {
-            "PRESS KEY".to_string()
-        } else {
-            self.value_of(item, s)
-        };
-        let mark = if selected { ">" } else { " " };
-        let label = item.label();
-        let pad = COLS.saturating_sub(1 + label.len() + value.len()).max(1);
-        format!("{mark}{label}{}{value}", " ".repeat(pad))
-    }
-
-    fn footer(&self) -> &'static str {
-        if self.rebinding {
-            "ESC CANCEL"
-        } else {
-            match self.page {
-                Page::Controls => "TAB PAGE  ENTER BIND  ESC BACK",
-                Page::Map => "< > SET  ENTER ENGAGE  M CLOSE",
-                Page::Ship => "CLICK A SLOT  DRAG TURN  B CLOSE",
-                _ => "TAB PAGE  < > ADJUST  ESC BACK",
+        let cols = self.item_cols();
+        let mark = if selected { "\u{25C6}" } else { " " };
+        match item {
+            Item::Heading(_) => {
+                let label = item.label();
+                format!("{mark}{label:<w$}", w = cols - 1)
+            }
+            Item::Help(i) => {
+                let e = help_entries()[i];
+                let key = item.value(s);
+                let name = item.label();
+                let line = format!(
+                    "{mark}{key:<k$}{name:<n$}{}",
+                    e.gloss,
+                    k = HELP_KEY_COLS,
+                    n = HELP_NAME_COLS
+                );
+                format!("{line:<w$}", w = cols)
+            }
+            _ => {
+                let value = if selected && self.rebinding {
+                    "PRESS A KEY".to_string()
+                } else {
+                    self.value_of(item, s)
+                };
+                let label = item.label();
+                let pad = cols
+                    .saturating_sub(1 + label.chars().count() + value.chars().count())
+                    .max(1);
+                format!("{mark}{label}{}{value}", " ".repeat(pad))
             }
         }
+    }
+
+    /// The footer: where the cursor is in the list, and the keys.
+    fn footer(&self) -> String {
+        if self.rebinding {
+            return "PRESS THE KEY TO BIND   ESC CANCEL".to_string();
+        }
+        let keys = match self.page {
+            _ if self.standalone && self.page == Page::Map => "< > SET  ENTER ENGAGE  M CLOSE",
+            _ if self.standalone => "CLICK A SLOT  DRAG TURN  B CLOSE",
+            Page::Controls => "TAB PAGE  ENTER BIND  ESC BACK",
+            Page::Help => "TAB PAGE  UP DOWN READ  ESC BACK",
+            _ => "TAB PAGE  < > ADJUST  ESC BACK",
+        };
+        if self.standalone {
+            keys.to_string()
+        } else {
+            format!("ROW {}/{}  {keys}", self.cursor + 1, self.items().len())
+        }
+    }
+
+    /// The chosen row's description, wrapped to the card.
+    fn description(&self) -> Vec<String> {
+        let items = self.items();
+        let item = items[self.cursor.min(items.len() - 1)];
+        let mut lines = wrap(&item.describe(), self.cols());
+        lines.truncate(DESCRIPTION_LINES);
+        lines
     }
 
     /// The chosen row's top and height in font pixels, for the card's band.
@@ -1271,25 +1986,50 @@ impl Menu {
         ((row * ROW_PX) as f32, ROW_PX as f32)
     }
 
+    /// The scrollbar beside the rows, font px, when the list is longer
+    /// than the card.
+    pub fn scrollbar(&self) -> Option<Scrollbar> {
+        let n = self.items().len();
+        let visible = self.visible();
+        if n <= visible {
+            return None;
+        }
+        let top = ROW_PX as f32;
+        let bottom = ((1 + visible) * ROW_PX) as f32 - 2.0;
+        let span = bottom - top;
+        let len = (span * visible as f32 / n as f32).max(4.0);
+        let at = top + (span - len) * self.scroll as f32 / (n - visible) as f32;
+        Some(Scrollbar {
+            track: (top, bottom),
+            thumb: (at, at + len),
+        })
+    }
+
+    /// The rules: under the header, over the footer.
+    pub fn rules(&self) -> [Option<f32>; 2] {
+        let visible = self.visible();
+        [
+            Some(ROW_PX as f32 - 1.5),
+            Some(((1 + visible) * ROW_PX) as f32 - 1.5),
+        ]
+    }
+
     /// Draw the menu into the text bitmap.
     pub fn render(&self, text: &mut TextBitmap, s: &Settings) {
         text.clear();
-        text.draw(0, 0, &self.header());
+        text.draw_line(0, 0, &self.header());
 
         let items = self.items();
-        let end = (self.scroll + VISIBLE_ITEMS).min(items.len());
+        let visible = self.visible();
+        let end = (self.scroll + visible).min(items.len());
         for (row, idx) in (self.scroll..end).enumerate() {
-            let y = (row + 1) * ROW_PX;
-            text.draw(0, y, &self.line(items[idx], idx == self.cursor, s));
+            text.draw_line(0, row + 1, &self.line(items[idx], idx == self.cursor, s));
         }
-        // Scroll marks.
-        if self.scroll > 0 {
-            text.draw(124, ROW_PX, "^");
+        let footer_line = 1 + visible;
+        text.draw_line(0, footer_line, &self.footer());
+        for (i, line) in self.description().iter().enumerate() {
+            text.draw_line(0, footer_line + 1 + i, line);
         }
-        if end < items.len() {
-            text.draw(124, VISIBLE_ITEMS * ROW_PX, "V");
-        }
-        text.draw(0, (VISIBLE_ITEMS + 1) * ROW_PX, self.footer());
     }
 }
 
@@ -1297,6 +2037,8 @@ impl Menu {
 mod tests {
     use super::*;
     use crate::cockpit::Slot;
+    use crate::settings::{key_matches, DRAGGED_KEYS, KEYS};
+    use farfall_render::text::{has_glyph, COLS, ROWS};
 
     #[test]
     fn escape_closes_and_tab_pages() {
@@ -1355,6 +2097,7 @@ mod tests {
         m.key(KeyCode::Tab, &mut s); // controls, cursor on thrust-forward
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Nothing);
         assert!(m.rebinding);
+        assert!(m.footer().contains("ESC CANCEL"));
         assert_eq!(m.key(KeyCode::Tab, &mut s), MenuEvent::Nothing); // reserved: ignored
         assert!(m.rebinding);
         assert_eq!(
@@ -1372,7 +2115,7 @@ mod tests {
         m.toggle();
         m.key(KeyCode::Tab, &mut s);
         m.key(KeyCode::Tab, &mut s);
-        m.key(KeyCode::Tab, &mut s); // gauges: style, stay, guide, the dial block, the slots
+        m.key(KeyCode::Tab, &mut s); // dials: style, stay, guide, the dial block, the slots
         assert_eq!(m.page, Page::Gauges);
         let items = m.items();
         let at = |it: Item| items.iter().position(|&x| x == it).unwrap();
@@ -1413,8 +2156,10 @@ mod tests {
             MenuEvent::Changed(Change::Layout)
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
-        m.key(KeyCode::Tab, &mut s); // on to ARMS
-        m.key(KeyCode::Tab, &mut s); // and back round to graphics
+        for _ in 0..(Page::ALL.len() - 3) {
+            m.key(KeyCode::Tab, &mut s); // round through ARMS, MAP, SHIP, HELP
+        }
+        assert_eq!(m.page, Page::Graphics);
         for _ in 0..m.items().len() - 1 {
             m.key(KeyCode::ArrowDown, &mut s);
         }
@@ -1430,49 +2175,123 @@ mod tests {
             hoop_size: HOOP_SIZE_MAX,
             cockpit_glow: 10.0,
             look_sensitivity: 10.0,
+            holo_range: crate::settings::HOLO_RANGE_MAX,
             ..Default::default()
         };
         s.layout.set_free(Instrument::Speed, [0.0, 0.0]);
+        s.layout.set_safe_edge(0.3);
         for d in s.dials.iter_mut() {
             d.size = crate::settings::DIAL_SIZE_MAX;
             d.tilt_deg = crate::settings::TILT_MIN;
             d.style = Some(crate::settings::GaugeStyle::Dial);
             d.stay = Some(false);
         }
+        // The longest key names on every bind.
+        let long = [
+            KeyCode::Backquote,
+            KeyCode::Backslash,
+            KeyCode::BracketLeft,
+            KeyCode::BracketRight,
+            KeyCode::NumpadEnter,
+            KeyCode::ContextMenu,
+        ];
+        for (i, a) in Action::ALL.iter().enumerate() {
+            s.bindings.bind(*a, long[i % long.len()]);
+        }
+        for (i, n) in Named::ALL.iter().enumerate() {
+            s.bindings.bind_named(*n, long[(i + 3) % long.len()]);
+        }
         s
     }
 
+    /// Nothing cut off, ever: every header, every row with its full
+    /// value, every footer and every description fits the card, on
+    /// every page, for the menu and both side panels — and the card
+    /// itself fits the bitmap.
     #[test]
-    fn every_row_of_every_page_fits_the_panel() {
+    fn every_row_of_every_page_fits_the_card() {
         for s in [Settings::default(), widest_settings()] {
             for mut m in [Menu::new(), Menu::map_panel(), Menu::ship_panel()] {
                 m.toggle();
                 for _ in 0..Page::ALL.len() {
+                    let cols = m.cols();
                     assert!(
-                        m.header().len() <= COLS,
+                        m.header().chars().count() <= cols,
                         "{} page header is too wide: {:?}",
                         m.page.name(),
                         m.header()
                     );
-                    assert!(m.footer().len() <= COLS, "{:?}", m.footer());
-                    for item in m.items() {
+                    let items = m.items();
+                    for (idx, item) in items.iter().enumerate() {
+                        m.set_cursor(idx);
+                        assert!(
+                            m.footer().chars().count() <= cols,
+                            "{} footer: {:?}",
+                            m.page.name(),
+                            m.footer()
+                        );
+                        let desc = item.describe();
+                        assert!(!desc.trim().is_empty(), "{item:?} has no description");
+                        let lines = wrap(&desc, cols);
+                        assert!(
+                            lines.len() <= DESCRIPTION_LINES,
+                            "{item:?}'s description needs {} lines: {desc:?}",
+                            lines.len()
+                        );
+                        for c in desc.chars() {
+                            assert!(
+                                c == ' ' || has_glyph(c),
+                                "{item:?}'s description uses {c:?}, which has no glyph"
+                            );
+                        }
                         for selected in [false, true] {
-                            let line = m.line(item, selected, &s);
+                            let line = m.line(*item, selected, &s);
                             assert_eq!(
-                                line.len(),
-                                COLS,
+                                line.chars().count(),
+                                m.item_cols(),
                                 "{} page, {:?}: {line:?}",
                                 m.page.name(),
                                 item
                             );
                             // Label and value never run into each other.
-                            assert!(line[1 + item.label().len()..].starts_with(' '), "{line:?}");
+                            let label = item.label();
+                            if !matches!(item, Item::Help(_) | Item::Heading(_)) {
+                                let after: String =
+                                    line.chars().skip(1 + label.chars().count()).collect();
+                                assert!(after.starts_with(' '), "{line:?}");
+                                let value = m.value_of(*item, &s);
+                                assert!(line.ends_with(&value), "{line:?} lost {value:?}");
+                            }
                         }
                     }
+                    let (w, h) = m.extent();
+                    assert!(w <= COLS && h <= ROWS, "{} card {w}x{h}", m.page.name());
                     m.key(KeyCode::Tab, &mut s.clone());
                 }
             }
         }
+    }
+
+    /// The card is the same size in canopy units on every screen, and
+    /// at the smallest supported window (800x600) it fits inside the
+    /// screen with its whole width and height.
+    #[test]
+    fn the_card_fits_the_smallest_window() {
+        let m = Menu::new();
+        let (w, h) = m.extent();
+        let px = crate::panel::px_canopy(600.0);
+        let aspect = 800.0 / 600.0;
+        let width_ndc = w as f32 * px / aspect;
+        let height_ndc = h as f32 * px;
+        assert!(width_ndc < 1.9, "card {width_ndc} of 2 wide");
+        assert!(height_ndc < 1.9, "card {height_ndc} of 2 tall");
+        // And not a postage stamp: it is the screen's main thing.
+        assert!(
+            width_ndc > 0.9 && height_ndc > 0.6,
+            "{width_ndc}x{height_ndc}"
+        );
+        // The same card at the real display's size takes the same share.
+        assert!((crate::panel::px_canopy(1800.0) - px).abs() < 1e-6);
     }
 
     #[test]
@@ -1525,7 +2344,7 @@ mod tests {
             match page {
                 Page::Graphics => {
                     assert!(on(Item::Msaa) && on(Item::Fov) && on(Item::CockpitRes));
-                    assert!(on(Item::FpsFloor));
+                    assert!(on(Item::FpsFloor) && on(Item::HoloRange));
                     // The nebula block sits together, after the sky knobs.
                     let at = |it: Item| items.iter().position(|i| *i == it).unwrap();
                     assert!(at(Item::Nebula) > at(Item::Flare));
@@ -1536,8 +2355,8 @@ mod tests {
                 Page::Controls => {
                     assert!(items.iter().all(|i| i.rebindable() || *i == Item::LookSens));
                     // EVERY bind the game answers to is on this page: all
-                    // twelve axis actions and all sixteen named controls.
-                    // A key that works in game but is missing here is a bug.
+                    // twelve axis actions and every named control. A key
+                    // that works in game but is missing here is a bug.
                     for a in Action::ALL {
                         assert!(on(Item::Bind(a)), "missing axis bind {a:?}");
                     }
@@ -1561,11 +2380,12 @@ mod tests {
                         assert_eq!(w[1], w[0] + 1, "hoop settings together: {hoops:?}");
                     }
                     assert_eq!(at(Item::HullSound), at(Item::Shield) + 1);
-                    assert!(on(Item::CamShake));
+                    assert!(on(Item::CamShake) && on(Item::SafeEdge));
                 }
                 Page::Gauges => {
                     assert!(on(Item::GaugeStyle) && on(Item::GaugesStay) && on(Item::Guide));
                     assert!(on(Item::DialTilt) && on(Item::Slot(Instrument::Gyro)));
+                    assert!(on(Item::Slot(Instrument::Map)), "the mini map is a gauge");
                     assert!(
                         !on(Item::Slot(Instrument::Hoops)),
                         "hoops live with the cabin"
@@ -1582,15 +2402,166 @@ mod tests {
                     assert!(on(Item::ArmsSight));
                     assert!(items.len() >= 2);
                 }
-                Page::Map | Page::Ship => unreachable!(),
+                Page::Map => {
+                    assert!(on(Item::Destination) && on(Item::SafeDist) && on(Item::Engage));
+                    assert!(on(Item::MapRings) && on(Item::MapGrid));
+                }
+                Page::Ship => {
+                    for h in Hardpoint::ALL {
+                        assert!(on(Item::Mount(h)));
+                    }
+                    assert!(on(Item::BayHue) && on(Item::BaySpin));
+                }
+                Page::Help => {
+                    assert_eq!(items[0], Item::Heading(0));
+                    assert_eq!(*items.last().unwrap(), Item::ControlsCard);
+                }
             }
         }
-        // The map's own page has the drive and its look, nothing else.
-        m.set_page(Page::Map);
-        assert!(m.items().iter().all(|i| matches!(
-            i,
-            Item::Destination | Item::SafeDist | Item::Engage | Item::MapRings | Item::MapGrid
-        )));
+    }
+
+    /// The HELP page lists every control the game answers to exactly
+    /// once, by group, each with a gloss that fits its column and a
+    /// sentence for the footer — and every glyph it needs exists.
+    #[test]
+    fn the_help_page_lists_every_control_once_with_what_it_does() {
+        let entries = help_entries();
+        for a in Action::ALL {
+            let n = entries
+                .iter()
+                .filter(|e| e.control == Control::Axis(a))
+                .count();
+            assert_eq!(n, 1, "{a:?} is on the HELP page {n} times");
+        }
+        for nm in Named::ALL {
+            let n = entries
+                .iter()
+                .filter(|e| e.control == Control::Named(nm))
+                .count();
+            assert_eq!(n, 1, "{nm:?} is on the HELP page {n} times");
+        }
+        // The fixed keys the game keeps: the menu, its page, the card,
+        // the mouse buttons, the pane zoom.
+        for key in ["ESC", "TAB", "F1", "LMB", "RMB", "+ -"] {
+            assert!(
+                entries
+                    .iter()
+                    .any(|e| matches!(e.control, Control::Fixed(k, _) if k == key)),
+                "fixed key {key} is not on the HELP page"
+            );
+        }
+        let gloss_cols = MENU_COLS - 2 - 1 - HELP_KEY_COLS - HELP_NAME_COLS;
+        for e in &entries {
+            assert!(
+                e.gloss.chars().count() <= gloss_cols,
+                "gloss too long: {:?}",
+                e.gloss
+            );
+            assert!(e.what.ends_with('.'), "a sentence: {:?}", e.what);
+            for c in e.gloss.chars().chain(e.what.chars()) {
+                assert!(c == ' ' || has_glyph(c), "{c:?} in {:?}", e.what);
+            }
+        }
+        for g in HELP {
+            assert!(!g.entries.is_empty());
+            assert!(g.name.chars().count() <= 12);
+        }
+        // Reading the page: the cursor walks the lines, the value column
+        // shows the live key, and nothing changes.
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.open_on(Page::Help);
+        assert_eq!(m.key(KeyCode::ArrowRight, &mut s), MenuEvent::Nothing);
+        m.key(KeyCode::ArrowDown, &mut s);
+        assert_eq!(m.items()[m.cursor], Item::Help(0));
+        assert!(m.line(Item::Help(0), true, &s).starts_with("\u{25C6}W "));
+        assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Nothing);
+        assert_eq!(s, Settings::default());
+    }
+
+    /// Every settings key has a row somewhere in the menu (the dragged
+    /// anchors excepted): a setting only the file can reach is a
+    /// setting a pilot cannot find.
+    #[test]
+    fn every_settings_key_has_a_menu_row() {
+        let mut m = Menu::new();
+        m.toggle();
+        let mut claimed: Vec<String> = Vec::new();
+        for page in Page::ALL {
+            m.set_page(page);
+            for it in m.items() {
+                claimed.extend(it.keys());
+            }
+        }
+        // Every key the file writes is claimed by a row.
+        let mut s = Settings::default();
+        for d in s.dials.iter_mut() {
+            d.size = 1.5;
+        }
+        for line in s.render().lines() {
+            let Some((k, _)) = line.split_once('=') else {
+                continue;
+            };
+            let k = k.trim();
+            if DRAGGED_KEYS.contains(&k) {
+                continue;
+            }
+            assert!(claimed.iter().any(|c| c == k), "no menu row edits {k}");
+        }
+        // And every listed name or pattern is claimed by a row.
+        for p in KEYS {
+            assert!(
+                claimed.iter().any(|c| key_matches(p, c)),
+                "no menu row edits {p}"
+            );
+        }
+    }
+
+    /// The list scrolls under a bar that shows where you are, and the
+    /// footer counts the rows.
+    #[test]
+    fn long_pages_scroll_with_a_bar_and_a_count() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.open_on(Page::Controls);
+        let n = m.items().len();
+        assert!(n > VISIBLE_ITEMS);
+        let bar = m.scrollbar().expect("a long page has a bar");
+        assert_eq!(bar.thumb.0, bar.track.0, "at the top");
+        assert!(m.footer().starts_with(&format!("ROW 1/{n}")));
+        for _ in 0..VISIBLE_ITEMS {
+            m.key(KeyCode::ArrowDown, &mut s);
+        }
+        assert_eq!(m.scroll, 1, "the cursor pushes the list up one");
+        let bar2 = m.scrollbar().unwrap();
+        assert!(bar2.thumb.0 > bar.thumb.0, "the thumb moves down");
+        assert!(bar2.thumb.1 <= bar2.track.1);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        m.key(KeyCode::ArrowUp, &mut s);
+        assert_eq!(m.cursor, n - 1, "up from the top wraps to the end");
+        assert_eq!(m.scroll, n - VISIBLE_ITEMS);
+        let bar3 = m.scrollbar().unwrap();
+        assert!((bar3.thumb.1 - bar3.track.1).abs() < 1e-3, "at the bottom");
+        assert!(m.footer().starts_with(&format!("ROW {n}/{n}")));
+        m.key(KeyCode::PageUp, &mut s);
+        assert_eq!(m.cursor, n - 1 - VISIBLE_ITEMS);
+        // A short page has no bar.
+        m.open_on(Page::Map);
+        assert!(m.scrollbar().is_none());
+        // The chosen row's band sits on its row of the card.
+        m.set_cursor(2);
+        assert_eq!(m.cursor_row_px(), ((3 * ROW_PX) as f32, ROW_PX as f32));
     }
 
     #[test]
@@ -1627,11 +2598,12 @@ mod tests {
         assert_eq!(m.bay_selected(), Some(1));
         assert_ne!(s.mounts[1], before);
         assert!(m.header().contains("SHIP BAY"));
+        assert_eq!(m.cols(), PANEL_COLS);
         assert_eq!(m.key(KeyCode::Escape, &mut s), MenuEvent::Closed);
-        // The look rows live on the GFX page and light no pip: hue wraps,
-        // the rest clamp, spin flips, the pointer sizes.
+        // The look rows live on the menu's SHIP page and light no pip:
+        // hue wraps, the rest clamp, spin flips; the pointer sizes on GFX.
         let mut m = Menu::new();
-        m.page = Page::Graphics;
+        m.open_on(Page::Ship);
         let at = m.items().iter().position(|&i| i == Item::BayHue).unwrap();
         m.set_cursor(at);
         assert_eq!(m.bay_selected(), None);
@@ -1663,7 +2635,13 @@ mod tests {
         m.key(KeyCode::ArrowDown, &mut s);
         m.key(KeyCode::ArrowRight, &mut s);
         assert!(!s.bay_spin);
-        m.key(KeyCode::ArrowDown, &mut s);
+        m.open_on(Page::Graphics);
+        let at = m
+            .items()
+            .iter()
+            .position(|&i| i == Item::PointerSize)
+            .unwrap();
+        m.set_cursor(at);
         for _ in 0..40 {
             m.key(KeyCode::ArrowRight, &mut s);
         }
@@ -1672,7 +2650,8 @@ mod tests {
 
     #[test]
     fn the_drive_panel_sets_the_plan_and_engages_and_never_pages() {
-        // The settings menu has no MAP page any more: Tab cycles the three.
+        // The settings menu's MAP page is a page, not the DRIVE panel:
+        // Tab cycles past it and the map is not drawn under it.
         let mut settings_menu = Menu::new();
         let mut s = Settings::default();
         settings_menu.toggle();
@@ -1701,6 +2680,39 @@ mod tests {
     }
 
     #[test]
+    fn the_hologram_range_and_the_card_have_rows() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.open_on(Page::Graphics);
+        let at = m
+            .items()
+            .iter()
+            .position(|&i| i == Item::HoloRange)
+            .unwrap();
+        m.set_cursor(at);
+        assert_eq!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::Changed(Change::Layout)
+        );
+        assert_eq!(s.holo_range, 1.5);
+        for _ in 0..20 {
+            m.key(KeyCode::ArrowRight, &mut s);
+        }
+        assert_eq!(s.holo_range, crate::settings::HOLO_RANGE_MAX);
+        assert_eq!(m.key(KeyCode::ArrowRight, &mut s), MenuEvent::Nothing);
+        m.open_on(Page::Help);
+        m.set_cursor(m.items().len() - 1);
+        assert_eq!(m.items()[m.cursor], Item::ControlsCard);
+        m.key(KeyCode::Enter, &mut s);
+        assert!(s.controls_card);
+        m.open_on(Page::Cockpit);
+        let at = m.items().iter().position(|&i| i == Item::SafeEdge).unwrap();
+        m.set_cursor(at);
+        m.key(KeyCode::ArrowRight, &mut s);
+        assert!((s.layout.safe_edge - 0.02).abs() < 1e-6);
+    }
+
+    #[test]
     fn renders_within_the_bitmap() {
         let mut m = Menu::new();
         let s = Settings::default();
@@ -1709,7 +2721,14 @@ mod tests {
         let mut t = TextBitmap::new();
         m.render(&mut t, &s);
         let (w, h) = t.used_extent();
-        assert!(w <= 128 && h <= 64, "{w}x{h}");
-        assert!(w > 60);
+        let (cw, ch) = m.extent();
+        assert!(w <= cw && h <= ch, "{w}x{h} in {cw}x{ch}");
+        assert!(w > cw / 2);
+        // Every row the card promises is drawn: the header, twelve items,
+        // the footer and a description of one or two lines.
+        assert!(
+            h <= block_height(CARD_LINES) && h >= block_height(CARD_LINES - 1),
+            "{h}"
+        );
     }
 }
