@@ -1170,9 +1170,6 @@ impl Menu {
                 Item::FpsFloor,
                 Item::Fov,
                 Item::Camera,
-                Item::HoloView,
-                Item::HoloSize,
-                Item::HoloRange,
                 Item::CockpitRes,
                 Item::Sky,
                 Item::TerrainDetail,
@@ -1240,6 +1237,8 @@ impl Menu {
                     Item::DialLean,
                     Item::DialRotate,
                 ];
+                // The holo3PP is a gauge: its rows live with the dials.
+                v.extend([Item::HoloView, Item::HoloSize, Item::HoloRange]);
                 v.extend(
                     Instrument::ALL
                         .iter()
@@ -2649,7 +2648,7 @@ mod tests {
             match page {
                 Page::Graphics => {
                     assert!(on(Item::Msaa) && on(Item::Fov) && on(Item::CockpitRes));
-                    assert!(on(Item::FpsFloor) && on(Item::HoloRange));
+                    assert!(on(Item::FpsFloor));
                     // The nebula block sits together, after the sky knobs.
                     let at = |it: Item| items.iter().position(|i| *i == it).unwrap();
                     assert!(at(Item::Nebula) > at(Item::Flare));
@@ -2697,7 +2696,12 @@ mod tests {
                 Page::Gauges => {
                     assert!(on(Item::GaugeStyle) && on(Item::GaugesStay) && on(Item::Guide));
                     assert!(on(Item::DialTilt) && on(Item::Slot(Instrument::Gyro)));
+                    assert!(on(Item::DialLean) && on(Item::DialRotate));
                     assert!(on(Item::Slot(Instrument::Map)), "the mini map is a gauge");
+                    assert!(
+                        on(Item::HoloView) && on(Item::HoloSize) && on(Item::HoloRange),
+                        "the holo3PP is a gauge"
+                    );
                     assert!(
                         !on(Item::Slot(Instrument::Hoops)),
                         "hoops live with the cabin"
@@ -3020,7 +3024,7 @@ mod tests {
     fn the_hologram_range_and_the_card_have_rows() {
         let mut m = Menu::new();
         let mut s = Settings::default();
-        m.open_on(Page::Graphics);
+        m.open_on(Page::Gauges);
         let at = m
             .items()
             .iter()

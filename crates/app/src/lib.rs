@@ -312,6 +312,8 @@ enum Dragged {
     Readout,
     /// The map pane with its DRIVE panel.
     MapPanel,
+    /// The mini map, a gauge on the glass.
+    MiniMap,
     /// The holo3PP panel.
     HoloPanel,
     /// The SHIP bay's hologram pane with its card.
@@ -325,10 +327,24 @@ impl Dragged {
             Dragged::MenuPanel => "SETTINGS PANEL",
             Dragged::Readout => "READOUT",
             Dragged::MapPanel => "MAP",
+            Dragged::MiniMap => "MINI MAP",
             Dragged::HoloPanel => "HOLO3PP",
             Dragged::BayPanel => "SHIP BAY",
         }
     }
+}
+
+/// Something DESIGN mode can select: a dial, or one of the other glass
+/// elements — each with its own card and keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesignEl {
+    Dial(Instrument),
+    /// The holo3PP: the ship's hologram over the dash.
+    Holo,
+    /// The mini map pane.
+    MiniMap,
+    /// The text readout's block.
+    Readout,
 }
 
 /// What the text readout shows this frame.
@@ -917,13 +933,27 @@ impl Gpu {
             } else {
                 look.gaze(ref_tan, cam.aspect)
             };
-            let anchors: Vec<[f32; 2]> = Instrument::ALL
+            let mut anchors: Vec<[f32; 2]> = Instrument::ALL
                 .iter()
                 .copied()
                 .filter(|i| i.slotted())
                 .filter_map(|i| layout.anchor(i))
+                .collect();
+            // The other glass elements DESIGN mode can take are marked
+            // on the guide too: holo3PP, mini map, readout.
+            if game.holo_active() {
+                anchors.push(game.settings.holo_anchor);
+            }
+            if game.mini_map_shown() {
+                anchors.push(layout.inset(game.mini_map_anchor()));
+            }
+            if layout.shown(Instrument::Readout) {
+                anchors.push(game.settings.readout_anchor);
+            }
+            let anchors: Vec<[f32; 2]> = anchors
+                .into_iter()
                 .map(|a| on_glass(look, cam, ref_tan, a))
-                .take(6)
+                .take(8)
                 .collect();
             self.passes.guide.update(
                 &self.queue,
@@ -1518,7 +1548,7 @@ impl Game {
         };
         // The full map on M; else the mini map, a gauge on the glass at
         // its anchor, re-projected like a dial, with no dim round it.
-        let mini = !self.map_open() && self.mini_map_on();
+        let mini = !self.map_open() && self.mini_map_shown();
         let look = map::MapLook {
             view: self.map_view,
             rings: self.settings.map_rings,
@@ -1528,13 +1558,13 @@ impl Game {
             time_s,
             centre: if mini {
                 let cam = self.camera(aspect);
-                let a = self.settings.layout.inset(map::MINI_ANCHOR);
+                let a = self.settings.layout.inset(self.mini_map_anchor());
                 on_glass(&self.look, &cam, self.ref_tan(), a)
             } else {
                 self.settings.map_anchor
             },
             half_h: if mini {
-                map::MINI_HALF_H
+                self.mini_map_half_h()
             } else {
                 map::PANE_HALF_H
             },
@@ -1590,10 +1620,31 @@ impl Game {
         self.map_panel.open
     }
 
-    /// The mini map is a stock gauge: shown on the glass while no panel
-    /// covers it and the view is the cockpit's.
-    fn mini_map_on(&self) -> bool {
-        self.settings.layout.shown(Instrument::Map) && !self.panel_open() && !self.chase_active()
+    /// The mini map is a stock gauge: shown on the glass while no pane or
+    /// card covers it and the view is the cockpit's. DESIGN mode keeps it
+    /// up — it is one of the things being laid out.
+    fn mini_map_shown(&self) -> bool {
+        let covered =
+            self.menu.open || self.map_panel.open || self.bay_panel.open || self.card_open;
+        self.settings.layout.shown(Instrument::Map) && !covered && !self.chase_active()
+    }
+
+    /// Where the mini map's centre sits before the safe-edge inset: the
+    /// stock corner, or wherever the pilot dragged it (kept on ui.map).
+    fn mini_map_anchor(&self) -> [f32; 2] {
+        self.settings
+            .layout
+            .free(Instrument::Map)
+            .unwrap_or(map::MINI_ANCHOR)
+    }
+
+    /// The mini map's half height: the stock pane times its own SIZE
+    /// (ui.map.size) — a gauge, sized like any dial.
+    fn mini_map_half_h(&self) -> f32 {
+        map::MINI_HALF_H
+            * self.settings.dials[Instrument::Map as usize]
+                .size
+                .clamp(settings::DIAL_SIZE_MIN, settings::DIAL_SIZE_MAX)
     }
 
     /// The SHIP bay (and its card) is up.
@@ -1919,11 +1970,14 @@ impl Game {
             return Self::centred_card([0.0, 0.05], card::extent(), px, aspect);
         }
         if self.design {
-            // Beside the selected dial, or where the readout lives.
-            return match self
-                .design_target(aspect)
-                .and_then(|i| self.settings.layout.anchor(i))
-            {
+            // Beside the selected element, or where the readout lives.
+            let anchor = self.design_target(aspect).and_then(|el| match el {
+                DesignEl::Dial(i) => self.settings.layout.anchor(i),
+                DesignEl::Holo => Some(self.settings.holo_anchor),
+                DesignEl::MiniMap => Some(self.settings.layout.inset(self.mini_map_anchor())),
+                DesignEl::Readout => Some(self.settings.readout_anchor),
+            });
+            return match anchor {
                 Some(a) => [a[0] + 0.2, a[1] + 0.12],
                 None => self.settings.readout_anchor,
             };
@@ -2173,7 +2227,16 @@ impl Game {
             return 1.0;
         }
         let t = (cam.fov_y * 0.5).tan().max(1e-4);
-        (self.ref_tan() / t).clamp(0.4, 1.25)
+        let base = (self.ref_tan() / t).clamp(0.4, 1.25);
+        // In flight the block is the readout — a glass element with its
+        // own SIZE (ui.readout.size), scaled like any dial.
+        if self.panel_open() {
+            base
+        } else {
+            base * self.settings.dials[Instrument::Readout as usize]
+                .size
+                .clamp(settings::DIAL_SIZE_MIN, settings::DIAL_SIZE_MAX)
+        }
     }
 
     /// How fast it looks, 0..1, for the picture's streaks and cool rim:
@@ -2222,18 +2285,53 @@ impl Game {
         log::info!("design mode {}", if self.design { "on" } else { "off" });
     }
 
-    /// The dial under the pointer (within reach), in design mode.
-    fn design_target(&self, aspect: f32) -> Option<Instrument> {
+    /// The element under the pointer (within reach), in design mode: the
+    /// nearest of the dials, the holo3PP, the mini map and the readout.
+    fn design_target(&self, aspect: f32) -> Option<DesignEl> {
         let gaze = self.design_pointer(aspect)?;
-        let mut best: Option<(Instrument, f32)> = None;
+        let dist = |a: [f32; 2]| {
+            let dx = (a[0] - gaze[0]) * aspect;
+            let dy = a[1] - gaze[1];
+            (dx * dx + dy * dy).sqrt()
+        };
+        let mut best: Option<(DesignEl, f32)> = None;
+        let mut offer = |el: DesignEl, d: f32| {
+            if best.is_none_or(|b| d < b.1) {
+                best = Some((el, d));
+            }
+        };
         for i in Instrument::ALL.iter().copied().filter(|i| i.slotted()) {
             if let Some(a) = self.settings.layout.anchor(i) {
-                let dx = (a[0] - gaze[0]) * aspect;
-                let dy = a[1] - gaze[1];
-                let d = (dx * dx + dy * dy).sqrt();
-                if d < DRAG_REACH && best.is_none_or(|b| d < b.1) {
-                    best = Some((i, d));
+                let d = dist(a);
+                if d < DRAG_REACH {
+                    offer(DesignEl::Dial(i), d);
                 }
+            }
+        }
+        if self.holo_active() {
+            let a = self.settings.holo_anchor;
+            let r = self.settings.holo_size * 0.9;
+            if (gaze[0] - a[0]).abs() <= r + 0.02 && (gaze[1] - a[1]).abs() <= r + 0.02 {
+                offer(DesignEl::Holo, dist(a));
+            }
+        }
+        if self.mini_map_shown() {
+            let a = self.settings.layout.inset(self.mini_map_anchor());
+            let [cx, cy, hw] = map::pane_rect_sized(aspect, a, self.mini_map_half_h());
+            let hh = hw * aspect;
+            if (gaze[0] - cx).abs() <= hw + 0.02 && (gaze[1] - cy).abs() <= hh + 0.02 {
+                offer(DesignEl::MiniMap, dist([cx, cy]));
+            }
+        }
+        if self.settings.layout.shown(Instrument::Readout) {
+            // The block hangs down-right of its top-left anchor.
+            let a = self.settings.readout_anchor;
+            if gaze[0] >= a[0] - 0.02
+                && gaze[0] <= a[0] + 0.6
+                && gaze[1] <= a[1] + 0.02
+                && gaze[1] >= a[1] - 0.45
+            {
+                offer(DesignEl::Readout, dist([a[0] + 0.25, a[1] - 0.2]));
             }
         }
         best.map(|b| b.0)
@@ -2246,55 +2344,134 @@ impl Game {
         self.cursor_on_glass(&cam)
     }
 
-    /// A key in design mode: the selected dial's own settings.
+    /// A key in design mode: the selected element's own settings.
     fn design_key(&mut self, code: KeyCode, aspect: f32) {
-        let Some(i) = self.design_target(aspect) else {
+        let Some(el) = self.design_target(aspect) else {
             return;
         };
-        let d = &mut self.settings.dials[i as usize];
-        match code {
-            KeyCode::Equal | KeyCode::NumpadAdd => {
-                d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+        match el {
+            DesignEl::Dial(i) => {
+                let d = &mut self.settings.dials[i as usize];
+                match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => {
+                        d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+                    }
+                    KeyCode::Minus | KeyCode::NumpadSubtract => {
+                        d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+                    }
+                    KeyCode::Tab => d.style = settings::next_dial_style(d.style, i, true),
+                    KeyCode::Comma => {
+                        d.tilt_deg = (d.tilt_deg - 5.0).max(settings::TILT_MIN);
+                    }
+                    KeyCode::Period => {
+                        d.tilt_deg = (d.tilt_deg + 5.0).min(settings::TILT_MAX);
+                    }
+                    KeyCode::Semicolon => {
+                        d.lean_deg = (d.lean_deg - 5.0).max(settings::TILT_MIN);
+                    }
+                    KeyCode::Quote => {
+                        d.lean_deg = (d.lean_deg + 5.0).min(settings::TILT_MAX);
+                    }
+                    KeyCode::Digit9 => {
+                        d.rotate_deg = (d.rotate_deg - 15.0).max(settings::ROTATE_MIN);
+                    }
+                    KeyCode::Digit0 => {
+                        d.rotate_deg = (d.rotate_deg + 15.0).min(settings::ROTATE_MAX);
+                    }
+                    KeyCode::KeyF => {
+                        d.stay = match d.stay {
+                            None => Some(true),
+                            Some(true) => Some(false),
+                            Some(false) => None,
+                        };
+                    }
+                    KeyCode::Backspace => *d = settings::DialTweak::DEFAULT,
+                    _ => {}
+                }
             }
-            KeyCode::Minus | KeyCode::NumpadSubtract => {
-                d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+            DesignEl::Holo => match code {
+                KeyCode::Equal | KeyCode::NumpadAdd => {
+                    self.settings.holo_size =
+                        (self.settings.holo_size + 0.04).min(settings::HOLO_SIZE_MAX);
+                }
+                KeyCode::Minus | KeyCode::NumpadSubtract => {
+                    self.settings.holo_size =
+                        (self.settings.holo_size - 0.04).max(settings::HOLO_SIZE_MIN);
+                }
+                KeyCode::Backspace => {
+                    self.settings.holo_size = Settings::default().holo_size;
+                    self.settings.holo_anchor = settings::HOLO_ANCHOR_DEFAULT;
+                }
+                _ => {}
+            },
+            DesignEl::MiniMap => {
+                let d = &mut self.settings.dials[Instrument::Map as usize];
+                match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => {
+                        d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+                    }
+                    KeyCode::Minus | KeyCode::NumpadSubtract => {
+                        d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+                    }
+                    KeyCode::Backspace => {
+                        *d = settings::DialTweak::DEFAULT;
+                        // On, at the stock corner: the slot lets go of
+                        // any dragged anchor.
+                        self.settings.layout.set(Instrument::Map, cockpit::Slot::On);
+                    }
+                    _ => {}
+                }
             }
-            KeyCode::Tab => d.style = settings::next_dial_style(d.style, i, true),
-            KeyCode::Comma => {
-                d.tilt_deg = (d.tilt_deg - 5.0).max(settings::TILT_MIN);
+            DesignEl::Readout => {
+                let d = &mut self.settings.dials[Instrument::Readout as usize];
+                match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => {
+                        d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+                    }
+                    KeyCode::Minus | KeyCode::NumpadSubtract => {
+                        d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+                    }
+                    KeyCode::Backspace => {
+                        *d = settings::DialTweak::DEFAULT;
+                        self.settings.readout_anchor = settings::READOUT_ANCHOR_DEFAULT;
+                    }
+                    _ => {}
+                }
             }
-            KeyCode::Period => {
-                d.tilt_deg = (d.tilt_deg + 5.0).min(settings::TILT_MAX);
-            }
-            KeyCode::Semicolon => {
-                d.lean_deg = (d.lean_deg - 5.0).max(settings::TILT_MIN);
-            }
-            KeyCode::Quote => {
-                d.lean_deg = (d.lean_deg + 5.0).min(settings::TILT_MAX);
-            }
-            KeyCode::Digit9 => {
-                d.rotate_deg = (d.rotate_deg - 15.0).max(settings::ROTATE_MIN);
-            }
-            KeyCode::Digit0 => {
-                d.rotate_deg = (d.rotate_deg + 15.0).min(settings::ROTATE_MAX);
-            }
-            KeyCode::KeyF => {
-                d.stay = match d.stay {
-                    None => Some(true),
-                    Some(true) => Some(false),
-                    Some(false) => None,
-                };
-            }
-            KeyCode::Backspace => *d = settings::DialTweak::DEFAULT,
-            _ => {}
         }
     }
 
     /// The design card: the selected dial's settings, a few short lines,
     /// and the keys.
     fn design_text(&self, aspect: f32) -> Vec<String> {
+        let sized_card = |name: &str, size: String| {
+            vec![
+                format!("[{name}]"),
+                size,
+                "- = SIZE  DRAG MOVE".to_string(),
+                "BKSP RESET  K DONE".to_string(),
+            ]
+        };
         match self.design_target(aspect) {
-            Some(i) => {
+            Some(DesignEl::Holo) => sized_card(
+                "HOLO3PP",
+                format!("SIZE {:.0}%", self.settings.holo_size * 100.0),
+            ),
+            Some(DesignEl::MiniMap) => sized_card(
+                "MINI MAP",
+                format!(
+                    "SIZE {:.2}X",
+                    self.settings.dials[Instrument::Map as usize].size
+                ),
+            ),
+            Some(DesignEl::Readout) => sized_card(
+                "READOUT",
+                format!(
+                    "SIZE {:.2}X",
+                    self.settings.dials[Instrument::Readout as usize].size
+                ),
+            ),
+            Some(DesignEl::Dial(i)) => {
                 let d = self.settings.dials[i as usize];
                 let eff = self.dial_tweak(i);
                 vec![
@@ -2319,9 +2496,9 @@ impl Game {
             }
             None => vec![
                 "[DESIGN]".to_string(),
-                "LOOK AT A DIAL".to_string(),
-                "CLICK DRAG TO MOVE".to_string(),
-                "K DONE".to_string(),
+                "POINT AT ANY GLASS PIECE:".to_string(),
+                "DIALS  MAP  HOLO  READOUT".to_string(),
+                "CLICK DRAG TO MOVE  K DONE".to_string(),
             ],
         }
     }
@@ -3906,6 +4083,19 @@ impl Game {
                 return true;
             }
         }
+        // The mini map is glassware too: taken by its pane, dropped
+        // anywhere on the glass, its anchor kept on ui.map.
+        if self.mini_map_shown() {
+            let a = self.settings.layout.inset(self.mini_map_anchor());
+            let [cx, cy, hw] = map::pane_rect_sized(cam.aspect, a, self.mini_map_half_h());
+            let hh = hw * cam.aspect;
+            let inside = (gaze[0] - cx).abs() <= hw + 0.02 && (gaze[1] - cy).abs() <= hh + 0.02;
+            if inside {
+                self.drag = Some((Dragged::MiniMap, [a[0] - gaze[0], a[1] - gaze[1]]));
+                log::info!("drag: picked up the mini map");
+                return true;
+            }
+        }
         // The readout's block is a glass element like a dial: the gaze
         // while looking, or the cursor in design mode, takes it too.
         {
@@ -3973,6 +4163,10 @@ impl Game {
             Dragged::MenuPanel => self.settings.menu_anchor = clamp(at),
             Dragged::Readout => self.settings.readout_anchor = glass(at),
             Dragged::MapPanel => self.settings.map_anchor = clamp(at),
+            Dragged::MiniMap => {
+                let at = self.settings.layout.uninset(clamp(at));
+                self.settings.layout.set_free(Instrument::Map, at);
+            }
             Dragged::HoloPanel => self.settings.holo_anchor = clamp(at),
             Dragged::BayPanel => self.settings.bay_anchor = clamp(at),
         }
@@ -5084,7 +5278,7 @@ fn redraw(
                     // single-sample (it draws in the present
                     // pass), so it can only join a 1x scene.
                     let capture_text = gpu.cfg.msaa == 1;
-                    if capture_text && (game.map_open() || game.mini_map_on()) {
+                    if capture_text && (game.map_open() || game.mini_map_shown()) {
                         gpu.map
                             .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
                     }
@@ -5245,7 +5439,7 @@ fn redraw(
                             gpu.passes.sight.draw(&mut pass);
                         }
                         gpu.passes.holo.draw(&mut pass);
-                        if capture_text && (game.map_open() || game.mini_map_on()) {
+                        if capture_text && (game.map_open() || game.mini_map_shown()) {
                             gpu.map.draw(&mut pass);
                         }
                         if capture_text && game.bay_open() {
@@ -5552,7 +5746,7 @@ fn redraw(
             if gpu.cfg.draws("blit") {
                 gpu.blit.draw(&mut pass);
             }
-            if game.map_open() || game.mini_map_on() {
+            if game.map_open() || game.mini_map_shown() {
                 gpu.map.draw(&mut pass);
             }
             if game.bay_open() {
@@ -6227,7 +6421,10 @@ mod tests {
         let t = game.ref_tan();
         let k = t / (cam.fov_y * 0.5).tan();
         game.cursor = Some(((a[0] * k + 1.0) * 750.0, (1.0 - a[1] * k) * 500.0));
-        assert_eq!(game.design_target(1.5), Some(Instrument::Speed));
+        assert_eq!(
+            game.design_target(1.5),
+            Some(DesignEl::Dial(Instrument::Speed))
+        );
         game.design_key(KeyCode::Quote, 1.5);
         game.design_key(KeyCode::Quote, 1.5);
         game.design_key(KeyCode::Digit9, 1.5);
@@ -6248,6 +6445,56 @@ mod tests {
             game.settings.dials[Instrument::Speed as usize],
             settings::DialTweak::DEFAULT
         );
+    }
+
+    /// The holo3PP, the mini map and the readout are design elements
+    /// like the dials: DESIGN mode's pointer finds them, -/= sizes them,
+    /// and the mini map can be dragged anywhere and keeps its place.
+    #[test]
+    fn design_mode_takes_the_holo_the_mini_map_and_the_readout() {
+        let mut game = Game::new();
+        game.design = true;
+        game.look.aim(0.0, 0.0);
+        game.window_size = (1500.0, 1000.0);
+        let cam = game.camera(1.5);
+        let t = game.ref_tan();
+        let k = t / (cam.fov_y * 0.5).tan();
+        let at = |a: [f32; 2]| ((a[0] * k + 1.0) * 750.0, (1.0 - a[1] * k) * 500.0);
+        // The hologram: found by its anchor, sized with =.
+        game.cursor = Some(at(game.settings.holo_anchor));
+        assert_eq!(game.design_target(1.5), Some(DesignEl::Holo));
+        let size = game.settings.holo_size;
+        game.design_key(KeyCode::Equal, 1.5);
+        assert!(game.settings.holo_size > size);
+        // The mini map: found by its pane, shrunk with -, dragged and
+        // its anchor kept on the layout.
+        assert!(game.mini_map_shown(), "the mini map shows in DESIGN mode");
+        let mini = game.settings.layout.inset(game.mini_map_anchor());
+        game.cursor = Some(at(mini));
+        assert_eq!(game.design_target(1.5), Some(DesignEl::MiniMap));
+        game.design_key(KeyCode::Minus, 1.5);
+        assert!(game.settings.dials[Instrument::Map as usize].size < 1.0);
+        assert!(game.mini_map_half_h() < map::MINI_HALF_H);
+        assert!(game.begin_drag(&cam, 0.4), "the mini map is picked up");
+        assert!(matches!(game.drag, Some((Dragged::MiniMap, _))));
+        game.cursor = Some(at([mini[0] - 0.3, mini[1] - 0.4]));
+        game.update_drag(&cam);
+        let moved = game.mini_map_anchor();
+        assert!(
+            (moved[0] - map::MINI_ANCHOR[0]).abs() > 0.1
+                || (moved[1] - map::MINI_ANCHOR[1]).abs() > 0.1,
+            "{moved:?}"
+        );
+        game.design_key(KeyCode::Backspace, 1.5);
+        // The readout: found by its block; its SIZE scales the text.
+        game.cursor = Some(at([
+            game.settings.readout_anchor[0] + 0.06,
+            game.settings.readout_anchor[1] - 0.14,
+        ]));
+        assert_eq!(game.design_target(1.5), Some(DesignEl::Readout));
+        game.design_key(KeyCode::Equal, 1.5);
+        game.design = false;
+        assert!(game.text_fov_scale(&cam) > 1.0 * 0.99 * 1.1);
     }
 
     #[test]

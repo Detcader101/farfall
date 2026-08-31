@@ -334,11 +334,14 @@ pub struct GuideUniforms {
     c: [f32; 4],
     d: [f32; 4],
     e: [f32; 4],
+    f: [f32; 4],
 }
 
 impl GuideUniforms {
-    /// `anchors`: up to six dial anchors (NDC); `gaze`: where the head
-    /// points on the glass; `reach`: the pick-up distance (NDC).
+    /// `anchors`: up to eight element anchors (NDC) — the dials, and the
+    /// other glass pieces DESIGN mode can take (holo3PP, mini map,
+    /// readout); `gaze`: where the head points on the glass; `reach`:
+    /// the pick-up distance (NDC).
     pub fn new(
         aspect: f32,
         on: bool,
@@ -348,7 +351,7 @@ impl GuideUniforms {
         looking: bool,
         anchors: &[[f32; 2]],
     ) -> Self {
-        let mut slots = [[-10.0f32, -10.0]; 6];
+        let mut slots = [[-10.0f32, -10.0]; 8];
         for (slot, a) in slots.iter_mut().zip(anchors.iter()) {
             *slot = *a;
         }
@@ -358,6 +361,7 @@ impl GuideUniforms {
             c: [slots[0][0], slots[0][1], slots[1][0], slots[1][1]],
             d: [slots[2][0], slots[2][1], slots[3][0], slots[3][1]],
             e: [slots[4][0], slots[4][1], slots[5][0], slots[5][1]],
+            f: [slots[6][0], slots[6][1], slots[7][0], slots[7][1]],
         }
     }
 }
