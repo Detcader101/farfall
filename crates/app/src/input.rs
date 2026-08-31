@@ -139,10 +139,13 @@ pub enum Named {
     ScaleDown,
     ScaleUp,
     Hold,
+    /// Leave the ship, once it is landed. Today it answers "not yet": the
+    /// bind and the state machine are the hook the walk-out hangs on.
+    Disembark,
 }
 
 impl Named {
-    pub const COUNT: usize = 23;
+    pub const COUNT: usize = 24;
     pub const ALL: [Named; Named::COUNT] = [
         Named::Boost,
         Named::Brake,
@@ -167,6 +170,7 @@ impl Named {
         Named::ScaleDown,
         Named::ScaleUp,
         Named::Hold,
+        Named::Disembark,
     ];
 
     /// Menu label.
@@ -195,6 +199,7 @@ impl Named {
             Named::ScaleDown => "RENDER SCALE -",
             Named::ScaleUp => "RENDER SCALE +",
             Named::Hold => "HOLD",
+            Named::Disembark => "DISEMBARK",
         }
     }
 
@@ -224,6 +229,7 @@ impl Named {
             Named::ScaleDown => "scale-down",
             Named::ScaleUp => "scale-up",
             Named::Hold => "hold",
+            Named::Disembark => "disembark",
         }
     }
 
@@ -255,6 +261,9 @@ impl Named {
             Named::ScaleDown => KeyCode::BracketLeft,
             Named::ScaleUp => KeyCode::BracketRight,
             Named::Hold => KeyCode::KeyO,
+            // I is the one letter the dash did not already answer to
+            // (Enter is the menu's and is reserved).
+            Named::Disembark => KeyCode::KeyI,
         }
     }
 }

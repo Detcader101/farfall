@@ -44,9 +44,30 @@ struct Traj {
     // dashes stay either way.
     // w: hoop radius at one kilometre, metres (the pilot's size setting).
     mark: vec4<f32>,
+    // The landing pad: xyz the predicted touchdown relative to the camera,
+    // metres; w its radius on the ground, metres.
+    pad: vec4<f32>,
+    // xyz: the surface normal at the pad. w: 1 to draw it, 0 not.
+    pad_up: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> tj: Traj;
+
+// Radiance of the landing hoops and the pad: over 1.0, so they read as
+// light sources — gates to fly through — and the post pass blooms them.
+const LANDING_RADIANCE: f32 = 2.2;
+const PAD_RADIANCE: f32 = 3.0;
+
+// The verdict's colour in LANDING mode: calm green for a touchdown the gear
+// takes, amber as it gets hard, red for one it will not survive. mark.z is
+// 2 + danger there.
+fn verdict_tint() -> vec3<f32> {
+    let danger = clamp(tj.mark.z - 2.0, 0.0, 1.0);
+    let calm = vec3<f32>(0.35, 1.0, 0.6);
+    let hard = vec3<f32>(1.0, 0.62, 0.18);
+    let red = vec3<f32>(1.0, 0.18, 0.12);
+    return select(mix(calm, hard, danger * 2.0), mix(hard, red, danger * 2.0 - 1.0), danger > 0.5);
+}
 
 // Substeps per segment.
 const SUBSTEPS: u32 = 6u;
@@ -240,6 +261,38 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     let n = u32(max(tj.look.y, 1.0));
     let ribbon_verts = n * 6u;
 
+    if (vi >= ribbon_verts + 12u + RING_COUNT * 6u) {
+        // The landing pad: a quad lying on the ground at the predicted
+        // touchdown, in the surface's tangent plane, the hoops' target.
+        let corner = (vi - ribbon_verts - 12u - RING_COUNT * 6u) % 6u;
+        let corners = array<vec2<f32>, 6>(
+            vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
+            vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        );
+        let local = corners[corner];
+        var out: VsOut;
+        out.uv = local;
+        out.kind = vec4<f32>(4.0, 0.0, 0.0, 0.0);
+        let show = tj.pad_up.w > 0.5 && tj.mark.z >= 2.0;
+        let up = tj.pad_up.xyz;
+        var east = cross(up, tj.forward.xyz);
+        if (dot(east, east) < 1e-6) {
+            east = cross(up, tj.right.xyz);
+        }
+        east = normalize(east);
+        let north = cross(east, up);
+        let world = tj.pad.xyz + (east * local.x + north * local.y) * tj.pad.w;
+        let z = dot(world, tj.forward.xyz);
+        if (!show || z <= 0.0) {
+            out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+            return out;
+        }
+        let x = dot(world, tj.right.xyz);
+        let y = dot(world, tj.up.xyz);
+        out.pos = vec4<f32>(x / (tj.params.x * tj.params.y), y / tj.params.x, z * 0.5, z);
+        return out;
+    }
+
     if (vi >= ribbon_verts + 12u) {
         // Distance rings: a hoop in the world, perpendicular to the path,
         // every RING_SPACING_M along it.
@@ -386,18 +439,35 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let d = in.kind.w;
         let closing = 1.0 - smoothstep(-0.6, -0.15, d);
         var tint = mix(cyan, red, closing);
+        var radiance = 0.8;
         if (tj.mark.z >= 2.0) {
             // Landing: the hoops themselves carry the verdict — calm green
             // for a touchdown the hull takes, amber as it gets hard, red
-            // for one it will not survive — the whole way down.
-            let danger = clamp(tj.mark.z - 2.0, 0.0, 1.0);
-            let calm = vec3<f32>(0.35, 1.0, 0.6);
-            let hard = vec3<f32>(1.0, 0.62, 0.18);
-            let verdict = select(mix(calm, hard, danger * 2.0), mix(hard, red, danger * 2.0 - 1.0), danger > 0.5);
-            tint = mix(verdict, red, closing * 0.5);
+            // for one it will not survive — the whole way down. They are
+            // gates to fly through, so they burn: HDR-bright, for the
+            // bloom to pick up.
+            tint = mix(verdict_tint(), red, closing * 0.5);
+            radiance = LANDING_RADIANCE;
         }
         let astern = 1.0 - smoothstep(0.0, f32(RINGS_ASTERN), -d);
-        colour = tint * hoop * 0.8 * astern;
+        colour = tint * hoop * radiance * astern;
+    } else if (in.kind.x > 3.5) {
+        // The landing pad, flat on the ground at the touchdown: an outer
+        // ring, four ticks at the compass points, a centre dot, and a ring
+        // that closes on the centre over and over — the eye is drawn in
+        // to the exact point. The verdict's colour, brightest of all.
+        let r = length(in.uv);
+        let aa = max(fwidth(r) * 1.5, 0.008);
+        let outer = 1.0 - smoothstep(0.0, aa, abs(r - 0.9) - 0.035);
+        let dot = 1.0 - smoothstep(0.0, aa, r - 0.07);
+        let arm = min(abs(in.uv.x), abs(in.uv.y));
+        let reach = max(abs(in.uv.x), abs(in.uv.y));
+        let ticks = (1.0 - smoothstep(0.0, aa, arm - 0.025)) * step(0.62, reach) * step(reach, 0.82);
+        let phase = fract(time * 0.6);
+        let closing_r = 0.85 * (1.0 - phase);
+        let closing = (1.0 - smoothstep(0.0, aa, abs(r - closing_r) - 0.02)) * phase * 0.8;
+        let pad = clamp(outer + dot + ticks + closing, 0.0, 1.0);
+        colour = verdict_tint() * pad * PAD_RADIANCE;
     } else {
         // Reticles: SDF rings and ticks in the quad's local space.
         let r = length(in.uv);

@@ -253,6 +253,13 @@ pub struct Settings {
     pub dials: [DialTweak; Instrument::ALL.len()],
     /// Spacing of the landing hoops, metres.
     pub landing_spacing_m: f32,
+    /// LANDING ASSIST: in LANDING mode with a touchdown ahead, the flight
+    /// computer holds the hull level over the ground on any axis the
+    /// pilot is not using.
+    pub landing_assist: bool,
+    /// The landing pad: a ring drawn on the ground at the predicted
+    /// touchdown, in LANDING mode.
+    pub landing_pad: bool,
     /// Rings drawn around each body on the map, 0..=6.
     pub map_rings: u32,
     /// The map's reference grid.
@@ -367,6 +374,8 @@ impl Default for Settings {
             shield: 1.0,
             dials: [DialTweak::DEFAULT; Instrument::ALL.len()],
             landing_spacing_m: 250.0,
+            landing_assist: true,
+            landing_pad: true,
             map_rings: 4,
             map_grid: true,
             camera_chase: false,
@@ -813,6 +822,8 @@ impl Settings {
                         }
                     }
                 }
+                "landing.assist" => s.landing_assist = matches!(v, "on" | "true" | "1"),
+                "landing.pad" => s.landing_pad = matches!(v, "on" | "true" | "1"),
                 "map.rings" => {
                     if let Ok(n) = v.parse::<u32>() {
                         s.map_rings = n.min(crate::map::RINGS_MAX);
@@ -1077,6 +1088,14 @@ impl Settings {
             "ui.landing-hoops = {:.0}\n",
             self.landing_spacing_m
         ));
+        out.push_str(&format!(
+            "landing.assist = {}\n",
+            if self.landing_assist { "on" } else { "off" }
+        ));
+        out.push_str(&format!(
+            "landing.pad = {}\n",
+            if self.landing_pad { "on" } else { "off" }
+        ));
         out.push_str(&format!("map.rings = {}\n", self.map_rings));
         out.push_str(&format!(
             "map.grid = {}\n",
@@ -1189,6 +1208,8 @@ mod tests {
         s.hoop_size = 2.5;
         s.map_rings = 2;
         s.landing_spacing_m = 500.0;
+        s.landing_assist = false;
+        s.landing_pad = false;
         s.cockpit_frame = false;
         s.cockpit_glow = 1.5;
         s.cockpit_hull = 0.25;

@@ -100,6 +100,8 @@ enum Item {
     Slot(Instrument),
     HoopSize,
     LandingHoops,
+    LandingAssist,
+    LandingPad,
     CockpitFrame,
     CockpitGlow,
     CockpitHull,
@@ -176,6 +178,8 @@ impl Item {
             Item::Slot(i) => i.name(),
             Item::HoopSize => "HOOP SIZE",
             Item::LandingHoops => "LANDING HOOPS",
+            Item::LandingAssist => "LANDING ASSIST",
+            Item::LandingPad => "LANDING PAD",
             Item::CockpitFrame => "CABIN FRAME",
             Item::CockpitGlow => "CABIN GLOW",
             Item::CockpitHull => "CABIN METAL",
@@ -250,6 +254,8 @@ impl Item {
             },
             Item::HoopSize => format!("{:.2}x", s.hoop_size),
             Item::LandingHoops => format!("{:.0}M", s.landing_spacing_m),
+            Item::LandingAssist => if s.landing_assist { "ON" } else { "OFF" }.to_string(),
+            Item::LandingPad => if s.landing_pad { "ON" } else { "OFF" }.to_string(),
             Item::CockpitFrame => if s.cockpit_frame { "ON" } else { "OFF" }.to_string(),
             Item::CockpitGlow => format!("{:.2}x", s.cockpit_glow),
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
@@ -508,6 +514,8 @@ impl Menu {
                 Item::Slot(Instrument::HoopSound),
                 Item::HoopSize,
                 Item::LandingHoops,
+                Item::LandingAssist,
+                Item::LandingPad,
                 Item::CamShake,
                 Item::DriveShake,
             ],
@@ -774,6 +782,14 @@ impl Menu {
                     (i + n - 1) % n
                 };
                 s.landing_spacing_m = LANDING_SPACINGS[j];
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::LandingAssist => {
+                s.landing_assist = !s.landing_assist;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::LandingPad => {
+                s.landing_pad = !s.landing_pad;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::CockpitFrame => {
