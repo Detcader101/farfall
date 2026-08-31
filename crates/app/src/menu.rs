@@ -1250,12 +1250,36 @@ impl Menu {
         (block_width(self.cols()), block_height(lines))
     }
 
-    /// A click on the card's row `row` (0 is the header): the cursor
-    /// goes there and the item is adjusted forward — the pointer's way
-    /// through a menu. A click on the header's tabs pages.
-    pub fn click(&mut self, row: usize, settings: &mut Settings) -> MenuEvent {
+    /// The header's tab under character column `col`, if any.
+    fn tab_at(&self, col: usize) -> Option<Page> {
+        if self.standalone {
+            return None;
+        }
+        let mut at = 0;
+        for p in Page::ALL {
+            // The current tab wears its brackets; the rest are bare.
+            let w = p.short().len() + if p == self.page { 2 } else { 0 };
+            if col >= at && col < at + w {
+                return Some(p);
+            }
+            at += w + 1;
+        }
+        None
+    }
+
+    /// A click on the card's row `row` (0 is the header) at character
+    /// column `col`: the cursor goes there and the item is adjusted
+    /// forward — the pointer's way through a menu. A click on one of the
+    /// header's tabs pages to it.
+    pub fn click(&mut self, row: usize, col: usize, settings: &mut Settings) -> MenuEvent {
         let items = self.items();
-        if row == 0 || row > self.visible() {
+        if row == 0 {
+            if let Some(p) = self.tab_at(col) {
+                self.set_page(p);
+            }
+            return MenuEvent::Nothing;
+        }
+        if row > self.visible() {
             return MenuEvent::Nothing;
         }
         let idx = self.scroll + row - 1;
@@ -2591,10 +2615,10 @@ mod tests {
         assert_eq!(m.bay_selected(), Some(3));
         // A click on a row is the cursor there and a step forward; the
         // header and rows past the list are nothing.
-        assert_eq!(m.click(0, &mut s), MenuEvent::Nothing);
-        assert_eq!(m.click(9, &mut s), MenuEvent::Nothing);
+        assert_eq!(m.click(0, 3, &mut s), MenuEvent::Nothing);
+        assert_eq!(m.click(9, 0, &mut s), MenuEvent::Nothing);
         let before = s.mounts[1];
-        assert_eq!(m.click(2, &mut s), MenuEvent::Changed(Change::Layout));
+        assert_eq!(m.click(2, 0, &mut s), MenuEvent::Changed(Change::Layout));
         assert_eq!(m.bay_selected(), Some(1));
         assert_ne!(s.mounts[1], before);
         assert!(m.header().contains("SHIP BAY"));
@@ -2677,6 +2701,29 @@ mod tests {
         m.key(KeyCode::ArrowDown, &mut s);
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Engage);
         assert!(!m.open);
+    }
+
+    /// The header is a row of tabs: a click on one pages to it, a click
+    /// between them is nothing, and the tabs sit where the header draws
+    /// them.
+    #[test]
+    fn a_click_on_a_tab_pages_to_it() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.toggle();
+        let header = m.header();
+        for p in Page::ALL {
+            let col = header.find(p.short()).unwrap();
+            assert_eq!(m.click(0, col, &mut s), MenuEvent::Nothing);
+            assert_eq!(m.page, p, "clicked {} at column {col}", p.short());
+        }
+        let last = Page::ALL[Page::ALL.len() - 1];
+        assert_eq!(m.click(0, MENU_COLS + 5, &mut s), MenuEvent::Nothing);
+        assert_eq!(m.page, last, "a click past the tabs pages nowhere");
+        let mut side = Menu::map_panel();
+        side.toggle();
+        side.click(0, 1, &mut s);
+        assert_eq!(side.page, Page::Map, "a side panel has no tabs");
     }
 
     #[test]

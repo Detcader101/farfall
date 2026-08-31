@@ -5342,10 +5342,14 @@ impl ApplicationHandler for App {
                             if on {
                                 let row =
                                     ((anchor[1] - at[1]) / (LINE as f32 * px)).floor() as usize;
+                                let col = ((at[0] - anchor[0]) * aspect
+                                    / (farfall_render::text::ADVANCE as f32 * px))
+                                    .floor()
+                                    .max(0.0) as usize;
                                 let ev = if game.map_open() {
-                                    game.map_panel.click(row, &mut game.settings)
+                                    game.map_panel.click(row, col, &mut game.settings)
                                 } else {
-                                    game.menu.click(row, &mut game.settings)
+                                    game.menu.click(row, col, &mut game.settings)
                                 };
                                 if ev != MenuEvent::Nothing {
                                     apply_menu_event(game, gpu, event_loop, ev);
