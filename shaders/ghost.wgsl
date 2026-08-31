@@ -3,10 +3,15 @@
 // WARP STOP halts the ship in place: all speed and spin taken out of it at
 // once. What carries on down the old vector, for a moment, is the image
 // the ship left behind — its own geometry, at the attitude it had, sliding
-// away ahead along the velocity it no longer has, in the field's blue,
-// fading. Ray-marched from the same fighter SDF as the cabin and the map
-// dart, in the ship's current frame, so it sits exactly where the ship
-// would have been.
+// away ahead along the velocity it no longer has, fading. Ray-marched
+// from the same fighter SDF as the cabin and the map dart, in the ship's
+// current frame, so it sits exactly where the ship would have been.
+//
+// The look is liquid: a shell of the field's blue seen edge-on, its rim
+// split into a chromatic fringe (red inside, blue outside — the image is
+// refracting the sky behind it), caustic light flowing down its length
+// like water over glass, a faint white heart. Additive: light only.
+// Written as radiance for the post pass's bloom.
 
 struct Ghost {
     // xyz: the head's right axis in ship frame. w: aspect
@@ -106,18 +111,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     let n = ghost_normal(p);
-    // The quantum look: a blue field seen edge-on — a rim that glows,
-    // faces that barely show — with bands of light flowing down the
-    // image's own length and a faint white core. The whole thing thins
-    // with the fade.
-    let rim = pow(1.0 - abs(dot(n, ray)), 2.2);
     let q = quat_rotate(quat_conj(gh.rot), p - c);
     let now = gh.fwd.w;
+    let facing = abs(dot(n, ray));
+    // The chromatic rim: three fringes at three angles, red hugging the
+    // body, blue standing off the silhouette — the image refracts.
+    let rim_r = pow(1.0 - facing, 1.4);
+    let rim_g = pow(1.0 - facing, 2.2);
+    let rim_b = pow(1.0 - facing, 3.2);
+    // Caustics flowing down the image's length: two noise fields sliding
+    // aft at different speeds, their product sharpened into ropes of light
+    // — water over glass.
+    let flow_a = vnoise(vec3<f32>(q.x * 1.1, q.y * 1.6, q.z * 0.9 - now * 7.0));
+    let flow_b = vnoise(vec3<f32>(q.x * 2.4 + 5.0, q.y * 2.4, q.z * 1.7 - now * 11.0));
+    let caustic = pow(clamp(flow_a * flow_b * 3.2, 0.0, 1.5), 2.6);
+    // Bands of light down the length, the field's pulse.
     let bands = 0.5 + 0.5 * sin(q.z * 2.4 - now * 18.0);
-    let bands2 = 0.5 + 0.5 * sin(q.z * 7.0 + q.x * 3.0 + now * 31.0);
-    let body = 0.10 + 0.22 * bands * bands2;
-    let blue = vec3<f32>(0.30, 0.62, 1.0);
-    let white = vec3<f32>(0.85, 0.95, 1.0);
-    let colour = (blue * (rim * 1.8 + body) + white * rim * rim * 0.8) * fade * strength;
+    let body = 0.06 + 0.16 * bands + 0.9 * caustic;
+    let blue = vec3<f32>(0.25, 0.55, 1.00);
+    let white = vec3<f32>(0.90, 0.96, 1.00);
+    let fringe = vec3<f32>(rim_r * 0.55, rim_g * 0.95, rim_b * 1.6);
+    let colour = (fringe * 1.1 + blue * body * 0.8 + white * rim_g * rim_g * 0.5 + white * caustic * 0.25 * facing)
+        * fade * strength * 0.75;
     return vec4<f32>(colour, 1.0);
 }

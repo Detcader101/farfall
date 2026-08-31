@@ -221,6 +221,8 @@ pub struct Settings {
     pub sky: f32,
     /// The lens flare's strength, 1 = stock, 0 none.
     pub flare: f32,
+    /// Space dust and cabin motes: 0 none, 1 stock, up to 2.
+    pub dust: f32,
     /// The nebula's glow, 0 (off) .. 3; 1 = stock.
     pub nebula: f32,
     /// Which nebula: the seed picks where the clouds sit and their shapes.
@@ -359,6 +361,7 @@ impl Default for Settings {
             nebula_hue2: 0.55,
             nebula_spread: 1.5,
             flare: 1.0,
+            dust: 1.0,
             fov: 70.0,
             gauge_style: GaugeStyle::Tron,
             gauges_stay: true,
@@ -726,6 +729,13 @@ impl Settings {
                         }
                     }
                 }
+                "graphics.dust" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.dust = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
                 "graphics.sky" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -983,6 +993,7 @@ impl Settings {
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
         out.push_str(&format!("graphics.flare = {:.2}\n", self.flare));
+        out.push_str(&format!("graphics.dust = {:.2}\n", self.dust));
         out.push_str(&format!("graphics.nebula = {:.2}\n", self.nebula));
         out.push_str(&format!("graphics.nebula-seed = {}\n", self.nebula_seed));
         out.push_str(&format!(
@@ -1196,6 +1207,7 @@ mod tests {
         s.fps_floor = 90.0;
         s.sky = 1.5;
         s.flare = 0.5;
+        s.dust = 1.75;
         s.nebula = 2.0;
         s.nebula_seed = 42;
         s.nebula_scale = 5.0;

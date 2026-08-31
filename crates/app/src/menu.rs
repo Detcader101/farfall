@@ -107,6 +107,7 @@ enum Item {
     FpsFloor,
     Sky,
     Flare,
+    Dust,
     /// The nebula block: glow, then which one and its shape and colours.
     Nebula,
     NebulaSeed,
@@ -183,6 +184,7 @@ impl Item {
             Item::FpsFloor => "FPS FLOOR",
             Item::Sky => "SKY",
             Item::Flare => "LENS FLARE",
+            Item::Dust => "DUST",
             Item::Nebula => "NEBULA",
             Item::NebulaSeed => "NEBULA SEED",
             Item::NebulaScale => "NEBULA SCALE",
@@ -272,6 +274,13 @@ impl Item {
             Item::Flare => {
                 if s.flare > 0.0 {
                     format!("{:.0}%", s.flare * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::Dust => {
+                if s.dust > 0.0 {
+                    format!("{:.0}%", s.dust * 100.0)
                 } else {
                     "OFF".to_string()
                 }
@@ -476,6 +485,7 @@ impl Menu {
                 Item::FpsFloor,
                 Item::Sky,
                 Item::Flare,
+                Item::Dust,
                 Item::Nebula,
                 Item::NebulaSeed,
                 Item::NebulaScale,
@@ -1081,6 +1091,15 @@ impl Menu {
                     return MenuEvent::Nothing;
                 }
                 s.flare = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::Dust => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.dust + step).clamp(0.0, 2.0);
+                if (next - s.dust).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.dust = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Camera => {

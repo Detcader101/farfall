@@ -155,6 +155,16 @@ impl CabinUniforms {
     }
 }
 
+impl BlitUniforms {
+    /// The clock, for the plumes' ripples: the composite runs every
+    /// frame, so time may live here where the cabin's own block keeps
+    /// none.
+    pub fn with_time(mut self, time_s: f32) -> Self {
+        self.misc[2] = time_s.rem_euclid(1000.0);
+        self
+    }
+}
+
 fn quantise(v: Vec3, step: f32) -> Vec3 {
     (v / step).round() * step
 }

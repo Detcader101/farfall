@@ -40,6 +40,7 @@ use web_time::{Duration, Instant};
 use capture::Capture;
 use farfall_audio::Audio;
 use farfall_render::debris::{debris_pass, DebrisPass, DebrisScene, DebrisUniforms, ShardView};
+use farfall_render::dust::{DustPass, DustScene, DustUniforms};
 use farfall_render::mimic::{mimic_pass, MimicPass, MimicUniforms, MimicView};
 use farfall_render::scar::{scar_heat, scar_pass, ScarPass, ScarScene, ScarUniforms, ScarView};
 use farfall_render::sight::{sight_pass, SightPass, SightScene, SightUniforms};
@@ -385,7 +386,9 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_NEBULA=1|off (benchmark only: a full sky of nebula at
 ///                           twice the stock glow, or off for a baseline)
 ///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
-///                           many seconds old, ahead and a little banked)
+///                           many seconds old AT THE CAPTURE — halfway
+///                           through the bench — ahead and a little banked;
+///                           0.5 is a good look, it lives 1.8 s)
 ///   FARFALL_BENCH_ARMS=nosight (benchmark only: the sight off, for a baseline)
 ///   FARFALL_BENCH_ARMS=sight (benchmark only: the cannon hot, as if firing:
 ///                           pair with FARFALL_BENCH_HEAD past the gimbal to
@@ -397,7 +400,7 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_ARMS=1   (benchmark only: tracers from both guns, a muzzle
 ///                           flash and every kind of burst ahead)
 ///   FARFALL_BENCH_STRIKES=n (benchmark only: n strikes on the shield at
-///                           staggered ages, for its ripples)
+///                           staggered ages at the capture, for its ripples)
 ///   FARFALL_BENCH_SHAKE=y,p,r (benchmark only: the helmet camera parked at
 ///                           this yaw, pitch, roll in degrees)
 ///   FARFALL_BENCH_G=x,y,z  (benchmark only: a felt load in g — right, up,
@@ -418,7 +421,7 @@ const MACH1_MPS: f64 = 340.0;
 ///                           seconds in, so the sequence can be captured)
 ///   FARFALL_SKIP=a,b       (profiling only: leave out passes by name —
 ///                           starfield, bodies, planet, plasma, trajectory, cockpit, gauge,
-///                           hud, blit —
+///                           hud, blit, dust —
 ///                           so each one's cost can be measured by its absence)
 struct Config {
     msaa: u32,
@@ -575,6 +578,8 @@ struct Passes {
     tracer: TracerPass,
     /// The arms' debris: shards off the rocks.
     debris: DebrisPass,
+    /// Space dust and the cabin's motes.
+    dust: DustPass,
     /// The arms' scars: craters glowing on the rocks.
     scar: ScarPass,
     /// The gun sight on the glass.
@@ -616,6 +621,7 @@ impl Passes {
             holo: holo_pass(device, format, msaa),
             tracer: tracer_pass(device, format, msaa),
             debris: debris_pass(device, format, msaa),
+            dust: DustPass::new(device, format, msaa),
             scar: scar_pass(device, format, msaa),
             sight: sight_pass(device, format, msaa),
             mimic: mimic_pass(device, format, msaa),
@@ -1783,19 +1789,51 @@ impl Game {
             metal: self.settings.cockpit_hull,
             on: self.settings.cockpit_frame,
             style: self.settings.gauge_style.index(),
-            thrust: self.bench_thrust.unwrap_or_else(|| {
-                let c = self.input.controls(self.assist);
-                [
-                    self.effort,
-                    c.torque_body.x as f32,
-                    c.torque_body.y as f32,
-                    c.torque_body.z as f32,
-                ]
-            }),
+            thrust: self.thrust_look(),
         };
         let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets);
-        let bu = cu.blit(look);
+        let bu = cu.blit(look).with_time(cam.time_s);
         (cu, bu)
+    }
+
+    /// What the engines and the RCS are doing, for the plumes and puffs:
+    /// main thrust 0..1 and the pitch / yaw / roll demands -1..1 — the
+    /// bench's forced numbers when it has them, so the cabin's plumes and
+    /// the chase view's agree.
+    fn thrust_look(&self) -> [f32; 4] {
+        self.bench_thrust.unwrap_or_else(|| {
+            let c = self.input.controls(self.assist);
+            [
+                self.effort,
+                c.torque_body.x as f32,
+                c.torque_body.y as f32,
+                c.torque_body.z as f32,
+            ]
+        })
+    }
+
+    /// The nearest body by altitude, as the altimeter picks it: its
+    /// direction in the ship's frame and the sine of its angular radius
+    /// (0 far away, 1 filling half the sky) — the light it throws on the
+    /// hull and the dust.
+    fn nearest_body_ship(&self) -> (Vec3, f32) {
+        let ship_inv = self.state.ship.orient.inverse();
+        let t = self.state.time_s;
+        let mut near: Option<(f64, DVec3, f64)> = None;
+        for b in self.params.bodies(t) {
+            let rel = b.centre - self.state.ship.pos_m;
+            let alt = rel.length() - b.radius_m;
+            if near.is_none_or(|n| alt < n.0) {
+                near = Some((alt, rel, b.radius_m));
+            }
+        }
+        match near {
+            Some((_, rel, r)) => (
+                (ship_inv * rel).normalize_or_zero().as_vec3(),
+                (r / rel.length().max(1.0)).clamp(0.0, 1.0) as f32,
+            ),
+            None => (Vec3::ZERO, 0.0),
+        }
     }
 
     /// tan(fov/2) of the reference projection the glass is laid out in.
@@ -2612,6 +2650,49 @@ impl Game {
 
     /// The shards this frame, in the ship's frame, with the rocks that
     /// can hide them.
+    /// The dust about the eye this frame: where the eye is on the world
+    /// lattice, how thick the dust is here (the belt, a planet's air, a
+    /// floor in deep space), what it rests in (the local orbit about the
+    /// nearest body), what hides it (that body), and the cabin's light.
+    fn dust_uniforms(&self, pose: &ViewPose, target_height_px: f32) -> DustUniforms {
+        let t = self.state.time_s;
+        let ship = &self.state.ship;
+        let eye = self.eye_m(pose);
+        let bodies = self.params.bodies(t);
+        let vels = self.params.body_velocities(t);
+        let mut near = 0;
+        for (i, b) in bodies.iter().enumerate() {
+            let alt = (b.centre - ship.pos_m).length() - b.radius_m;
+            let best = (bodies[near].centre - ship.pos_m).length() - bodies[near].radius_m;
+            if alt < best {
+                near = i;
+            }
+        }
+        let body = bodies[near];
+        let rel = body.centre - ship.pos_m;
+        let uranus = warp::Destination::Uranus.body(&self.params, t);
+        let belt = belt::Belt::ring_density(&uranus, eye) as f32;
+        let air = (sim::atmo_density(&self.params.planet, ship.pos_m.length())
+            / self.params.planet.atmo_rho0.max(1e-12)) as f32;
+        let density = farfall_render::dust::density(belt, air, self.hyper, self.settings.dust);
+        let cabin = (pose.eye_ship == DVec3::ZERO && self.settings.cockpit_frame)
+            .then_some((pose.head, self.settings.cockpit_glow));
+        DustUniforms::new(
+            &pose.cam,
+            &DustScene {
+                eye_m: eye,
+                drift_mps: farfall_render::dust::drift(rel, body.mu, vels[near], ship.vel_mps),
+                sun_dir: self.params.sun.dir.as_vec3(),
+                density,
+                setting: self.settings.dust,
+                occluder_rel: (body.centre - eye).as_vec3(),
+                occluder_radius_m: body.radius_m as f32,
+                cabin,
+                target_height_px,
+            },
+        )
+    }
+
     fn debris_uniforms(&self, pose: &ViewPose) -> DebrisUniforms {
         let cam = &pose.cam;
         let head = pose.head;
@@ -2685,14 +2766,18 @@ impl Game {
     fn jet_uniforms(&self, pose: &ViewPose) -> JetUniforms {
         let ship_inv = self.state.ship.orient.inverse();
         let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        let thrust = self.thrust_look();
+        let (body_dir, body_sin) = self.nearest_body_ship();
         let u = JetUniforms::new(
             &pose.cam,
             pose.head,
             pose.eye_ship.as_vec3(),
             sun_ship,
-            self.effort,
+            thrust[0],
             self.hyper,
-        );
+        )
+        .with_rcs(thrust[1], thrust[2], thrust[3])
+        .with_body_fill(body_dir, body_sin * body_sin);
         if pose.eye_ship == DVec3::ZERO {
             u
         } else {
@@ -3652,6 +3737,18 @@ fn capture_final() -> bool {
     std::env::var("FARFALL_CAPTURE").as_deref() == Ok("final")
 }
 
+/// When a bench takes its capture, seconds on the frame clock: halfway
+/// through the run (see `Gpu::bench_capture_due`). The bench knobs that
+/// stage a moment — an after-image, strikes on the shield — are aged
+/// against this, so they show in the capture whatever the run's length.
+fn bench_capture_s() -> f32 {
+    std::env::var("FARFALL_BENCH_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(20.0)
+        * 0.5
+}
+
 /// "x,y,z" → vector, for the bench knobs.
 fn parse_vec3(s: &str) -> Option<DVec3> {
     let mut it = s.split(',').map(|p| p.trim().parse::<f64>().ok());
@@ -4013,13 +4110,13 @@ impl App {
             .filter(|_| game.frozen)
             .and_then(|v| v.trim().parse::<f32>().ok())
         {
-            // The capture lands at t = 1 s of the bench clock: an image
-            // that old then, banked a little, gone down the nose.
+            // The capture lands halfway through the bench: an image that
+            // old then, banked a little, gone down the nose.
             let o = game.state.ship.orient;
             game.ghost = Some(Ghost {
                 orient: o * DQuat::from_rotation_z(0.35) * DQuat::from_rotation_x(-0.15),
                 dir_world: o * DVec3::new(0.15, 0.05, -1.0).normalize(),
-                at_s: 1.0 - age,
+                at_s: bench_capture_s() - age,
             });
         }
         let bench_arms = std::env::var("FARFALL_BENCH_ARMS").unwrap_or_default();
@@ -4229,15 +4326,16 @@ impl App {
             .filter(|_| game.frozen)
             .and_then(|v| v.trim().parse::<usize>().ok())
         {
-            // Staggered over the last second and a half, spread round the
-            // nose: each ripple is at a different age in the capture. The
-            // capture lands at t = 1 s of the bench clock.
+            // Staggered over the last second, spread round the nose: each
+            // ripple is at a different age in the capture, which lands
+            // halfway through the bench.
+            let cap = bench_capture_s();
             for i in 0..n.min(farfall_render::shield::IMPACTS) {
                 let spread = random_unit(0.3 + 0.1 * i as f32, 0.13 * i as f32).as_vec3();
                 game.impacts.push(Impact {
                     dir: (glam::Vec3::NEG_Z + spread * 0.8).normalize(),
-                    at_s: 1.0 - 0.1 - 0.35 * i as f32,
-                    size: 0.2 + 0.25 * (i % 4) as f32,
+                    at_s: cap - 0.15 - 0.3 * i as f32,
+                    size: 0.3 + 0.25 * (i % 4) as f32,
                 });
             }
         }
@@ -4499,6 +4597,8 @@ fn redraw(
                         .ghost
                         .update(&gpu.queue, &game.ghost_uniforms(&pose));
                     gpu.passes.jet.update(&gpu.queue, &game.jet_uniforms(&pose));
+                    let du = game.dust_uniforms(&pose, gpu.scene.size().1 as f32);
+                    gpu.passes.dust.update(&gpu.queue, &du);
                     {
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("scene headless"),
@@ -4516,6 +4616,7 @@ fn redraw(
                         gpu.passes.scar.draw(&mut pass);
                         gpu.passes.debris.draw(&mut pass);
                         gpu.passes.tracer.draw(&mut pass);
+                        gpu.passes.dust.draw_space(&mut pass, &du);
                         gpu.passes.jet.draw(&mut pass);
                         if !game.chase_active() {
                             gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
@@ -4525,6 +4626,7 @@ fn redraw(
                         gpu.passes.ghost.draw(&mut pass);
                         if !game.chase_active() {
                             gpu.passes.cabin.draw(&mut pass);
+                            gpu.passes.dust.draw_cabin(&mut pass, &du);
                             gpu.passes.horizon.draw(&mut pass);
                             gpu.passes.gauge.draw_within(
                                 &mut pass,
@@ -4686,6 +4788,8 @@ fn redraw(
             .ghost
             .update(&gpu.queue, &game.ghost_uniforms(&pose));
         gpu.passes.jet.update(&gpu.queue, &game.jet_uniforms(&pose));
+        let du = game.dust_uniforms(&pose, gpu.scene.size().1 as f32);
+        gpu.passes.dust.update(&gpu.queue, &du);
         let (altitude_m, _) = game.altitude_vspeed();
         gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
 
@@ -4787,6 +4891,9 @@ fn redraw(
             if gpu.cfg.draws("tracer") {
                 gpu.passes.tracer.draw(&mut pass);
             }
+            if gpu.cfg.draws("dust") {
+                gpu.passes.dust.draw_space(&mut pass, &du);
+            }
             if gpu.cfg.draws("jet") {
                 gpu.passes.jet.draw(&mut pass);
             }
@@ -4804,6 +4911,9 @@ fn redraw(
             }
             if gpu.cfg.draws("cockpit") && !game.chase_active() {
                 gpu.passes.cabin.draw(&mut pass);
+                if gpu.cfg.draws("dust") {
+                    gpu.passes.dust.draw_cabin(&mut pass, &du);
+                }
             }
             if gpu.cfg.draws("gauge") && !game.chase_active() {
                 gpu.passes.horizon.draw(&mut pass);

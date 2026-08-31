@@ -35,6 +35,7 @@ pub const GUIDE: &str = include_str!("../../../shaders/guide.wgsl");
 pub const TRACER: &str = include_str!("../../../shaders/tracer.wgsl");
 pub const NEBULA: &str = include_str!("../../../shaders/nebula.wgsl");
 pub const MIMIC: &str = include_str!("../../../shaders/mimic.wgsl");
+pub const DUST: &str = include_str!("../../../shaders/dust.wgsl");
 
 /// Every pass: display name, source, and required entry points.
 pub const PASSES: &[(&str, &str, &[&str])] = &[
@@ -79,6 +80,7 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("tracer", TRACER, &["vs_main", "fs_main"]),
     ("nebula", NEBULA, &["vs_main", "fs_bake", "fs_downsample"]),
     ("mimic", MIMIC, &["vs_main", "fs_main"]),
+    ("dust", DUST, &["vs_main", "fs_main"]),
 ];
 
 /// Prepend the shared prelude to a pass source.
