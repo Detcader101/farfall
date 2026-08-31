@@ -9,6 +9,7 @@
 use crate::bay::{Mount, STOCK};
 use crate::cockpit::{Instrument, Layout, Slot};
 use crate::input::{key_from_name, key_name, Action, Bindings, Named};
+use crate::stick::StickMap;
 use crate::warp::{Destination, Plan, LENGTH_MAX, LENGTH_MIN};
 pub use farfall_render::post::Tonemap;
 use std::path::PathBuf;
@@ -244,6 +245,8 @@ pub struct Settings {
     pub cockpit_hull: f32,
     /// The cabin is drawn at this fraction of the scene's size.
     pub cockpit_res: f32,
+    /// The control column on the console mirrors the live stick demand.
+    pub cockpit_stick: bool,
     /// The least frame rate the pilot will have, or 0 for no floor.
     pub fps_floor: f32,
     /// The daytime sky's strength low down, 1 = stock.
@@ -388,6 +391,8 @@ pub struct Settings {
     pub pointer_size: f32,
     /// Where the SHIP bay's panel sits (top-left, canopy NDC).
     pub bay_anchor: [f32; 2],
+    /// The stick: which raw axis and button is which control (stick.*).
+    pub stick: StickMap,
 }
 
 impl Settings {
@@ -422,6 +427,7 @@ impl Default for Settings {
             cockpit_glow: 1.0,
             cockpit_hull: 0.92,
             cockpit_res: 0.5,
+            cockpit_stick: true,
             fps_floor: 60.0,
             sky: 1.0,
             terrain_detail: 1.0,
@@ -489,6 +495,7 @@ impl Default for Settings {
             bay_spin: true,
             pointer_size: POINTER_SIZE_DEFAULT,
             bay_anchor: BAY_ANCHOR_DEFAULT,
+            stick: StickMap::default(),
         }
     }
 }
@@ -536,6 +543,7 @@ pub const KEYS: &[&str] = &[
     "cockpit.glow",
     "cockpit.hull",
     "cockpit.res",
+    "cockpit.stick",
     "ui.gauges",
     "ui.gauge-style",
     "ui.guide",
@@ -560,6 +568,21 @@ pub const KEYS: &[&str] = &[
     "sound.hull",
     "control.*",
     "control.look-sens",
+    "stick.enabled",
+    "stick.pitch",
+    "stick.yaw",
+    "stick.roll",
+    "stick.throttle",
+    "stick.strafe",
+    "stick.lift",
+    "stick.deadzone",
+    "stick.curve",
+    "stick.throttle-zero",
+    "stick.throttle-brake",
+    "stick.throttle-jump",
+    "stick.layout",
+    "stick.fire",
+    "stick.button.*",
     "arms.power",
     "arms.glow",
     "arms.sight",
@@ -772,6 +795,9 @@ impl Settings {
                             s.look_sensitivity = f.clamp(0.1, 5.0);
                         }
                     }
+                }
+                k if k.starts_with("stick.") => {
+                    s.stick.parse_key(k, v);
                 }
                 "ui.panel-menu" => {
                     if let Some(a) = parse_pair(v) {
@@ -1150,6 +1176,7 @@ impl Settings {
                         }
                     }
                 }
+                "cockpit.stick" => s.cockpit_stick = matches!(v, "on" | "true" | "1"),
                 "cockpit.res" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if COCKPIT_RES_CHOICES.contains(&f) {
@@ -1344,6 +1371,7 @@ impl Settings {
             "control.look-sens = {:.2}\n",
             self.look_sensitivity
         ));
+        self.stick.render(&mut out);
         out.push_str(&format!("ui.hoop-size = {:.2}\n", self.hoop_size));
         out.push_str(&format!(
             "ui.panel-menu = {:.3},{:.3}\n",
@@ -1364,6 +1392,10 @@ impl Settings {
         out.push_str(&format!("cockpit.glow = {:.2}\n", self.cockpit_glow));
         out.push_str(&format!("cockpit.hull = {:.2}\n", self.cockpit_hull));
         out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
+        out.push_str(&format!(
+            "cockpit.stick = {}\n",
+            if self.cockpit_stick { "on" } else { "off" }
+        ));
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
         out.push_str(&format!(
@@ -1616,6 +1648,15 @@ mod tests {
         s.miners_growth = 2.5;
         s.hold_gain = 1.75;
         s.hold_face = false;
+        s.stick.enabled = false;
+        s.stick.deadzone = 0.14;
+        s.stick.curve = 2.25;
+        s.stick.throttle_zero = crate::stick::ThrottleZero::Bottom;
+        s.stick.bind_axis(
+            crate::stick::Flight::Lift,
+            crate::stick::AxisMap::parse("3-").unwrap(),
+        );
+        s.stick.bind_fire(Some(2));
         s.arms_sight = 0.5;
         s.cam_shake = 1.75;
         s.drive_shake = 0.8;
@@ -1628,6 +1669,7 @@ mod tests {
         s.cockpit_glow = 1.5;
         s.cockpit_hull = 0.25;
         s.cockpit_res = 1.0;
+        s.cockpit_stick = false;
         s.fps_floor = 90.0;
         s.sky = 1.5;
         s.flare = 0.5;

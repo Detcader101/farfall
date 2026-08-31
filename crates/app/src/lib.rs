@@ -27,6 +27,7 @@ mod panel;
 mod readout;
 mod settings;
 mod shake;
+mod stick;
 mod warp;
 
 use cockpit::Instrument;
@@ -174,6 +175,8 @@ fn apply_menu_event(
             game.settings.save();
             game.engage_warp();
         }
+        // The wizard sits over the open menu: same pause, same panel.
+        MenuEvent::StickWizard => game.wizard = Some(stick::Wizard::new()),
         MenuEvent::Closed | MenuEvent::Nothing => {}
     }
 }
@@ -435,7 +438,12 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_DISEMBARK=1 (benchmark only: DISEMBARK pressed at once,
 ///                           for its answer on the readout)
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
-///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times)
+///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times,
+///                           0..8; 2 is the STICK page)
+///   FARFALL_BENCH_STICK=n  (benchmark only: the stick wizard open at step n
+///                           (0-based), with a stand-in detection on it)
+///   FARFALL_BENCH_DEMAND=p,r,y,t (benchmark only: a parked pitch/roll/yaw/
+///                           throttle demand, for the console stick's mirror)
 ///   FARFALL_BENCH_CARD=1   (benchmark only: the CONTROLS card up, as on the first run)
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_NEBULA=1|off (benchmark only: a full sky of nebula at
@@ -1349,6 +1357,18 @@ struct Game {
     /// The arms, and the trigger.
     arms: arms::Arms,
     fire_held: bool,
+    /// The trigger on the stick.
+    stick_fire: bool,
+    /// The stick (a HOTAS through winmm / the Gamepad API), the wizard
+    /// that maps it while it is up, and a frame count between the
+    /// flight-log lines it writes.
+    stick: stick::Reader,
+    wizard: Option<stick::Wizard>,
+    stick_log: u32,
+    /// The throttle gestures: lever hard back brakes, a slam bursts.
+    stick_gestures: stick::Gestures,
+    /// FARFALL_BENCH_DEMAND: a parked demand the poll must not stomp.
+    bench_demand: bool,
     /// The mimics — ships in the rocks — and what the guns bring in.
     mimics: mimic::Mimics,
     haul: mimic::Haul,
@@ -1503,6 +1523,12 @@ impl Game {
             belt: belt::Belt::default(),
             arms: arms::Arms::default(),
             fire_held: false,
+            stick_fire: false,
+            stick: stick::Reader::default(),
+            wizard: None,
+            stick_log: 0,
+            stick_gestures: stick::Gestures::default(),
+            bench_demand: false,
             mimics: mimic::Mimics::default(),
             haul: mimic::Haul::default(),
             miners: miner::Miners::default(),
@@ -1523,6 +1549,14 @@ impl Game {
             strike_rng: 0x9E37_79B9,
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
+        }
+    }
+
+    /// The settings panel's text: the wizard while it is up, else the menu.
+    fn render_menu(&self, text: &mut TextBitmap) {
+        match &self.wizard {
+            Some(w) => w.render(text, &self.settings.stick, self.stick.device.as_ref()),
+            None => self.menu.render(text, &self.settings),
         }
     }
 
@@ -2067,7 +2101,21 @@ impl Game {
             thrust: self.thrust_look(),
         };
         let fit = bay::fit_views(&self.settings.mounts);
-        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets, &fit);
+        // The console's control column mirrors the live demand (HOTAS
+        // or keys): pitch, roll, yaw, throttle in the pilot's sense.
+        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets, &fit).with_stick(
+            if self.settings.cockpit_stick {
+                let c = self.input.controls(self.assist);
+                [
+                    c.torque_body.x as f32,
+                    -c.torque_body.z as f32,
+                    -c.torque_body.y as f32,
+                    -c.thrust_body.z as f32,
+                ]
+            } else {
+                [0.0; 4]
+            },
+        );
         let bu = cu.blit(look).with_time(cam.time_s);
         (cu, bu)
     }
@@ -2199,7 +2247,9 @@ impl Game {
     /// The pause panel's chosen row, for the card's band: (top, height)
     /// in font pixels.
     fn highlight_row(&self) -> Option<(f32, f32)> {
-        if self.menu.open {
+        if self.wizard.is_some() {
+            None
+        } else if self.menu.open {
             Some(self.menu.cursor_row_px())
         } else if self.map_panel.open {
             Some(self.map_panel.cursor_row_px())
@@ -3712,7 +3762,10 @@ impl Game {
             self.haul.yield_ = self.settings.arms_ore;
             self.miners.count = self.settings.miners_count;
             self.miners.growth = self.settings.miners_growth;
-            let trigger = self.fire_held && !self.menu.open && !self.map_open() && !self.design;
+            let trigger = (self.fire_held || self.stick_fire)
+                && !self.menu.open
+                && !self.map_open()
+                && !self.design;
             let kick = self.arms.step(
                 self.state.time_s,
                 sim::DT,
@@ -5205,6 +5258,33 @@ impl App {
                 game.menu.key(KeyCode::Tab, &mut game.settings);
             }
         }
+        if let Some(step) = std::env::var("FARFALL_BENCH_STICK")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            if !game.menu.open {
+                game.menu.toggle();
+            }
+            let mut w = stick::Wizard::at_step(step);
+            w.bench_detect();
+            game.wizard = Some(w);
+        }
+        // FARFALL_BENCH_DEMAND=p,r,y,t: a parked control demand, for a
+        // capture of the console's stick and lever answering it.
+        if let Some([p, r, y, t]) = std::env::var("FARFALL_BENCH_DEMAND")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| {
+                let n: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                <[f64; 4]>::try_from(n).ok()
+            })
+        {
+            // The mirror's senses: +p pitch up (+x torque), +r roll right
+            // (-z), +y yaw right (-y), +t thrust ahead (-z).
+            game.input.set_stick([0.0, 0.0, -t, p, -y, -r]);
+            game.bench_demand = true;
+        }
         if game.frozen && std::env::var("FARFALL_BENCH_LAND").is_ok() {
             game.toggle_landing();
             game.touchdown = landing::predict(&game.params, &game.state.ship, game.state.time_s);
@@ -5355,7 +5435,7 @@ fn redraw(
                     } else if capture_text && game.card_open {
                         card::render(&mut gpu.text, &game.settings.bindings);
                     } else if capture_text && game.menu.open {
-                        game.menu.render(&mut gpu.text, &game.settings);
+                        game.render_menu(&mut gpu.text);
                     } else if capture_text {
                         gpu.text.clear();
                         gpu.text.draw(0, 0, "HEADLESS CAPTURE");
@@ -5915,9 +5995,304 @@ fn redraw(
         card::render(&mut gpu.text, &game.settings.bindings);
     } else if game.menu.open {
         gpu.text.clear();
-        game.menu.render(&mut gpu.text, &game.settings);
+        game.render_menu(&mut gpu.text);
     }
     gpu.window.request_redraw();
+}
+
+impl App {
+    /// The stick, once a frame: its axes into the input, its buttons as
+    /// the keys their controls are bound to, its trigger as the trigger
+    /// — or, while the wizard is up, everything into the wizard; or,
+    /// while a KEYS row waits for a bind, the button onto that row.
+    fn poll_stick(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(game) = self.game.as_mut() else {
+            return;
+        };
+        // A parked bench demand stands; the real stick must not stomp it.
+        if game.bench_demand {
+            return;
+        }
+        let Some(sample) = game.stick.poll() else {
+            game.menu.set_stick(None);
+            game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
+            game.stick_fire = false;
+            return;
+        };
+        game.menu
+            .set_stick(game.stick.device.as_ref().map(|d| (d.vid, d.pid)));
+        // The device names the raw indices: a HOTAS 4 says TRIGGER and
+        // ROCKER, anything else says B0 and AXIS 4.
+        if let Some(d) = game.stick.device.as_ref() {
+            let layout =
+                if stick::Device::known_name(d.vid, d.pid).is_some_and(|n| n.contains("HOTAS 4")) {
+                    stick::Layout::Hotas4
+                } else {
+                    stick::Layout::Generic
+                };
+            if game.settings.stick.layout != layout {
+                game.settings.stick.layout = layout;
+                game.settings.save();
+            }
+        }
+        let (pressed, released) = game.stick.edges(sample);
+        if let Some(w) = game.wizard.as_mut() {
+            w.feed(sample);
+            game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
+            game.stick_fire = false;
+            return;
+        }
+        let map = game.settings.stick;
+        if !map.enabled {
+            game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
+            game.stick_fire = false;
+            return;
+        }
+        let axes = map.body_axes(&sample);
+        game.input.set_stick(axes);
+        game.stick_fire = map.fire.is_some_and(|b| sample.button(b));
+        // The throttle's gestures: the lever hard back holds the air
+        // brake; a slam forward is two seconds of chaos drive.
+        let t = game.started.elapsed().as_secs_f64();
+        let (gesture_brake, gesture_hyper) = game.stick_gestures.step(&map, &sample, t);
+        game.input.set_stick_held(gesture_brake, gesture_hyper);
+        // A flight-log line while the stick is doing something, a
+        // second apart: the evidence that the map is the right way up.
+        if game.stick_log > 0 {
+            game.stick_log -= 1;
+        } else if axes.iter().any(|v| v.abs() > 0.3) || sample.buttons != 0 {
+            let f = map.flight(&sample);
+            log::info!(
+                "stick: pitch {:+.2} yaw {:+.2} roll {:+.2} throttle {:+.2} strafe {:+.2} lift {:+.2} buttons {:#x} -> thrust [{:+.2} {:+.2} {:+.2}] torque [{:+.2} {:+.2} {:+.2}]",
+                f[0], f[1], f[2], f[3], f[4], f[5], sample.buttons,
+                axes[0], axes[1], axes[2], axes[3], axes[4], axes[5]
+            );
+            game.stick_log = 60;
+        }
+        // Button edges, outside the borrow: each one is its key.
+        let mut edges: Vec<(u8, bool)> = Vec::new();
+        for b in 0..stick::MAX_BUTTONS {
+            let bit = 1u32 << b;
+            if pressed & bit != 0 {
+                edges.push((b, true));
+            } else if released & bit != 0 {
+                edges.push((b, false));
+            }
+        }
+        for (b, down) in edges {
+            let (Some(gpu), Some(game)) = (self.gpu.as_mut(), self.game.as_mut()) else {
+                return;
+            };
+            log::info!(
+                "stick: {} {}",
+                game.settings.stick.button_name(Some(b)),
+                if down { "down" } else { "up" }
+            );
+            if down && game.menu.open && game.menu.rebinding() {
+                let ev = game.menu.stick_button(b, &mut game.settings);
+                apply_menu_event(game, gpu, event_loop, ev);
+                continue;
+            }
+            if let Some(n) = game.settings.stick.named_for_button(b) {
+                let code = game.settings.bindings.named(n);
+                self.key_input(event_loop, code, down, false);
+            }
+        }
+    }
+
+    /// A key, pressed or released — from the keyboard, or from a stick
+    /// button standing in for the key its control is bound to (so a
+    /// button bound to BOOST is exactly the BOOST key). The wizard, when
+    /// it is up, takes every key first.
+    fn key_input(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        code: KeyCode,
+        pressed: bool,
+        repeat: bool,
+    ) {
+        let (Some(gpu), Some(game)) = (self.gpu.as_mut(), self.game.as_mut()) else {
+            return;
+        };
+        // The CONTROLS card: any key puts it away; F1 brings it back.
+        if game.card_open {
+            if pressed && !repeat {
+                game.close_card();
+            }
+            return;
+        }
+        if pressed && !repeat && code == KeyCode::F1 && !game.design {
+            game.open_card();
+            return;
+        }
+        // The stick wizard, over the open menu: every key is its.
+        if let Some(w) = game.wizard.as_mut() {
+            if pressed && !repeat {
+                match w.key(code, &mut game.settings.stick) {
+                    stick::WizardEvent::Done => {
+                        game.wizard = None;
+                        game.settings.save();
+                    }
+                    stick::WizardEvent::Changed => game.settings.save(),
+                    stick::WizardEvent::Nothing => {}
+                }
+            }
+            return;
+        }
+        if game.design {
+            if pressed && !repeat {
+                let aspect = gpu.config.width as f32 / gpu.config.height as f32;
+                match code {
+                    KeyCode::KeyK | KeyCode::Escape => {
+                        game.toggle_design();
+                        gpu.set_look_cursor(game.look.engaged());
+                    }
+                    other => game.design_key(other, aspect),
+                }
+            }
+            return;
+        }
+        if game.panel_open() {
+            // M closes the map from anywhere in it; B the bay.
+            if pressed && !repeat && code == game.bind(Named::Map) {
+                game.toggle_map();
+                return;
+            }
+            if pressed && !repeat && code == game.bind(Named::Bay) {
+                game.toggle_bay();
+                return;
+            }
+            // Pane zoom from the keyboard, for a mouse with no wheel.
+            if pressed && game.pane_open() {
+                let notches = match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => 1.0,
+                    KeyCode::Minus | KeyCode::NumpadSubtract => -1.0,
+                    _ => 0.0,
+                };
+                if game.map_open() {
+                    game.map_view.zoom_by(notches);
+                } else {
+                    game.bay_view.zoom_by(notches);
+                }
+            }
+            if pressed && !repeat {
+                let panel = if game.map_open() {
+                    &mut game.map_panel
+                } else if game.bay_open() {
+                    &mut game.bay_panel
+                } else {
+                    &mut game.menu
+                };
+                let ev = panel.key(code, &mut game.settings);
+                apply_menu_event(game, gpu, event_loop, ev);
+            }
+            return;
+        }
+        match code {
+            // Whatever was held is released when a panel opens: the
+            // world pauses, the keys must not carry a thrust demand
+            // across.
+            KeyCode::Escape if pressed && !repeat => game.toggle_menu(),
+            // Every named control below reads its binding — the
+            // KEYS page lists all of them, so what the menu shows
+            // is what the keyboard does. Edge-triggered, and
+            // `repeat` is filtered: holding a key must not strobe
+            // a toggle.
+            c if pressed && !repeat && c == game.bind(Named::Bay) => game.toggle_bay(),
+            c if pressed && !repeat && c == game.bind(Named::Hold) => game.toggle_hold(),
+            c if pressed && !repeat && c == game.bind(Named::Map) => game.toggle_map(),
+            c if pressed && !repeat && c == game.bind(Named::Appearance) => game.cycle_appearance(),
+            c if pressed && !repeat && (c == game.bind(Named::Capture) || c == KeyCode::F12) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    gpu.capture_requested = true;
+                }
+            }
+            c if pressed
+                && !repeat
+                && (c == game.bind(Named::ScaleDown) || c == game.bind(Named::ScaleUp)) =>
+            {
+                let step = if c == game.bind(Named::ScaleUp) {
+                    0.1
+                } else {
+                    -0.1
+                };
+                let next = gpu.scene.scale() + step;
+                gpu.scene.set_scale(next);
+                log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
+            }
+            c if pressed && !repeat && c == game.bind(Named::Engage) => game.engage_warp(),
+            c if pressed && !repeat && c == game.bind(Named::WarpStop) => game.warp_stop(),
+            c if pressed && !repeat && c == game.bind(Named::Landing) => game.toggle_landing(),
+            c if pressed && !repeat && c == game.bind(Named::Disembark) => game.disembark(),
+            c if pressed && !repeat && c == game.bind(Named::Design) => {
+                game.toggle_design();
+                gpu.set_look_cursor(game.look.engaged() && !game.design);
+            }
+            c if pressed && !repeat && c == game.bind(Named::LookLock) => {
+                game.look.toggle_lock();
+                gpu.set_look_cursor(game.look.engaged());
+            }
+            c if pressed && !repeat && c == game.bind(Named::Trajectory) => {
+                game.settings.layout.cycle(Instrument::Trajectory, true);
+                game.settings.save();
+                log::info!(
+                    "trajectory {}",
+                    game.settings.layout.get(Instrument::Trajectory).name()
+                );
+            }
+            c if pressed && !repeat && c == game.bind(Named::Chase) => {
+                game.settings.camera_chase = !game.settings.camera_chase;
+                game.settings.save();
+                log::info!(
+                    "camera {}",
+                    if game.settings.camera_chase {
+                        "CHASE"
+                    } else {
+                        "FIRST PERSON"
+                    }
+                );
+            }
+            c if pressed && !repeat && c == game.bind(Named::Holo) => {
+                game.settings.holo_view = !game.settings.holo_view;
+                game.settings.save();
+                log::info!(
+                    "holo3PP {}",
+                    if game.settings.holo_view { "ON" } else { "OFF" }
+                );
+            }
+            c if pressed && !repeat && c == game.bind(Named::Weapon1) => {
+                game.arms.select(arms::Weapon::Cannon);
+                log::info!("arms: {}", game.arms.selected.name());
+            }
+            c if pressed && !repeat && c == game.bind(Named::Weapon2) => {
+                game.arms.select(arms::Weapon::Rail);
+                log::info!("arms: {}", game.arms.selected.name());
+            }
+            c if pressed && !repeat && c == game.bind(Named::NextWeapon) => {
+                game.arms.next_weapon();
+                log::info!("arms: {}", game.arms.selected.name());
+            }
+            c if pressed && !repeat && c == game.bind(Named::Assist) => {
+                game.assist = !game.assist;
+                log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
+            }
+            c if pressed && (c == game.bind(Named::HoloOut) || c == game.bind(Named::HoloIn)) => {
+                game.zoom_holo(if c == game.bind(Named::HoloOut) {
+                    1.0
+                } else {
+                    -1.0
+                });
+            }
+            _ => game.input.set(code, pressed),
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -5970,185 +6345,7 @@ impl ApplicationHandler for App {
                     return;
                 };
                 let pressed = event.state == ElementState::Pressed;
-                // The CONTROLS card: any key puts it away; F1 brings it back.
-                if game.card_open {
-                    if pressed && !event.repeat {
-                        game.close_card();
-                    }
-                    return;
-                }
-                if pressed && !event.repeat && code == KeyCode::F1 && !game.design {
-                    game.open_card();
-                    return;
-                }
-                if game.design {
-                    if pressed && !event.repeat {
-                        let aspect = gpu.config.width as f32 / gpu.config.height as f32;
-                        match code {
-                            KeyCode::KeyK | KeyCode::Escape => {
-                                game.toggle_design();
-                                gpu.set_look_cursor(game.look.engaged());
-                            }
-                            other => game.design_key(other, aspect),
-                        }
-                    }
-                    return;
-                }
-                if game.panel_open() {
-                    // M closes the map from anywhere in it; B the bay.
-                    if pressed && !event.repeat && code == game.bind(Named::Map) {
-                        game.toggle_map();
-                        return;
-                    }
-                    if pressed && !event.repeat && code == game.bind(Named::Bay) {
-                        game.toggle_bay();
-                        return;
-                    }
-                    // Pane zoom from the keyboard, for a mouse with no wheel.
-                    if pressed && game.pane_open() {
-                        let notches = match code {
-                            KeyCode::Equal | KeyCode::NumpadAdd => 1.0,
-                            KeyCode::Minus | KeyCode::NumpadSubtract => -1.0,
-                            _ => 0.0,
-                        };
-                        if game.map_open() {
-                            game.map_view.zoom_by(notches);
-                        } else {
-                            game.bay_view.zoom_by(notches);
-                        }
-                    }
-                    if pressed && !event.repeat {
-                        let panel = if game.map_open() {
-                            &mut game.map_panel
-                        } else if game.bay_open() {
-                            &mut game.bay_panel
-                        } else {
-                            &mut game.menu
-                        };
-                        let ev = panel.key(code, &mut game.settings);
-                        apply_menu_event(game, gpu, event_loop, ev);
-                    }
-                    return;
-                }
-                match code {
-                    // Whatever was held is released when a panel opens: the
-                    // world pauses, the keys must not carry a thrust demand
-                    // across.
-                    KeyCode::Escape if pressed && !event.repeat => game.toggle_menu(),
-                    // Every named control below reads its binding — the
-                    // KEYS page lists all of them, so what the menu shows
-                    // is what the keyboard does. Edge-triggered, and
-                    // `repeat` is filtered: holding a key must not strobe
-                    // a toggle.
-                    c if pressed && !event.repeat && c == game.bind(Named::Bay) => {
-                        game.toggle_bay()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Hold) => {
-                        game.toggle_hold()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Map) => {
-                        game.toggle_map()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Appearance) => {
-                        game.cycle_appearance()
-                    }
-                    c if pressed
-                        && !event.repeat
-                        && (c == game.bind(Named::Capture) || c == KeyCode::F12) =>
-                    {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            gpu.capture_requested = true;
-                        }
-                    }
-                    c if pressed
-                        && !event.repeat
-                        && (c == game.bind(Named::ScaleDown) || c == game.bind(Named::ScaleUp)) =>
-                    {
-                        let step = if c == game.bind(Named::ScaleUp) {
-                            0.1
-                        } else {
-                            -0.1
-                        };
-                        let next = gpu.scene.scale() + step;
-                        gpu.scene.set_scale(next);
-                        log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Engage) => {
-                        game.engage_warp()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::WarpStop) => {
-                        game.warp_stop()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Landing) => {
-                        game.toggle_landing()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Disembark) => {
-                        game.disembark()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Design) => {
-                        game.toggle_design();
-                        gpu.set_look_cursor(game.look.engaged() && !game.design);
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::LookLock) => {
-                        game.look.toggle_lock();
-                        gpu.set_look_cursor(game.look.engaged());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Trajectory) => {
-                        game.settings.layout.cycle(Instrument::Trajectory, true);
-                        game.settings.save();
-                        log::info!(
-                            "trajectory {}",
-                            game.settings.layout.get(Instrument::Trajectory).name()
-                        );
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Chase) => {
-                        game.settings.camera_chase = !game.settings.camera_chase;
-                        game.settings.save();
-                        log::info!(
-                            "camera {}",
-                            if game.settings.camera_chase {
-                                "CHASE"
-                            } else {
-                                "FIRST PERSON"
-                            }
-                        );
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Holo) => {
-                        game.settings.holo_view = !game.settings.holo_view;
-                        game.settings.save();
-                        log::info!(
-                            "holo3PP {}",
-                            if game.settings.holo_view { "ON" } else { "OFF" }
-                        );
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Weapon1) => {
-                        game.arms.select(arms::Weapon::Cannon);
-                        log::info!("arms: {}", game.arms.selected.name());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Weapon2) => {
-                        game.arms.select(arms::Weapon::Rail);
-                        log::info!("arms: {}", game.arms.selected.name());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::NextWeapon) => {
-                        game.arms.next_weapon();
-                        log::info!("arms: {}", game.arms.selected.name());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Assist) => {
-                        game.assist = !game.assist;
-                        log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
-                    }
-                    c if pressed
-                        && (c == game.bind(Named::HoloOut) || c == game.bind(Named::HoloIn)) =>
-                    {
-                        game.zoom_holo(if c == game.bind(Named::HoloOut) {
-                            1.0
-                        } else {
-                            -1.0
-                        });
-                    }
-                    _ => game.input.set(code, pressed),
-                }
+                self.key_input(event_loop, code, pressed, event.repeat);
             }
             WindowEvent::MouseInput {
                 state,
@@ -6269,6 +6466,7 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => {
                 game.input.release_all();
                 game.fire_held = false;
+                game.stick_fire = false;
                 game.look.set_held(false);
                 gpu.set_look_cursor(game.look.engaged());
                 game.end_drag();
@@ -6283,6 +6481,12 @@ impl ApplicationHandler for App {
                 gpu.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                // The stick is polled once a frame, here, before the frame
+                // samples the controls.
+                self.poll_stick(event_loop);
+                let (Some(gpu), Some(game)) = (self.gpu.as_mut(), self.game.as_mut()) else {
+                    return;
+                };
                 redraw(gpu, game, self.audio.as_ref(), Some(event_loop));
             }
             _ => {}

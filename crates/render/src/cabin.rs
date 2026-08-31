@@ -21,6 +21,10 @@ pub struct CabinUniforms {
     /// (bay.rs Hardpoint::pos via fit_views); w: its mount's kind
     /// (0 empty, 1 cannon, 2 rail). The glass shows the bay's fit.
     hp: [[f32; 4]; 4],
+    /// The pilot's demand mirrored by the cabin's own stick and lever:
+    /// x pitch, y roll, z yaw, w throttle, each in [-1, 1], quantised so
+    /// a settling ramp does not re-march the cabin every frame.
+    stick: [f32; 4],
 }
 
 /// What the composite needs each frame: the head's basis for the thruster
@@ -142,7 +146,22 @@ impl CabinUniforms {
             pads,
             eye: [0.0; 4],
             hp,
+            stick: [0.0; 4],
         }
+    }
+
+    /// The control column's mirror: the live pitch/roll/yaw/throttle
+    /// demand, quantised to steps no eye will miss (the cabin re-marches
+    /// only when its inputs change).
+    pub fn with_stick(mut self, demand: [f32; 4]) -> Self {
+        for (dst, v) in self.stick.iter_mut().zip(demand) {
+            *dst = if v.is_finite() {
+                (v.clamp(-1.0, 1.0) / 0.05).round() * 0.05
+            } else {
+                0.0
+            };
+        }
+        self
     }
 
     /// Seat the eye off the head's origin: a headset's left and right.
@@ -1081,7 +1100,7 @@ mod tests {
         assert_eq!(Placement::glass_sized(1.5).right[3], 1.5);
         assert_eq!(Placement::glass_sized(1.0).tilted(0.5).up[3], 0.5);
         assert_eq!(Placement::glass_sized(1.0).tilted(9.0).up[3], TILT_MAX);
-        assert_eq!(UNIFORM_BYTES, 16 * 16); // eye, then the four hardpoints
+        assert_eq!(UNIFORM_BYTES, 17 * 16); // eye, the four hardpoints, then the stick vec4
                                             // Unchanged inputs compare equal (no clock inside), a turned head
                                             // is a moved view, a changed socket is not.
         let again = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets, &fit);
