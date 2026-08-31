@@ -206,6 +206,8 @@ pub const ARMS_SHARDS_MAX: u32 = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
+    /// The file format's version (see [`SETTINGS_VERSION`]).
+    pub version: u32,
     pub msaa: u32,
     pub scale: f32,
     /// The world's scale governs itself to hold the FPS floor: RENDER
@@ -391,6 +393,7 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            version: SETTINGS_VERSION,
             msaa: 4,
             scale: 1.0,
             auto_scale: false,
@@ -565,6 +568,10 @@ pub const KEYS: &[&str] = &[
     "landing.pad",
 ];
 
+/// Keys the file carries for itself, with no menu row to reach them.
+#[cfg(test)]
+pub const FILE_ONLY_KEYS: &[&str] = &["settings.version"];
+
 /// The anchors: set by dragging a panel, never by a row.
 #[cfg(test)]
 pub const DRAGGED_KEYS: &[&str] = &[
@@ -588,9 +595,27 @@ pub fn key_matches(pattern: &str, key: &str) -> bool {
     }
 }
 
+/// The settings file's format version, written as `settings.version`.
+/// A file without the line predates the DRIVE SHAKE stock change (40% →
+/// 12%): parse adopts the new stock for exactly the old stock value, and
+/// keeps anything else — an explicit choice survives, an old default
+/// does not.
+pub const SETTINGS_VERSION: u32 = 2;
+/// What `cam.drive-shake` used to default to, before the polish pass.
+const OLD_DRIVE_SHAKE_STOCK: f32 = 0.40;
+
+/// The pilot's home: `HOME` where a shell sets it, else Windows'
+/// `USERPROFILE`. A plain Windows launch (Explorer, a shortcut) has no
+/// HOME at all — without the fallback nothing was ever saved there.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
 impl Settings {
     pub fn path() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".farfall").join("settings.cfg"))
+        home_dir().map(|h| h.join(".farfall").join("settings.cfg"))
     }
 
     /// Is there a settings file (or saved web settings) at all? Its
@@ -649,6 +674,7 @@ impl Settings {
 
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
+        let mut saw_version = false;
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -659,6 +685,12 @@ impl Settings {
             };
             let (k, v) = (k.trim(), v.trim());
             match k {
+                "settings.version" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        s.version = n.max(1);
+                        saw_version = true;
+                    }
+                }
                 "graphics.msaa" => {
                     if let Ok(n) = v.parse::<u32>() {
                         if MSAA_CHOICES.contains(&n) {
@@ -1211,11 +1243,21 @@ impl Settings {
                 }
             }
         }
+        // A file from before `settings.version` carrying exactly the old
+        // DRIVE SHAKE stock is an old default, not a choice: it adopts
+        // the new stock. Any other value in an old file is kept.
+        if !saw_version {
+            if (s.drive_shake - OLD_DRIVE_SHAKE_STOCK).abs() < 1e-3 {
+                s.drive_shake = Self::default().drive_shake;
+            }
+            s.version = SETTINGS_VERSION;
+        }
         s
     }
 
     pub fn render(&self) -> String {
         let mut out = String::from("# FARFALL settings — edited by the in-game menu (Esc)\n");
+        out.push_str(&format!("settings.version = {}\n", self.version));
         out.push_str(&format!("graphics.msaa = {}\n", self.msaa));
         out.push_str(&format!("graphics.scale = {:.2}\n", self.scale));
         out.push_str(&format!(
@@ -1614,7 +1656,10 @@ mod tests {
             .collect();
         for k in &written {
             assert!(
-                KEYS.iter().chain(DRAGGED_KEYS).any(|p| key_matches(p, k)),
+                KEYS.iter()
+                    .chain(DRAGGED_KEYS)
+                    .chain(FILE_ONLY_KEYS)
+                    .any(|p| key_matches(p, k)),
                 "{k} is written but not listed"
             );
         }
@@ -1682,6 +1727,24 @@ mod tests {
         assert_eq!(s.dials[Instrument::Gyro as usize].tilt_deg, -12.0);
         assert_eq!(s.dials[Instrument::GForce as usize].tilt_deg, 0.0);
         assert!(s.render().contains("ui.gyro.tilt = -12\n"));
+    }
+
+    /// A settings file from before `settings.version` that still carries
+    /// the old DRIVE SHAKE stock (40%) adopts the new stock; an explicit
+    /// choice — any other value — is kept, and a versioned file is
+    /// believed as written. Saving stamps the current version.
+    #[test]
+    fn an_old_files_stock_drive_shake_adopts_the_new_stock() {
+        let old_stock = Settings::parse("cam.drive-shake = 0.40\n");
+        assert_eq!(old_stock.drive_shake, Settings::default().drive_shake);
+        assert_eq!(old_stock.version, SETTINGS_VERSION);
+        let old_choice = Settings::parse("cam.drive-shake = 0.80\n");
+        assert_eq!(old_choice.drive_shake, 0.80);
+        let versioned = Settings::parse("settings.version = 2\ncam.drive-shake = 0.40\n");
+        assert_eq!(versioned.drive_shake, 0.40, "a versioned file is a choice");
+        assert!(Settings::default()
+            .render()
+            .contains(&format!("settings.version = {SETTINGS_VERSION}\n")));
     }
 
     #[test]

@@ -2773,7 +2773,7 @@ mod tests {
                 continue;
             };
             let k = k.trim();
-            if DRAGGED_KEYS.contains(&k) {
+            if DRAGGED_KEYS.contains(&k) || crate::settings::FILE_ONLY_KEYS.contains(&k) {
                 continue;
             }
             assert!(claimed.iter().any(|c| c == k), "no menu row edits {k}");

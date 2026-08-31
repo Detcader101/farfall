@@ -3313,6 +3313,9 @@ impl Game {
         // The camera on the head: pushed by the load, trembling under
         // thrust, settling — or parked, for a bench.
         self.shake.strength = self.settings.cam_shake;
+        // The chaos drive jostles the SHIP; the helmet camera is held
+        // while the field is up so the dash reads to the slip.
+        self.shake.hyper_damp(self.hyper);
         self.shake
             .step(self.frame_dt, self.felt_g_body, self.effort);
         if let Some([y, p, r]) = self.bench_shake {

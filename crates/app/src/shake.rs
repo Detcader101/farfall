@@ -42,6 +42,10 @@ pub struct Shake {
     tremor: f32,
     /// The setting: 0 off .. 2 double.
     pub strength: f32,
+    /// How much the hyper field reins the view in, 0..1: the chaos drive
+    /// jostles the SHIP (that warning stays), but the helmet camera is
+    /// held so the dash reads all the way to the slip.
+    damp: f32,
 }
 
 impl Default for Shake {
@@ -52,6 +56,7 @@ impl Default for Shake {
             phase: 0.0,
             tremor: 0.0,
             strength: 1.0,
+            damp: 0.0,
         }
     }
 }
@@ -97,6 +102,18 @@ impl Shake {
         self.phase += dt;
     }
 
+    /// The hyper field's rein on the view, 0 (free) .. 1 (held): set
+    /// each frame from the field's level. The ship still bucks — the
+    /// warning is gameplay — but the camera's total deflection is capped
+    /// so the dash stays readable through the run to the slip.
+    pub fn hyper_damp(&mut self, level: f32) {
+        self.damp = if level.is_finite() {
+            level.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+
     /// The deflection this frame, in the head's frame.
     pub fn rotation(&self) -> Quat {
         let t = self.phase;
@@ -109,7 +126,11 @@ impl Shake {
             jit(53.0, 29.0, 7.0),
             jit(23.0, 71.0, 5.0),
         ) * self.tremor;
-        let d = (self.pos + n).clamp(Vec3::splat(-MAX_RAD), Vec3::splat(MAX_RAD));
+        // Under the hyper field the whole deflection is scaled down and
+        // its cap pulled in (a quarter of MAX_RAD at full field).
+        let cap = MAX_RAD * (1.0 - 0.75 * self.damp);
+        let d = ((self.pos + n) * (1.0 - 0.55 * self.damp))
+            .clamp(Vec3::splat(-cap), Vec3::splat(cap));
         Quat::from_rotation_y(d.x) * Quat::from_rotation_x(d.y) * Quat::from_rotation_z(d.z)
     }
 
@@ -188,6 +209,32 @@ mod tests {
         let a = s.rotation();
         s.step(0.02, [0.0, 0.0, 1.5], 1.0);
         assert!(s.rotation().angle_between(a) > 1e-5);
+    }
+
+    /// With the hyper field up the same load deflects the view far less
+    /// and never past a quarter of the free cap — the dash reads to the
+    /// slip — and dropping the field frees the camera again.
+    #[test]
+    fn the_hyper_field_reins_the_camera_in() {
+        let mut free = Shake::default();
+        run(&mut free, 2.0, [8.0, 4.0, 2.0], 1.0);
+        let mut held = free;
+        held.hyper_damp(1.0);
+        let a_free = free.rotation().angle_between(Quat::IDENTITY);
+        let a_held = held.rotation().angle_between(Quat::IDENTITY);
+        assert!(a_held < a_free * 0.6, "{a_held} vs {a_free}");
+        // Parked hard over (the bench's worst case): still capped.
+        held.park(1.0, 1.0, 1.0);
+        let parked = held.rotation().angle_between(Quat::IDENTITY);
+        assert!(parked <= MAX_RAD * 0.25 * 1.8, "{parked}");
+        held.hyper_damp(0.0);
+        assert!(held.rotation().angle_between(Quat::IDENTITY) > parked * 2.0);
+        // Garbage never frees or NaNs the camera.
+        held.hyper_damp(f32::NAN);
+        assert!(held
+            .rotation()
+            .angle_between(Quat::IDENTITY)
+            .is_finite());
     }
 
     #[test]
