@@ -367,8 +367,10 @@ fn city_lights(n: vec3<f32>, radius: f32, urban: f32, fp: f32) -> vec3<f32> {
     tint = mix(tint, neon, step(0.88, hh.x));
     // Near to far: the grid and points resolve, then melt into the mean.
     let far_k = smoothstep(BLOCK_M * 0.15, BLOCK_M * 1.2, fpm);
-    let near_l = sodium * street + tint * point;
-    let far_l = sodium * 0.16;
+    // The far glow is the near lights' mean, so nothing brightens or dims
+    // as the blocks resolve.
+    let near_l = (sodium * street + tint * point) * 2.0;
+    let far_l = sodium * 0.08;
     return mix(near_l, far_l, far_k) * urban;
 }
 
