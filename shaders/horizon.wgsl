@@ -44,8 +44,19 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 
 const DEG: f32 = 0.017453292;
 // Half-width of the ladder bars in azimuth, and of the gap at their middle.
-const LADDER_HALF: f32 = 7.0 * DEG;
-const LADDER_GAP: f32 = 1.6 * DEG;
+const LADDER_HALF: f32 = 9.0 * DEG;
+const LADDER_GAP: f32 = 2.4 * DEG;
+// The numerals at the bar ends: half-height, half-width, cell pitch, and
+// how far outboard of the bar's end they sit.
+const NUM_H: f32 = 0.70 * DEG;
+const NUM_W: f32 = 0.40 * DEG;
+const NUM_PITCH: f32 = 1.15 * DEG;
+const NUM_OUT: f32 = 2.2 * DEG;
+
+// A crisp line: solid within half_w of the distance, a pixel of ramp.
+fn hline(d: f32, half_w: f32, aa: f32) -> f32 {
+    return 1.0 - smoothstep(0.0, aa, d - half_w);
+}
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
@@ -74,43 +85,67 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         h_fwd = vec3<f32>(0.0, 1.0, 0.0) - up * up.y;
     }
     h_fwd = normalize(h_fwd);
-    let h_right = cross(h_fwd, up);
+    // Camera space is x right, y up, z forward: that is a left-handed
+    // triple, so cross(forward, up) points LEFT; negated, azimuth grows
+    // to the right and the numerals read the right way round.
+    let h_right = -cross(h_fwd, up);
     let az = atan2(dot(ray, h_right), dot(ray, h_fwd));
+    // Azimuth as an angle on the sphere at this elevation — the ladder
+    // keeps its width up toward the zenith instead of splaying.
+    let azs = az * cos(elev);
 
-    let aa_e = max(fwidth(elev), 1e-5) * 1.2;
+    // A pixel, in radians of elevation: every stroke is sized in pixels.
+    let px = max(fwidth(elev), 1e-5);
+    let aa = px * 1.2;
     var glow = 0.0;
+    var halo = 0.0;
 
-    // The horizon line: everywhere, thin, with a soft halo.
-    glow += 0.9 * (1.0 - smoothstep(0.0, aa_e, abs(elev) - aa_e * 0.6));
-    glow += 0.12 * (1.0 - smoothstep(0.0, 8.0 * aa_e, abs(elev)));
+    // The horizon line: everywhere, crisp, with a soft halo.
+    glow += hline(abs(elev), px * 1.0, aa);
+    halo += 0.12 * (1.0 - smoothstep(0.0, 10.0 * px, abs(elev)));
 
     // The ladder: bars every 10 degrees within the azimuth window, broken
-    // at the middle; the window shrinks with angle so the ladder tapers.
+    // at the middle, the 30° and 60° bars heavier; the window shrinks with
+    // angle so the ladder tapers. End ticks point at the horizon; the
+    // pitch in degrees is written outboard of each end. Below the horizon
+    // the bars are dashed.
     let deg10 = 10.0 * DEG;
     let step_i = round(elev / deg10);
-    if (hz.c.x > 0.5 && abs(step_i) >= 1.0 && abs(step_i) <= 8.0 && abs(az) < LADDER_HALF) {
-        let off = abs(elev - step_i * deg10);
-        let half_w = LADDER_HALF - abs(step_i) * 0.5 * DEG;
-        let in_bar = abs(az) < half_w && abs(az) > LADDER_GAP;
-        if (in_bar) {
-            // Below the horizon the bars are dashed.
-            let dashed = step_i < 0.0;
-            let dash = select(1.0, step(0.5, fract(az / (2.0 * DEG))), dashed);
-            let major = select(0.55, 0.9, (i32(abs(step_i)) % 3) == 0);
-            glow += major * dash * (1.0 - smoothstep(0.0, aa_e, off - aa_e * 0.5));
-        }
-        // End ticks, pointing toward the horizon.
-        let end_d = abs(abs(az) - half_w);
-        let toward = select(elev - step_i * deg10, step_i * deg10 - elev, step_i < 0.0);
-        if (end_d < aa_e * 1.5 && toward < 0.0 && toward > -1.2 * DEG) {
-            glow += 0.8;
-        }
+    let abs_i = abs(step_i);
+    if (hz.c.x > 0.5 && abs_i >= 1.0 && abs_i <= 8.0 && abs(azs) < LADDER_HALF + NUM_OUT + 2.0 * NUM_PITCH) {
+        let off = elev - step_i * deg10;
+        let half_w = LADDER_HALF - abs_i * 0.4 * DEG;
+        let major = (i32(abs_i) % 3) == 0;
+        let bar_hw = px * select(0.85, 1.15, major);
+        let ax = abs(azs);
+        let in_bar = smoothstep(LADDER_GAP - px, LADDER_GAP + px, ax)
+            * (1.0 - smoothstep(half_w - px, half_w + px, ax));
+        let ph = fract(azs / (2.0 * DEG));
+        let pxd = px / (2.0 * DEG);
+        let dash = select(1.0, smoothstep(0.5 - pxd, 0.5 + pxd, ph), step_i < 0.0);
+        glow += hline(abs(off), bar_hw, aa) * in_bar * dash * select(0.85, 1.0, major);
+        // End ticks toward the horizon.
+        let toward = select(-off, off, step_i < 0.0);
+        let tick_span = smoothstep(-px, px, toward) * (1.0 - smoothstep(1.4 * DEG - px, 1.4 * DEG + px, toward));
+        glow += hline(abs(ax - half_w), bar_hw, aa) * tick_span;
+        // Numerals: the pitch in tens, "10" .. "80", two cells at each
+        // end, read the right way round on both sides.
+        let cx = half_w + NUM_OUT;
+        let qx = select(azs + cx, azs - cx, azs > 0.0);
+        let q = vec2<f32>(qx, off);
+        let tens = u32(abs_i);
+        let d = min(
+            digit_dist(q - vec2<f32>(-0.5 * NUM_PITCH, 0.0), digit_mask(tens), NUM_W, NUM_H),
+            digit_dist(q - vec2<f32>(0.5 * NUM_PITCH, 0.0), digit_mask(0u), NUM_W, NUM_H),
+        );
+        glow += 0.9 * hline(d, px * 0.75, aa);
     }
 
-    if (glow < 0.003) {
+    if (glow + halo < 0.003) {
         discard;
     }
+    // Real radiance in the lines — a hair over one — for the bloom.
     let cyan = vec3<f32>(0.22, 0.85, 1.0);
     let glass = canopy_glass(in.ndc, aspect);
-    return vec4<f32>(cyan * glow * glass * vis * 0.85, 1.0);
+    return vec4<f32>(cyan * (glow * 1.3 + halo) * glass * vis, 1.0);
 }

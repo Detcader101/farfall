@@ -251,6 +251,7 @@ features:
     tests: ["crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense", crates/render/src/cabin.rs, crates/app/src/settings.rs, crates/app/src/menu.rs]
     settings: [ui.gauge-style, ui.gauges, ui.guide, graphics.fov]
     e2e: "FARFALL_BENCH_HEAD=10,-22 capture with jet + guide on — bowls, bezels, dials inside, ruled glass, reach rings, gaze reticle; FARFALL_BENCH_HEAD=8,-24 with dial — flush wells, bezels, faces foreshortened in the dash"
+    note: "2026-08-31 polish (fable/gauges): nothing is hollowed into the dash any more — no bowls, wells, recesses or lit sockets; every instrument sits ON the dash (see gauges-on-the-dash). WARTHOG is the default style."
 
   - id: ship-fixed-glass
     name: "Glass anchors laid out in a FIXED 70° reference projection and shown through the live FOV — dials stay fixed to the ship through the FOV setting, throttle flare and warp, and scale like objects"
@@ -272,6 +273,7 @@ features:
     tests: ["crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin", "crates/app/src/settings.rs::a_tilt_is_held_within_reach", "crates/app/src/menu.rs::cockpit_page_cycles_slots_and_quit_quits"]
     settings: ["ui.<dial>.tilt"]
     e2e: "FARFALL_BENCH_HEAD=20,-26 capture — speedo at +40° in its pod, black face, readable; altimeter at -30° in the left console"
+    note: "2026-08-31 polish: no well — a leaned face is lifted along the dash normal so its low edge clears the surface and its housing rises to carry it (cabin.rs Placement::in_dash mirrors cockpit.wgsl)"
 
   - id: despin
     name: "Emergency gyro (Z, rebindable DESPIN) — kills any spin on a fixed time constant in the sim"
@@ -386,6 +388,7 @@ features:
     state: complete
     tests: [crates/render/tests/shader_validation.rs, crates/render/src/cabin.rs]
     e2e: "FARFALL_BENCH_HEAD=0,-28 capture, gyro JET ×1.5 — a shaded globe in the bowl, earth up for a nose-down ship"
+    note: "2026-08-31 polish: the bowl is gone — the ball stands proud of the dash (centre 4 cm under the surface) with a thin seam ring, clipped at the metal; WARTHOG has the same ball, brighter, white markings with a dark border"
 
   - id: fps-floor
     name: "FPS FLOOR (graphics.fps-floor, default 60) — a governor on the cabin's moving size; while turning the head costs more than the floor allows, the moving march shrinks (to 0.3 of the still size) and grows back when there is room; the sharp cabin is untouched"
@@ -563,4 +566,12 @@ features:
     settings: [ui.gauge-style, "ui.<dial>.style"]
     tests: ["crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense", "crates/app/src/settings.rs::dials_stay_lit_by_default_and_every_style_is_open_to_every_dial", "crates/render/tests/shader_validation.rs", "crates/app/tests/scenes.rs::the_warthog_dials_are_white_steam_gauges_in_the_dash"]
     e2e: "FARFALL_BENCH_STYLE=warthog capture — three white-on-black steam gauges with bezels set into the dash, the ADI ball blue over brown (scene test)"
+    note: "2026-08-31 polish: WARTHOG is now the cockpit default (settings.rs); the faces sit on the dash in machined bezels, no housing well; the gyro is the real ball"
 
+
+  - id: gauges-on-the-dash
+    name: "Polish pass, gauges (fable/gauges, 2026-08-31) — WARTHOG is the default gauge style; NO CAVITIES: the cabin marcher no longer hollows anything for an instrument (no TRON recess or lit socket, no JET bowl, no DIAL well) — a DIAL/WARTHOG face is a black plate 8 mm proud of the dash's real surface (the slab's 4 cm rounding, DASH_SURFACE) inside a thin machined bezel, the JET/WARTHOG gyro a real sphere standing out of the metal with a seam ring and painted only above the surface, JET dials over a thin flush ring, TRON over bare metal with its beam; the seam light lines no longer paint the plates. Quality: every stroke on gauge/gvec/gyro is a constant-width line with one pixel of AA (ticks are arc-length strokes at true multiples of the scale — 0 and full scale included, so a major sits under every mach bar), halo light separated from structure and switched off on the dash (printed markings, no glow), a tapered steam-gauge pointer with a boss, the warning arc painted red on the scale (top for speed/G, bottom for altitude) instead of tinting the whole dial, the ×m Ek multiplier printed on the face under the hub (arc gauge) and the G-vector drawn at 0.82 on the dash so its bar sits on the plate, heavier readout digits, the ball's wings with a dark border, hologram accents at radiance > 1. Pitch ladder: 9° bars, 30°/60° heavier, end ticks, the pitch in degrees at both ends (7-seg), azimuth conformal (cos elev), camera-space handedness fixed so numerals read the right way round, drawn BEFORE the cabin so the dash occludes it. Landing hoops: crisp one-pixel-plus core at 1.8 radiance with a soft skirt"
+    state: complete
+    tests: ["crates/render/src/cabin.rs::the_ball_stands_proud_of_the_dash_with_no_bowl", "crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin", "crates/app/src/settings.rs::warthog_is_the_default_and_the_menu_still_cycles_every_style", "crates/render/tests/shader_validation.rs", "crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense"]
+    settings: [ui.gauge-style, "ui.<dial>.style"]
+    e2e: "farfall-captures/gauges: r3-default (WARTHOG cluster on the dash, no cavities), r3-head (FARFALL_BENCH_HEAD=30,-15 — plates and ball seen at an angle, nothing hollow), r3-tron / r3-jet / r3-dial, r3-g (FARFALL_BENCH_G=1,0.5,2), r3-landing (hoops + ladder), r3-spin-1..4, r3-full perf"

@@ -375,10 +375,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // the far ones hold their weight on screen as perspective shrinks
         // them — thickness in metres grows, thickness in pixels stays
         // readable.
+        // Drawn as a crisp line: a bright core one pixel wide plus a
+        // little, with a soft skirt of a few pixels around it — real
+        // radiance in the core, so the bloom lifts the hoop off the sky
+        // without the ring itself going soft.
         let r = length(in.uv);
-        let aa = max(fwidth(r) * 1.2, 0.01);
-        let thickness = 0.02 + 0.09 * clamp(in.kind.z, 0.0, 1.0);
-        let hoop = 1.0 - smoothstep(0.0, aa, abs(r - (0.92 - thickness)) - thickness);
+        let px = max(fwidth(r), 1e-4);
+        let thickness = 0.012 + 0.05 * clamp(in.kind.z, 0.0, 1.0);
+        let ring_d = abs(r - (0.92 - thickness));
+        let core = 1.0 - smoothstep(0.0, px * 1.2, ring_d - max(thickness, px * 0.9));
+        let skirt = 1.0 - smoothstep(0.0, max(thickness * 2.5, px * 4.0), ring_d);
+        let hoop = core * 1.8 + skirt * 0.35;
         // Cyan all the way in, and red only once the hoop is clear behind
         // us — half a spacing astern — then gone a few marks back: the
         // colour is the hoop's signed distance in spacings.
@@ -397,7 +404,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             tint = mix(verdict, red, closing * 0.5);
         }
         let astern = 1.0 - smoothstep(0.0, f32(RINGS_ASTERN), -d);
-        colour = tint * hoop * 0.8 * astern;
+        colour = tint * hoop * astern;
     } else {
         // Reticles: SDF rings and ticks in the quad's local space.
         let r = length(in.uv);

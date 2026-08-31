@@ -166,6 +166,18 @@ city-lights emissive on night side), `hud` (crisp 2D). M2: `atmosphere` (Bruneto
 transmittance + single-scattering LUTs, aerial perspective), `terrain` (cube-sphere
 chunked LOD heightfield, analytic noise + small authored landmark masks), `entry-fx`.
 
+### 6.5.1 Instruments on the dash
+
+The cockpit instruments are passes of their own (`gauge`, `gvec`, `gyro`, `horizon`,
+`trajectory`), each SDF-drawn with constant-width strokes and one pixel of anti-aliasing.
+Four styles, WARTHOG the default: WARTHOG (A-10 steam gauges — black plate, white
+markings, red warning arc, the gyro a real ball), TRON (holograms on the glass), JET
+(holograms over thin rings, the ball gyro), DIAL (period instruments on the dash).
+**Nothing is ever hollowed into the dash for an instrument** — no wells, bowls, recesses
+or lit sockets: a face plate sits proud of the metal in a thin bezel, the ball stands out
+of it, and the instrument itself is what shows. The dash's real surface is 4 cm above
+its nominal plane (the slab's rounding); every seat is measured from the surface.
+
 ### 6.6 The city, eventually (direction, not commitment)
 
 The end-state city (M5+) is the ultimate test of P1+P2: dense, alive, and readable.
