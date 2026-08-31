@@ -108,8 +108,15 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
             // Keep the star inside its cell so the 3×3 search always covers it.
             let star_pos = vec2<f32>(cell) + h.xy * 0.7 + 0.15;
             let d = length(p - star_pos);
-            // Power-law brightness: many dim, few brilliant.
-            let mag = pow(h.w, 14.0) * 60.0 + pow(h.w, 4.0) * 1.2 + 0.02;
+            // The magnitude law, in radiance: most stars faint (a fiftieth
+            // to a third of white), a few per screen brilliant (past white,
+            // where the post pass's bloom starts), the rare one blazing.
+            // Steep on purpose: the sky reads as depth only when nearly
+            // everything is a pinprick and the bright ones are rare.
+            let m = h.w;
+            let m4 = m * m * m * m;
+            let m16 = m4 * m4 * m4 * m4;
+            let mag = 0.02 + 0.35 * m4 + 1.5 * m16 * m4 + 30.0 * m16 * m16 * m16 * m16 * m16;
             // Compact support is load-bearing: a tight gaussian core, windowed
             // to zero well inside the search radius. A falloff with an infinite
             // tail (e.g. 1/(1+d²)) clips at the neighborhood edge and turns the
@@ -118,8 +125,14 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
             let v = p - star_pos;
             let offs_px = vec2<f32>(jy.y * v.x - jx.y * v.y, -jy.x * v.x + jx.x * v.y) * inv_det;
             let d_px2 = dot(offs_px, offs_px);
-            let core = mag * exp(-d_px2 * 0.4) * window;
-            col += star_tint(fract((h.x + h.y) * 7.91)) * core;
+            // A sub-pixel core (sigma ~0.6 px): a point, which the MSAA
+            // resolve and the bloom soften exactly as far as they should
+            // and no further. The old sigma of 1.1 px was the "snow".
+            let core = mag * exp(-d_px2 * 1.4) * window;
+            // Colour by temperature — and more of it on the bright ones,
+            // where the eye actually sees a star's colour.
+            let tint = star_tint(fract((h.x + h.y) * 7.91));
+            col += mix(vec3<f32>(1.0), tint, 0.55 + 0.45 * min(mag, 1.0)) * core;
         }
     }
     return col;
@@ -201,13 +214,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // Brighter than the mean: a streak is the star's light spread out,
         // and the eye reads the long faint line as the brilliant star it
         // came from.
-        star_light = acc / wsum * (1.0 + 1.5 * stretch);
+        star_light = acc / wsum * (1.0 + 4.0 * stretch);
     }
     // Gas in front of a star takes a little of its light; the glow of the
     // gas adds over everything.
     let neb = nebula(dir);
     star_light *= 1.0 - neb.a * 0.35;
-    var col = tonemap(star_light + milky_way(dir) + neb.rgb, exposure);
+    var col = radiance(star_light + milky_way(dir) + neb.rgb, exposure);
     col += vec3<f32>(dither_px(in.pos.xy));
     return vec4<f32>(max(col, vec3<f32>(0.0)), 1.0);
 }

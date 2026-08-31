@@ -11,22 +11,25 @@
 use glam::{Quat, Vec3};
 
 /// Radians of head deflection per g of sideways load, at full strength.
-const SWAY_RAD_PER_G: f32 = 0.014;
+/// Subtle by default (a third of what it was): the helmet camera is felt,
+/// not watched, and the dash must stay readable under load — CAMERA SHAKE
+/// on the CABIN page goes to 200% for anyone who wants it back.
+const SWAY_RAD_PER_G: f32 = 0.006;
 /// Roll per g of sideways load.
-const ROLL_RAD_PER_G: f32 = 0.022;
+const ROLL_RAD_PER_G: f32 = 0.009;
 /// The spring: natural frequency (rad/s) and damping ratio. Under-damped
 /// so a jolt overshoots and settles, like a neck.
 const OMEGA: f32 = 9.0;
 const ZETA: f32 = 0.45;
 /// Tremor amplitude, radians: per unit of thrust effort, per g of load.
-const TREMOR_THRUST: f32 = 0.0016;
-const TREMOR_G: f32 = 0.0007;
+const TREMOR_THRUST: f32 = 0.0006;
+const TREMOR_G: f32 = 0.00028;
 /// A gun's kick: radians of pitch velocity impulse per m/s the ship is
 /// kicked by, and its cap.
-const KICK_RAD_PER_MPS: f32 = 0.35;
-const KICK_MAX: f32 = 0.12;
+const KICK_RAD_PER_MPS: f32 = 0.22;
+const KICK_MAX: f32 = 0.07;
 /// The most the whole thing may deflect, radians.
-const MAX_RAD: f32 = 0.20;
+const MAX_RAD: f32 = 0.12;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shake {
@@ -172,7 +175,7 @@ mod tests {
         let mut s = Shake::default();
         run(&mut s, 1.0, [0.0, 0.0, 1.5], 1.0);
         let full = s.amount();
-        assert!(s.tremor > 0.0015, "{}", s.tremor);
+        assert!(s.tremor > 0.0006, "{}", s.tremor);
         let mut half = Shake::new(0.5);
         run(&mut half, 1.0, [0.0, 0.0, 1.5], 1.0);
         assert!((half.amount() * 2.0 - full).abs() < 1e-4);

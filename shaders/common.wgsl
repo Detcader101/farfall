@@ -121,7 +121,17 @@ fn fbm5(p: vec3<f32>) -> f32 {
 
 // ------------------------------------------------------------------ output
 
-// Exposure + soft shoulder. No history buffers, no temporal accumulation (P1).
+// What a WORLD pass writes: exposed linear radiance, uncurved, into the
+// HDR scene target — the post pass (post.wgsl) does the bloom and the
+// tonemap once, for everything outside the glass. Clamped well inside
+// half-float range so a resolve or a bloom tap never meets an inf.
+fn radiance(col: vec3<f32>, exposure: f32) -> vec3<f32> {
+    return min(max(col, vec3<f32>(0.0)) * exposure, vec3<f32>(4096.0));
+}
+
+// Exposure + soft shoulder, for the SHIP passes (the cabin), which draw
+// after the post pass into an 8-bit target and so curve themselves. No
+// history buffers, no temporal accumulation (P1).
 fn tonemap(col: vec3<f32>, exposure: f32) -> vec3<f32> {
     return vec3<f32>(1.0) - exp(-max(col, vec3<f32>(0.0)) * exposure);
 }

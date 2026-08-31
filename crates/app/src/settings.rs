@@ -10,6 +10,7 @@ use crate::bay::{Mount, STOCK};
 use crate::cockpit::{Instrument, Layout, Slot};
 use crate::input::{key_from_name, key_name, Action, Bindings, Named};
 use crate::warp::{Destination, Plan};
+pub use farfall_render::post::Tonemap;
 use std::path::PathBuf;
 
 /// "x,y" → a pair of finite numbers.
@@ -164,6 +165,10 @@ impl GaugeStyle {
     }
 }
 
+/// Exposure, a multiplier on the scene's own: two stops either way.
+pub const EXPOSURE_MIN: f32 = 0.25;
+pub const EXPOSURE_MAX: f32 = 4.0;
+
 /// Field of view limits, degrees.
 pub const FOV_MIN: f32 = 50.0;
 pub const FOV_MAX: f32 = 110.0;
@@ -221,6 +226,16 @@ pub struct Settings {
     pub sky: f32,
     /// The lens flare's strength, 1 = stock, 0 none.
     pub flare: f32,
+    /// The picture (the post pass): the bloom's strength, 0 (none) .. 2;
+    /// 1 = stock.
+    pub bloom: f32,
+    /// Exposure, a multiplier on the scene's own: 0.25 .. 4 (±2 stops),
+    /// 1 = stock. The eye's slow drift about it is built in.
+    pub exposure: f32,
+    /// The curve from radiance to the screen: OFF (a clip), SOFT, AGX.
+    pub tonemap: Tonemap,
+    /// The glass rim's chromatic fringing, 0 (none) .. 2; 1 = a hair.
+    pub fringe: f32,
     /// The nebula's glow, 0 (off) .. 3; 1 = stock.
     pub nebula: f32,
     /// Which nebula: the seed picks where the clouds sit and their shapes.
@@ -359,6 +374,10 @@ impl Default for Settings {
             nebula_hue2: 0.55,
             nebula_spread: 1.5,
             flare: 1.0,
+            bloom: 1.0,
+            exposure: 1.0,
+            tonemap: Tonemap::Agx,
+            fringe: 1.0,
             fov: 70.0,
             gauge_style: GaugeStyle::Tron,
             gauges_stay: true,
@@ -387,7 +406,10 @@ impl Default for Settings {
             hold_face: true,
             arms_sight: 1.0,
             cam_shake: 1.0,
-            drive_shake: 0.4,
+            // A warning, not a beating: the gauges must stay readable to
+            // the slip. Turn it up on the CABIN page if you want the
+            // violence.
+            drive_shake: 0.12,
             mounts: STOCK,
             bay_hue: BAY_HUE_DEFAULT,
             bay_saturation: 1.0,
@@ -726,6 +748,32 @@ impl Settings {
                         }
                     }
                 }
+                "graphics.bloom" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.bloom = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.exposure" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.exposure = f.clamp(EXPOSURE_MIN, EXPOSURE_MAX);
+                        }
+                    }
+                }
+                "graphics.tonemap" => {
+                    if let Some(t) = Tonemap::from_key(v) {
+                        s.tonemap = t;
+                    }
+                }
+                "graphics.fringe" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.fringe = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
                 "graphics.sky" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -983,6 +1031,10 @@ impl Settings {
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
         out.push_str(&format!("graphics.flare = {:.2}\n", self.flare));
+        out.push_str(&format!("graphics.bloom = {:.2}\n", self.bloom));
+        out.push_str(&format!("graphics.exposure = {:.3}\n", self.exposure));
+        out.push_str(&format!("graphics.tonemap = {}\n", self.tonemap.key()));
+        out.push_str(&format!("graphics.fringe = {:.2}\n", self.fringe));
         out.push_str(&format!("graphics.nebula = {:.2}\n", self.nebula));
         out.push_str(&format!("graphics.nebula-seed = {}\n", self.nebula_seed));
         out.push_str(&format!(
@@ -1196,6 +1248,10 @@ mod tests {
         s.fps_floor = 90.0;
         s.sky = 1.5;
         s.flare = 0.5;
+        s.bloom = 1.5;
+        s.exposure = 0.5;
+        s.tonemap = Tonemap::Soft;
+        s.fringe = 0.0;
         s.nebula = 2.0;
         s.nebula_seed = 42;
         s.nebula_scale = 5.0;
