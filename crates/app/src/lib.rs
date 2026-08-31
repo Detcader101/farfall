@@ -1271,6 +1271,25 @@ impl Game {
                 state.ship.orient *= DQuat::from_rotation_z(roll);
             }
         }
+        // FARFALL_SPAWN=belt|uranus|moon|sun: start where the wormhole
+        // drive would land you — the belt (Uranus' ring) is where the
+        // mimics live. Nose prograde, the body below.
+        if let Some(dest) = std::env::var("FARFALL_SPAWN").ok().and_then(|v| {
+            let k = v.trim().to_ascii_lowercase();
+            warp::Destination::from_key(if k == "belt" { "uranus" } else { &k })
+        }) {
+            let plan = warp::Plan {
+                dest,
+                ..warp::Plan::default()
+            };
+            let t = state.time_s;
+            let (pos, vel) = plan.arrival(&params, &state.ship, t);
+            state.ship.pos_m = pos;
+            state.ship.vel_mps = vel;
+            let up = (pos - dest.centre(&params, t)).normalize();
+            state.ship.orient = look_at(vel - dest.velocity(&params, t), up);
+            log::info!("spawn: {} at {:.0} m/s", dest.name(), vel.length());
+        }
         let now = Instant::now();
         Self {
             vr: None,
