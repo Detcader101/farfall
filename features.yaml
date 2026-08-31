@@ -23,17 +23,18 @@ rules:
 # persisted as control.<key>; the menu lists every one (id complete-key-menu).
 controls:
   axes: {thrust-forward: W, thrust-back: S, strafe-left: A, strafe-right: D, thrust-up: R, thrust-down: F, pitch-up: Up, pitch-down: Down, yaw-left: Left, yaw-right: Right, roll-left: Q, roll-right: E}
-  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P, bay: B, next-weapon: U, weapon-1: 1, weapon-2: 2, scale-down: "[", scale-up: "]", hold: O}
-  fixed: {menu: Esc, page: Tab, capture-alt: F12, pane-zoom: "+ / -", fire: "left mouse", freelook: "right mouse"}
-  rule: every key the game answers to is a Named bind on the KEYS page; only the menu keys, the pane zoom and the mouse buttons are fixed
-  mouse: freelook while the right button is held; left drag turns the map or moves a panel; wheel zooms the map
+  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P, bay: B, next-weapon: U, weapon-1: 1, weapon-2: 2, scale-down: "[", scale-up: "]", hold: O, holo-out: ",", holo-in: "."}
+  fixed: {menu: Esc, page: Tab, controls-card: F1, capture-alt: F12, pane-zoom: "+ / -", fire: "left mouse", freelook: "right mouse"}
+  rule: every key the game answers to is a Named bind on the KEYS page; only the menu keys, F1, the pane zoom and the mouse buttons are fixed; the HELP page lists every one by group with what it does
+  mouse: freelook while the right button is held; left drag turns the map or moves a panel; wheel zooms the map, the bay, or in flight the hologram
 
 # Every key ~/.farfall/settings.cfg may hold, by group (crates/app/src/settings.rs).
 settings_keys:
   graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread]
-  camera: [camera.chase, holo.view, holo.size, cam.shake, cam.drive-shake]
+  camera: [camera.chase, holo.view, holo.size, holo.range, cam.shake, cam.drive-shake]
   cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
-  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
+  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
+  rule: every key above has a menu row (crates/app/src/menu.rs::every_settings_key_has_a_menu_row walks settings.rs::KEYS), save the panel anchors, which are set by dragging
   map: [map.rings, map.grid]
   warp: [warp.destination, warp.safe-radii]
   sound: [sound.hull]
@@ -57,7 +58,7 @@ bench:
     FARFALL_BENCH_ALT: frozen altitude in metres over the planet
     FARFALL_BENCH_HEAD: head yaw,pitch in degrees
     FARFALL_BENCH_SPIN: the head turns a full circle over the run, n times
-    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND: the map, the settings menu (paged n times), DESIGN mode, LANDING mode up
+    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND / _CARD: the map, the settings menu (paged n times, 0..7), DESIGN mode, LANDING mode, the CONTROLS card up
     FARFALL_BENCH_CHASE / _HOLO: the chase camera, the holo3PP
     FARFALL_BENCH_NEBULA=1|off: a full sky of nebula at twice the stock glow, or off for a baseline
     FARFALL_BENCH_HYPER / _WARP=s / _GHOST=age: the chaos drive's field up; the wormhole drive engaged at s; a WARP STOP after-image this old
@@ -118,11 +119,11 @@ features:
     e2e: captures
 
   - id: menu-settings
-    name: "In-game menu — GFX / KEYS / CABIN / GAUGES pages, settings grouped by topic (the ship, then every path/hoop setting in one run on CABIN; dials on GAUGES), a flat framed card on the screen with the chosen row banded; every row proven to fit; settings file"
+    name: "In-game menu — GFX / KEYS / CABIN / DIALS / ARMS / MAP / SHIP / HELP tabs, settings grouped by topic (the ship, then every path/hoop setting in one run on CABIN; dials on DIALS; the bay hologram look on SHIP), a flat framed card centred on the screen with the chosen row banded; every row proven to fit; settings file. Superseded in layout by id menu-card"
     state: complete
     settings: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.sky, graphics.flare, ui.panel-menu]
-    tests: ["crates/app/src/menu.rs::every_row_of_every_page_fits_the_panel", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense", crates/app/src/settings.rs]
-    e2e: "FARFALL_BENCH_MENU=3 capture — GAUGES page, rows aligned, card framed"
+    tests: ["crates/app/src/menu.rs::every_row_of_every_page_fits_the_card", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense", crates/app/src/settings.rs]
+    e2e: "FARFALL_BENCH_MENU=3 capture — DIALS page, rows aligned, card framed"
 
   - id: relativity
     name: "Light limit above 9,500 m/s; mouldable speed units"
@@ -564,3 +565,50 @@ features:
     tests: ["crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense", "crates/app/src/settings.rs::dials_stay_lit_by_default_and_every_style_is_open_to_every_dial", "crates/render/tests/shader_validation.rs", "crates/app/tests/scenes.rs::the_warthog_dials_are_white_steam_gauges_in_the_dash"]
     e2e: "FARFALL_BENCH_STYLE=warthog capture — three white-on-black steam gauges with bezels set into the dash, the ADI ball blue over brown (scene test)"
 
+
+  - id: hud-font-5x7
+    name: "A readable HUD font: 5x7 glyphs (slashed 0 against O, serifed 1 against I and l, square 5 against S, flat B against 8) on a 6-pixel advance and a 9-pixel line pitch, the bitmap 384x180 (three vec4<u32> a row); hud.wgsl box-filters the bits over each pixel's footprint so the text is anti-aliased at any scale, with a dark halo under the strokes on the glass so it reads over a white sky; the scale is fractional (h/400, 1.5..8 px a dot) so every block is the same size in canopy units at 800x600 and 2880x1800"
+    state: tests-pass
+    tests: ["crates/render/src/text.rs::look_alike_glyphs_are_distinct", "crates/render/src/text.rs::every_glyph_fits_its_cell", "crates/render/src/text.rs::the_games_charset_is_covered", "crates/render/src/text.rs::wrap_breaks_at_spaces_and_cuts_long_words", "crates/render/src/hud.rs::the_bitmap_rows_match_the_shaders_array", "crates/app/src/panel.rs::a_font_pixel_is_the_same_share_of_every_supported_screen", crates/render/tests/shader_validation.rs]
+    e2e: "pending — the bench is halted; cockpit / menu-keys / card captures in farfall-captures/hud-menu"
+
+  - id: menu-card
+    name: "The settings menu as a card a stranger can read: 48 columns, eight tabs all in the header, twelve rows with a scrollbar and ROW n/m in the footer, every key name whole, a one- or two-line description of the chosen row under a footer rule (in ivory), PageUp/PageDown, the card kept by its centre (ui.panel-menu) so it is centred on any screen; SAFE EDGE and HOLO RANGE and CARD AT START have rows; the bay hologram's look moved from GFX to SHIP"
+    state: tests-pass
+    settings: [ui.panel-menu, ui.safe-edge, holo.range, ui.controls-card]
+    tests: ["crates/app/src/menu.rs::every_row_of_every_page_fits_the_card", "crates/app/src/menu.rs::the_card_fits_the_smallest_window", "crates/app/src/menu.rs::long_pages_scroll_with_a_bar_and_a_count", "crates/app/src/menu.rs::every_settings_key_has_a_menu_row", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense", "crates/app/src/settings.rs::the_key_list_is_the_file"]
+    e2e: "pending — FARFALL_BENCH_MENU=0..7 captures"
+
+  - id: help-page
+    name: "The HELP page: every control by group (FLIGHT, DRIVES, VIEW, ARMS, PANELS) — the live key, the control, a gloss — with a sentence on what it does in the footer; the fixed keys (Esc, Tab, F1, the mouse buttons, + -) listed with the binds; the KEYS page's rows carry the same sentences"
+    state: tests-pass
+    tests: ["crates/app/src/menu.rs::the_help_page_lists_every_control_once_with_what_it_does"]
+    e2e: "pending — FARFALL_BENCH_MENU=7 capture"
+
+  - id: controls-card
+    name: "The CONTROLS card: the essential keys in two columns (flight and drives; view, panels, arms), read from the live bindings, on the first run (no settings file yet), at every start if ui.controls-card is on, and on F1 any time; any key or a click puts it away and writes the settings so it does not return unasked; FARFALL_BENCH_CARD=1 for a capture"
+    state: tests-pass
+    settings: [ui.controls-card]
+    tests: ["crates/app/src/card.rs::the_card_fits_with_any_binding", "crates/app/src/card.rs::the_card_shows_the_essentials_with_their_live_keys", "crates/app/src/settings.rs::the_hologram_range_and_the_card_are_kept"]
+    e2e: "pending — FARFALL_BENCH_CARD=1 capture"
+
+  - id: readout-layout
+    name: "The readout laid out cleanly: the frame's numbers in two columns (FPS with its 1% low; CPU with the rest; MSAA, scale and size), then ALT, VEL, FC, and the status line (landing, hail, hold, strain, arms, haul) wrapped to the block over up to three lines so it never clips; stock anchor in the top-left corner of the glass, clear of the arch; still draggable"
+    state: tests-pass
+    settings: [ui.panel-readout]
+    tests: ["crates/app/src/readout.rs::long_status_lines_wrap_inside_the_block", "crates/app/src/readout.rs::the_numbers_read_in_two_columns"]
+    e2e: "pending — cockpit and FARFALL_BENCH_LAND=1 captures"
+
+  - id: stock-gauges-map-holo
+    name: "The mini map and the holo3PP are stock gauges: MINI MAP is an instrument (ui.map, ON by default, a row on DIALS) — the system map as a small undimmed pane in the top-right of the glass, re-projected with the head like a dial; M still opens the full map. HOLO VIEW is ON by default at a size and an anchor right of the cluster between the speed dial and the G meter"
+    state: tests-pass
+    settings: [ui.map, holo.view, holo.size, ui.panel-holo]
+    tests: ["crates/app/src/cockpit.rs::default_layout_shows_the_cluster", "crates/app/src/settings.rs::the_hologram_range_and_the_card_are_kept", crates/app/src/map.rs]
+    e2e: "pending — cockpit capture"
+
+  - id: holo-range-marks
+    name: "HOLO RANGE (holo.range, 1..4): the hologram's ship shrinks by the range so the scene round it stands for that much more space (1500 m a rim at 1x); , and . (HOLO WIDER / HOLO CLOSER, rebindable) and the wheel in flight step it. Revealed mimics are marks round the little ship at their true bearing — a red beating octahedron for a hostile, amber for a hail, grey for a wreck — at their distance over the reach, on the rim beyond it, each on a hair of a tether"
+    state: tests-pass
+    settings: [holo.range, control.holo-out, control.holo-in]
+    tests: ["crates/render/src/holo.rs::marks_sit_at_their_bearing_by_their_distance_over_the_reach", "crates/render/src/holo.rs::holo_lanes_hold_their_places", "crates/app/src/menu.rs::the_hologram_range_and_the_card_have_rows", crates/render/tests/shader_validation.rs]
+    e2e: "pending — FARFALL_BENCH_MIMIC=hostile capture with the hologram"

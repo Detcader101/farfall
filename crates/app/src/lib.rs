@@ -5314,6 +5314,13 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 game.left_down = state == ElementState::Pressed;
+                // The CONTROLS card: a click puts it away like any key.
+                if game.card_open {
+                    if game.left_down {
+                        game.close_card();
+                    }
+                    return;
+                }
                 if game.left_down {
                     let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                     let cam = game.camera(aspect);
