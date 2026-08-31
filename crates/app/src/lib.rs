@@ -338,7 +338,9 @@ struct Readout {
     speed_mps: f64,
     assist: bool,
     show: bool,
-    /// The LANDING line, in landing mode.
+    /// The LANDING lines (the approach in landing mode; DOWN or LANDED
+    /// whenever the ship is on the ground), newline-separated — or the
+    /// next system's line when the ground has nothing to say.
     landing: Option<String>,
 }
 
@@ -380,6 +382,10 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
+///   FARFALL_BENCH_LANDED=1 (benchmark only: parked on the ground, LANDED,
+///                           on its gear with the Sun up the sky)
+///   FARFALL_BENCH_DISEMBARK=1 (benchmark only: DISEMBARK pressed at once,
+///                           for its answer on the readout)
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
 ///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times)
 ///   FARFALL_BENCH_CARD=1   (benchmark only: the CONTROLS card up, as on the first run)
@@ -1233,6 +1239,10 @@ struct Game {
     landing: bool,
     /// The predicted touchdown, refreshed each frame in landing mode.
     touchdown: Option<landing::Touchdown>,
+    /// How the last touchdown went, from the tick the ground was met.
+    touchdown_record: Option<landing::Record>,
+    /// DISEMBARK's answer, and when it was given (it shows for a moment).
+    disembark_notice: Option<(&'static str, Instant)>,
     /// Mouse: last cursor position and whether the left button is down,
     /// for dragging the map round; the window's size, to read it.
     cursor: Option<(f32, f32)>,
@@ -1341,6 +1351,12 @@ impl Game {
             state.ship.orient = look_at(vel - dest.velocity(&params, t), up);
             log::info!("spawn: {} at {:.0} m/s", dest.name(), vel.length());
         }
+        // FARFALL_BENCH_LANDED=1: parked on the ground, LANDED, for the
+        // capture of the settled state and its readout.
+        let bench_landed = std::env::var("FARFALL_BENCH_LANDED").is_ok();
+        if bench_landed {
+            state.ship = landing::parked(&params, 0);
+        }
         let now = Instant::now();
         Self {
             vr: None,
@@ -1382,6 +1398,8 @@ impl Game {
             card_open: false,
             landing: false,
             touchdown: None,
+            touchdown_record: bench_landed.then(landing::Record::sample),
+            disembark_notice: None,
             cursor: None,
             window_size: (1.0, 1.0),
             left_down: false,
@@ -1497,10 +1515,19 @@ impl Game {
     }
 
     /// The path's world-fixed marks, from the odometer and the settings.
-    fn marks(&self) -> farfall_render::trajectory::Marks {
+    /// In LANDING mode with a touchdown ahead the grid is phased onto the
+    /// touchdown instead, so the hoops converge on the pad drawn there
+    /// (`eye_m` is the camera, for the pad's camera-relative position).
+    fn marks(&self, eye_m: DVec3) -> farfall_render::trajectory::Marks {
         let spacing = self.mark_spacing_m();
+        let approach = self
+            .touchdown
+            .filter(|_| self.landing && self.state.ship.ground == sim::Ground::Flight);
         farfall_render::trajectory::Marks {
-            odometer_m: (self.odometer_m % 1.0e6) as f32,
+            odometer_m: match approach {
+                Some(t) => landing::hoop_phase(t.path_m, spacing),
+                None => (self.odometer_m % 1.0e6) as f32,
+            },
             hoops: self.settings.layout.shown(Instrument::Hoops),
             // Landing hoops are big: a gate to fly through, not a bead.
             hoop_scale: self.settings.hoop_size * if self.landing { 2.5 } else { 1.0 },
@@ -1510,6 +1537,12 @@ impl Game {
             } else {
                 None
             },
+            pad: approach.filter(|_| self.settings.landing_pad).map(|t| {
+                farfall_render::trajectory::Pad {
+                    rel: (t.pos - eye_m).as_vec3(),
+                    up: t.up.as_vec3(),
+                }
+            }),
         }
     }
 
@@ -2256,27 +2289,55 @@ impl Game {
         log::info!("landing mode {}", if self.landing { "on" } else { "off" });
     }
 
-    /// The landing readout line, if there is one.
+    /// On the ground — down or landed — as the sim says.
+    fn on_ground(&self) -> bool {
+        self.state.ship.ground != sim::Ground::Flight
+    }
+
+    /// The ground's speed under the ship: over the body it is on, or the
+    /// nearest one.
+    fn ground_speed(&self) -> f64 {
+        let body = match self.state.ship.ground {
+            sim::Ground::Down { body, .. } | sim::Ground::Landed { body, .. } => body,
+            sim::Ground::Flight => 0,
+        };
+        let v = self.params.body_velocities(self.state.time_s)[body];
+        let rel = self.state.ship.vel_mps - v;
+        let up = self.up_world();
+        (rel - up * rel.dot(up)).length()
+    }
+
+    /// DISEMBARK (I): leave the ship. Today the answer is "not yet" — the
+    /// bind, the state and the readout are the hook for the walk-out.
+    fn disembark(&mut self) {
+        let notice = landing::disembark_notice(self.state.ship.ground);
+        self.disembark_notice = Some((notice, Instant::now()));
+        log::info!("disembark: {notice}");
+    }
+
+    /// The landing readout lines, newline-joined, if there are any: the
+    /// approach in LANDING mode; DOWN or LANDED whenever the ship is on
+    /// the ground, mode or no mode.
     fn landing_text(&self) -> Option<String> {
-        if !self.landing {
-            return None;
-        }
-        let (_, vspeed) = self.altitude_vspeed();
-        Some(match self.touchdown {
-            Some(t) => format!(
-                "LAND {} IN {:.0}S  DOWN {:.0}  ALONG {:.0} M/S  VS {:+.0}",
-                t.verdict(),
-                t.in_s,
-                t.into_mps,
-                t.along_mps,
-                vspeed
-            ),
-            None => format!(
-                "LAND  NO TOUCHDOWN IN {:.0}S  VS {:+.0}",
-                landing::HORIZON_S,
-                vspeed
-            ),
-        })
+        let (altitude_m, vspeed_mps) = self.altitude_vspeed();
+        let notice = self
+            .disembark_notice
+            .filter(|(_, at)| at.elapsed() < Duration::from_secs(4))
+            .map(|(n, _)| n);
+        let view = landing::View {
+            mode: self.landing,
+            ground: self.state.ship.ground,
+            touchdown: self.touchdown,
+            vspeed_mps,
+            altitude_m,
+            ground_speed_mps: self.ground_speed(),
+            tilt_deg: landing::tilt_deg(self.state.ship.orient, self.up_world()),
+            record: self.touchdown_record,
+            notice,
+            disembark_key: input::key_name(self.bind(Named::Disembark)),
+        };
+        let lines = landing::lines(&view);
+        (!lines.is_empty()).then(|| lines.join("\n"))
     }
 
     /// Gravity's up at the ship, world frame — whichever body is pulling.
@@ -3305,6 +3366,20 @@ impl Game {
             // HOLD: the computer's thrust replaces the pilot's on the way
             // in, its torque adds; the lock drops when the target is gone.
             let mut step_controls = controls;
+            // LANDING ASSIST: on the way in, the flight computer holds the
+            // hull level over the ground on any axis the pilot leaves alone.
+            if self.landing
+                && self.settings.landing_assist
+                && self.touchdown.is_some()
+                && !self.on_ground()
+            {
+                landing::assist(
+                    &mut step_controls,
+                    self.state.ship.orient,
+                    self.state.ship.ang_vel_radps,
+                    self.up_world(),
+                );
+            }
             if self.hold.engaged() {
                 self.hold.gain = self.settings.hold_gain;
                 self.hold.face = self.settings.hold_face;
@@ -3333,6 +3408,20 @@ impl Game {
                 }
             }
             self.state = sim::step(&self.params, &self.state, step_controls);
+            // The tick the ground is met is the one that says how the
+            // touchdown went; the record stands until the next one.
+            if let Some(record) =
+                landing::Record::judge(&self.params, before_t, &before, &self.state.ship)
+            {
+                self.touchdown_record = Some(record);
+                log::info!(
+                    "touchdown: {} on {} — {:.1} m/s down, {:.1} m/s along",
+                    record.verdict(),
+                    landing::BODY_NAMES[record.body],
+                    record.into_mps,
+                    record.along_mps
+                );
+            }
             // The belt: rocks move, knock each other, and knock the ship
             // — an impulse on its state, a bump on the shield, grit in
             // the sound.
@@ -4772,6 +4861,9 @@ impl App {
             game.toggle_landing();
             game.touchdown = landing::predict(&game.params, &game.state.ship, game.state.time_s);
         }
+        if game.frozen && std::env::var("FARFALL_BENCH_DISEMBARK").is_ok() {
+            game.disembark();
+        }
         if let Some(head) = std::env::var("FARFALL_BENCH_HEAD")
             .ok()
             .filter(|_| game.frozen)
@@ -4973,7 +5065,7 @@ fn redraw(
                             TRAJECTORY_HORIZON_S,
                             game.trajectory_vis,
                             gpu.scene.size().1 as f32,
-                            game.marks(),
+                            game.marks(game.eye_m(&pose)),
                         ),
                     );
                     gpu.passes
@@ -5170,7 +5262,7 @@ fn redraw(
                 TRAJECTORY_HORIZON_S,
                 game.trajectory_vis,
                 gpu.scene.size().1 as f32,
-                game.marks(),
+                game.marks(game.eye_m(&pose)),
             ),
         );
         gpu.passes
@@ -5448,7 +5540,9 @@ fn redraw(
             altitude_m: game.altitude_vspeed().0,
             speed_mps: game.state.ship.vel_mps.length(),
             assist: game.assist,
-            show: game.settings.layout.shown(Instrument::Readout) || game.landing,
+            show: game.settings.layout.shown(Instrument::Readout)
+                || game.landing
+                || game.on_ground(),
             landing: game
                 .landing_text()
                 .or_else(|| game.hold_text())
@@ -5640,6 +5734,9 @@ impl ApplicationHandler for App {
                     }
                     c if pressed && !event.repeat && c == game.bind(Named::Landing) => {
                         game.toggle_landing()
+                    }
+                    c if pressed && !event.repeat && c == game.bind(Named::Disembark) => {
+                        game.disembark()
                     }
                     c if pressed && !event.repeat && c == game.bind(Named::Design) => {
                         game.toggle_design();

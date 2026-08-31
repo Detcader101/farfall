@@ -259,7 +259,52 @@ pub struct ShipState {
     pub orient: DQuat,
     /// Angular velocity, body frame, rad/s.
     pub ang_vel_radps: DVec3,
+    /// Flying, down on a body, or landed on it (see [`Ground`]).
+    pub ground: Ground,
 }
+
+/// The ship's relationship with the ground.
+///
+/// Contact alone is restitution and friction: a ship that hits the ground
+/// skids. A LANDING is more than contact — it is the ship settling onto its
+/// gear and staying put, which the integrator will not do on its own (a
+/// resting body is kicked into the ground by gravity and pushed back out
+/// every tick, and rounding turns that into a slow drift). So it is a state:
+/// judged at the moment of touchdown, entered once the ship is slow enough,
+/// and held exactly until the pilot throttles up.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Ground {
+    /// Clear of every body.
+    Flight,
+    /// In contact with body `body` (index into [`WorldParams::bodies`]).
+    /// `clean` is the verdict on the touchdown that put it there — descent
+    /// under [`TOUCHDOWN_INTO_MPS`], upright within [`UPRIGHT_COS`] — and it
+    /// is fixed until the ship lifts off: a clean touchdown may settle once
+    /// it slows, a hard or tilted one skids and never does. (The crash that
+    /// a hard touchdown ought to be is deferred, not faked into a landing.)
+    Down { body: usize, clean: bool },
+    /// Parked on its gear on body `body`: `up` is the surface normal under
+    /// it, kept so the resting position is *recomputed* from the body's
+    /// centre each tick rather than integrated — exact, forever.
+    Landed { body: usize, up: DVec3 },
+}
+
+/// Height of the ship's reference point above the ground when it is on its
+/// gear, metres: the hull's belly and the legs. Contact happens here, on
+/// every body, so the pilot's eye is never at ground level and settling
+/// onto the gear moves nothing.
+pub const GEAR_HEIGHT_M: f64 = 2.5;
+/// The fastest descent the gear takes, m/s. Any harder is a hard touchdown:
+/// the ship is down, but it did not land.
+pub const TOUCHDOWN_INTO_MPS: f64 = 12.0;
+/// Sliding slower than this over the ground, a clean touchdown settles, m/s.
+pub const TOUCHDOWN_ALONG_MPS: f64 = 2.0;
+/// cos 15°: how far off the surface normal the ship's own up may be at
+/// touchdown and still land. The gear levels the rest.
+pub const UPRIGHT_COS: f64 = 0.965_925_826_289_068_3;
+/// Thrust demand (any axis, either sign) that releases a landed ship;
+/// below it the throttle is at idle and the ship stays parked.
+pub const RELEASE_THRUST: f64 = 0.05;
 
 /// Player/agent intent for one tick. Components are clamped to [-1, 1] on use,
 /// so out-of-range input cannot break determinism or physics.
@@ -424,6 +469,7 @@ pub mod presets {
                 vel_mps: DVec3::new(0.0, 0.0, -speed),
                 orient: DQuat::IDENTITY,
                 ang_vel_radps: DVec3::ZERO,
+                ground: Ground::Flight,
             },
         }
     }
@@ -610,6 +656,29 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     let ship = &state.ship;
     let planet = &params.planet;
 
+    // LANDED: parked on the gear. Nothing is integrated — the ship sits at
+    // its spot over the body's centre, which is recomputed from the body's
+    // own motion each tick so it cannot drift by so much as a bit, with the
+    // body's velocity as its own (the same one-step difference the contact
+    // code uses, so it agrees with where the body actually goes). The
+    // throttle releases it: from then on it is a ship again, integrated
+    // from rest on the ground like any other.
+    if let Ground::Landed { body, up } = ship.ground {
+        if !releases(&c) {
+            let b = params.bodies(state.time_s + DT)[body];
+            return WorldState {
+                time_s: state.time_s + DT,
+                ship: ShipState {
+                    pos_m: b.centre + up * (b.radius_m + GEAR_HEIGHT_M),
+                    vel_mps: params.body_velocities(state.time_s)[body],
+                    orient: ship.orient,
+                    ang_vel_radps: DVec3::ZERO,
+                    ground: ship.ground,
+                },
+            };
+        }
+    }
+
     let r = ship.pos_m.length();
 
     let a_gravity = gravity_all(params, state.time_s, ship.pos_m);
@@ -692,13 +761,22 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     // that body's own frame — the Moon is moving, and a ship set down on it
     // must come to rest on *it*, carried along, not scrubbed to a stop in
     // the planet's frame while the ground slides away underneath.
+    // Contact is at the gear's height, not the surface: the hull has a
+    // belly, and the ship's reference point never reaches the ground.
+    //
+    // A touchdown is judged on the tick it happens — descent and attitude
+    // against what the gear takes — and that verdict is kept for as long as
+    // the ship stays down. A clean one settles into LANDED once the ground
+    // speed is nearly gone; the rest is contact as before.
     let mut pos = pos;
     let mut vel = vel;
+    let mut ground = Ground::Flight;
     let body_vel = params.body_velocities(state.time_s);
     for (i, b) in params.bodies(state.time_s + DT).iter().enumerate() {
         let rel = pos - b.centre;
         let r = rel.length();
-        if r < b.radius_m && r > 0.0 {
+        let stance = b.radius_m + GEAR_HEIGHT_M;
+        if r < stance && r > 0.0 {
             let up = rel / r;
             let v_rel = vel - body_vel[i];
             let into = v_rel.dot(up);
@@ -709,8 +787,27 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
                 up * into
             };
             let friction = libm::pow(params.ship.ground_friction, DT);
-            pos = b.centre + up * b.radius_m;
+            pos = b.centre + up * stance;
             vel = body_vel[i] + tangential * friction + bounced;
+
+            let upright = (ship.orient * DVec3::Y).dot(up) >= UPRIGHT_COS;
+            let clean = match ship.ground {
+                Ground::Flight => -into <= TOUCHDOWN_INTO_MPS && upright,
+                Ground::Down { clean, .. } => clean,
+                Ground::Landed { .. } => true,
+            };
+            let slow = (tangential * friction).length() <= TOUCHDOWN_ALONG_MPS
+                && bounced.length() <= TOUCHDOWN_ALONG_MPS;
+            // Throttle up and it does not settle, however slow: the ship
+            // is rolling off, not parking (else the main engine would be
+            // re-parked every tick before it could ever get going).
+            ground = if clean && upright && slow && !releases(&c) {
+                // Settled: at rest on the ground, exactly.
+                vel = body_vel[i];
+                Ground::Landed { body: i, up }
+            } else {
+                Ground::Down { body: i, clean }
+            };
         }
     }
 
@@ -760,6 +857,12 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     )
     .normalize();
 
+    // Settling: the gear takes the last of the tilt and all of the spin.
+    let (orient, ang_vel) = match ground {
+        Ground::Landed { up, .. } => (levelled(ship.orient, up), DVec3::ZERO),
+        _ => (orient, ang_vel),
+    };
+
     WorldState {
         time_s: state.time_s + DT,
         ship: ShipState {
@@ -767,8 +870,36 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
             vel_mps: vel,
             orient,
             ang_vel_radps: ang_vel,
+            ground,
         },
     }
+}
+
+/// Does this demand take a landed ship off the ground: any thrust past
+/// idle, the overdrive, or the hyper field. The stick does not — torque on
+/// the gear is the gear's to absorb.
+fn releases(c: &Controls) -> bool {
+    c.thrust_body.abs().max_element() > RELEASE_THRUST || c.boost || c.hyper
+}
+
+/// `orient` with the smallest rotation applied that puts the ship's own up
+/// (+Y) along `up`: the gear levelling the hull. IEEE ops only (a cross, a
+/// dot, a normalise), so it is as deterministic as the rest.
+fn levelled(orient: DQuat, up: DVec3) -> DQuat {
+    let from = orient * DVec3::Y;
+    let dot = from.dot(up);
+    if dot >= 1.0 - 1e-12 {
+        return orient;
+    }
+    if dot <= -1.0 + 1e-12 {
+        // Upside down cannot land (UPRIGHT_COS refuses it long before), so
+        // this is unreachable in practice; leave the attitude alone rather
+        // than pick an arbitrary axis.
+        return orient;
+    }
+    let c = from.cross(up);
+    let arc = DQuat::from_xyzw(c.x, c.y, c.z, 1.0 + dot).normalize();
+    (arc * orient).normalize()
 }
 
 /// Specific orbital energy (per unit mass): v²/2 − μ/r. Conserved on drag-free
@@ -800,5 +931,23 @@ pub fn state_hash(state: &WorldState) -> u64 {
     eat(s.orient.y);
     eat(s.orient.z);
     eat(s.orient.w);
+    // The ground state. A ship in flight eats nothing here, so every hash
+    // of a ship that never touches the ground — the golden one included —
+    // is exactly what it was before there was a ground state.
+    match s.ground {
+        Ground::Flight => {}
+        Ground::Down { body, clean } => {
+            eat(1.0);
+            eat(body as f64);
+            eat(if clean { 1.0 } else { 0.0 });
+        }
+        Ground::Landed { body, up } => {
+            eat(2.0);
+            eat(body as f64);
+            eat(up.x);
+            eat(up.y);
+            eat(up.z);
+        }
+    }
     h
 }

@@ -331,7 +331,9 @@ Each milestone ends with a demonstrable artifact and its acceptance tests green.
   Quest browser) against the frozen `ViewProvider` seam; go/no-go per target with
   measured frame times. Accept: written verdict + at minimum the native path
   rendering the M2 scene in stereo at 90 Hz on Index-class hardware.
-- **M5+ — Vision lane**: landing + touchdown; the shader city; background simulation
+- **M5+ — Vision lane**: landing + touchdown (the sim's LANDED state and the
+  DISEMBARK bind exist now — the ship settles on its gear and stays; the walk-out
+  itself, leaving the seat for a surface on foot, is this milestone's); the shader city; background simulation
   (Elite-style faction states) + narrative layer (Yarn Spinner rust port, verified
   MIT OR Apache-2.0) — the "choices matter" layer from the original research, which
   remains the destination.

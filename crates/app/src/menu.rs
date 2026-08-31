@@ -390,6 +390,11 @@ pub const HELP: &[HelpGroup] = &[
                 "THE HOOPS CLOSE UP ALONG THE PATH AND THE READOUT JUDGES THE TOUCHDOWN.",
             ),
             named(
+                Named::Disembark,
+                "DISEMBARK",
+                "LEAVE THE SHIP ONCE IT IS LANDED. TODAY IT ANSWERS NOT YET: THE WALK-OUT COMES LATER.",
+            ),
+            named(
                 Named::Trajectory,
                 "PATH ON / OFF",
                 "SHOW OR HIDE THE PREDICTED PATH ON THE GLASS.",
@@ -421,6 +426,8 @@ enum Item {
     Slot(Instrument),
     HoopSize,
     LandingHoops,
+    LandingAssist,
+    LandingPad,
     CockpitFrame,
     CockpitGlow,
     CockpitHull,
@@ -528,6 +535,8 @@ impl Item {
             Item::Quit => "QUIT GAME",
             Item::HoopSize => "HOOP SIZE",
             Item::LandingHoops => "LANDING HOOPS",
+            Item::LandingAssist => "LANDING ASSIST",
+            Item::LandingPad => "LANDING PAD",
             Item::CockpitFrame => "CABIN FRAME",
             Item::CockpitGlow => "CABIN GLOW",
             Item::CockpitHull => "CABIN METAL",
@@ -640,6 +649,8 @@ impl Item {
     fn fixed_description(self) -> &'static str {
         match self {
             Item::Msaa => "MULTISAMPLE ANTI-ALIASING: SMOOTHER EDGES FOR MORE GPU WORK.",
+            Item::LandingAssist => "THE FLIGHT COMPUTER HOLDS YOU UPRIGHT ON THE WAY DOWN.",
+            Item::LandingPad => "A RING ON THE GROUND AT THE PREDICTED TOUCHDOWN.",
             Item::Bloom => "HOW MUCH THE BRIGHT THINGS GLOW: THE SUN, THE FLASHES, THE BRIGHTEST STARS.",
             Item::Exposure => "THE PICTURE'S BRIGHTNESS IN STOPS; THE EYE DRIFTS SLOWLY ABOUT IT.",
             Item::TonemapCurve => "HOW RADIANCE BECOMES THE SCREEN: AGX ROLLS HIGHLIGHTS TO WHITE, OFF CLIPS.",
@@ -728,6 +739,8 @@ impl Item {
         let one = |k: &str| vec![k.to_string()];
         match self {
             Item::Msaa => one("graphics.msaa"),
+            Item::LandingAssist => one("landing.assist"),
+            Item::LandingPad => one("landing.pad"),
             Item::Bloom => one("graphics.bloom"),
             Item::Exposure => one("graphics.exposure"),
             Item::TonemapCurve => one("graphics.tonemap"),
@@ -834,6 +847,8 @@ impl Item {
             },
             Item::HoopSize => format!("{:.2}X", s.hoop_size),
             Item::LandingHoops => format!("{:.0} M", s.landing_spacing_m),
+            Item::LandingAssist => if s.landing_assist { "ON" } else { "OFF" }.to_string(),
+            Item::LandingPad => if s.landing_pad { "ON" } else { "OFF" }.to_string(),
             Item::CockpitFrame => if s.cockpit_frame { "ON" } else { "OFF" }.to_string(),
             Item::CockpitGlow => format!("{:.2}X", s.cockpit_glow),
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
@@ -1153,6 +1168,8 @@ impl Menu {
                 Item::Slot(Instrument::HoopSound),
                 Item::HoopSize,
                 Item::LandingHoops,
+                Item::LandingAssist,
+                Item::LandingPad,
                 Item::CamShake,
                 Item::DriveShake,
                 Item::SafeEdge,
@@ -1528,6 +1545,14 @@ impl Menu {
                     (i + n - 1) % n
                 };
                 s.landing_spacing_m = LANDING_SPACINGS[j];
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::LandingAssist => {
+                s.landing_assist = !s.landing_assist;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::LandingPad => {
+                s.landing_pad = !s.landing_pad;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::CockpitFrame => {

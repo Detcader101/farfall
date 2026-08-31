@@ -23,7 +23,7 @@ rules:
 # persisted as control.<key>; the menu lists every one (id complete-key-menu).
 controls:
   axes: {thrust-forward: W, thrust-back: S, strafe-left: A, strafe-right: D, thrust-up: R, thrust-down: F, pitch-up: Up, pitch-down: Down, yaw-left: Left, yaw-right: Right, roll-left: Q, roll-right: E}
-  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P, bay: B, next-weapon: U, weapon-1: 1, weapon-2: 2, scale-down: "[", scale-up: "]", hold: O, holo-out: ",", holo-in: "."}
+  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P, bay: B, next-weapon: U, weapon-1: 1, weapon-2: 2, scale-down: "[", scale-up: "]", hold: O, holo-out: ",", holo-in: ".", disembark: I}
   fixed: {menu: Esc, page: Tab, controls-card: F1, capture-alt: F12, pane-zoom: "+ / -", fire: "left mouse", freelook: "right mouse"}
   rule: every key the game answers to is a Named bind on the KEYS page; only the menu keys, F1, the pane zoom and the mouse buttons are fixed; the HELP page lists every one by group with what it does
   mouse: freelook while the right button is held; left drag turns the map or moves a panel; wheel zooms the map, the bay, or in flight the hologram
@@ -43,6 +43,7 @@ settings_keys:
   mimics: [mimics.chance, mimics.hostility, mimics.size]
   miners: [miners.count, miners.growth]
   hold: [hold.gain, hold.face]
+  landing: [landing.assist, landing.pad]
   ship: ["ship.hardpoint.<n>", ship.holo-hue, ship.holo-saturation, ship.holo-scanlines, ship.holo-size, ship.holo-spin, ui.panel-bay-card, ui.pointer-size]
 
 # The bench harness (documented in crates/app/src/main.rs). All FARFALL_BENCH_*
@@ -60,6 +61,8 @@ bench:
     FARFALL_BENCH_HEAD: head yaw,pitch in degrees
     FARFALL_BENCH_SPIN: the head turns a full circle over the run, n times
     FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND / _CARD: the map, the settings menu (paged n times, 0..7), DESIGN mode, LANDING mode, the CONTROLS card up
+    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND: the map, the settings menu (paged n times), DESIGN mode, LANDING mode up
+    FARFALL_BENCH_LANDED / _DISEMBARK: parked on the ground, LANDED, on its gear; DISEMBARK pressed at once for its answer on the readout
     FARFALL_BENCH_CHASE / _HOLO: the chase camera, the holo3PP
     FARFALL_BENCH_NEBULA=1|off: a full sky of nebula at twice the stock glow, or off for a baseline
     FARFALL_BENCH_HYPER / _WARP=s / _GHOST=age: the chaos drive's field up; the wormhole drive engaged at s; a WARP STOP after-image this old
@@ -190,11 +193,38 @@ features:
     e2e: capture
 
   - id: landing-mode
-    name: "G toggles LANDING — close gates down the path coloured by predicted touchdown; readout"
-    state: complete
-    tests: [crates/app/src/landing.rs, crates/render/src/trajectory.rs]
+    name: "G toggles LANDING — the hoops become HDR-bright gates (radiance 2.2) converging on the predicted touchdown, coloured by the verdict; the prediction is at the gear's height like the sim's contact; a two-line readout that fits the panel: LAND SOFT/FIRM/HARD IN Ns ALT, then VS / ALONG and the cue — FLARE (descent past what the gear takes, ground close), LEVEL (tilted past 15°), GEAR DOWN (last 15 s)"
+    state: tests-pass
+    tests: ["crates/app/src/landing.rs::every_readout_line_fits_the_panel_in_every_state", "crates/app/src/landing.rs::the_hoops_are_phased_onto_the_touchdown", "crates/app/src/landing.rs::an_orbit_touches_nothing_and_a_hover_is_safe", crates/render/src/trajectory.rs]
     settings: [ui.landing-hoops]
-    e2e: "FARFALL_BENCH_LAND capture (HARD verdict, red gates)"
+    e2e: "farfall-captures/landing/approach-1.png (FARFALL_BENCH_LAND=1 FARFALL_BENCH_ALT=300)"
+
+  - id: landing-pad
+    name: "A landing pad drawn on the ground at the predicted touchdown in LANDING mode (LANDING PAD, landing.pad): a flat ring in the surface's tangent plane with compass ticks, a centre dot and a ring that keeps closing on the centre, in the verdict's colour at radiance 3.0; 60 m across at least, growing with distance so it never shrinks under a degree of sky. A shader quad in the trajectory pass, no assets; the hoops' grid is phased onto it"
+    state: tests-pass
+    tests: ["crates/render/src/trajectory.rs::uniforms_are_clamped_and_sized", "crates/app/src/landing.rs::the_hoops_are_phased_onto_the_touchdown", crates/render/tests/shader_validation.rs]
+    settings: [landing.pad]
+    e2e: "farfall-captures/landing/approach-1.png"
+
+  - id: landing-assist
+    name: "LANDING ASSIST (landing.assist, default on): in LANDING mode with a touchdown ahead the flight computer holds the hull level over the ground — pitch and roll toward the surface normal, damped (ζ ≈ 0.8 on roll), on any axis the pilot is not using; yaw is the pilot's. App-side control glue like HOLD; the sim is untouched"
+    state: tests-pass
+    tests: ["crates/app/src/landing.rs::the_assist_levels_the_hull_and_yields_to_the_pilot"]
+    settings: [landing.assist]
+    e2e: "flight — to be flown; the capture bench is frozen"
+
+  - id: landed-state
+    name: "The ship LANDS: set down gently (under 12 m/s) and upright (within 15°), it settles onto its gear at a fixed 2.5 m stance once it slides under 2 m/s, levels, kills its spin, and stays put — velocity locked to the ground's own (the Moon carries it, bit for bit), position recomputed from the body's centre each tick so it cannot drift — until thrust, boost or the hyper field releases it. A hard or tilted touchdown is DOWN, not landed: it skids as before and never settles until it lifts off and re-lands (the crash it should be is deferred, id crash). Sim state (farfall_sim::Ground on ShipState), in the hash; the golden is unchanged because a ship in flight adds nothing. The readout says LANDED ON <BODY> with the touchdown's verdict and speeds (recorded by the app the tick the ground was met), or DOWN ON <BODY> HARD / ROLLING ON <BODY>, mode or no mode"
+    state: tests-pass
+    tests: ["crates/sim/tests/contact.rs::a_slow_upright_touchdown_settles_and_stays_put_through_a_thousand_ticks", "crates/sim/tests/contact.rs::a_landed_ship_rides_the_ground_exactly_as_the_planet_turns", "crates/sim/tests/contact.rs::throttle_releases_a_landed_ship", "crates/sim/tests/contact.rs::a_hard_or_tilted_touchdown_does_not_settle", "crates/sim/tests/contact.rs::the_ground_state_is_in_the_hash", "crates/sim/tests/invariants.rs::golden_hash", "crates/app/src/landing.rs::a_touchdown_is_judged_from_the_tick_it_happens", "crates/app/src/landing.rs::a_parked_ship_is_landed_level_and_still"]
+    e2e: "farfall-captures/landing/landed-1.png (FARFALL_BENCH_LANDED=1)"
+
+  - id: disembark
+    name: "DISEMBARK (I, control.disembark): the hook for leaving the ship. Today it answers on the readout — DISEMBARK NOT YET when LANDED, NOT LANDED when down, LAND FIRST in flight — for four seconds; the LANDED readout names the key. The walk-out itself is SPEC §9 M5+"
+    state: tests-pass
+    tests: ["crates/app/src/input.rs::no_two_default_binds_share_a_key", "crates/app/src/landing.rs::every_readout_line_fits_the_panel_in_every_state", crates/app/src/menu.rs]
+    settings: [control.disembark]
+    e2e: "farfall-captures/landing/disembark-1.png (FARFALL_BENCH_LANDED=1 FARFALL_BENCH_DISEMBARK=1)"
 
   - id: ladder-on-nose
     name: "Pitch ladder stays on the boresight under freelook"

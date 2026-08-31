@@ -142,10 +142,13 @@ pub enum Named {
     /// The hologram shows more of the space round the ship, or less.
     HoloOut,
     HoloIn,
+    /// Leave the ship, once it is landed. Today it answers "not yet": the
+    /// bind and the state machine are the hook the walk-out hangs on.
+    Disembark,
 }
 
 impl Named {
-    pub const COUNT: usize = 25;
+    pub const COUNT: usize = 26;
     pub const ALL: [Named; Named::COUNT] = [
         Named::Boost,
         Named::Brake,
@@ -172,6 +175,7 @@ impl Named {
         Named::Hold,
         Named::HoloOut,
         Named::HoloIn,
+        Named::Disembark,
     ];
 
     /// Menu label.
@@ -202,6 +206,7 @@ impl Named {
             Named::Hold => "HOLD",
             Named::HoloOut => "HOLO WIDER",
             Named::HoloIn => "HOLO CLOSER",
+            Named::Disembark => "DISEMBARK",
         }
     }
 
@@ -233,6 +238,7 @@ impl Named {
             Named::Hold => "hold",
             Named::HoloOut => "holo-out",
             Named::HoloIn => "holo-in",
+            Named::Disembark => "disembark",
         }
     }
 
@@ -268,6 +274,9 @@ impl Named {
             // it is on.
             Named::HoloOut => KeyCode::Comma,
             Named::HoloIn => KeyCode::Period,
+            // I is the one letter the dash did not already answer to
+            // (Enter is the menu's and is reserved).
+            Named::Disembark => KeyCode::KeyI,
         }
     }
 }
