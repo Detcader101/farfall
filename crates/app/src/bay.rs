@@ -106,6 +106,24 @@ impl Mount {
 /// The stock fit: a rail on the nose, a cannon on each wing.
 pub const STOCK: [Mount; 4] = [Mount::Rail, Mount::Cannon, Mount::Cannon, Mount::Empty];
 
+/// The fit as every pass draws it: each hardpoint's place from the one
+/// table ([`Hardpoint::pos`]) with what the bay mounted there. The SHIP
+/// bay's hologram, the cockpit's own airframe and the chase view all
+/// read this — one source, so the glass and the bay cannot disagree.
+pub fn fit_views(mounts: &[Mount; 4]) -> [farfall_render::hologram::MountView; 4] {
+    let mut v = [farfall_render::hologram::MountView {
+        at: glam::Vec3::ZERO,
+        kind: 0,
+    }; 4];
+    for ((slot, h), m) in v.iter_mut().zip(Hardpoint::ALL.iter()).zip(mounts.iter()) {
+        *slot = farfall_render::hologram::MountView {
+            at: h.pos().as_vec3(),
+            kind: m.kind(),
+        };
+    }
+    v
+}
+
 /// The orbit camera's reach, ship metres from the hull's middle.
 pub const DIST_MIN: f32 = 22.0;
 pub const DIST_MAX: f32 = 110.0;
@@ -164,6 +182,21 @@ impl BayView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_pass_reads_the_same_fit_table() {
+        // The glass, the bay and the chase view all draw from this one
+        // mapping: each hardpoint's true place with its mounted kind.
+        let fit = fit_views(&[Mount::Rail, Mount::Cannon, Mount::Empty, Mount::Cannon]);
+        for (i, h) in Hardpoint::ALL.iter().enumerate() {
+            assert_eq!(fit[i].at, h.pos().as_vec3(), "{}", h.name());
+        }
+        assert_eq!(
+            [fit[0].kind, fit[1].kind, fit[2].kind, fit[3].kind],
+            [2, 1, 0, 1],
+            "kinds ride with their hardpoints"
+        );
+    }
 
     #[test]
     fn mounts_cycle_and_name_their_keys() {

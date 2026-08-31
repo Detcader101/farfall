@@ -313,6 +313,53 @@ fn sd_fighter_exterior(q: vec3<f32>) -> f32 {
     return min(d, fin);
 }
 
+// ---- The hardpoints' mounts ----
+//
+// What sits on a hardpoint, model frame (ship m), by kind: 0 the bare
+// pylon (the carrier lug alone, an empty hardpoint's look), 1 the twin
+// cannon, 2 the rail. One definition: the SHIP bay's hologram, the
+// cockpit's own airframe and the chase view (jet) all draw the fit from
+// this, so the ship the pilot built is the ship seen everywhere. The
+// hardpoints' PLACES come from Rust (bay.rs Hardpoint::pos, via each
+// pass's uniforms) — the one transform table.
+
+// A ring about the z axis: the rail's coils.
+fn sd_ring_z(p: vec3<f32>, r: f32, t: f32) -> f32 {
+    let q = vec2<f32>(length(p.xy) - r, p.z);
+    return length(q) - t;
+}
+
+// Everything a mount can be sits inside this sphere about the hardpoint:
+// centre MOUNT_BOUND_C aft of the muzzle's place, radius MOUNT_BOUND_R
+// (the rail runs z -2.73..1.03 of the point). A march may use the
+// sphere's distance as a safe lower bound and skip sd_mount beyond it.
+const MOUNT_BOUND_C: vec3<f32> = vec3<f32>(0.0, 0.0, -0.85);
+const MOUNT_BOUND_R: f32 = 2.2;
+
+fn sd_mount(q: vec3<f32>, m: vec3<f32>, kind: f32) -> f32 {
+    let p = q - m;
+    // The pylon: the hardpoint's own carrier lug, there whatever is on it
+    // (bare when nothing is — the empty hardpoint the pilot can see).
+    var d = sd_round_box(p - vec3<f32>(0.0, 0.05, 0.55), vec3<f32>(0.07, 0.10, 0.28), 0.03);
+    if (kind > 1.5) {
+        // The rail: one long barrel, three coils along it, a breech.
+        d = min(d, sd_capsule_ab(p, vec3<f32>(0.0, 0.0, 0.9), vec3<f32>(0.0, 0.0, -2.6), 0.13));
+        d = min(d, sd_ring_z(p - vec3<f32>(0.0, 0.0, -0.4), 0.28, 0.05));
+        d = min(d, sd_ring_z(p - vec3<f32>(0.0, 0.0, -1.1), 0.28, 0.05));
+        d = min(d, sd_ring_z(p - vec3<f32>(0.0, 0.0, -1.8), 0.28, 0.05));
+        d = min(d, sd_round_box(p - vec3<f32>(0.0, 0.0, 0.7), vec3<f32>(0.24, 0.22, 0.4), 0.05));
+        return d;
+    }
+    if (kind > 0.5) {
+        // The cannon: twin barrels off a breech block.
+        let b = vec3<f32>(abs(p.x) - 0.17, p.y, p.z);
+        d = min(d, sd_capsule_ab(b, vec3<f32>(0.0, 0.0, 0.3), vec3<f32>(0.0, 0.0, -1.5), 0.08));
+        d = min(d, sd_round_box(p - vec3<f32>(0.0, 0.0, 0.45), vec3<f32>(0.4, 0.22, 0.45), 0.05));
+        return d;
+    }
+    return d;
+}
+
 // The ship with the cockpit carved out: the cavity the pilot sits in, and
 // the glass cut above it. What is left has thickness — the wall between
 // the cavity and space.

@@ -38,6 +38,9 @@ struct Jet {
     rcs: vec4<f32>,
     // xyz: the nearest body's direction, ship frame; w: its fill 0..1
     fill: vec4<f32>,
+    // xyz: each hardpoint, ship frame (m) — bay.rs Hardpoint::pos via
+    // fit_views. w: 0 empty (bare pylon), 1 cannon, 2 rail.
+    hp: array<vec4<f32>, 4>,
 }
 
 @group(0) @binding(0) var<uniform> jet: Jet;
@@ -59,12 +62,30 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     return out;
 }
 
+// The hull with the SHIP bay's fit on it (common.wgsl sd_mount — the
+// same geometry the bay hologram and the cockpit march): each mount
+// only inside its hardpoint's bounding sphere, whose distance is a safe
+// lower bound beyond it.
+fn sd_fitted(p: vec3<f32>) -> f32 {
+    var d = sd_fighter_exterior(p);
+    for (var i = 0u; i < 4u; i += 1u) {
+        let hp = jet.hp[i];
+        let b = length(p - hp.xyz - MOUNT_BOUND_C) - MOUNT_BOUND_R;
+        if (b > 0.25) {
+            d = min(d, b);
+        } else {
+            d = min(d, sd_mount(p, hp.xyz, hp.w));
+        }
+    }
+    return d;
+}
+
 fn jet_normal(p: vec3<f32>) -> vec3<f32> {
     let e = 0.02;
     return normalize(vec3<f32>(
-        sd_fighter_exterior(p + vec3<f32>(e, 0.0, 0.0)) - sd_fighter_exterior(p - vec3<f32>(e, 0.0, 0.0)),
-        sd_fighter_exterior(p + vec3<f32>(0.0, e, 0.0)) - sd_fighter_exterior(p - vec3<f32>(0.0, e, 0.0)),
-        sd_fighter_exterior(p + vec3<f32>(0.0, 0.0, e)) - sd_fighter_exterior(p - vec3<f32>(0.0, 0.0, e)),
+        sd_fitted(p + vec3<f32>(e, 0.0, 0.0)) - sd_fitted(p - vec3<f32>(e, 0.0, 0.0)),
+        sd_fitted(p + vec3<f32>(0.0, e, 0.0)) - sd_fitted(p - vec3<f32>(0.0, e, 0.0)),
+        sd_fitted(p + vec3<f32>(0.0, 0.0, e)) - sd_fitted(p - vec3<f32>(0.0, 0.0, e)),
     ));
 }
 
@@ -214,7 +235,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             var t = t_in;
             for (var i = 0u; i < STEPS; i += 1u) {
                 p = eye + ray * t;
-                let d = sd_fighter_exterior(p);
+                let d = sd_fitted(p);
                 if (d < 0.008) {
                     hit = true;
                     t_hit = t;
