@@ -6,9 +6,11 @@
 // fading as it goes — a liquid wave, its crest white-hot, caustics
 // wrinkling the field inside it — and behind the crest the shell's own
 // honeycomb shows through for a moment, cell by cell, the field ablating
-// Star Trek fashion. Under the hyper drive the whole shell is a liquid
-// skin: space streaming over it aft from the nose in bands, a refractive
-// sheen wandering across the honeycomb, a violet fringe at the graze.
+// Star Trek fashion — a ring of cells round each strike, never the whole
+// shell. Under the hyper drive the whole shell is a liquid skin: space
+// streaming over it aft from the nose in bands, a refractive sheen
+// wandering over it, a violet fringe at the graze; the honeycomb stays
+// all but hidden under it.
 // Drawn on the world side of the glass (before the cabin), additively:
 // where nothing has hit, nothing is there. Written as radiance — the
 // crests go well over 1.0 for the post pass's bloom.
@@ -135,19 +137,29 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let x2 = (d - front * 0.70) / (width * 2.2);
         let wake = exp(-x2 * x2) * 0.4;
         let fade = exp(-age * 1.1) * (0.5 + 0.5 * size);
-        crest += ring * fade;
-        glow += (swell + wake) * fade;
-        // The honeycomb shows in a band behind the crest and at the
-        // impact itself, where the field is working hardest; the field
-        // is wet — caustic — through the same band.
-        let band = smoothstep(front - 1.6 - 1.2 * size, front - 0.05, d) * (1.0 - smoothstep(front - 0.05, front + 0.10, d));
-        let at_hit = (1.0 - smoothstep(0.0, 0.5 + 1.0 * size, d)) * exp(-age * 2.0);
-        comb += (band * 0.9 + at_hit) * fade;
-        wet += band * fade;
+        // The wave's energy thins as the ring grows round the shell: the
+        // crest and its swell are strongest near the strike.
+        let thin = 0.35 + 0.65 * exp(-d / 2.5);
+        crest += ring * fade * thin;
+        glow += (swell + wake) * fade * thin;
+        // The honeycomb shows only in a ring just behind the crest — half
+        // a metre to a metre of shell — and at the impact itself, dying
+        // with distance from the strike and faster with time than the
+        // wave: a few cells lit round each hit, never the whole shell
+        // (three strikes used to tile the sky). The field is wet —
+        // caustic — through the same ring.
+        let band = smoothstep(front - 0.4 - 0.3 * size, front - 0.05, d) * (1.0 - smoothstep(front - 0.05, front + 0.10, d));
+        let reach = exp(-d / (0.6 + 0.6 * size));
+        let at_hit = (1.0 - smoothstep(0.0, 0.3 + 0.4 * size, d)) * exp(-age * 2.5);
+        let comb_fade = exp(-age * 1.8) * (0.5 + 0.5 * size);
+        comb += (band * reach * 0.9 + at_hit) * comb_fade;
+        wet += band * reach * fade;
     }
     // The hyper drive: space streaming over the whole shell. The field
-    // lights from the nose back, the honeycomb everywhere under bands of
-    // light sweeping aft at speed, a liquid sheen wandering over it.
+    // lights from the nose back under bands of light sweeping aft at
+    // speed, a liquid sheen wandering over it — a wet skin, the honeycomb
+    // no more than a ghost in it (a lattice over the whole sky hid the
+    // world it was there to protect).
     var stream = 0.0;
     if (hyper > 0.001) {
         let nose = vec3<f32>(0.0, 0.0, -1.0);
@@ -158,8 +170,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let bands2 = 0.5 + 0.5 * sin(along * 13.0 - now * 71.0 + n.x * 9.0);
         let sheen = vnoise(vec3<f32>(n.x * 4.0, n.y * 4.0, along * 1.4 - now * 9.0));
         stream = hyper * (0.25 + 0.75 * from_front) * (0.3 + 0.35 * bands + 0.2 * bands2 + 0.5 * pow(sheen, 3.0));
-        comb += stream * 0.5;
-        glow += stream * 0.2;
+        comb += stream * 0.04;
+        glow += stream * 0.16;
         wet += stream * 0.6;
     }
     if (crest + glow + comb < 0.002) {
@@ -184,10 +196,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The shell is seen at a grazing angle near its rim: a touch more there.
     let graze = pow(1.0 - abs(dot(n, ray)), 2.0);
     let colour = (
-            white * crest * 1.1
-            + cyan * crest * caus * 1.2
+            white * crest * 0.85
+            + cyan * crest * caus * 1.0
             + blue * glow * 0.45
-            + blue * comb * (lines * 2.2 + cells * (0.35 + 1.4 * caus))
+            + blue * comb * (lines * 1.6 + cells * (0.35 + 1.4 * caus))
             + cyan * wet * caus * 0.6
             + violet * hyper * graze * 0.5
         )
