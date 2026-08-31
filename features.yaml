@@ -176,10 +176,10 @@ features:
 
   - id: warp-liquid-sequence
     name: "The wormhole jump is an eight-second liquid sequence, all in the post pass on the world alone (the dash stays crisp): CHARGE (2 s) — space stretches radially, the stars draw into threads, a shimmer builds at the rim; PULL (2 s) — the picture warps harder, the chromatic split grows, the view folds toward the nose with a slow turn; FLIP (1.5 s) — the mirror-sphere inversion made long and liquid, the one jump exactly at its peak; REFORM (2.5 s) — the destination pours in as fluid, settling rings and chromatic fringes easing to stillness. Every phase's look flows into the next without a seam; WARP LENGTH on the DRIVE page scales the whole of it 50–200% (warp.length)"
-    state: in-progress
+    state: complete
     settings: [warp.length]
     tests: ["crates/app/src/warp.rs::the_sequence_jumps_exactly_once_at_the_flips_peak", "crates/app/src/warp.rs::the_sequence_is_eight_seconds_and_the_length_setting_scales_it", "crates/app/src/warp.rs::the_phases_flow_in_order_and_every_one_is_seen", "crates/app/src/warp.rs::the_look_flows_between_phases_without_a_seam", "crates/render/src/post.rs::the_drive_lanes_are_clamped_and_zero_at_idle"]
-    e2e: "farfall-captures/warp/seq-* at 1, 3, 4.5, 6, 7.5 s into the sequence; spin-* during PULL"
+    e2e: "farfall-captures/warp/seq-s1..s75 (1, 3, 4.5, 6, 7.5 s into the sequence), spin-1..4 (head turning, one mid-PULL), seq-after (ends still), perf-full (2880x1800 4xMSAA mid-sequence: 5.83 ms avg) — all looked at"
 
   - id: warp-crack
     name: "The warp-barrier crack at the jump (bassier, heavier than the sonic boom)"
