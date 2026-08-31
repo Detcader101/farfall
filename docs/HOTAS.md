@@ -26,7 +26,13 @@ samples the controls):
 
 1. The reader polls the platform for one sample: up to 8 axes in [-1, 1] and a
    32-bit button mask. The hat's four ways are bits 28–31, so a hat direction
-   binds like any button.
+   binds like any button. **Calibration gate**: an axis that has only ever
+   read full deflection contributes nothing until it is first seen inside the
+   rails (±0.95) — winmm reports an axis nothing has touched since plug-in at
+   full rail (a live flight had the rocker's STRAFE at +1.00 throughout), so a
+   railed reading from an untouched axis is "no data yet", not a demand. The
+   moment it moves it is real for good, rails included; the log says
+   `stick: axis 4 rests at full deflection - ignored until it moves`.
 2. If the wizard is up, the sample goes to it and nothing flies.
 3. Otherwise `StickMap::body_axes` turns the sample into the six body axes —
    thrust xyz, torque xyz — each shaped (deadzone, curve), signed by the body

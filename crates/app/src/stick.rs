@@ -1363,9 +1363,19 @@ pub struct Reader {
     last: Sample,
     /// Frames until the next look for a stick when none is attached.
     retry: u32,
+    /// Axes seen inside the rails since the stick appeared, one bit each.
+    /// winmm reports an axis nothing has touched since plug-in at full
+    /// deflection (the HOTAS 4's rocker read `strafe +1.00` for a whole
+    /// live flight), so a railed axis is "no data yet", not a demand.
+    calibrated: u8,
+    /// Which railed axes have been logged, so each says so once.
+    warned: u8,
     #[cfg(windows)]
     id: u32,
 }
+
+/// Inside this much of full travel an axis counts as real (calibrated).
+const AXIS_ALIVE: f32 = 0.95;
 
 /// Frames between looks for a stick that isn't there (a second at 60).
 const RETRY_FRAMES: u32 = 60;
@@ -1400,13 +1410,15 @@ impl Reader {
                 }
                 None => return None,
             }
+            self.calibrated = 0;
+            self.warned = 0;
         }
         #[cfg(windows)]
         let read = platform::read(self.id);
         #[cfg(not(windows))]
         let read = platform::read(0);
         match read {
-            Some(s) => Some(s),
+            Some(s) => Some(self.admit(s)),
             None => {
                 log::info!("stick: unplugged");
                 self.device = None;
@@ -1414,6 +1426,28 @@ impl Reader {
                 None
             }
         }
+    }
+
+    /// The calibration gate: an axis that has only ever read full
+    /// deflection contributes nothing until it is first seen inside the
+    /// rails — then it is real for good, rails included.
+    fn admit(&mut self, mut s: Sample) -> Sample {
+        for (i, v) in s.axes.iter_mut().enumerate() {
+            let bit = 1u8 << i;
+            if self.calibrated & bit != 0 {
+                continue;
+            }
+            if v.abs() < AXIS_ALIVE {
+                self.calibrated |= bit;
+            } else {
+                if self.warned & bit == 0 {
+                    log::info!("stick: axis {i} rests at full deflection - ignored until it moves");
+                    self.warned |= bit;
+                }
+                *v = 0.0;
+            }
+        }
+        s
     }
 
     /// Note the sample as seen: returns (pressed, released) button masks
@@ -2022,6 +2056,23 @@ mod tests {
         };
         assert!(StickItem::Device.value(&m, Some(&d)).contains("HOTAS 4"));
         assert!(d.is_hotas4());
+    }
+
+    /// The live bug this answers: a fresh HOTAS 4's rocker read
+    /// `strafe +1.00` at rest for a whole flight — winmm reports an axis
+    /// nothing has touched since plug-in at full deflection.
+    #[test]
+    fn an_unidentified_axis_resting_at_full_deflection_moves_nothing() {
+        let mut r = Reader::default();
+        let s = r.admit(sample(&[(4, 1.0), (1, 0.2)], &[]));
+        assert_eq!(s.axes[4], 0.0, "a railed axis is not a demand");
+        assert_eq!(s.axes[1], 0.2, "a centred axis works at once");
+        // Still railed, either way: still nothing.
+        assert_eq!(r.admit(sample(&[(4, -1.0)], &[])).axes[4], 0.0);
+        // The moment it reads inside the rails it is real...
+        assert_eq!(r.admit(sample(&[(4, 0.3)], &[])).axes[4], 0.3);
+        // ...and full deflection then means full deflection.
+        assert_eq!(r.admit(sample(&[(4, 1.0)], &[])).axes[4], 1.0);
     }
 
     #[test]

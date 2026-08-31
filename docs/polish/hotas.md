@@ -134,6 +134,22 @@ named control bindable to a stick button, a step-by-step setup wizard, docs.
   (`Page::Stick`, `Item::Stick`, header fit); the base branch's
   `crates/render/src/sight.rs` is not fmt-clean (I reverted fmt's touch on it).
 
+## The live flight (2026-08-31, Jay Jay at the stick)
+
+Jay Jay flew the merged build with the real HOTAS 4 mid-pass
+(`farfall-captures/live/hotas-live.log`, 408 stick lines). What it proved:
+pitch, roll, yaw and their directions ride the stick full-range exactly as the
+measured default map says. What it caught: **`strafe +1.00` at rest, for the
+whole flight** — winmm reports an axis nothing has touched since plug-in at
+full deflection, so the rocker's V axis read as a full strafe demand from the
+first frame. Fixed with a calibration gate in `Reader::admit`: an axis that
+has only ever read full rail contributes nothing until first seen inside
+±0.95, then it is real for good (test
+`an_unidentified_axis_resting_at_full_deflection_moves_nothing`; the log says
+`stick: axis 4 rests at full deflection - ignored until it moves`). The
+throttle inherits the same guard, which also means a lever parked at a rail
+cannot slam the ship at spawn.
+
 ## The merge with fable/polish (74347db, eight branches in)
 
 Done in this worktree, `fable/polish` merged INTO `fable/hotas`, per the lead.
