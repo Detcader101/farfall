@@ -365,6 +365,8 @@ fn dial_tilted_normal(dash_n: vec3<f32>, tilt: f32) -> vec3<f32> {
 // The dash's plane, shared with the cockpit: a point on it and its normal.
 const DIAL_DASH_C: vec3<f32> = vec3<f32>(0.0, -0.50, -1.05);
 const DIAL_DASH_N: vec3<f32> = vec3<f32>(0.0, 0.9563, 0.2924);
+// The dash metal stands this far above the plane (cockpit.wgsl DASH_SURFACE).
+const DIAL_DASH_SURFACE: f32 = 0.04;
 
 // ---- Instrument drawing, shared by the dials ----
 // Capsule SDF: distance to segment ab, for needle and digit segments.

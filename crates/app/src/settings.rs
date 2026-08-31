@@ -238,8 +238,10 @@ pub struct Settings {
     pub nebula_spread: f32,
     /// Base field of view, degrees (vertical).
     pub fov: f32,
-    /// Gauge style: TRON holograms on the glass; JET bowls hollowed into
-    /// the dash; DIAL real instruments set flush into the dash.
+    /// Gauge style: WARTHOG (the default) steam gauges on the dash; TRON
+    /// holograms on the glass; JET holograms over thin rings, the gyro a
+    /// real ball; DIAL period instruments on the dash. Nothing is ever
+    /// hollowed into the dash for any of them.
     pub gauge_style: GaugeStyle,
     /// Gauges stay lit (true) or fade by relevance (false).
     pub gauges_stay: bool,
@@ -360,7 +362,7 @@ impl Default for Settings {
             nebula_spread: 1.5,
             flare: 1.0,
             fov: 70.0,
-            gauge_style: GaugeStyle::Tron,
+            gauge_style: GaugeStyle::Warthog,
             gauges_stay: true,
             guide: false,
             hull_sound: true,
@@ -1234,6 +1236,30 @@ mod tests {
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);
         assert_eq!(Settings::parse(&s.render()), s);
+    }
+
+    /// A new player's dash is the Warthog's: steam gauges on the metal.
+    /// The GAUGES page still cycles the other three, and a file that
+    /// names another style keeps it.
+    #[test]
+    fn warthog_is_the_default_and_the_menu_still_cycles_every_style() {
+        let s = Settings::default();
+        assert_eq!(s.gauge_style, GaugeStyle::Warthog);
+        assert!(s.render().contains("ui.gauge-style = warthog\n"));
+        let mut seen = vec![s.gauge_style];
+        let mut cur = s.gauge_style;
+        for _ in 0..GaugeStyle::ALL.len() - 1 {
+            cur = cur.next(true);
+            seen.push(cur);
+        }
+        seen.sort_by_key(|g| g.index());
+        assert_eq!(seen, GaugeStyle::ALL.to_vec());
+        assert_eq!(cur.next(true), GaugeStyle::Warthog, "and round");
+        assert_eq!(
+            Settings::parse("ui.gauge-style = tron\n").gauge_style,
+            GaugeStyle::Tron
+        );
+        assert_eq!(Settings::parse("").gauge_style, GaugeStyle::Warthog);
     }
 
     #[test]

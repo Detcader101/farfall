@@ -82,14 +82,16 @@ impl GyroUniforms {
         self
     }
 
-    /// The geometric ball: a sphere in the dash (its placement carries
+    /// The geometric ball: a sphere on the dash (its placement carries
     /// the centre and radius), shaded on the world's frame — `up` and
-    /// `east` in the ship's frame.
+    /// `east` in the ship's frame. A WARTHOG ball (set before this) is
+    /// coded 3, since the up vector takes the lane the flag rode in.
     pub fn ball(mut self, place: crate::cabin::Placement, up_ship: Vec3, east_ship: Vec3) -> Self {
         let up = up_ship.normalize_or_zero();
         let east = east_ship.normalize_or_zero();
         let oct = oct_encode(east);
-        self.d = [2.0, up.x, up.y, up.z];
+        let kind = if self.d[1] > 0.5 { 3.0 } else { 2.0 };
+        self.d = [kind, up.x, up.y, up.z];
         self.c[2] = oct[0];
         self.c[3] = oct[1];
         self.place = place;

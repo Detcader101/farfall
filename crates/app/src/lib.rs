@@ -1763,11 +1763,15 @@ impl Game {
                 let tw = self.dial_tweak(i);
                 farfall_render::cabin::Socket {
                     dir: anchor_direction(a, ref_tan, cam.aspect),
-                    // The gyro's JET is the ball itself.
-                    style: if i == Instrument::Gyro && tw.style == settings::GaugeStyle::Jet {
+                    // The gyro's JET and WARTHOG are the ball itself.
+                    style: if i == Instrument::Gyro
+                        && matches!(
+                            tw.style,
+                            settings::GaugeStyle::Jet | settings::GaugeStyle::Warthog
+                        ) {
                         3
                     } else if tw.style == settings::GaugeStyle::Warthog {
-                        // The Warthog's face sits in the DIAL's housing.
+                        // The Warthog's face sits on the DIAL's plate.
                         2
                     } else {
                         tw.style.index()
@@ -1869,9 +1873,9 @@ impl Game {
         }
     }
 
-    /// The gyro as a geometric ball: when it is JET and sits in the dash,
-    /// its sphere's placement and the world's up and east in the ship's
-    /// frame, for the gyro pass to paint.
+    /// The gyro as a geometric ball: when it is JET or WARTHOG and sits
+    /// on the dash, its sphere's placement and the world's up and east in
+    /// the ship's frame, for the gyro pass to paint.
     fn gyro_ball(
         &self,
         cam: &CameraFrame,
@@ -1879,7 +1883,10 @@ impl Game {
     ) -> Option<(farfall_render::cabin::Placement, glam::Vec3, glam::Vec3)> {
         use farfall_render::cabin::anchor_direction;
         use glam::Vec3;
-        if tw.style != settings::GaugeStyle::Jet {
+        if !matches!(
+            tw.style,
+            settings::GaugeStyle::Jet | settings::GaugeStyle::Warthog
+        ) {
             return None;
         }
         let a = self.settings.layout.anchor(Instrument::Gyro)?;
@@ -4524,8 +4531,10 @@ fn redraw(
                         gpu.passes.shield.draw(&mut pass);
                         gpu.passes.ghost.draw(&mut pass);
                         if !game.chase_active() {
-                            gpu.passes.cabin.draw(&mut pass);
+                            // The horizon and its ladder are at infinity:
+                            // the dash hides what falls below its sill.
                             gpu.passes.horizon.draw(&mut pass);
+                            gpu.passes.cabin.draw(&mut pass);
                             gpu.passes.gauge.draw_within(
                                 &mut pass,
                                 gpu.dial_rects.get()[0],
@@ -4802,11 +4811,15 @@ fn redraw(
             if gpu.cfg.draws("ghost") {
                 gpu.passes.ghost.draw(&mut pass);
             }
+            if gpu.cfg.draws("gauge") && !game.chase_active() {
+                // At infinity, so under the dash: the cabin covers what
+                // falls below its sill.
+                gpu.passes.horizon.draw(&mut pass);
+            }
             if gpu.cfg.draws("cockpit") && !game.chase_active() {
                 gpu.passes.cabin.draw(&mut pass);
             }
             if gpu.cfg.draws("gauge") && !game.chase_active() {
-                gpu.passes.horizon.draw(&mut pass);
                 gpu.passes
                     .gauge
                     .draw_within(&mut pass, gpu.dial_rects.get()[0], gpu.scene.size());
