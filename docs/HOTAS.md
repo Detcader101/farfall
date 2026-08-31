@@ -105,6 +105,30 @@ Measured on Jay Jay's unit (`hotas-reforger/device-audit.json`) and asserted by
 
 Deadzone 8 %, curve 1.5 (a power curve: finer about centre, full at the stop).
 
+## The throttle's gestures, and the cabin's own stick
+
+- **Lever hard back = air brake** (`stick.throttle-brake`, ON): the bottom
+  ~5% of the lever's true travel holds the air brake exactly as holding
+  Space does. Centre-zero only (with the zero at the bottom, idle would
+  brake); an axis the calibration gate is still holding back reads 0 and
+  cannot brake by resting.
+- **Lever slammed forward = a chaos burst** (`stick.throttle-jump`, ON): at
+  least 70% of travel forward within a quarter second, ending past halfway,
+  holds the chaos drive for exactly two seconds and lets go — the same as
+  holding H; the drive's own charge and entropy rules apply. A smooth push
+  can never do it (test `a_smooth_throttle_push_never_jumps`), and holding
+  the lever forward does not re-fire: bring it back and slam again.
+- **The cabin's control column mirrors the demand** (`cockpit.stick`, ON —
+  the CABIN page): the stick on the console leans with pitch and roll,
+  its grip twists with yaw, and the lever on the left console slides with
+  the throttle — from the HOTAS when it is flying, from the keys when not
+  (it reads the summed demand). Render-only: a lane on the cabin uniforms
+  (`CabinUniforms::with_stick`, quantised to 0.05 so a settling ramp does
+  not re-march the cabin every frame).
+
+Both gestures are listed on the HELP page under DRIVES, and each has a row
+with a description on the STICK page (LEVER BRAKE, LEVER JUMP).
+
 ## Settings keys
 
 ```
@@ -118,6 +142,8 @@ stick.lift = none
 stick.deadzone = 0.08      # 0 .. 0.5 of half travel, symmetric
 stick.curve = 1.50         # 1 linear .. 3
 stick.throttle-zero = centre   # or bottom: the lever is 0..1 ahead only
+stick.throttle-brake = on  # the lever hard back holds the air brake
+stick.throttle-jump = on   # a slam forward = two seconds of chaos drive
 stick.layout = hotas4      # how raw indices are named (hotas4 | generic); the reader sets it from the USB id
 stick.fire = 0             # button number, hat-up/right/down/left, or none
 stick.button.boost = 1

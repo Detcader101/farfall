@@ -297,6 +297,10 @@ pub struct StickMap {
     pub buttons: [Option<u8>; Named::COUNT],
     /// How to name the raw indices (stick.layout; the reader sets it).
     pub layout: Layout,
+    /// The lever hard back (the bottom ~5% of travel) holds the air brake.
+    pub throttle_brake: bool,
+    /// The lever slammed forward fires the chaos drive for two seconds.
+    pub throttle_jump: bool,
 }
 
 impl Default for StickMap {
@@ -349,7 +353,24 @@ impl StickMap {
             fire: Some(0),
             buttons,
             layout: Layout::Hotas4,
+            throttle_brake: true,
+            throttle_jump: true,
         }
+    }
+
+    /// The throttle's raw demand after invert, before the deadzone — the
+    /// gestures read the lever's true position, not the shaped output.
+    /// `None` when no throttle axis is mapped (or the reader is holding
+    /// it back as uncalibrated, in which case it reads 0 and stays out
+    /// of both gesture zones).
+    fn throttle_raw(&self, s: &Sample) -> Option<f32> {
+        let m = self.axes[Flight::Throttle as usize];
+        let a = m.axis?;
+        let raw = *s.axes.get(usize::from(a))?;
+        if !raw.is_finite() {
+            return None;
+        }
+        Some(if m.invert { -raw } else { raw })
     }
 
     /// A raw axis's name under this layout.
@@ -428,6 +449,8 @@ impl StickMap {
             fire: None,
             buttons: [None; Named::COUNT],
             layout: Layout::Generic,
+            throttle_brake: true,
+            throttle_jump: true,
         }
     }
 
@@ -559,6 +582,8 @@ impl StickMap {
                 }
             }
             "fire" => self.fire = button_from_name(v),
+            "throttle-brake" => self.throttle_brake = matches!(v, "on" | "true" | "1"),
+            "throttle-jump" => self.throttle_jump = matches!(v, "on" | "true" | "1"),
             "layout" => {
                 self.layout = match v {
                     "hotas4" => Layout::Hotas4,
@@ -607,6 +632,14 @@ impl StickMap {
             }
         ));
         out.push_str(&format!("stick.fire = {}\n", button_key(self.fire)));
+        out.push_str(&format!(
+            "stick.throttle-brake = {}\n",
+            if self.throttle_brake { "on" } else { "off" }
+        ));
+        out.push_str(&format!(
+            "stick.throttle-jump = {}\n",
+            if self.throttle_jump { "on" } else { "off" }
+        ));
         for n in Named::ALL {
             out.push_str(&format!(
                 "stick.button.{} = {}\n",
@@ -708,6 +741,10 @@ pub enum StickItem {
     Deadzone,
     Curve,
     ThrottleZero,
+    /// The lever hard back holds the air brake.
+    ThrottleBrake,
+    /// The lever slammed forward fires the chaos drive for two seconds.
+    ThrottleJump,
     Fire,
 }
 
@@ -719,6 +756,8 @@ impl StickItem {
             StickItem::Deadzone,
             StickItem::Curve,
             StickItem::ThrottleZero,
+            StickItem::ThrottleBrake,
+            StickItem::ThrottleJump,
             StickItem::Fire,
         ]);
         v
@@ -733,6 +772,8 @@ impl StickItem {
             StickItem::Deadzone => "DEADZONE",
             StickItem::Curve => "CURVE",
             StickItem::ThrottleZero => "THROTTLE ZERO",
+            StickItem::ThrottleBrake => "LEVER BRAKE",
+            StickItem::ThrottleJump => "LEVER JUMP",
             StickItem::Fire => "TRIGGER",
         }
     }
@@ -760,6 +801,8 @@ impl StickItem {
                 ThrottleZero::Bottom => "BOTTOM",
             }
             .to_string(),
+            StickItem::ThrottleBrake => if m.throttle_brake { "ON" } else { "OFF" }.to_string(),
+            StickItem::ThrottleJump => if m.throttle_jump { "ON" } else { "OFF" }.to_string(),
             StickItem::Fire => m.button_name(m.fire),
         }
     }
@@ -799,6 +842,12 @@ impl StickItem {
             StickItem::ThrottleZero => {
                 "WHERE THE LEVER MEANS ZERO: THE CENTRE (THE BACK HALF REVERSES) OR THE BOTTOM."
             }
+            StickItem::ThrottleBrake => {
+                "THE LEVER HARD BACK HOLDS THE AIR BRAKE, LIKE HOLDING SPACE. CENTRE ZERO ONLY."
+            }
+            StickItem::ThrottleJump => {
+                "SLAM THE LEVER FORWARD: THE CHAOS DRIVE FIRES FOR TWO SECONDS. A SMOOTH PUSH NEVER DOES."
+            }
             StickItem::Fire => "THE STICK BUTTON THAT FIRES THE GUNS.",
         }
     }
@@ -816,6 +865,8 @@ impl StickItem {
             StickItem::Deadzone => vec!["stick.deadzone".to_string()],
             StickItem::Curve => vec!["stick.curve".to_string()],
             StickItem::ThrottleZero => vec!["stick.throttle-zero".to_string()],
+            StickItem::ThrottleBrake => vec!["stick.throttle-brake".to_string()],
+            StickItem::ThrottleJump => vec!["stick.throttle-jump".to_string()],
             StickItem::Fire => vec!["stick.fire".to_string()],
         }
     }
@@ -861,6 +912,14 @@ impl StickItem {
                 };
                 true
             }
+            StickItem::ThrottleBrake => {
+                m.throttle_brake = !m.throttle_brake;
+                true
+            }
+            StickItem::ThrottleJump => {
+                m.throttle_jump = !m.throttle_jump;
+                true
+            }
             StickItem::Fire => {
                 let n = i32::from(MAX_BUTTONS) + 1;
                 let i = m.fire.map_or(0, |b| i32::from(b) + 1);
@@ -880,6 +939,77 @@ fn step(v: &mut f32, forward: bool, by: f32, lo: f32, hi: f32) -> bool {
     }
     *v = next;
     true
+}
+
+// ---------------------------------------------------------------------
+// The throttle's gestures: hard back holds the air brake, a slam
+// forward fires the chaos drive for two seconds.
+// ---------------------------------------------------------------------
+
+/// Below this raw lever position (post-invert) the air brake holds:
+/// the bottom ~5% of travel — past anything the deadzone would keep.
+const BRAKE_ZONE: f32 = -0.9;
+/// A slam: the lever travels at least this far forward...
+const SLAM_TRAVEL: f32 = 0.7;
+/// ...within this window, seconds. A smooth push cannot do it.
+const SLAM_WINDOW_S: f64 = 0.25;
+/// ...ending at least this far forward.
+const SLAM_MIN: f32 = 0.5;
+/// How long a slam holds the chaos drive, seconds.
+const SLAM_BURST_S: f64 = 2.0;
+
+/// The gesture detector: fed the admitted sample once a frame with the
+/// wall clock, answers (brake held, hyper held).
+#[derive(Clone, Debug, Default)]
+pub struct Gestures {
+    /// The lever's recent positions, oldest first, within SLAM_WINDOW_S.
+    window: std::collections::VecDeque<(f64, f32)>,
+    /// The chaos drive held until this time by a slam.
+    hyper_until: f64,
+}
+
+impl Gestures {
+    /// Everything forgotten (the wizard opened, the stick unplugged, the
+    /// map turned off): no gesture survives a gap in the feed.
+    pub fn reset(&mut self) {
+        self.window.clear();
+        self.hyper_until = 0.0;
+    }
+
+    /// One frame. `t` is a monotonic clock in seconds.
+    pub fn step(&mut self, m: &StickMap, s: &Sample, t: f64) -> (bool, bool) {
+        let Some(v) = m.throttle_raw(s).filter(|_| m.enabled) else {
+            self.reset();
+            return (false, false);
+        };
+        // The brake zone reads the lever's true position. With the zero
+        // at the bottom the whole idle rest would brake, so it is a
+        // centre-zero gesture only.
+        let brake = m.throttle_brake && m.throttle_zero == ThrottleZero::Centre && v <= BRAKE_ZONE;
+        // The slam: enough travel forward inside the window.
+        self.window.push_back((t, v));
+        while self
+            .window
+            .front()
+            .is_some_and(|(t0, _)| t - t0 > SLAM_WINDOW_S)
+        {
+            self.window.pop_front();
+        }
+        if self.window.len() > 64 {
+            self.window.pop_front();
+        }
+        if m.throttle_jump && v >= SLAM_MIN && t >= self.hyper_until {
+            let lowest = self
+                .window
+                .iter()
+                .fold(f32::INFINITY, |acc, (_, w)| acc.min(*w));
+            if v - lowest >= SLAM_TRAVEL {
+                self.hyper_until = t + SLAM_BURST_S;
+                log::info!("stick: throttle slam - chaos drive for {SLAM_BURST_S} s");
+            }
+        }
+        (brake, t < self.hyper_until)
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1870,6 +2000,8 @@ mod tests {
         m.deadzone = 0.12;
         m.curve = 2.0;
         m.enabled = false;
+        m.throttle_brake = false;
+        m.throttle_jump = false;
         let mut text = String::new();
         m.render(&mut text);
         let mut back = StickMap::empty();
@@ -2061,6 +2193,87 @@ mod tests {
     /// The live bug this answers: a fresh HOTAS 4's rocker read
     /// `strafe +1.00` at rest for a whole flight — winmm reports an axis
     /// nothing has touched since plug-in at full deflection.
+    /// A steady push up the whole travel, however far, is throttle — the
+    /// slam needs the travel inside a quarter second.
+    #[test]
+    fn a_smooth_throttle_push_never_jumps() {
+        let m = StickMap::hotas4();
+        let mut g = Gestures::default();
+        // Two seconds from full back to full forward, 120 Hz. Remember
+        // the lever is inverted on the HOTAS 4: raw -1 is full forward.
+        for i in 0..=240 {
+            let t = i as f64 / 120.0;
+            let lever = 1.0 - (i as f32 / 240.0) * 2.0;
+            let (_, hyper) = g.step(&m, &sample(&[(2, lever)], &[]), t);
+            assert!(!hyper, "a smooth push jumped at t={t:.2}");
+        }
+        // And a jump switched OFF never fires, however hard the slam.
+        let mut off = StickMap::hotas4();
+        off.throttle_jump = false;
+        let mut g = Gestures::default();
+        g.step(&off, &sample(&[(2, 1.0)], &[]), 0.0);
+        let (_, hyper) = g.step(&off, &sample(&[(2, -1.0)], &[]), 0.1);
+        assert!(!hyper);
+    }
+
+    #[test]
+    fn a_slam_jumps_for_two_seconds_and_releases() {
+        let m = StickMap::hotas4();
+        let mut g = Gestures::default();
+        g.step(&m, &sample(&[(2, 1.0)], &[]), 0.0);
+        let (_, hyper) = g.step(&m, &sample(&[(2, -1.0)], &[]), 0.1);
+        assert!(hyper, "a slam fires the drive");
+        // Held for two seconds from the slam, wherever the lever went...
+        let (_, still) = g.step(&m, &sample(&[(2, 0.0)], &[]), 2.0);
+        assert!(still);
+        // ...and let go after.
+        let (_, done) = g.step(&m, &sample(&[(2, 0.0)], &[]), 2.2);
+        assert!(!done);
+        // Holding the lever forward does not re-fire: it must come back
+        // and be slammed again.
+        let (_, again) = g.step(&m, &sample(&[(2, -1.0)], &[]), 2.5);
+        assert!(!again, "holding forward is not another slam");
+    }
+
+    /// The lever hard back is the air brake — but only with the zero at
+    /// the centre, and never from an axis the reader is holding back.
+    #[test]
+    fn the_lever_hard_back_holds_the_air_brake() {
+        let m = StickMap::hotas4();
+        let mut g = Gestures::default();
+        let (brake, _) = g.step(&m, &sample(&[(2, 0.97)], &[]), 0.0);
+        assert!(brake, "the bottom of the travel brakes");
+        let (brake, _) = g.step(&m, &sample(&[(2, 0.5)], &[]), 0.1);
+        assert!(!brake, "half back is reverse thrust, not the brake");
+        let mut bottom = StickMap::hotas4();
+        bottom.throttle_zero = ThrottleZero::Bottom;
+        assert!(
+            !Gestures::default()
+                .step(&bottom, &sample(&[(2, 1.0)], &[]), 0.0)
+                .0,
+            "with the zero at the bottom, resting there must not brake"
+        );
+        let mut off = StickMap::hotas4();
+        off.throttle_brake = false;
+        assert!(
+            !Gestures::default()
+                .step(&off, &sample(&[(2, 1.0)], &[]), 0.0)
+                .0
+        );
+        let mut none = StickMap::hotas4();
+        none.bind_axis(Flight::Throttle, AxisMap::NONE);
+        assert!(
+            !Gestures::default()
+                .step(&none, &sample(&[(2, 1.0)], &[]), 0.0)
+                .0
+        );
+        // The calibration gate zeroes a railed untouched axis: through
+        // the reader, a fresh stick's lever cannot brake by resting.
+        let mut r = Reader::default();
+        let s = r.admit(sample(&[(2, 1.0)], &[]));
+        assert!(!Gestures::default().step(&m, &s, 0.0).0);
+    }
+
     #[test]
     fn an_unidentified_axis_resting_at_full_deflection_moves_nothing() {
         let mut r = Reader::default();

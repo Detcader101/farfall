@@ -536,6 +536,10 @@ pub struct InputState {
     /// shaped (deadzone, curve) by the stick map. A physical stick is its
     /// own ramp, so it bypasses the key smoothing and adds to it.
     stick: [f64; 6],
+    /// The throttle gestures: the lever hard back holds the air brake,
+    /// a slam holds the chaos drive (see crate::stick::Gestures).
+    stick_brake: bool,
+    stick_hyper: bool,
     bindings: Option<Bindings>,
 }
 
@@ -554,6 +558,13 @@ impl InputState {
     /// The stick's six body axes for this frame (see [`crate::stick`]).
     /// Non-finite values are treated as centred; the sum with the keys is
     /// clamped in [`Self::controls`].
+    /// The throttle gestures' held states, OR-ed with the keys' each
+    /// frame: the lever hard back is the air brake, a slam is the drive.
+    pub fn set_stick_held(&mut self, brake: bool, hyper: bool) {
+        self.stick_brake = brake;
+        self.stick_hyper = hyper;
+    }
+
     pub fn set_stick(&mut self, axes: [f64; 6]) {
         for (dst, v) in self.stick.iter_mut().zip(axes) {
             *dst = if v.is_finite() {
@@ -605,6 +616,8 @@ impl InputState {
         self.hyper = false;
         self.axes = [0.0; 6];
         self.stick = [0.0; 6];
+        self.stick_brake = false;
+        self.stick_hyper = false;
     }
 
     /// Advance the smoothing by `dt` seconds.
@@ -662,9 +675,9 @@ impl InputState {
             torque_body: DVec3::new(a[3], a[4], a[5]),
             assist,
             boost: self.boost,
-            brake: self.brake,
+            brake: self.brake || self.stick_brake,
             despin: self.despin,
-            hyper: self.hyper,
+            hyper: self.hyper || self.stick_hyper,
             hyper_level: 0.0,
         }
     }
@@ -911,6 +924,15 @@ mod tests {
             DVec3::ZERO,
             "focus loss drops the stick too"
         );
+        // The gestures hold the brake and the drive like keys, and focus
+        // loss drops them like keys.
+        let mut s = InputState::default();
+        s.set_stick_held(true, true);
+        let c = s.controls(false);
+        assert!(c.brake && c.hyper);
+        s.release_all();
+        let c = s.controls(false);
+        assert!(!c.brake && !c.hyper);
     }
 
     #[test]

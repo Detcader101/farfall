@@ -399,6 +399,8 @@ const MACH1_MPS: f64 = 340.0;
 ///                           0..8; 2 is the STICK page)
 ///   FARFALL_BENCH_STICK=n  (benchmark only: the stick wizard open at step n
 ///                           (0-based), with a stand-in detection on it)
+///   FARFALL_BENCH_DEMAND=p,r,y,t (benchmark only: a parked pitch/roll/yaw/
+///                           throttle demand, for the console stick's mirror)
 ///   FARFALL_BENCH_CARD=1   (benchmark only: the CONTROLS card up, as on the first run)
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_NEBULA=1|off (benchmark only: a full sky of nebula at
@@ -1281,6 +1283,8 @@ struct Game {
     stick: stick::Reader,
     wizard: Option<stick::Wizard>,
     stick_log: u32,
+    /// The throttle gestures: lever hard back brakes, a slam bursts.
+    stick_gestures: stick::Gestures,
     /// The mimics — ships in the rocks — and what the guns bring in.
     mimics: mimic::Mimics,
     haul: mimic::Haul,
@@ -1438,6 +1442,7 @@ impl Game {
             stick: stick::Reader::default(),
             wizard: None,
             stick_log: 0,
+            stick_gestures: stick::Gestures::default(),
             mimics: mimic::Mimics::default(),
             haul: mimic::Haul::default(),
             miners: miner::Miners::default(),
@@ -1995,7 +2000,21 @@ impl Game {
             style: self.settings.gauge_style.index(),
             thrust: self.thrust_look(),
         };
-        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets);
+        // The console's control column mirrors the live demand (HOTAS
+        // or keys): pitch, roll, yaw, throttle in the pilot's sense.
+        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets).with_stick(
+            if self.settings.cockpit_stick {
+                let c = self.input.controls(self.assist);
+                [
+                    c.torque_body.x as f32,
+                    -c.torque_body.z as f32,
+                    -c.torque_body.y as f32,
+                    -c.thrust_body.z as f32,
+                ]
+            } else {
+                [0.0; 4]
+            },
+        );
         let bu = cu.blit(look).with_time(cam.time_s);
         (cu, bu)
     }
@@ -4964,6 +4983,20 @@ impl App {
             w.bench_detect();
             game.wizard = Some(w);
         }
+        // FARFALL_BENCH_DEMAND=p,r,y,t: a parked control demand, for a
+        // capture of the console's stick and lever answering it.
+        if let Some([p, r, y, t]) = std::env::var("FARFALL_BENCH_DEMAND")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| {
+                let n: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                <[f64; 4]>::try_from(n).ok()
+            })
+        {
+            // The mirror's senses: +p pitch up (+x torque), +r roll right
+            // (-z), +y yaw right (-y), +t thrust ahead (-z).
+            game.input.set_stick([0.0, 0.0, -t, p, -y, -r]);
+        }
         if game.frozen && std::env::var("FARFALL_BENCH_LAND").is_ok() {
             game.toggle_landing();
             game.touchdown = landing::predict(&game.params, &game.state.ship, game.state.time_s);
@@ -5691,6 +5724,8 @@ impl App {
         let Some(sample) = game.stick.poll() else {
             game.menu.set_stick(None);
             game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
             game.stick_fire = false;
             return;
         };
@@ -5714,18 +5749,27 @@ impl App {
         if let Some(w) = game.wizard.as_mut() {
             w.feed(sample);
             game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
             game.stick_fire = false;
             return;
         }
         let map = game.settings.stick;
         if !map.enabled {
             game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
             game.stick_fire = false;
             return;
         }
         let axes = map.body_axes(&sample);
         game.input.set_stick(axes);
         game.stick_fire = map.fire.is_some_and(|b| sample.button(b));
+        // The throttle's gestures: the lever hard back holds the air
+        // brake; a slam forward is two seconds of chaos drive.
+        let t = game.started.elapsed().as_secs_f64();
+        let (gesture_brake, gesture_hyper) = game.stick_gestures.step(&map, &sample, t);
+        game.input.set_stick_held(gesture_brake, gesture_hyper);
         // A flight-log line while the stick is doing something, a
         // second apart: the evidence that the map is the right way up.
         if game.stick_log > 0 {

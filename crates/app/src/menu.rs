@@ -264,6 +264,18 @@ pub const HELP: &[HelpGroup] = &[
                 "DROP OUT OF WARP",
                 "CUT THE DRIVE AT ONCE, LEAVING AN AFTER-IMAGE OF THE SHIP BEHIND.",
             ),
+            fixed(
+                "LEVER BACK",
+                "AIR BRAKE",
+                "HOTAS: HOLD BRAKE",
+                "THE THROTTLE LEVER HARD BACK HOLDS THE AIR BRAKE, LIKE HOLDING SPACE (STICK PAGE).",
+            ),
+            fixed(
+                "LEVER SLAM",
+                "CHAOS BURST",
+                "HOTAS: 2S OF DRIVE",
+                "SLAM THE LEVER FORWARD AND THE CHAOS DRIVE FIRES FOR TWO SECONDS. A SMOOTH PUSH NEVER DOES.",
+            ),
             named(
                 Named::Engage,
                 "FIRE WORMHOLE DRIVE",
@@ -442,6 +454,8 @@ enum Item {
     CockpitGlow,
     CockpitHull,
     CockpitRes,
+    /// The console's control column mirrors the live stick demand.
+    CockpitStick,
     FpsFloor,
     Sky,
     /// The ground's live relief, the cloud deck, the night side's cities.
@@ -556,6 +570,7 @@ impl Item {
             Item::CockpitGlow => "CABIN GLOW",
             Item::CockpitHull => "CABIN METAL",
             Item::CockpitRes => "CABIN DETAIL",
+            Item::CockpitStick => "CABIN STICK",
             Item::FpsFloor => "FPS FLOOR",
             Item::Sky => "SKY",
             Item::TerrainDetail => "TERRAIN DETAIL",
@@ -685,6 +700,9 @@ impl Item {
             Item::Scale => "THE WORLD IS DRAWN AT THIS SHARE OF THE SCREEN'S SIZE; THE GLASS STAYS SHARP.",
             Item::AutoScale => "LET THE RENDER SCALE GOVERN ITSELF DOWN TO HOLD THE FPS FLOOR.",
             Item::Vsync => "WAIT FOR THE DISPLAY EACH FRAME: NO TEARING, A LITTLE LAG.",
+            Item::CockpitStick => {
+                "THE STICK AND LEVER ON THE CONSOLE MOVE WITH YOUR OWN DEMAND - HOTAS OR KEYS."
+            }
             Item::Quit => "LEAVE THE GAME. EVERYTHING IS ALREADY SAVED.",
             Item::HoopSize => "HOW BIG THE PATH'S HOOPS ARE.",
             Item::LandingHoops => "HOW FAR APART THE HOOPS SIT IN LANDING MODE.",
@@ -793,6 +811,7 @@ impl Item {
             Item::CockpitGlow => one("cockpit.glow"),
             Item::CockpitHull => one("cockpit.hull"),
             Item::CockpitRes => one("cockpit.res"),
+            Item::CockpitStick => one("cockpit.stick"),
             Item::FpsFloor => one("graphics.fps-floor"),
             Item::Sky => one("graphics.sky"),
             Item::Flare => one("graphics.flare"),
@@ -897,6 +916,7 @@ impl Item {
             Item::LandingAssist => if s.landing_assist { "ON" } else { "OFF" }.to_string(),
             Item::LandingPad => if s.landing_pad { "ON" } else { "OFF" }.to_string(),
             Item::CockpitFrame => if s.cockpit_frame { "ON" } else { "OFF" }.to_string(),
+            Item::CockpitStick => if s.cockpit_stick { "ON" } else { "OFF" }.to_string(),
             Item::CockpitGlow => format!("{:.2}X", s.cockpit_glow),
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
@@ -1229,6 +1249,7 @@ impl Menu {
                 Item::CockpitFrame,
                 Item::CockpitGlow,
                 Item::CockpitHull,
+                Item::CockpitStick,
                 Item::Shield,
                 Item::HullSound,
                 Item::Slot(Instrument::Trajectory),
@@ -1666,6 +1687,10 @@ impl Menu {
             }
             Item::CockpitFrame => {
                 s.cockpit_frame = !s.cockpit_frame;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::CockpitStick => {
+                s.cockpit_stick = !s.cockpit_stick;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::CockpitGlow => {

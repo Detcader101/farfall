@@ -233,6 +233,8 @@ pub struct Settings {
     pub cockpit_hull: f32,
     /// The cabin is drawn at this fraction of the scene's size.
     pub cockpit_res: f32,
+    /// The control column on the console mirrors the live stick demand.
+    pub cockpit_stick: bool,
     /// The least frame rate the pilot will have, or 0 for no floor.
     pub fps_floor: f32,
     /// The daytime sky's strength low down, 1 = stock.
@@ -409,6 +411,7 @@ impl Default for Settings {
             cockpit_glow: 1.0,
             cockpit_hull: 0.92,
             cockpit_res: 0.5,
+            cockpit_stick: true,
             fps_floor: 60.0,
             sky: 1.0,
             terrain_detail: 1.0,
@@ -523,6 +526,7 @@ pub const KEYS: &[&str] = &[
     "cockpit.glow",
     "cockpit.hull",
     "cockpit.res",
+    "cockpit.stick",
     "ui.gauges",
     "ui.gauge-style",
     "ui.guide",
@@ -554,6 +558,8 @@ pub const KEYS: &[&str] = &[
     "stick.deadzone",
     "stick.curve",
     "stick.throttle-zero",
+    "stick.throttle-brake",
+    "stick.throttle-jump",
     "stick.layout",
     "stick.fire",
     "stick.button.*",
@@ -1094,6 +1100,7 @@ impl Settings {
                         }
                     }
                 }
+                "cockpit.stick" => s.cockpit_stick = matches!(v, "on" | "true" | "1"),
                 "cockpit.res" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if COCKPIT_RES_CHOICES.contains(&f) {
@@ -1285,6 +1292,10 @@ impl Settings {
         out.push_str(&format!("cockpit.glow = {:.2}\n", self.cockpit_glow));
         out.push_str(&format!("cockpit.hull = {:.2}\n", self.cockpit_hull));
         out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
+        out.push_str(&format!(
+            "cockpit.stick = {}\n",
+            if self.cockpit_stick { "on" } else { "off" }
+        ));
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
         out.push_str(&format!(
@@ -1555,6 +1566,7 @@ mod tests {
         s.cockpit_glow = 1.5;
         s.cockpit_hull = 0.25;
         s.cockpit_res = 1.0;
+        s.cockpit_stick = false;
         s.fps_floor = 90.0;
         s.sky = 1.5;
         s.flare = 0.5;

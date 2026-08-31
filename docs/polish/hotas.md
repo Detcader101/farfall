@@ -150,6 +150,31 @@ has only ever read full rail contributes nothing until first seen inside
 throttle inherits the same guard, which also means a lever parked at a rail
 cannot slam the ship at spawn.
 
+## The three follow-ons (Jay Jay, mid-pass)
+
+1. **The cabin's stick answers the HOTAS.** The console's control column
+   (already in cockpit.wgsl) now rides the live demand: the column leans
+   with pitch/roll, the grip twists with yaw, the left lever slides with the
+   throttle — from the summed demand (HOTAS or keys), through one new lane
+   on the cabin uniforms (`CabinUniforms::with_stick`, quantised 0.05 so a
+   settling ramp doesn't re-march the cabin every frame). Setting
+   `cockpit.stick` (CABIN page row, described). **cockpit.wgsl touched only
+   in the interior console block** — the stick/grip/throttle SDF lines
+   inside `map()` (the region commented "The stick between the knees…"),
+   plus one `stick: vec4` field appended to the `Cockpit` uniform struct
+   after `eye` — for the cockpit-arms agent's merge.
+2. **Lever hard back = air brake** (`stick.throttle-brake`, ON, STICK row +
+   description): bottom ~5% of the lever's true travel holds the brake;
+   centre-zero maps only; the calibration gate keeps an untouched railed
+   lever out of it. Test `the_lever_hard_back_holds_the_air_brake`.
+3. **Lever slam = 2 s chaos burst** (`stick.throttle-jump`, ON, STICK row +
+   description): ≥70% of travel forward inside 250 ms ending past halfway
+   holds the chaos drive for exactly two seconds (the same held-state as H;
+   charge/entropy rules untouched); a smooth push can never fire it, and
+   holding forward does not re-fire. Tests `a_smooth_throttle_push_never_jumps`,
+   `a_slam_jumps_for_two_seconds_and_releases`. Both gestures are HELP
+   entries under DRIVES (LEVER BACK / LEVER SLAM).
+
 ## The merge with fable/polish (74347db, eight branches in)
 
 Done in this worktree, `fable/polish` merged INTO `fable/hotas`, per the lead.
