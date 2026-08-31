@@ -44,6 +44,16 @@ impl Weapon {
             Weapon::Rail => "RAIL",
         }
     }
+    /// The settings/world-file key.
+    pub fn key(self) -> &'static str {
+        match self {
+            Weapon::Cannon => "cannon",
+            Weapon::Rail => "rail",
+        }
+    }
+    pub fn from_key(k: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|w| w.key() == k)
+    }
     /// Rounds a second at full power (the rail's is its charge, see
     /// [`RAIL_CHARGE_S`]).
     pub fn rate_hz(self) -> f64 {

@@ -56,6 +56,23 @@ pub enum Mood {
     Hostile,
 }
 
+impl Mood {
+    /// The world-file key.
+    pub fn key(self) -> &'static str {
+        match self {
+            Mood::Hail => "hail",
+            Mood::Hostile => "hostile",
+        }
+    }
+    pub fn from_key(k: &str) -> Option<Self> {
+        Some(match k {
+            "hail" => Mood::Hail,
+            "hostile" => Mood::Hostile,
+            _ => return None,
+        })
+    }
+}
+
 /// Where a mimic is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -67,6 +84,29 @@ pub enum Phase {
     Leaving,
     /// Dead: dark, tumbling, salvage taken.
     Wreck,
+}
+
+impl Phase {
+    /// The world-file key.
+    pub fn key(self) -> &'static str {
+        match self {
+            Phase::Revealing => "revealing",
+            Phase::Hailing => "hailing",
+            Phase::Attacking => "attacking",
+            Phase::Leaving => "leaving",
+            Phase::Wreck => "wreck",
+        }
+    }
+    pub fn from_key(k: &str) -> Option<Self> {
+        Some(match k {
+            "revealing" => Phase::Revealing,
+            "hailing" => Phase::Hailing,
+            "attacking" => Phase::Attacking,
+            "leaving" => Phase::Leaving,
+            "wreck" => Phase::Wreck,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -142,6 +182,71 @@ impl Mimic {
             (_, Mood::Hail) => 0,
         }
     }
+
+    /// Every field a save keeps. Takes `self` by value (cheap: `Mimic` is
+    /// `Copy`) so it can be passed straight to `Iterator::map`.
+    pub fn to_save(self) -> MimicSave {
+        MimicSave {
+            id: self.id,
+            pos: self.pos,
+            vel: self.vel,
+            orient: self.orient,
+            spin: self.spin,
+            born_s: self.born_s,
+            phase: self.phase,
+            phase_s: self.phase_s,
+            mood: self.mood,
+            wound_j: self.wound_j,
+            effort: self.effort,
+            seed: self.seed,
+        }
+    }
+
+    /// Rebuilt from a save at sim time `t_s`. The private timers (its
+    /// next shot, a burst mid-flight) are not persisted: they get the
+    /// same short grace a freshly-revealed ship does, so nothing fires
+    /// the instant the world comes back.
+    pub fn from_save(s: &MimicSave, t_s: f64) -> Self {
+        Self {
+            id: s.id,
+            pos: s.pos,
+            vel: s.vel,
+            orient: s.orient,
+            spin: s.spin,
+            born_s: s.born_s,
+            phase: s.phase,
+            phase_s: s.phase_s,
+            mood: s.mood,
+            wound_j: s.wound_j,
+            effort: s.effort,
+            seed: s.seed,
+            next_shot_s: t_s + 1.0,
+            burst_left: 0,
+        }
+    }
+}
+
+/// A mimic's persisted shape: every field a save keeps, as plain public
+/// data — so `save.rs` can build one from parsed text without reaching
+/// into [`Mimic`]'s private timers. Deliberately keeps the rock `id` too
+/// (beyond the sim-visible fields), because a mimic still `Revealing`
+/// when the world is saved needs it: [`Mimics::shroud_off`] matches on it
+/// to evict the shrouding rock from the belt once the reveal finishes,
+/// and without it that rock would linger after a resume.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MimicSave {
+    pub id: RockId,
+    pub pos: DVec3,
+    pub vel: DVec3,
+    pub orient: DQuat,
+    pub spin: DVec3,
+    pub born_s: f64,
+    pub phase: Phase,
+    pub phase_s: f64,
+    pub mood: Mood,
+    pub wound_j: f64,
+    pub effort: f32,
+    pub seed: f32,
 }
 
 /// A slug from a mimic's guns.

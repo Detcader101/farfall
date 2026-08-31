@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -49,6 +50,57 @@ pub fn storage_set(key: &str, value: &str) {
     }
 }
 
+pub fn storage_remove(key: &str) {
+    if let Some(s) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = s.remove_item(key);
+    }
+}
+
+/// Save-on-hide: a tab can vanish (backgrounded on mobile, closed) with
+/// no `beforeunload`/`unload` ever firing, so `pagehide` and a hidden
+/// `visibilitychange` are the only signals the web build can rely on that
+/// the pilot is leaving. Registered once, for the page's life — the
+/// closures are deliberately leaked (`forget`), which is the standard
+/// wasm-bindgen pattern for a listener meant to outlive its call frame.
+fn install_autosave_listeners() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let on_pagehide = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+        save_world_now();
+    });
+    let _ =
+        window.add_event_listener_with_callback("pagehide", on_pagehide.as_ref().unchecked_ref());
+    on_pagehide.forget();
+
+    if let Some(doc) = window.document() {
+        let on_visibility = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+            let hidden = web_sys::window()
+                .and_then(|w| w.document())
+                .is_some_and(|d| d.visibility_state() == web_sys::VisibilityState::Hidden);
+            if hidden {
+                save_world_now();
+            }
+        });
+        let _ = doc.add_event_listener_with_callback(
+            "visibilitychange",
+            on_visibility.as_ref().unchecked_ref(),
+        );
+        on_visibility.forget();
+    }
+}
+
+/// The running app's world, saved right now if RESUME allows it.
+fn save_world_now() {
+    APP.with(|a| {
+        if let Some(app) = a.borrow().clone() {
+            if let Some(game) = app.borrow().game.as_ref() {
+                game.maybe_store_world();
+            }
+        }
+    });
+}
+
 /// The web app: the native one behind a shared handle, so the page's XR
 /// loop can reach it between winit's events.
 struct WebApp(Rc<RefCell<App>>);
@@ -84,6 +136,7 @@ pub fn run() {
     let event_loop = EventLoop::new().expect("event loop");
     let app = Rc::new(RefCell::new(App::default()));
     APP.with(|a| *a.borrow_mut() = Some(app.clone()));
+    install_autosave_listeners();
     event_loop.spawn_app(WebApp(app));
 }
 

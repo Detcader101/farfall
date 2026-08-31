@@ -79,6 +79,8 @@ pub enum MenuEvent {
     Quit,
     /// Close the menu and fire the wormhole drive at the plan.
     Engage,
+    /// Forget the saved world and stand back at the stock spawn.
+    NewGame,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +96,8 @@ enum Item {
     Scale,
     AutoScale,
     Vsync,
+    Resume,
+    NewGame,
     Quit,
     Bind(Action),
     BindNamed(Named),
@@ -170,6 +174,8 @@ impl Item {
             Item::Scale => "RENDER SCALE",
             Item::AutoScale => "AUTO SCALE",
             Item::Vsync => "VSYNC",
+            Item::Resume => "RESUME",
+            Item::NewGame => "NEW GAME",
             Item::Quit => "QUIT GAME",
             Item::Bind(a) => a.name(),
             Item::BindNamed(n) => n.name(),
@@ -241,6 +247,8 @@ impl Item {
             Item::Scale => format!("{:.0}%", s.scale * 100.0),
             Item::AutoScale => (if s.auto_scale { "ON" } else { "OFF" }).to_string(),
             Item::Vsync => (if s.vsync { "ON" } else { "OFF" }).to_string(),
+            Item::Resume => (if s.resume { "ON" } else { "OFF" }).to_string(),
+            Item::NewGame => String::new(),
             Item::Quit => String::new(),
             Item::Bind(a) => key_name(s.bindings.key_for(a)).to_string(),
             Item::BindNamed(n) => key_name(s.bindings.named(n)).to_string(),
@@ -484,6 +492,8 @@ impl Menu {
                 Item::NebulaHue,
                 Item::NebulaHue2,
                 Item::NebulaSpread,
+                Item::Resume,
+                Item::NewGame,
                 Item::Quit,
             ],
             Page::Controls => {
@@ -690,6 +700,10 @@ impl Menu {
                     self.open = false;
                     MenuEvent::Engage
                 }
+                Item::NewGame => {
+                    self.open = false;
+                    MenuEvent::NewGame
+                }
                 i if i.rebindable() => {
                     self.rebinding = true;
                     MenuEvent::Nothing
@@ -734,6 +748,10 @@ impl Menu {
             }
             Item::Vsync => {
                 s.vsync = !s.vsync;
+                MenuEvent::Changed(Change::Graphics)
+            }
+            Item::Resume => {
+                s.resume = !s.resume;
                 MenuEvent::Changed(Change::Graphics)
             }
             Item::Slot(i) => {
@@ -1183,7 +1201,7 @@ impl Menu {
                 s.hoop_size = next;
                 MenuEvent::Changed(Change::Layout)
             }
-            Item::Quit | Item::Bind(_) | Item::BindNamed(_) => MenuEvent::Nothing,
+            Item::Quit | Item::NewGame | Item::Bind(_) | Item::BindNamed(_) => MenuEvent::Nothing,
         }
     }
 

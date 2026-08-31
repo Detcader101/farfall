@@ -274,6 +274,38 @@ atmosphere scale height exaggerated (H = 2 km) for visual depth. Low orbit ≈ 7
 period ≈ 8.5 min — an orbit is a gameplay beat, not an afternoon. The *numbers* are
 presets; the *models* are scale-free, and the scale-invariance test proves it.
 
+### 7.6 Persistence — the world file
+
+The sim state is plain data and hashable (§7.1, §7.4); persistence is the
+cheapest consequence of that and the M3 slice's "save exists" line item. The
+game writes **`~/.farfall/world.cfg`** (the browser: localStorage `farfall.world`)
+on quit, on window close, on the page being hidden, and every 30 s of sim time;
+on launch it restores it, so you wake where you left off — in the belt, on the
+Moon, mid-decaying-orbit.
+
+- **Format**: `key = value` text like the settings file, no format crate.
+  Floats are written in the shortest form that parses back to the same bits, so
+  `parse(render(w)) == w` bit for bit — proven by the state hash.
+- **Sealed by the hash**: the file carries `sim::state_hash` of the world it
+  holds. A file whose hash does not match its contents — hand-edited, truncated,
+  from a different build of the physics — is refused *whole*, never half-applied;
+  the stock orbit stands and the log says why.
+- **What it holds**: the whole `WorldState` (which alone regenerates the belt,
+  the ring's phase, every body's position and which rocks are ships), plus the
+  app-side ledgers that are not a function of it: the flight computer, the
+  atmosphere, the chaos drive's entropy *and its hidden slip threshold*, the
+  guns' ammo/heat/jams, the HAUL, hull integrity, the dead and wounded rocks,
+  revealed mimics and the live ships, the game's one PRNG seed, the odometer.
+- **What it never holds**: anything wall-clock (fades, shake, after-images), a
+  warp in flight, a HOLD lock, a touchdown prediction, the settings (their own
+  file). Those reconverge or re-acquire within a second of resuming.
+- **Determinism**: a world resumed from its file runs on bit for bit as the
+  uninterrupted one would have — the invariant test for this feature.
+- **Never during a bench**: `FARFALL_BENCH*` runs neither read nor write it, so
+  scene captures and golden images stay reproducible. `RESUME` (menu, `game.resume`)
+  off or `FARFALL_RESUME=0` does the same for a session. `NEW GAME` (menu)
+  forgets the file and stands the ship at the stock orbit.
+
 ## 8. Testing doctrine (P6)
 
 | Layer | What | Where it runs |

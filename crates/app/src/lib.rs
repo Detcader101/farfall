@@ -20,6 +20,7 @@ mod look;
 mod map;
 mod menu;
 mod mimic;
+mod save;
 mod settings;
 mod shake;
 mod warp;
@@ -149,6 +150,12 @@ fn apply_menu_event(
             game.settings.save();
             game.engage_warp();
         }
+        MenuEvent::NewGame => {
+            save::forget();
+            game.reset_world();
+            game.mimics.line = Some(("NEW GAME".to_string(), game.state.time_s + 3.0));
+            log::info!("world: new game, forgot the save");
+        }
         MenuEvent::Closed | MenuEvent::Nothing => {}
     }
 }
@@ -223,6 +230,88 @@ fn slot_of(
 /// ease off once the field is down.
 const HYPER_STRAIN_S: f32 = 40.0;
 const HYPER_EASE_S: f32 = 90.0;
+
+/// How often the world is autosaved, in sim seconds (never wall-clock: a
+/// paused/frozen session should not burn through them).
+const AUTOSAVE_INTERVAL_S: f64 = 30.0;
+
+/// Whether this run may touch the world file at all — shared by the load
+/// in `App::init_gpu`, the autosave in `tick`, and the store in
+/// `log_exit`. Pure, so it is trivial to test exhaustively: `frozen` or a
+/// bench spawn override (`FARFALL_BENCH_POS`/`ALT`/`VEL`/`LOOK`/`ROLL`)
+/// always refuses, `env_resume` of "0"/"off"/"false" always refuses, and
+/// otherwise it is exactly the RESUME setting. There is no environment
+/// value that forces it on over a pilot's RESUME OFF.
+fn resume_allowed(
+    settings_resume: bool,
+    frozen: bool,
+    env_resume: Option<&str>,
+    bench_env_present: bool,
+) -> bool {
+    if frozen || bench_env_present {
+        return false;
+    }
+    if matches!(env_resume, Some("0" | "off" | "false")) {
+        return false;
+    }
+    settings_resume
+}
+
+/// The benchmark-only spawn overrides that make a run's start unlike a
+/// real one — `FARFALL_BENCH` itself is `Game::frozen`, tracked
+/// separately.
+fn bench_spawn_env_present() -> bool {
+    [
+        "FARFALL_BENCH_POS",
+        "FARFALL_BENCH_ALT",
+        "FARFALL_BENCH_VEL",
+        "FARFALL_BENCH_LOOK",
+        "FARFALL_BENCH_ROLL",
+    ]
+    .iter()
+    .any(|k| std::env::var_os(k).is_some())
+}
+
+/// `FARFALL_RESUME`, read fresh each time so a profiler's override always
+/// wins without a restart.
+fn env_resume() -> Option<String> {
+    std::env::var("FARFALL_RESUME").ok()
+}
+
+/// Whether `FARFALL_BENCH_SAVE`/`FARFALL_BENCH_RESUME` may act at all:
+/// only ever during a bench, and only when a path was actually given.
+/// Pure, tested exhaustively the same way as [`resume_allowed`] — the
+/// real read of the env var happens at the (untested) call site, this is
+/// just the decision.
+fn bench_path_action_allowed(bench: bool, path_env: Option<&std::ffi::OsStr>) -> bool {
+    bench && path_env.is_some()
+}
+
+/// `FARFALL_BENCH_SAVE=<path>`: bench-only, for e2e verification — write
+/// the world file to this EXACT path (never `~/.farfall`) at the bench's
+/// own exit, so a scripted run produces a real sealed save of a real
+/// parked world with no interactive window. Called from both of
+/// `redraw`'s bench-exit sites (the headless/occluded capture path and
+/// the normal end-of-frame path).
+fn bench_save_world(game: &Game, bench: bool) {
+    let path_env = std::env::var_os("FARFALL_BENCH_SAVE");
+    if !bench_path_action_allowed(bench, path_env.as_deref()) {
+        return;
+    }
+    game.snapshot()
+        .store_to(std::path::Path::new(&path_env.unwrap()));
+}
+
+/// `T+HH:MM:SS` from a sim time in seconds, for the RESUMED readout.
+fn format_hms(total_s: f64) -> String {
+    let total = total_s.max(0.0) as u64;
+    format!(
+        "{:02}:{:02}:{:02}",
+        total / 3600,
+        (total % 3600) / 60,
+        total % 60
+    )
+}
 
 /// How unstable the flight is at this much of the way to the slip: calm
 /// to halfway, then shaking harder and harder.
@@ -416,6 +505,23 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_MUTE=1         (no audio stream at all)
 ///   FARFALL_BENCH_WARP=s   (benchmark only: engage the wormhole drive s
 ///                           seconds in, so the sequence can be captured)
+///   FARFALL_BENCH_SAVE=path (benchmark only: write the world file to this
+///                           EXACT path, never ~/.farfall, at the bench's
+///                           own exit — a real sealed save of a real
+///                           parked world, for scripted e2e verification)
+///   FARFALL_BENCH_RESUME=path (benchmark only: load and restore a world
+///                           file from this EXACT path, never ~/.farfall,
+///                           through the same seal check as a real
+///                           resume; a tampered file is refused and
+///                           logged, and the bench stays at the stock
+///                           orbit, same as any other refusal. The bench
+///                           stays frozen either way.)
+///   FARFALL_RESUME=0|off|false (turn RESUME off for this run only, whatever
+///                           the setting says: the world file is neither
+///                           read nor written. There is no value that
+///                           forces it ON over the setting. Unrelated to
+///                           FARFALL_BENCH_SAVE/RESUME above, which never
+///                           touch ~/.farfall regardless of this.)
 ///   FARFALL_SKIP=a,b       (profiling only: leave out passes by name —
 ///                           starfield, bodies, planet, plasma, trajectory, cockpit, gauge,
 ///                           hud, blit —
@@ -1236,6 +1342,8 @@ struct Game {
     /// is a real settings panel.
     appearance: PlanetAppearance,
     appearance_index: usize,
+    /// Sim time of the next autosave (see [`AUTOSAVE_INTERVAL_S`]).
+    next_save_s: f64,
 }
 
 impl Game {
@@ -1272,6 +1380,7 @@ impl Game {
             }
         }
         let now = Instant::now();
+        let spawn_time_s = state.time_s;
         Self {
             vr: None,
             vr_eye: 0,
@@ -1339,6 +1448,7 @@ impl Game {
             strike_rng: 0x9E37_79B9,
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
+            next_save_s: spawn_time_s + AUTOSAVE_INTERVAL_S,
         }
     }
 
@@ -1350,6 +1460,184 @@ impl Game {
         self.look.sensitivity = settings.look_sensitivity;
         // The guns fire from whatever the bay mounted.
         self.arms.mounts = settings.mounts;
+        // These used to be pushed only when the bay's dropdown changed a
+        // mount (`bay_click`), so a non-default value loaded straight
+        // from the settings file had no effect until the bay was opened.
+        self.mimics.chance = settings.mimics_chance;
+        self.mimics.hostility = settings.mimics_hostility;
+        self.haul.yield_ = settings.arms_ore;
+    }
+
+    /// Every field the world file keeps, as of right now.
+    fn snapshot(&self) -> save::Save {
+        save::Save {
+            time_s: self.state.time_s,
+            ship_pos: self.state.ship.pos_m,
+            ship_vel: self.state.ship.vel_mps,
+            ship_orient: self.state.ship.orient,
+            ship_spin: self.state.ship.ang_vel_radps,
+            assist: self.assist,
+            landing: self.landing,
+            appearance_index: self.appearance_index,
+            hyper_strain: self.hyper_strain,
+            slip_at: self.slip_at,
+            jumps: self.jumps,
+            arms_selected: self.arms.selected,
+            arms_ammo: self.arms.ammo,
+            arms_jammed: self.arms.jammed,
+            arms_heat: self.arms.heat,
+            arms_charge: self.arms.charge,
+            haul_tonnes: self.haul.tonnes,
+            hull: self.mimics.hull,
+            strikes: self.strikes,
+            strike_rng: self.strike_rng,
+            odometer_m: self.odometer_m,
+            hoops_passed: self.hoops_passed,
+            belt_dead: self.belt.dead.clone(),
+            belt_wounds: self.belt.wounds.clone(),
+            mimics_revealed: self.mimics.revealed.clone(),
+            mimics: self
+                .mimics
+                .ships
+                .iter()
+                .copied()
+                .map(mimic::Mimic::to_save)
+                .collect(),
+        }
+    }
+
+    /// Take on a save: the sim state, and every app-side field a save
+    /// keeps. Everything NOT in that list — the accumulator, the warp
+    /// sequence, a ghost, an open hold lock, every fade/shake integrator,
+    /// the settings themselves — is reset instead, exactly as a fresh
+    /// [`Game::new`] would leave it, because none of it is a fact about
+    /// the world: it is mid-frame or mid-gesture presentation state that
+    /// means nothing once the session that produced it is gone.
+    fn restore(&mut self, save: &save::Save) {
+        self.state = sim::WorldState {
+            time_s: save.time_s,
+            ship: sim::ShipState {
+                pos_m: save.ship_pos,
+                vel_mps: save.ship_vel,
+                orient: save.ship_orient,
+                ang_vel_radps: save.ship_spin,
+            },
+        };
+        self.assist = save.assist;
+        self.landing = save.landing;
+        self.appearance_index = save
+            .appearance_index
+            .min(PlanetAppearance::PRESETS.len() - 1);
+        self.appearance = PlanetAppearance::PRESETS[self.appearance_index];
+        self.hyper_strain = save.hyper_strain;
+        self.slip_at = save.slip_at;
+        self.jumps = save.jumps;
+        self.arms.selected = save.arms_selected;
+        self.arms.ammo = save.arms_ammo;
+        self.arms.jammed = save.arms_jammed;
+        self.arms.heat = save.arms_heat;
+        self.arms.charge = save.arms_charge;
+        self.haul.tonnes = save.haul_tonnes;
+        self.haul.last = None;
+        self.mimics.hull = save.hull;
+        self.strikes = save.strikes;
+        self.strike_size = 0.0;
+        self.strike_rng = save.strike_rng;
+        self.odometer_m = save.odometer_m;
+        self.hoops_passed = save.hoops_passed;
+        self.belt.rocks.clear();
+        self.belt.hits.clear();
+        self.belt.dead = save.belt_dead.clone();
+        self.belt.wounds = save.belt_wounds.clone();
+        self.mimics.revealed = save.mimics_revealed.clone();
+        self.mimics.ships = save
+            .mimics
+            .iter()
+            .map(|m| mimic::Mimic::from_save(m, save.time_s))
+            .collect();
+        self.mimics.slugs.clear();
+        self.mimics.own_hits.clear();
+
+        // Reset: mid-frame and mid-gesture presentation state, none of it
+        // a fact about the world.
+        let now = Instant::now();
+        self.started = now;
+        self.last_frame = now;
+        self.accumulator = 0.0;
+        self.warp = Warp::new();
+        self.hyper = 0.0;
+        self.hyper_was = false;
+        self.bench_hyper = false;
+        self.pending_slip = false;
+        self.ghost = None;
+        self.impacts.clear();
+        self.touchdown = None;
+        self.hold.release();
+        self.frozen = false;
+        self.gauge_fade = GaugeFade::new();
+        self.alt_fade = AltitudeFade::new();
+        self.holo_sway = HoloSway::new();
+        self.shake = shake::Shake::new(1.0);
+        self.mach_alert = MachAlert::new();
+        self.horizon_fade = HorizonFade::new();
+        self.g_fade = GForceFade::new();
+        self.felt_g = 0.0;
+        self.felt_g_body = [0.0; 3];
+        self.next_save_s = save.time_s + AUTOSAVE_INTERVAL_S;
+
+        self.mimics.line = Some((
+            format!("RESUMED  T+{}", format_hms(save.time_s)),
+            save.time_s + 4.0,
+        ));
+        log::info!(
+            "world: resumed t={:.1}s hash={:#018x}",
+            self.state.time_s,
+            sim::state_hash(&self.state)
+        );
+    }
+
+    /// NEW GAME and the world's first spawn share this: everything about
+    /// the sim and the gameplay state goes back to a fresh start.
+    /// `settings`, `look`, the menus (and where they are open to) and the
+    /// mouse/window bookkeeping are kept — only the world itself is new.
+    fn reset_world(&mut self) {
+        let settings = self.settings;
+        let look = self.look;
+        let menu = self.menu;
+        let map_panel = self.map_panel;
+        let bay_panel = self.bay_panel;
+        let window_size = self.window_size;
+        let cursor = self.cursor;
+        let left_down = self.left_down;
+        let vr = self.vr;
+        let vr_eye = self.vr_eye;
+
+        *self = Game::new();
+        self.apply_settings(settings);
+        self.look = look;
+        self.menu = menu;
+        self.map_panel = map_panel;
+        self.bay_panel = bay_panel;
+        self.window_size = window_size;
+        self.cursor = cursor;
+        self.left_down = left_down;
+        self.vr = vr;
+        self.vr_eye = vr_eye;
+    }
+
+    /// Write the world file, if RESUME allows it right now. Shared by the
+    /// autosave (`tick`), every real exit (`log_exit`), and the web
+    /// build's `pagehide`/hidden-`visibilitychange` listeners — a tab can
+    /// vanish with no exit event at all.
+    fn maybe_store_world(&self) {
+        if resume_allowed(
+            self.settings.resume,
+            self.frozen,
+            env_resume().as_deref(),
+            bench_spawn_env_present(),
+        ) {
+            self.snapshot().store();
+        }
     }
 
     /// The Sun and the Moon as the camera sees them: where the sim has them
@@ -3052,6 +3340,15 @@ impl Game {
             .max(self.hold_effort()) as f32;
         let alpha = 1.0 - (-(frame_dt as f32) / FOV_RESPONSE_S).exp();
         self.effort += (target - self.effort) * alpha;
+
+        // Autosave: every 30 s of SIM time (not wall clock), so a crash
+        // costs at most that much. Never reached while a panel is open or
+        // the sim is frozen — both return earlier in this function, which
+        // is exactly when this should not run anyway.
+        if self.state.time_s >= self.next_save_s {
+            self.next_save_s = self.state.time_s + AUTOSAVE_INTERVAL_S;
+            self.maybe_store_world();
+        }
     }
 
     /// How much atmosphere surrounds the hull, 0 (vacuum) to 1 (thick air).
@@ -3307,6 +3604,7 @@ impl Game {
             if self.assist { "on" } else { "off" },
             sim::state_hash(&self.state),
         );
+        self.maybe_store_world();
     }
 
     /// Camera pose for this frame: ride the hull, look down the nose. The view
@@ -3924,6 +4222,42 @@ impl App {
         let mut settings = settings;
         settings.msaa = msaa_in_use;
         game.apply_settings(settings);
+        // RESUME: pick up the last quit's world, unless this is a bench
+        // (a scene capture must stay reproducible — it must never see a
+        // resumed world) or the pilot/profiler has turned it off.
+        if resume_allowed(
+            game.settings.resume,
+            game.frozen,
+            env_resume().as_deref(),
+            bench_spawn_env_present(),
+        ) {
+            if let Some(s) = save::load() {
+                game.restore(&s);
+            }
+        }
+        // FARFALL_BENCH_RESUME=<path>: bench-only, for e2e verification —
+        // load a save from an EXPLICIT path (never ~/.farfall) through
+        // the same parse/seal check as a real resume, then keep the bench
+        // frozen (restore itself always clears `frozen`, since a real
+        // resume can only ever happen when it was already false). A
+        // tampered or unreadable file is refused and logged; the bench
+        // simply stays at the stock orbit, same as any other refusal.
+        let bench_resume_path = std::env::var_os("FARFALL_BENCH_RESUME");
+        if bench_path_action_allowed(game.frozen, bench_resume_path.as_deref()) {
+            let bench_resume_path = std::path::PathBuf::from(bench_resume_path.unwrap());
+            match save::load_from(&bench_resume_path) {
+                Some(s) => {
+                    game.restore(&s);
+                    game.frozen = true;
+                    log::info!("bench: resumed from {}", bench_resume_path.display());
+                }
+                None => log::warn!(
+                    "bench: FARFALL_BENCH_RESUME {} refused (missing, unreadable, \
+                     or failed validation)",
+                    bench_resume_path.display()
+                ),
+            }
+        }
         game.menu.set_msaa_supported(&msaa_supported);
         if game.frozen && std::env::var("FARFALL_BENCH_MAP").is_ok() {
             game.toggle_map();
@@ -4556,6 +4890,7 @@ fn redraw(
                 }
                 if t > gpu.cfg.bench_seconds {
                     if let Some(el) = event_loop {
+                        bench_save_world(game, gpu.cfg.bench);
                         el.exit();
                     }
                 }
@@ -4907,6 +5242,7 @@ fn redraw(
         if t > gpu.cfg.bench_seconds {
             log::info!("benchmark complete, exiting");
             if let Some(el) = event_loop {
+                bench_save_world(game, gpu.cfg.bench);
                 el.exit();
             }
         }
@@ -5850,5 +6186,272 @@ mod tests {
     #[test]
     fn action_count_matches_bindings() {
         assert_eq!(Action::COUNT, 12);
+    }
+
+    /// A little of everything a save is meant to carry, mutated away from
+    /// `Game::new`'s defaults so a round trip that silently dropped a
+    /// field would show up as a mismatch rather than an accidental match.
+    fn mutate_for_save_tests(game: &mut Game) {
+        game.state.ship.pos_m = DVec3::new(1.0e7, 2.0e6, -3.0e5);
+        game.state.ship.vel_mps = DVec3::new(120.0, -5.0, 30.0);
+        game.state.ship.orient = DQuat::from_euler(glam::EulerRot::YXZ, 0.4, -0.2, 0.1).normalize();
+        game.state.ship.ang_vel_radps = DVec3::new(0.01, 0.0, -0.02);
+        game.state.time_s = 4_321.0;
+        game.assist = false;
+        game.landing = true;
+        game.appearance_index = 2;
+        game.hyper_strain = 0.35;
+        game.slip_at = 0.77;
+        game.jumps = 5;
+        game.arms.selected = arms::Weapon::Rail;
+        game.arms.ammo = [400, 10];
+        game.arms.jammed = [true, false];
+        game.arms.heat = [0.6, 0.2];
+        game.arms.charge = 0.9;
+        game.haul.tonnes = [1.0, 2.0, 3.0, 4.0];
+        game.mimics.hull = 0.6;
+        game.strikes = 9;
+        game.strike_rng = 0xDEAD_BEEF;
+        game.odometer_m = 12_345.0;
+        game.hoops_passed = 7;
+        game.belt.dead.insert((1, 2, 3, 0));
+        game.belt.wounds.insert((1, 2, 3, 0), 555.0);
+        game.mimics.revealed.insert((4, 5, 6, 1));
+        game.mimics.ships.push(mimic::Mimic::planted(
+            DVec3::new(10.0, 0.0, 0.0),
+            DVec3::new(1.0, 0.0, 0.0),
+            DQuat::IDENTITY,
+            game.state.time_s,
+            mimic::Phase::Hailing,
+            mimic::Mood::Hail,
+            0.42,
+        ));
+    }
+
+    #[test]
+    fn a_saved_world_comes_back_bit_for_bit() {
+        let mut game = Game::new();
+        mutate_for_save_tests(&mut game);
+
+        let saved = game.snapshot();
+        let parsed = save::Save::parse(&saved.render()).expect("a fresh snapshot always parses");
+        assert_eq!(parsed, saved, "render/parse must be lossless");
+
+        let mut resumed = Game::new();
+        resumed.restore(&parsed);
+
+        assert_eq!(
+            sim::state_hash(&resumed.state),
+            sim::state_hash(&game.state)
+        );
+        assert_eq!(resumed.assist, game.assist);
+        assert_eq!(resumed.landing, game.landing);
+        assert_eq!(resumed.appearance_index, game.appearance_index);
+        assert_eq!(resumed.hyper_strain, game.hyper_strain);
+        assert_eq!(resumed.slip_at, game.slip_at);
+        assert_eq!(resumed.jumps, game.jumps);
+        assert_eq!(resumed.arms.selected, game.arms.selected);
+        assert_eq!(resumed.arms.ammo, game.arms.ammo);
+        assert_eq!(resumed.arms.jammed, game.arms.jammed);
+        assert_eq!(resumed.arms.heat, game.arms.heat);
+        assert_eq!(resumed.arms.charge, game.arms.charge);
+        assert_eq!(resumed.haul.tonnes, game.haul.tonnes);
+        assert_eq!(resumed.mimics.hull, game.mimics.hull);
+        assert_eq!(resumed.strikes, game.strikes);
+        assert_eq!(resumed.strike_rng, game.strike_rng);
+        assert_eq!(resumed.odometer_m, game.odometer_m);
+        assert_eq!(resumed.hoops_passed, game.hoops_passed);
+        assert_eq!(resumed.belt.dead, game.belt.dead);
+        assert_eq!(resumed.belt.wounds, game.belt.wounds);
+        assert_eq!(resumed.mimics.revealed, game.mimics.revealed);
+        assert_eq!(resumed.mimics.ships.len(), game.mimics.ships.len());
+        assert_eq!(resumed.mimics.ships[0].pos, game.mimics.ships[0].pos);
+        assert_eq!(resumed.mimics.ships[0].phase, game.mimics.ships[0].phase);
+        assert_eq!(resumed.mimics.ships[0].mood, game.mimics.ships[0].mood);
+    }
+
+    #[test]
+    fn a_resumed_world_runs_on_exactly_as_the_uninterrupted_one() {
+        let mut original = Game::new();
+        let controls = sim::Controls {
+            thrust_body: DVec3::new(0.3, 0.0, -0.6),
+            torque_body: DVec3::new(0.1, -0.05, 0.02),
+            assist: true,
+            ..Default::default()
+        };
+        for _ in 0..50 {
+            original.state = sim::step(&original.params, &original.state, controls);
+        }
+        let saved = original.snapshot();
+
+        let mut resumed = Game::new();
+        resumed.restore(&saved);
+        assert_eq!(
+            sim::state_hash(&resumed.state),
+            sim::state_hash(&original.state),
+            "restore itself must be exact before either runs on"
+        );
+
+        for _ in 0..30 {
+            original.state = sim::step(&original.params, &original.state, controls);
+            resumed.state = sim::step(&resumed.params, &resumed.state, controls);
+        }
+        assert_eq!(
+            sim::state_hash(&resumed.state),
+            sim::state_hash(&original.state),
+            "the same controls from the same state must land the same hash"
+        );
+    }
+
+    #[test]
+    fn the_haul_the_hull_the_ammo_and_the_dead_rocks_survive_a_quit() {
+        let mut game = Game::new();
+        mutate_for_save_tests(&mut game);
+        let saved = game.snapshot();
+        let mut resumed = Game::new();
+        resumed.restore(&saved);
+
+        assert_eq!(resumed.haul.tonnes, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(resumed.mimics.hull, 0.6);
+        assert_eq!(resumed.arms.ammo, [400, 10]);
+        assert_eq!(resumed.arms.jammed, [true, false]);
+        assert!(resumed.belt.dead.contains(&(1, 2, 3, 0)));
+        assert_eq!(resumed.belt.wounds.get(&(1, 2, 3, 0)), Some(&555.0));
+    }
+
+    #[test]
+    fn a_warp_in_flight_and_a_hold_come_back_idle() {
+        let mut game = Game::new();
+        game.warp.engage();
+        assert!(game.warp.active(), "test setup: the drive is mid-sequence");
+        game.hold.target = Some((hold::Target::Rock((1, 2, 3, 0)), DVec3::new(10.0, 0.0, 0.0)));
+        assert!(game.hold.engaged(), "test setup: the lock is on");
+
+        let saved = game.snapshot();
+        let mut resumed = Game::new();
+        // Give it something to be idle FROM, so this is not just "a fresh
+        // Game::new() happens to be idle".
+        resumed.warp.engage();
+        resumed.hold.target = Some((hold::Target::Rock((9, 9, 9, 0)), DVec3::ZERO));
+        resumed.restore(&saved);
+
+        assert!(
+            !resumed.warp.active(),
+            "a warp in flight is never resumed mid-jump"
+        );
+        assert!(!resumed.hold.engaged(), "a hold lock never survives a quit");
+    }
+
+    #[test]
+    fn new_game_forgets_the_world_and_stands_at_the_stock_orbit() {
+        let fresh_hash = sim::state_hash(&Game::new().state);
+
+        let mut game = Game::new();
+        mutate_for_save_tests(&mut game);
+        assert_ne!(
+            sim::state_hash(&game.state),
+            fresh_hash,
+            "test setup: the mutation actually moved the ship"
+        );
+
+        game.reset_world();
+        assert_eq!(sim::state_hash(&game.state), fresh_hash);
+        assert_eq!(game.arms.ammo, arms::Arms::default().ammo);
+        assert!(game.belt.dead.is_empty());
+        assert!(game.mimics.ships.is_empty());
+    }
+
+    #[test]
+    fn new_game_keeps_the_pilots_settings_look_and_open_menu() {
+        let mut game = Game::new();
+        let mut settings = game.settings;
+        settings.fov = 95.0;
+        game.apply_settings(settings);
+        game.look.sensitivity = 3.0;
+        game.menu.toggle();
+        assert!(game.menu.open, "test setup: the menu is open");
+
+        game.reset_world();
+        assert_eq!(game.settings.fov, 95.0, "settings survive a new game");
+        assert_eq!(game.look.sensitivity, 3.0, "look survives a new game");
+        assert!(game.menu.open, "the open menu itself survives a new game");
+    }
+
+    #[test]
+    fn resume_off_or_a_bench_run_never_touches_the_world_file() {
+        assert!(resume_allowed(true, false, None, false));
+        assert!(!resume_allowed(false, false, None, false), "RESUME off");
+        assert!(!resume_allowed(true, true, None, false), "frozen (a bench)");
+        assert!(
+            !resume_allowed(true, false, None, true),
+            "a bench spawn override on its own, without FARFALL_BENCH itself"
+        );
+        for off in ["0", "off", "false"] {
+            assert!(!resume_allowed(true, false, Some(off), false), "{off}");
+        }
+        assert!(
+            resume_allowed(true, false, Some("1"), false),
+            "a non-off value neither forces it on nor off"
+        );
+        assert!(
+            !resume_allowed(false, false, Some("1"), false),
+            "the environment can turn resume off but never force it on over the setting"
+        );
+    }
+
+    #[test]
+    fn bench_save_and_resume_knobs_only_ever_act_during_a_bench() {
+        use std::ffi::OsStr;
+        let path = Some(OsStr::new("C:\\tmp\\w.cfg"));
+        assert!(bench_path_action_allowed(true, path), "bench + a path");
+        assert!(
+            !bench_path_action_allowed(false, path),
+            "a path with no bench running does nothing"
+        );
+        assert!(
+            !bench_path_action_allowed(true, None),
+            "a bench with no path set does nothing"
+        );
+        assert!(!bench_path_action_allowed(false, None));
+    }
+
+    /// The mechanics `FARFALL_BENCH_SAVE`/`FARFALL_BENCH_RESUME` lean on:
+    /// an explicit path, never `~/.farfall`, through the same seal as a
+    /// real resume — including refusing a tampered file at that path.
+    #[test]
+    fn store_to_and_load_from_an_explicit_path_round_trip_and_refuse_tampering() {
+        let mut game = Game::new();
+        mutate_for_save_tests(&mut game);
+        let path = std::env::temp_dir().join(format!(
+            "farfall-bench-save-test-{}.cfg",
+            std::process::id()
+        ));
+        let _cleanup = TempFileGuard(path.clone());
+
+        game.snapshot().store_to(&path);
+        let loaded = save::load_from(&path).expect("a freshly stored save loads back");
+        assert_eq!(loaded, game.snapshot());
+
+        let tampered = std::fs::read_to_string(&path).unwrap().replacen(
+            "world.version = 1",
+            "world.version = 99",
+            1,
+        );
+        std::fs::write(&path, tampered).unwrap();
+        assert_eq!(
+            save::load_from(&path),
+            None,
+            "a tampered file at an explicit path is refused, same as ~/.farfall"
+        );
+    }
+
+    /// Removes the file it names when dropped, so a test that writes to
+    /// the real filesystem (an explicit-path save, never `~/.farfall`)
+    /// never leaves anything behind, pass or fail.
+    struct TempFileGuard(std::path::PathBuf);
+    impl Drop for TempFileGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 }
