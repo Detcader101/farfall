@@ -1,4 +1,4 @@
-//! farfall-app — native shell (SPEC §5.1).
+//! farfall-ap — native shell (SPEC §5.1).
 //!
 //! Owns the window, the fixed-timestep accumulator (SPEC §7.2), and the
 //! sim → render translation. The sim is authoritative (SPEC §5.2): this loop
@@ -3808,6 +3808,13 @@ fn capture_final() -> bool {
     std::env::var("FARFALL_CAPTURE").as_deref() == Ok("final")
 }
 
+/// "x,y" as two integers, for FARFALL_WINDOW_POS.
+fn parse_vec2(s: &str) -> Option<(i32, i32)> {
+    let mut it = s.split(',').map(|p| p.trim().parse::<i32>().ok());
+    let x = it.next()??;
+    let y = it.next()??;
+    Some((x, y))
+}
 /// "x,y,z" → vector, for the bench knobs.
 fn parse_vec3(s: &str) -> Option<DVec3> {
     let mut it = s.split(',').map(|p| p.trim().parse::<f64>().ok());
@@ -3947,6 +3954,18 @@ impl App {
             attrs = attrs
                 .with_inner_size(winit::dpi::PhysicalSize::new(w, h))
                 .with_decorations(false);
+        }
+        if cfg.bench {
+            // A benchmark window is born unfocused and, if asked, on another
+            // screen (FARFALL_WINDOW_POS=x,y in desktop pixels): it must never
+            // take the keyboard or the mouse from whoever is working here.
+            attrs = attrs.with_active(false);
+            if let Some(pos) = std::env::var("FARFALL_WINDOW_POS")
+                .ok()
+                .and_then(|v| parse_vec2(&v))
+            {
+                attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(pos.0, pos.1));
+            }
         }
         if !cfg.windowed && cfg!(not(target_arch = "wasm32")) {
             // Borderless fullscreen on the current monitor: no mode switch, so
