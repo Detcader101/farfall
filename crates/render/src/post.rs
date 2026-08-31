@@ -111,6 +111,11 @@ pub struct PostUniforms {
     look: [f32; 4],
     /// x: bloom threshold (radiance), y: knee, z: bypass, w: unused
     knee: [f32; 4],
+    /// x: stretch (space drawing into threads), y: pull (the view folding
+    /// toward the nose), z: reform (the destination pouring in as fluid),
+    /// w: unused — the wormhole sequence's staged lanes, all 0..1 and all
+    /// zero when the drive is idle.
+    drive: [f32; 4],
 }
 
 /// Where the bloom starts, in the world's radiance: just over display
@@ -140,7 +145,15 @@ impl PostUniforms {
             misc: [aspect.max(0.1), time_s, 0.0, 1.0],
             look: [1.0, Tonemap::Agx.code(), 1.0, 1.0],
             knee: [BLOOM_THRESHOLD, BLOOM_KNEE, 0.0, 0.0],
+            drive: [0.0; 4],
         }
+    }
+
+    /// The wormhole sequence's staged lanes (see the app's `warp::Look`):
+    /// stretch, pull, reform.
+    pub fn with_drive(mut self, stretch: f32, pull: f32, reform: f32) -> Self {
+        self.drive = [unit(stretch), unit(pull), unit(reform), 0.0];
+        self
     }
 
     /// How fast the ship is going, for the streaks and the cool rim, 0..1.
@@ -643,6 +656,14 @@ mod tests {
         let stock = PostUniforms::idle(1.5, 0.0).with_look(&Look::default());
         assert_eq!(stock.look[1], Tonemap::Agx.code(), "AgX is the stock curve");
         assert_eq!(stock.knee[0], BLOOM_THRESHOLD);
+    }
+
+    #[test]
+    fn the_drive_lanes_are_clamped_and_zero_at_idle() {
+        let u = PostUniforms::idle(1.5, 0.0);
+        assert_eq!(u.drive, [0.0; 4], "idle warps nothing");
+        let u = u.with_drive(2.0, f32::NAN, -1.0);
+        assert_eq!(u.drive, [1.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]

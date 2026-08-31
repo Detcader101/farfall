@@ -36,7 +36,7 @@ settings_keys:
   ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
   rule: every key above has a menu row (crates/app/src/menu.rs::every_settings_key_has_a_menu_row walks settings.rs::KEYS), save the panel anchors, which are set by dragging
   map: [map.rings, map.grid]
-  warp: [warp.destination, warp.safe-radii]
+  warp: [warp.destination, warp.safe-radii, warp.length]
   sound: [sound.hull]
   controls: ["control.<axis>", "control.<named>", control.look-sens]
   arms: [arms.power, arms.glow, arms.sight, arms.shards, arms.shard-life, arms.scar-size, arms.scar-cool, arms.ore]
@@ -173,6 +173,13 @@ features:
     settings: [warp.destination, warp.safe-radii, control.engage]
     tests: ["crates/app/src/warp.rs::uranus_is_arrived_at_in_the_belt_riding_with_the_rocks", "crates/app/src/warp.rs::every_body_is_arrived_at_in_a_circular_orbit", crates/app/src/warp.rs, crates/audio/src/synth.rs]
     e2e: "FARFALL_BENCH_WARP captures; flown — ENGAGE DRIVE with URANUS set drops you among the rocks at rest relative to them"
+
+  - id: warp-liquid-sequence
+    name: "The wormhole jump is an eight-second liquid sequence, all in the post pass on the world alone (the dash stays crisp): CHARGE (2 s) — space stretches radially, the stars draw into threads, a shimmer builds at the rim; PULL (2 s) — the picture warps harder, the chromatic split grows, the view folds toward the nose with a slow turn; FLIP (1.5 s) — the mirror-sphere inversion made long and liquid, the one jump exactly at its peak; REFORM (2.5 s) — the destination pours in as fluid, settling rings and chromatic fringes easing to stillness. Every phase's look flows into the next without a seam; WARP LENGTH on the DRIVE page scales the whole of it 50–200% (warp.length)"
+    state: in-progress
+    settings: [warp.length]
+    tests: ["crates/app/src/warp.rs::the_sequence_jumps_exactly_once_at_the_flips_peak", "crates/app/src/warp.rs::the_sequence_is_eight_seconds_and_the_length_setting_scales_it", "crates/app/src/warp.rs::the_phases_flow_in_order_and_every_one_is_seen", "crates/app/src/warp.rs::the_look_flows_between_phases_without_a_seam", "crates/render/src/post.rs::the_drive_lanes_are_clamped_and_zero_at_idle"]
+    e2e: "farfall-captures/warp/seq-* at 1, 3, 4.5, 6, 7.5 s into the sequence; spin-* during PULL"
 
   - id: warp-crack
     name: "The warp-barrier crack at the jump (bassier, heavier than the sonic boom)"
