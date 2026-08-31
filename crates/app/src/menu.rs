@@ -147,6 +147,9 @@ enum Item {
     ArmsOre,
     MimicsChance,
     MimicsHostility,
+    MimicsSize,
+    MinersCount,
+    MinersGrowth,
     HoldGain,
     HoldFace,
     ArmsSight,
@@ -212,6 +215,9 @@ impl Item {
             Item::ArmsOre => "ORE YIELD",
             Item::MimicsChance => "MIMICS",
             Item::MimicsHostility => "HOSTILITY",
+            Item::MimicsSize => "MIMIC SIZE",
+            Item::MinersCount => "MINERS",
+            Item::MinersGrowth => "MINER GROWTH",
             Item::HoldGain => "HOLD GAIN",
             Item::HoldFace => "HOLD FACING",
             Item::Mount(h) => h.name(),
@@ -355,6 +361,15 @@ impl Item {
                 }
             }
             Item::MimicsHostility => format!("{:.0}%", s.mimics_hostility * 100.0),
+            Item::MimicsSize => format!("{:.0}%", s.mimics_size * 100.0),
+            Item::MinersCount => {
+                if s.miners_count > 0 {
+                    format!("{}", s.miners_count)
+                } else {
+                    "NONE".to_string()
+                }
+            }
+            Item::MinersGrowth => format!("{:.0}%", s.miners_growth * 100.0),
             Item::HoldGain => format!("{:.0}%", s.hold_gain * 100.0),
             Item::HoldFace => if s.hold_face { "ON" } else { "OFF" }.to_string(),
             Item::ArmsSight => {
@@ -545,6 +560,9 @@ impl Menu {
                 Item::ArmsOre,
                 Item::MimicsChance,
                 Item::MimicsHostility,
+                Item::MimicsSize,
+                Item::MinersCount,
+                Item::MinersGrowth,
                 Item::HoldGain,
                 Item::HoldFace,
             ],
@@ -932,6 +950,37 @@ impl Menu {
                     return MenuEvent::Nothing;
                 }
                 s.mimics_hostility = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::MimicsSize => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.mimics_size + step).clamp(0.5, 3.0);
+                if (next - s.mimics_size).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.mimics_size = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::MinersCount => {
+                let max = crate::miner::MAX_MINERS as u32;
+                let next = if forward {
+                    (s.miners_count + 1).min(max)
+                } else {
+                    s.miners_count.saturating_sub(1)
+                };
+                if next == s.miners_count {
+                    return MenuEvent::Nothing;
+                }
+                s.miners_count = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::MinersGrowth => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.miners_growth + step).clamp(0.25, 4.0);
+                if (next - s.miners_growth).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.miners_growth = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::HoldGain => {
@@ -1579,6 +1628,8 @@ mod tests {
                         on(Item::ArmsOre) && on(Item::MimicsChance) && on(Item::MimicsHostility)
                     );
                     assert!(on(Item::HoldGain) && on(Item::HoldFace));
+                    assert!(on(Item::MinersCount) && on(Item::MinersGrowth));
+                    assert!(on(Item::MimicsSize));
                     assert!(on(Item::ArmsSight));
                     assert!(items.len() >= 2);
                 }

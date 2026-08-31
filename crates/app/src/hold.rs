@@ -16,6 +16,7 @@ use glam::DVec3;
 use crate::arms::Ship;
 use crate::belt::{Belt, RockId};
 use crate::mimic::Mimics;
+use crate::miner::Miners;
 
 /// How far the lock reaches, metres, and how far off the aim it will take
 /// something (the cosine of the cone's half angle).
@@ -39,6 +40,7 @@ pub const FACE_KD: f64 = 1.4;
 pub enum Target {
     Rock(RockId),
     Ship(RockId),
+    Miner(u32),
 }
 
 impl Target {
@@ -46,6 +48,7 @@ impl Target {
         match self {
             Target::Rock(_) => "ROCK",
             Target::Ship(_) => "SHIP",
+            Target::Miner(_) => "MINER",
         }
     }
 }
@@ -95,7 +98,14 @@ impl Hold {
     /// Take the lock on whatever is nearest the aim within reach: ships
     /// and rocks alike, the one closest to the line. Returns whether
     /// anything was taken.
-    pub fn engage(&mut self, own: &Ship, aim: DVec3, belt: &Belt, mimics: &Mimics) -> bool {
+    pub fn engage(
+        &mut self,
+        own: &Ship,
+        aim: DVec3,
+        belt: &Belt,
+        mimics: &Mimics,
+        miners: &Miners,
+    ) -> bool {
         let aim = aim.normalize_or_zero();
         let mut best: Option<(Target, DVec3, f64)> = None;
         let mut consider = |t: Target, pos: DVec3, radius_m: f64| {
@@ -117,7 +127,10 @@ impl Hold {
             }
         };
         for m in mimics.ships.iter() {
-            consider(Target::Ship(m.id), m.pos, crate::mimic::HULL_R_M);
+            consider(Target::Ship(m.id), m.pos, mimics.hull_r_m());
+        }
+        for m in miners.ships.iter() {
+            consider(Target::Miner(m.id), m.pos, m.hull_r_m());
         }
         for r in belt.rocks.iter() {
             consider(Target::Rock(r.id), r.pos, r.radius_m);
@@ -132,7 +145,7 @@ impl Hold {
     }
 
     /// Where the target is now, or None if it is gone (the lock drops).
-    pub fn track(&self, belt: &Belt, mimics: &Mimics) -> Option<Tracked> {
+    pub fn track(&self, belt: &Belt, mimics: &Mimics, miners: &Miners) -> Option<Tracked> {
         let (t, _) = self.target?;
         match t {
             Target::Rock(id) => belt.rocks.iter().find(|r| r.id == id).map(|r| Tracked {
@@ -143,7 +156,12 @@ impl Hold {
             Target::Ship(id) => mimics.ships.iter().find(|m| m.id == id).map(|m| Tracked {
                 pos: m.pos,
                 vel: m.vel,
-                radius_m: crate::mimic::HULL_R_M,
+                radius_m: mimics.hull_r_m(),
+            }),
+            Target::Miner(id) => miners.ships.iter().find(|m| m.id == id).map(|m| Tracked {
+                pos: m.pos,
+                vel: m.vel,
+                radius_m: m.hull_r_m(),
             }),
         }
     }
@@ -277,7 +295,9 @@ mod tests {
                 orient: state.ship.orient,
                 aim: nose_of(state.ship.orient),
             };
-            let tracked = hold.track(belt, &Mimics::default()).unwrap();
+            let tracked = hold
+                .track(belt, &Mimics::default(), &Miners::default())
+                .unwrap();
             let mut controls = sim::Controls {
                 thrust_body: stick,
                 assist: true,
@@ -316,16 +336,18 @@ mod tests {
             spin: 0.0,
         });
         let mut hold = Hold::default();
-        assert!(hold.engage(&own, nose, &belt, &Mimics::default()));
+        assert!(hold.engage(&own, nose, &belt, &Mimics::default(), &Miners::default()));
         assert!(matches!(hold.target, Some((Target::Rock((1, 2, 3, 0)), _))));
         assert!(hold.text().unwrap().starts_with("HOLD ROCK"));
         // Aimed away from both: nothing.
         let mut h2 = Hold::default();
-        assert!(!h2.engage(&own, -nose, &belt, &Mimics::default()));
+        assert!(!h2.engage(&own, -nose, &belt, &Mimics::default(), &Miners::default()));
         assert!(h2.text().is_none());
         // The rock gone: the track drops.
         belt.rocks.clear();
-        assert!(hold.track(&belt, &Mimics::default()).is_none());
+        assert!(hold
+            .track(&belt, &Mimics::default(), &Miners::default())
+            .is_none());
     }
 
     #[test]
@@ -343,7 +365,7 @@ mod tests {
             orient: state.ship.orient,
             aim: nose,
         };
-        assert!(hold.engage(&own, nose, &belt, &Mimics::default()));
+        assert!(hold.engage(&own, nose, &belt, &Mimics::default(), &Miners::default()));
         fly(&params, &mut state, &mut hold, &mut belt, 25.0, DVec3::ZERO);
         let rock = belt.rocks[0];
         let rel_v = (state.ship.vel_mps - rock.vel).length();
@@ -377,7 +399,7 @@ mod tests {
             orient: state.ship.orient,
             aim: nose,
         };
-        assert!(hold.engage(&own, nose, &belt, &Mimics::default()));
+        assert!(hold.engage(&own, nose, &belt, &Mimics::default(), &Miners::default()));
         fly(&params, &mut state, &mut hold, &mut belt, 20.0, DVec3::ZERO);
         let to = (belt.rocks[0].pos - state.ship.pos_m).normalize();
         assert!(
