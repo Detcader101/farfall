@@ -20,8 +20,9 @@ pub struct PlanetAppearance {
     /// Colour of the air: the rim, and what the surface fades into.
     pub atmosphere_colour: Vec3,
     /// Optical density of the whole air column. Under the unified scattering
-    /// model this is a true optical depth: ~0.45 reads as Earth, ~0.1 as thin
-    /// and dusty, above ~1.5 the ground dissolves into the sky.
+    /// model this is a true optical depth: ~0.3 reads as Earth (blue OD per
+    /// kilometre near Earth's on this small, short-scale-height world), ~0.1
+    /// as thin and dusty, above ~1.5 the ground dissolves into the sky.
     pub atmosphere_density: f32,
     /// 0 clears the sky, 1 overcasts it.
     pub cloud_coverage: f32,
@@ -40,7 +41,7 @@ impl PlanetAppearance {
     pub const EARTHLIKE: Self = Self {
         name: "EARTHLIKE",
         atmosphere_colour: Vec3::new(0.28, 0.48, 0.95),
-        atmosphere_density: 0.45,
+        atmosphere_density: 0.30,
         cloud_coverage: 0.42,
         cloud_altitude_m: 2_200.0,
         cloud_sharpness: 0.85,

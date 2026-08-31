@@ -369,7 +369,12 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_SECONDS  (how long a benchmark runs before quitting; 20)
 ///   FARFALL_BENCH_ALT      (frozen altitude in metres; low values are the
 ///                           worst case, a screen filled edge to edge with
-///                           ground, which is where this renderer hurts)
+///                           ground, which is where this renderer hurts.
+///                           Under 8 km the ship flies at 250 m/s over a
+///                           coast instead of orbiting — orbital speed in
+///                           thick air lights the entry plasma and fogs the
+///                           glass; FARFALL_BENCH_ALT_AT=lat,lon picks the
+///                           spot in degrees)
 ///   FARFALL_BENCH_POS=x,y,z (benchmark only: park the ship at this world
 ///                           position, nose on the planet — e.g. behind the
 ///                           Moon, to check what hides what); with
@@ -408,6 +413,9 @@ const MACH1_MPS: f64 = 340.0;
 ///                           flash and every kind of burst ahead)
 ///   FARFALL_BENCH_STRIKES=n (benchmark only: n strikes on the shield at
 ///                           staggered ages at the capture, for its ripples)
+///   FARFALL_BENCH_CLOUDS=k (benchmark only: the CLOUDS setting for this run,
+///                           0 clears the deck — to see the air and the
+///                           ground on their own)
 ///   FARFALL_BENCH_MIMIC=reveal|hail|attack|wreck (benchmark only: a ship
 ///                           out of a rock ahead-left in that state)
 ///   FARFALL_BENCH_MINERS=tier[,mine|fight] (benchmark only: a miner of
@@ -1308,6 +1316,9 @@ impl Game {
             .unwrap_or(SPAWN_ALTITUDE_M);
         let mut state = sim::presets::circular_orbit(&params, altitude);
         state.ship.orient = spawn_attitude();
+        if std::env::var("FARFALL_BENCH_ALT").is_ok() && altitude < LOW_BENCH_CEILING_M {
+            low_bench_flight(&mut state);
+        }
         if let Some(pos) = std::env::var("FARFALL_BENCH_POS")
             .ok()
             .and_then(|v| parse_vec3(&v))
@@ -2975,7 +2986,13 @@ impl Game {
             &pose.cam,
             &DustScene {
                 eye_m: eye,
-                drift_mps: farfall_render::dust::drift(rel, body.mu, vels[near], ship.vel_mps),
+                drift_mps: farfall_render::dust::drift(
+                    rel,
+                    body.mu,
+                    vels[near],
+                    ship.vel_mps,
+                    self.air_ratio(),
+                ),
                 sun_dir: self.params.sun.dir.as_vec3(),
                 density,
                 setting: self.settings.dust,
@@ -4070,6 +4087,41 @@ const SPAWN_PITCH_DEG: f64 = 12.0;
 /// Also close enough to make an approach, and eventually a collision, short.
 const SPAWN_ALTITUDE_M: f64 = 12_000.0;
 
+/// Under this altitude a FARFALL_BENCH_ALT run flies, it does not orbit:
+/// the sim's circular orbit at 500 m is 787 m/s in sea-level air, which
+/// lights the entry plasma (as it should — see thermal.wgsl) and fogs the
+/// whole glass, so the ground and the air could never be looked at. The
+/// stock 12 km scene is above this and unchanged.
+const LOW_BENCH_CEILING_M: f64 = 8_000.0;
+/// The airspeed of a low bench run, m/s: a fast cruise, a warm hull, no
+/// sheath.
+const LOW_BENCH_AIRSPEED_MPS: f64 = 250.0;
+/// Where a low bench run is parked, latitude and longitude in degrees:
+/// over a coast, so a capture shows land, sea and the line between them
+/// (the orbit's own spot, 0°N 0°E, is open ocean to the horizon).
+/// FARFALL_BENCH_ALT_AT=lat,lon overrides it.
+const LOW_BENCH_LAT_LON_DEG: (f64, f64) = (10.0, 320.0);
+
+/// Move a bench spawn from the orbit's spot to the low-flight spot at the
+/// same altitude, keeping its attitude to the local horizon, at airspeed.
+fn low_bench_flight(state: &mut sim::WorldState) {
+    let (lat, lon) = std::env::var("FARFALL_BENCH_ALT_AT")
+        .ok()
+        .and_then(|v| {
+            let p: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            (p.len() == 2 && p[0].is_finite() && p[1].is_finite()).then(|| (p[0], p[1]))
+        })
+        .unwrap_or(LOW_BENCH_LAT_LON_DEG);
+    let (lat, lon) = (lat.clamp(-89.0, 89.0).to_radians(), lon.to_radians());
+    let up = DVec3::new(lat.cos() * lon.cos(), lat.sin(), lat.cos() * lon.sin());
+    // The orbit spawns with +X up; take everything round to the new up.
+    let rot = DQuat::from_rotation_arc(DVec3::X, up);
+    let ship = &mut state.ship;
+    ship.pos_m = rot * ship.pos_m;
+    ship.vel_mps = rot * ship.vel_mps.normalize_or_zero() * LOW_BENCH_AIRSPEED_MPS;
+    ship.orient = rot * ship.orient;
+}
+
 /// Base vertical field of view, degrees.
 /// How much the view opens up under full boost, degrees. The camera reads the
 /// ship's own thrust demand, so acceleration is *seen*, not just measured — the
@@ -4808,6 +4860,13 @@ impl App {
                 .bursts
                 .push(burst(DVec3::new(25.0, -8.0, -380.0), 0.5, 2, 1.0, 0.9));
             game.arms.heat[0] = 0.4;
+        }
+        if let Some(k) = std::env::var("FARFALL_BENCH_CLOUDS")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| v.trim().parse::<f32>().ok())
+        {
+            game.settings.clouds = k.clamp(0.0, 2.0);
         }
         if let Some(n) = std::env::var("FARFALL_BENCH_STRIKES")
             .ok()

@@ -181,9 +181,11 @@ pub const COCKPIT_RES_CHOICES: [f32; 3] = [0.5, 0.75, 1.0];
 
 /// Frame-rate floors on offer (0: none). The cabin's moving detail gives
 /// way while turning the head would cost more than the floor allows.
-/// The holo3PP stands on the dash right of the cluster, between the
-/// speed dial and the G meter, and back toward the sill.
-pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.52, -0.46];
+/// The holo3PP floats in the glass at the upper right, under the mini map
+/// and outside the arch: clear of the five dials on the dash (it used to
+/// stand between the speed dial and the G meter, over both) and of the
+/// forward view. Pinned by `the_stock_hologram_sits_clear_of_the_dials_and_the_mini_map`.
+pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.81, 0.30];
 pub const HOLO_SIZE_MIN: f32 = 0.16;
 pub const HOLO_SIZE_MAX: f32 = 0.50;
 /// HOLO RANGE: how much space the hologram shows round the ship, as a
@@ -437,7 +439,7 @@ impl Default for Settings {
             map_grid: true,
             camera_chase: false,
             holo_view: true,
-            holo_size: 0.24,
+            holo_size: 0.18,
             holo_range: 1.0,
             controls_card: false,
             holo_anchor: HOLO_ANCHOR_DEFAULT,
@@ -1702,5 +1704,58 @@ mod tests {
         assert_eq!(b.action_for(KeyCode::KeyW), Some(Action::PitchUp));
         // Reserved keys are refused.
         assert!(!b.bind(Action::YawLeft, KeyCode::Escape));
+    }
+
+    /// The stock hologram floats where nothing else is drawn: its disc on
+    /// the glass is outside every dial on the dash, under the mini map with
+    /// room to spare, out of the forward view, and inside the glass — at
+    /// the narrow screen (4:3) and the wide (16:9).
+    #[test]
+    fn the_stock_hologram_sits_clear_of_the_dials_and_the_mini_map() {
+        use crate::map::{MINI_ANCHOR, MINI_HALF_H};
+        use farfall_render::holo::{holo_centre, HOLO_RADIUS_M};
+        let s = Settings::default();
+        assert!(s.holo_view, "the hologram is a stock gauge");
+        let tan_half = (s.fov.to_radians() * 0.5).tan();
+        for aspect in [4.0 / 3.0, 16.0 / 9.0] {
+            let radius_m = s.holo_size * HOLO_RADIUS_M;
+            let c = holo_centre(s.holo_anchor, tan_half, aspect, radius_m);
+            assert!(c.z < 0.0, "in front of the pilot: {c}");
+            // Its disc on the glass, NDC.
+            let cx = c.x / -c.z / (tan_half * aspect);
+            let cy = c.y / -c.z / tan_half;
+            let ry = radius_m / c.length() / tan_half;
+            let rx = ry / aspect;
+            assert!(
+                cx + rx < 0.98 && cy + ry < 0.98,
+                "inside the glass: {cx} {cy}"
+            );
+            // Under the mini map, with a gap.
+            let map_bottom = s.layout.inset(MINI_ANCHOR)[1] - MINI_HALF_H;
+            assert!(
+                cy + ry < map_bottom - 0.05,
+                "under the mini map: {} vs {map_bottom}",
+                cy + ry
+            );
+            // Outside every dial on the dash: a stock dial is about 0.28 of
+            // the half height tall on the glass.
+            let dial_ry = 0.28;
+            for i in Instrument::ALL {
+                if !i.slotted() {
+                    continue;
+                }
+                let Some(a) = s.layout.anchor(i) else {
+                    continue;
+                };
+                let dx = (a[0] - cx).abs() - (dial_ry / aspect + rx);
+                let dy = (a[1] - cy).abs() - (dial_ry + ry);
+                assert!(
+                    dx > 0.0 || dy > 0.0,
+                    "{i:?} at {a:?} is under the hologram at {cx},{cy}"
+                );
+            }
+            // Out of the forward view: the middle of the glass is for the world.
+            assert!(cx - rx > 0.6, "right of the forward view: {}", cx - rx);
+        }
     }
 }

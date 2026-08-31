@@ -93,7 +93,10 @@ fn capture(name: &str, env: &[(&str, &str)]) -> Frame {
     )
     .unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_farfall"));
+    // TMPDIR is the Unix name; Windows' temp_dir() reads TMP / TEMP.
     cmd.env("TMPDIR", &dir)
+        .env("TMP", &dir)
+        .env("TEMP", &dir)
         .env("HOME", &home)
         .env("FARFALL_MSAA", "1")
         .env("FARFALL_BENCH", "1")
@@ -487,9 +490,10 @@ fn the_holo3pp_stands_as_a_3d_hologram_over_the_dash() {
         return;
     }
     let f = capture("holo", &[("FARFALL_BENCH_HOLO", "1")]);
-    // Over the right of the dash, below the sill: the little ship and its
-    // emitter's ring in the hologram's cyan...
-    let cyan = f.share(0.60, 0.55, 0.92, 0.88, |c| {
+    // In the glass at the upper right, under the mini map and clear of the
+    // dials: the little ship and its emitter's ring in the hologram's
+    // cyan...
+    let cyan = f.share(0.80, 0.20, 1.0, 0.50, |c| {
         c[1] > 0.45 && c[2] > 0.5 && c[0] < 0.45 && c[2] > c[0] + 0.2
     });
     assert!(
@@ -498,7 +502,7 @@ fn the_holo3pp_stands_as_a_3d_hologram_over_the_dash() {
     );
     // ...and the nearest body (Uranus, 200 km under the keel here) as an
     // amber wire globe at its true size beside it.
-    let amber = f.share(0.60, 0.55, 0.92, 0.88, |c| {
+    let amber = f.share(0.80, 0.20, 1.0, 0.50, |c| {
         c[0] > 0.45 && c[0] > c[2] + 0.15 && c[1] > 0.25
     });
     assert!(amber > 0.001, "the body's wire globe is lit: {amber}");
@@ -610,12 +614,14 @@ fn the_nebula_colours_the_sky_and_goes_away_when_off() {
         ],
     );
     // Coloured gas over the glass, clear of the sun's flare on the right:
-    // lit, clearly not grey, and blue-heavy like both stock hues.
+    // lit, clearly not grey, and blue-heavy like both stock hues. "Lit" is
+    // measured above the HDR picture's floor: AgX leaves empty space near
+    // sRGB 0.15 with a cool cast, which the old 0.08 counted as gas.
     let gas = |f: &Frame| {
         f.share(0.15, 0.0, 0.7, 0.45, |c| {
             let mx = c[0].max(c[1]).max(c[2]);
             let mn = c[0].min(c[1]).min(c[2]);
-            mx > 0.08 && mx - mn > 0.04 && c[2] > c[1] + 0.02
+            mx > 0.22 && mx - mn > 0.04 && c[2] > c[1] + 0.02
         })
     };
     let on_gas = gas(&on);
