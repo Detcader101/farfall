@@ -1662,9 +1662,9 @@ impl Game {
             save.time_s + 4.0,
         ));
         log::info!(
-            "world: resumed t={:.1}s hash={:#018x}",
+            "world: resumed t={:.1}s hash={:016x}",
             self.state.time_s,
-            sim::state_hash(&self.state)
+            save.seal()
         );
     }
 
