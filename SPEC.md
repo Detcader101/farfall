@@ -166,6 +166,15 @@ city-lights emissive on night side), `hud` (crisp 2D). M2: `atmosphere` (Bruneto
 transmittance + single-scattering LUTs, aerial perspective), `terrain` (cube-sphere
 chunked LOD heightfield, analytic noise + small authored landmark masks), `entry-fx`.
 
+### 6.5a Other ships (app-side, never sim-side)
+
+Mimics and miners (WEAPONS.md, "Other ships") live in `crates/app`: derived
+from rock hashes plus app state, stepped after the belt each fixed step, drawn
+by the `mimic` pass from the shared fighter SDF at each hull's own pose and
+size. They shove and shoot the ship through impulses after `sim::step`, like a
+strike; the golden hash does not know they exist. A miner is the same ship
+class as ours that grows through tiers as it mines the ring.
+
 ### 6.6 The city, eventually (direction, not commitment)
 
 The end-state city (M5+) is the ultimate test of P1+P2: dense, alive, and readable.
