@@ -10,6 +10,7 @@ use crate::bay::{Mount, STOCK};
 use crate::cockpit::{Instrument, Layout, Slot};
 use crate::input::{key_from_name, key_name, Action, Bindings, Named};
 use crate::warp::{Destination, Plan};
+pub use farfall_render::post::Tonemap;
 use std::path::PathBuf;
 
 /// "x,y" → a pair of finite numbers.
@@ -20,9 +21,11 @@ fn parse_pair(v: &str) -> Option<[f32; 2]> {
     (x.is_finite() && y.is_finite()).then_some([x, y])
 }
 
-/// Where the settings menu's text starts and the map pane is centred,
-/// until the pilot drags them.
-pub const MENU_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
+/// Where the settings menu's card is centred and the map pane is centred,
+/// until the pilot drags them. The card is a fixed size in canopy units
+/// (its width over the aspect on the screen), so it is kept by its
+/// centre and stays centred on any screen.
+pub const MENU_ANCHOR_DEFAULT: [f32; 2] = [0.0, 0.04];
 pub const MAP_ANCHOR_DEFAULT: [f32; 2] = [0.42, 0.12];
 /// The SHIP bay's panel: right of the hologram, up.
 pub const BAY_ANCHOR_DEFAULT: [f32; 2] = [0.95, 0.90];
@@ -33,7 +36,8 @@ pub const BAY_SIZE_DEFAULT: f32 = 0.28;
 pub const BAY_SIZE_MIN: f32 = 0.14;
 pub const BAY_SIZE_MAX: f32 = 0.45;
 pub const BAY_SCANLINES_MAX: f32 = 400.0;
-pub const READOUT_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
+/// The readout: the top-left corner of the glass, clear of the arch.
+pub const READOUT_ANCHOR_DEFAULT: [f32; 2] = [-0.96, 0.94];
 
 fn clamp_anchor(a: [f32; 2]) -> [f32; 2] {
     [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)]
@@ -164,6 +168,10 @@ impl GaugeStyle {
     }
 }
 
+/// Exposure, a multiplier on the scene's own: two stops either way.
+pub const EXPOSURE_MIN: f32 = 0.25;
+pub const EXPOSURE_MAX: f32 = 4.0;
+
 /// Field of view limits, degrees.
 pub const FOV_MIN: f32 = 50.0;
 pub const FOV_MAX: f32 = 110.0;
@@ -173,9 +181,16 @@ pub const COCKPIT_RES_CHOICES: [f32; 3] = [0.5, 0.75, 1.0];
 
 /// Frame-rate floors on offer (0: none). The cabin's moving detail gives
 /// way while turning the head would cost more than the floor allows.
-pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.55, -0.55];
+/// The holo3PP stands on the dash right of the cluster, between the
+/// speed dial and the G meter, and back toward the sill.
+pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.52, -0.46];
 pub const HOLO_SIZE_MIN: f32 = 0.16;
 pub const HOLO_SIZE_MAX: f32 = 0.50;
+/// HOLO RANGE: how much space the hologram shows round the ship, as a
+/// multiple of the stock (the ship shrinks by the same factor).
+pub const HOLO_RANGE_MIN: f32 = 1.0;
+pub const HOLO_RANGE_MAX: f32 = 4.0;
+pub const HOLO_RANGE_STEP: f32 = 0.5;
 pub const FPS_FLOOR_CHOICES: [f32; 5] = [0.0, 30.0, 60.0, 90.0, 120.0];
 
 /// The landing hoops' spacings on offer, metres.
@@ -226,6 +241,18 @@ pub struct Settings {
     pub sky: f32,
     /// The lens flare's strength, 1 = stock, 0 none.
     pub flare: f32,
+    /// The picture (the post pass): the bloom's strength, 0 (none) .. 2;
+    /// 1 = stock.
+    pub bloom: f32,
+    /// Exposure, a multiplier on the scene's own: 0.25 .. 4 (±2 stops),
+    /// 1 = stock. The eye's slow drift about it is built in.
+    pub exposure: f32,
+    /// The curve from radiance to the screen: OFF (a clip), SOFT, AGX.
+    pub tonemap: Tonemap,
+    /// The glass rim's chromatic fringing, 0 (none) .. 2; 1 = a hair.
+    pub fringe: f32,
+    /// Space dust and cabin motes: 0 none, 1 stock, up to 2.
+    pub dust: f32,
     /// The nebula's glow, 0 (off) .. 3; 1 = stock.
     pub nebula: f32,
     /// Which nebula: the seed picks where the clouds sit and their shapes.
@@ -243,8 +270,10 @@ pub struct Settings {
     pub nebula_spread: f32,
     /// Base field of view, degrees (vertical).
     pub fov: f32,
-    /// Gauge style: TRON holograms on the glass; JET bowls hollowed into
-    /// the dash; DIAL real instruments set flush into the dash.
+    /// Gauge style: WARTHOG (the default) steam gauges on the dash; TRON
+    /// holograms on the glass; JET holograms over thin rings, the gyro a
+    /// real ball; DIAL period instruments on the dash. Nothing is ever
+    /// hollowed into the dash for any of them.
     pub gauge_style: GaugeStyle,
     /// Gauges stay lit (true) or fade by relevance (false).
     pub gauges_stay: bool,
@@ -270,6 +299,12 @@ pub struct Settings {
     pub holo_view: bool,
     /// The hologram's size (its radius is this times half a metre).
     pub holo_size: f32,
+    /// How much space the hologram shows round the ship, 1 (the ship
+    /// fills it) .. 4 (four times the room, the ship a quarter the size).
+    pub holo_range: f32,
+    /// The CONTROLS card at every start (it always shows on the first
+    /// run, and F1 shows it any time).
+    pub controls_card: bool,
     /// The hologram's emitter: a glass anchor (canopy NDC) whose direction
     /// meets the dash at the socket.
     pub holo_anchor: [f32; 2],
@@ -293,6 +328,13 @@ pub struct Settings {
     /// HOSTILITY: the share of those that shoot rather than hail, 0..1.
     pub mimics_chance: f32,
     pub mimics_hostility: f32,
+    /// MIMIC SIZE: a mimic hull over our own fighter, 0.5..3 (1 stock: the
+    /// same ship).
+    pub mimics_size: f32,
+    /// MINERS: how many miner ships work the ring about us, 0..8, and
+    /// MINER GROWTH: how fast they haul and so grow, 0.25..4 (1 stock).
+    pub miners_count: u32,
+    pub miners_growth: f32,
     /// HOLD GAIN: how hard the lock holds, 0.2..3; HOLD FACING: the nose
     /// kept on the target.
     pub hold_gain: f32,
@@ -365,8 +407,13 @@ impl Default for Settings {
             nebula_hue2: 0.55,
             nebula_spread: 1.5,
             flare: 1.0,
+            bloom: 1.0,
+            exposure: 1.0,
+            tonemap: Tonemap::Agx,
+            fringe: 1.0,
+            dust: 1.0,
             fov: 70.0,
-            gauge_style: GaugeStyle::Tron,
+            gauge_style: GaugeStyle::Warthog,
             gauges_stay: true,
             guide: false,
             hull_sound: true,
@@ -376,8 +423,10 @@ impl Default for Settings {
             map_rings: 4,
             map_grid: true,
             camera_chase: false,
-            holo_view: false,
-            holo_size: 0.30,
+            holo_view: true,
+            holo_size: 0.24,
+            holo_range: 1.0,
+            controls_card: false,
             holo_anchor: HOLO_ANCHOR_DEFAULT,
             plan: Plan::default(),
             arms_power: 0.5,
@@ -389,11 +438,17 @@ impl Default for Settings {
             arms_ore: 1.0,
             mimics_chance: 1.0,
             mimics_hostility: 0.5,
+            mimics_size: 1.0,
+            miners_count: 4,
+            miners_growth: 1.0,
             hold_gain: 1.0,
             hold_face: true,
             arms_sight: 1.0,
             cam_shake: 1.0,
-            drive_shake: 0.4,
+            // A warning, not a beating: the gauges must stay readable to
+            // the slip. Turn it up on the CABIN page if you want the
+            // violence.
+            drive_shake: 0.12,
             mounts: STOCK,
             bay_hue: BAY_HUE_DEFAULT,
             bay_saturation: 1.0,
@@ -424,9 +479,126 @@ fn config_dir_from(
         .map(|h| PathBuf::from(h).join(".farfall"))
 }
 
+/// Every key the settings file may hold, by name or by pattern (a `*`
+/// stands for one segment: an action's key, a dial's key). The menu's
+/// coverage test walks this list: a key here with no menu row is a
+/// setting a pilot cannot find, save the panel anchors, which are set by
+/// dragging the panel itself.
+#[cfg(test)]
+pub const KEYS: &[&str] = &[
+    "graphics.msaa",
+    "graphics.scale",
+    "graphics.vsync",
+    "graphics.auto-scale",
+    "graphics.fov",
+    "graphics.fps-floor",
+    "graphics.sky",
+    "graphics.flare",
+    "graphics.bloom",
+    "graphics.exposure",
+    "graphics.tonemap",
+    "graphics.fringe",
+    "graphics.dust",
+    "graphics.nebula",
+    "graphics.nebula-seed",
+    "graphics.nebula-scale",
+    "graphics.nebula-density",
+    "graphics.nebula-clouds",
+    "graphics.nebula-hue",
+    "graphics.nebula-hue2",
+    "graphics.nebula-spread",
+    "camera.chase",
+    "holo.view",
+    "holo.size",
+    "holo.range",
+    "cam.shake",
+    "cam.drive-shake",
+    "cockpit.frame",
+    "cockpit.glow",
+    "cockpit.hull",
+    "cockpit.res",
+    "ui.gauges",
+    "ui.gauge-style",
+    "ui.guide",
+    "ui.shield",
+    "ui.hoop-size",
+    "ui.landing-hoops",
+    "ui.safe-edge",
+    "ui.controls-card",
+    "ui.pointer-size",
+    "ui.*",
+    "ui.*.size",
+    "ui.*.style",
+    "ui.*.fade",
+    "ui.*.tilt",
+    "map.rings",
+    "map.grid",
+    "warp.destination",
+    "warp.safe-radii",
+    "sound.hull",
+    "control.*",
+    "control.look-sens",
+    "arms.power",
+    "arms.glow",
+    "arms.sight",
+    "arms.shards",
+    "arms.shard-life",
+    "arms.scar-size",
+    "arms.scar-cool",
+    "arms.ore",
+    "mimics.chance",
+    "mimics.hostility",
+    "hold.gain",
+    "hold.face",
+    "ship.hardpoint.*",
+    "ship.holo-hue",
+    "ship.holo-saturation",
+    "ship.holo-scanlines",
+    "ship.holo-size",
+    "ship.holo-spin",
+    "mimics.size",
+    "miners.count",
+    "miners.growth",
+    "game.resume",
+];
+
+/// The anchors: set by dragging a panel, never by a row.
+#[cfg(test)]
+pub const DRAGGED_KEYS: &[&str] = &[
+    "ui.panel-menu",
+    "ui.panel-map",
+    "ui.panel-readout",
+    "ui.panel-holo",
+    "ui.panel-bay-card",
+];
+
+/// Does a key match a listed name or pattern?
+#[cfg(test)]
+pub fn key_matches(pattern: &str, key: &str) -> bool {
+    let (mut p, mut k) = (pattern.split('.'), key.split('.'));
+    loop {
+        match (p.next(), k.next()) {
+            (None, None) => return true,
+            (Some(ps), Some(ks)) if ps == "*" || ps == ks => {}
+            _ => return false,
+        }
+    }
+}
+
 impl Settings {
     pub fn path() -> Option<PathBuf> {
         config_dir().map(|d| d.join("settings.cfg"))
+    }
+
+    /// Is there a settings file (or saved web settings) at all? Its
+    /// absence is the first run: the CONTROLS card shows itself.
+    pub fn file_exists() -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            return crate::web::storage_get("farfall.settings").is_some();
+        }
+        #[allow(unreachable_code)]
+        Self::path().is_some_and(|p| p.is_file())
     }
 
     /// Read the file, or defaults if there is none.
@@ -686,6 +858,25 @@ impl Settings {
                         }
                     }
                 }
+                "mimics.size" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.mimics_size = f.clamp(0.5, 3.0);
+                        }
+                    }
+                }
+                "miners.count" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        s.miners_count = n.min(crate::miner::MAX_MINERS as u32);
+                    }
+                }
+                "miners.growth" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.miners_growth = f.clamp(0.25, 4.0);
+                        }
+                    }
+                }
                 "hold.gain" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -732,6 +923,18 @@ impl Settings {
                         }
                     }
                 }
+                "holo.range" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.holo_range = f.clamp(HOLO_RANGE_MIN, HOLO_RANGE_MAX);
+                        }
+                    }
+                }
+                "ui.controls-card" => match v {
+                    "on" => s.controls_card = true,
+                    "off" => s.controls_card = false,
+                    _ => {}
+                },
                 "sound.hull" => match v {
                     "on" => s.hull_sound = true,
                     "off" => s.hull_sound = false,
@@ -746,6 +949,39 @@ impl Settings {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.flare = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.bloom" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.bloom = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.exposure" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.exposure = f.clamp(EXPOSURE_MIN, EXPOSURE_MAX);
+                        }
+                    }
+                }
+                "graphics.tonemap" => {
+                    if let Some(t) = Tonemap::from_key(v) {
+                        s.tonemap = t;
+                    }
+                }
+                "graphics.fringe" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.fringe = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.dust" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.dust = f.clamp(0.0, 2.0);
                         }
                     }
                 }
@@ -1010,6 +1246,11 @@ impl Settings {
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
         out.push_str(&format!("graphics.flare = {:.2}\n", self.flare));
+        out.push_str(&format!("graphics.bloom = {:.2}\n", self.bloom));
+        out.push_str(&format!("graphics.exposure = {:.3}\n", self.exposure));
+        out.push_str(&format!("graphics.tonemap = {}\n", self.tonemap.key()));
+        out.push_str(&format!("graphics.fringe = {:.2}\n", self.fringe));
+        out.push_str(&format!("graphics.dust = {:.2}\n", self.dust));
         out.push_str(&format!("graphics.nebula = {:.2}\n", self.nebula));
         out.push_str(&format!("graphics.nebula-seed = {}\n", self.nebula_seed));
         out.push_str(&format!(
@@ -1053,6 +1294,9 @@ impl Settings {
             "mimics.hostility = {:.2}\n",
             self.mimics_hostility
         ));
+        out.push_str(&format!("mimics.size = {:.2}\n", self.mimics_size));
+        out.push_str(&format!("miners.count = {}\n", self.miners_count));
+        out.push_str(&format!("miners.growth = {:.2}\n", self.miners_growth));
         out.push_str(&format!("hold.gain = {:.2}\n", self.hold_gain));
         out.push_str(&format!(
             "hold.face = {}\n",
@@ -1070,6 +1314,11 @@ impl Settings {
             if self.holo_view { "on" } else { "off" }
         ));
         out.push_str(&format!("holo.size = {:.2}\n", self.holo_size));
+        out.push_str(&format!("holo.range = {:.1}\n", self.holo_range));
+        out.push_str(&format!(
+            "ui.controls-card = {}\n",
+            if self.controls_card { "on" } else { "off" }
+        ));
         out.push_str(&format!(
             "ui.panel-holo = {:.3},{:.3}\n",
             self.holo_anchor[0], self.holo_anchor[1]
@@ -1209,6 +1458,9 @@ mod tests {
         s.arms_ore = 1.5;
         s.mimics_chance = 0.25;
         s.mimics_hostility = 0.75;
+        s.mimics_size = 1.75;
+        s.miners_count = 7;
+        s.miners_growth = 2.5;
         s.hold_gain = 1.75;
         s.hold_face = false;
         s.arms_sight = 0.5;
@@ -1224,6 +1476,11 @@ mod tests {
         s.fps_floor = 90.0;
         s.sky = 1.5;
         s.flare = 0.5;
+        s.bloom = 1.5;
+        s.exposure = 0.5;
+        s.tonemap = Tonemap::Soft;
+        s.fringe = 0.0;
+        s.dust = 1.75;
         s.nebula = 2.0;
         s.nebula_seed = 42;
         s.nebula_scale = 5.0;
@@ -1258,10 +1515,82 @@ mod tests {
         s.camera_chase = true;
         s.holo_view = true;
         s.holo_size = 0.40;
+        s.holo_range = 2.5;
+        s.controls_card = true;
         s.holo_anchor = [-0.375, 0.25];
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);
         assert_eq!(Settings::parse(&s.render()), s);
+    }
+
+    /// A new player's dash is the Warthog's: steam gauges on the metal.
+    /// The GAUGES page still cycles the other three, and a file that
+    /// names another style keeps it.
+    #[test]
+    fn warthog_is_the_default_and_the_menu_still_cycles_every_style() {
+        let s = Settings::default();
+        assert_eq!(s.gauge_style, GaugeStyle::Warthog);
+        assert!(s.render().contains("ui.gauge-style = warthog\n"));
+        let mut seen = vec![s.gauge_style];
+        let mut cur = s.gauge_style;
+        for _ in 0..GaugeStyle::ALL.len() - 1 {
+            cur = cur.next(true);
+            seen.push(cur);
+        }
+        seen.sort_by_key(|g| g.index());
+        assert_eq!(seen, GaugeStyle::ALL.to_vec());
+        assert_eq!(cur.next(true), GaugeStyle::Warthog, "and round");
+        assert_eq!(
+            Settings::parse("ui.gauge-style = tron\n").gauge_style,
+            GaugeStyle::Tron
+        );
+        assert_eq!(Settings::parse("").gauge_style, GaugeStyle::Warthog);
+    }
+
+    /// The KEYS list is the ledger of the file: every line the file writes
+    /// is on it (or is a dragged anchor), and every fixed name on it is a
+    /// line the file writes. A key written but unlisted would slip past
+    /// the menu's coverage test.
+    #[test]
+    fn the_key_list_is_the_file() {
+        let mut s = Settings::default();
+        s.dials[Instrument::Speed as usize].size = 1.5;
+        let written: Vec<String> = s
+            .render()
+            .lines()
+            .filter_map(|l| l.split_once('=').map(|(k, _)| k.trim().to_string()))
+            .collect();
+        for k in &written {
+            assert!(
+                KEYS.iter().chain(DRAGGED_KEYS).any(|p| key_matches(p, k)),
+                "{k} is written but not listed"
+            );
+        }
+        for p in KEYS {
+            if !p.contains('*') {
+                assert!(
+                    written.iter().any(|k| k == p),
+                    "{p} is listed but never written"
+                );
+            }
+        }
+        assert!(key_matches("ui.*.size", "ui.speed.size"));
+        assert!(!key_matches("ui.*", "ui.speed.size"));
+        assert!(!key_matches("control.*", "ui.speed"));
+    }
+
+    #[test]
+    fn the_hologram_range_and_the_card_are_kept() {
+        let s = Settings::parse("holo.range = 9\nui.controls-card = on\n");
+        assert_eq!(s.holo_range, HOLO_RANGE_MAX);
+        assert!(s.controls_card);
+        let d = Settings::default();
+        assert!(d.holo_view, "the holo3PP is a stock gauge");
+        assert!(
+            !d.controls_card,
+            "the card shows itself on the first run only"
+        );
+        assert_eq!(d.holo_range, 1.0);
     }
 
     #[test]

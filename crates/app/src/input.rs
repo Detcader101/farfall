@@ -139,10 +139,13 @@ pub enum Named {
     ScaleDown,
     ScaleUp,
     Hold,
+    /// The hologram shows more of the space round the ship, or less.
+    HoloOut,
+    HoloIn,
 }
 
 impl Named {
-    pub const COUNT: usize = 23;
+    pub const COUNT: usize = 25;
     pub const ALL: [Named; Named::COUNT] = [
         Named::Boost,
         Named::Brake,
@@ -167,6 +170,8 @@ impl Named {
         Named::ScaleDown,
         Named::ScaleUp,
         Named::Hold,
+        Named::HoloOut,
+        Named::HoloIn,
     ];
 
     /// Menu label.
@@ -195,6 +200,8 @@ impl Named {
             Named::ScaleDown => "RENDER SCALE -",
             Named::ScaleUp => "RENDER SCALE +",
             Named::Hold => "HOLD",
+            Named::HoloOut => "HOLO WIDER",
+            Named::HoloIn => "HOLO CLOSER",
         }
     }
 
@@ -224,6 +231,8 @@ impl Named {
             Named::ScaleDown => "scale-down",
             Named::ScaleUp => "scale-up",
             Named::Hold => "hold",
+            Named::HoloOut => "holo-out",
+            Named::HoloIn => "holo-in",
         }
     }
 
@@ -255,6 +264,10 @@ impl Named {
             Named::ScaleDown => KeyCode::BracketLeft,
             Named::ScaleUp => KeyCode::BracketRight,
             Named::Hold => KeyCode::KeyO,
+            // Comma and period: DESIGN mode borrows them for tilt only while
+            // it is on.
+            Named::HoloOut => KeyCode::Comma,
+            Named::HoloIn => KeyCode::Period,
         }
     }
 }
@@ -359,11 +372,12 @@ impl Bindings {
     }
 }
 
-/// Keys the game keeps for itself: the menu and its navigation.
+/// Keys the game keeps for itself: the menu and its navigation, and F1
+/// for the CONTROLS card.
 pub fn is_reserved(key: KeyCode) -> bool {
     matches!(
         key,
-        KeyCode::Escape | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace
+        KeyCode::Escape | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::F1
     )
 }
 

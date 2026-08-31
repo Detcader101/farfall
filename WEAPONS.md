@@ -90,3 +90,89 @@ rocks in the same `Belt` live set, so belt collisions/ray-tracing work unchanged
 7. flak, torpedo (guided + post shockwave), mines.
 8. tools: tractor/repulsor, cutter + ore, flare, scanner pulse.
 9. ship damage model + Impact feed (own ship), multiplayer seam.
+
+## Other ships (polish pass, 2026-08-31 — branch `fable/ships`)
+
+Owner asks, verbatim: *"Make mimic ships as big as me."* and *"Make ships that
+spawn already, that are like mimics but mine asteroids to upgrade and get
+bigger, eventually becoming more powerful with the materials."*
+
+### Mimic size
+
+A mimic is drawn from `sd_fighter_exterior` — the very SDF the cabin is carved
+from and the chase camera shows — at 1:1. It IS our ship's size class. It reads
+small because a hostile held 520 m off and a hailer 780 m: at 800×600 a 15 m
+fighter at that range is a dozen pixels, while the chase camera sees our own
+hull from 24 m. So:
+
+- The mimic pass gets a **size lane** per hull (`MimicView.size`, metres per
+  SDF unit): a mimic is 1.0 — exactly our fighter — and the collision sphere,
+  hold radius and hit maths scale with it (`HULL_R_M * size`).
+- **Encounter ranges** are the fix for what the eye sees: a hailer comes
+  alongside at `HAIL_HOLD_M` = 90 m (canopy, beacon and nozzles readable), a
+  hostile holds `HOLD_M` = 320 m weaving (its spread widened a touch so the
+  closer range is not a free kill). Fire range unchanged.
+- The pass grows to 12 lanes (4 mimics + 8 miners); the sight's marker array
+  grows with it.
+
+### Miners
+
+App-side only (like mimics: hashes + app state; the sim's golden hash is
+untouched). `crates/app/src/miner.rs`.
+
+**Population.** When the belt is live (the ship is in Uranus' ring) and no
+miners have been placed since the ring was last empty, `MINERS` (setting
+`miners.count`, 0–8, 4 stock) ships are placed 900–2 600 m from the ship in
+hashed directions, riding the ring's velocity, each with a hashed starting haul
+(mostly nothing, a few already a tier up: a population that was here before
+us). Dropped past 12 km. Never respawned until the ring has been left.
+
+**Life (the growth state machine).**
+
+```
+Seeking  — pick a rock: the nearest live rock ≥ 8 m within 4 km that is not a
+           mimic in a shroud, not another miner's claim, and NEVER the rock
+           the pilot is holding station on (HOLD). None: drift, retry in 2 s.
+Transit  — fly to a stand-off point (rock surface + 70 m × size) matching the
+           rock's velocity, nose on it.
+Mining   — the beam is on: ore drifts up it; the miner's haul grows at
+           MINE_T_PER_S × (1 + 0.5 tier) × MINER GROWTH (miners.growth,
+           0.25–4, 1 stock) t/s, by the rock's ore kind, until the rock has
+           given its share (0.1 % of its mass, 2–80 t) — then it is wounded
+           to breaking (fragments off it, the belt's own break) and the
+           miner seeks again. The pilot taking HOLD on its rock, or the rock
+           leaving the live set, sends it back to Seeking.
+Hailing  — a neutral miner within 300 m of us hails once (a line on the
+           readout, the relay knock) and goes on mining.
+Attacking— shot at: a tier-0 miner runs (Leaving); a grown one comes about
+           and fights with the mimic's guns scaled by tier (longer bursts,
+           the rail at tier 3), holding 320 m.
+Leaving  — full burn away, cleared past 8 km.
+Wreck    — past its toughness: dark, tumbling; its whole haul goes into
+           ours (× ORE YIELD) plus salvage.
+```
+
+**Tiers** (by haul crossing a threshold; a miner never loses a tier):
+
+| tier | haul ≥ | size | toughness | shield | guns | hull detail |
+|---|---|---|---|---|---|---|
+| 0 | 0 t | 1.0 | 2.4 MJ | none | cannon, bursts of 3 | the fighter, ochre stripe |
+| 1 | 40 t | 1.6 | 6 MJ | none | cannon, bursts of 5 | ore tanks under the wings |
+| 2 | 160 t | 2.4 | 14 MJ | 40 % of a hit shed | cannon, bursts of 7 | + dorsal collector, bigger nacelles |
+| 3 | 480 t | 3.4 | 32 MJ | 65 % shed | cannon 9 + the rail | + the drill boom off the nose |
+
+**Look** (mimic.wgsl, same pass): the hull is the fighter SDF at `size` with
+the tier's parts unioned on; an ochre working stripe instead of the hostile's
+rust; engines a working amber-white; the beam a thin hot amber-white core with
+a faint red halo and bright ore motes sliding up it toward the miner, ending in
+a glow on the rock's face; a shield sheen on tiers 2–3 when hit. Far off, any
+hull that would be under two pixels is a lit speck so the belt reads as
+populated. The sight marks a miner with an ivory diamond (kind 3), red and
+pulsing when hostile (kind 4); edge arrows as for mimics.
+
+**Bench.** `FARFALL_BENCH_MINERS=tier[,mine|fight]`: a miner of that tier
+ahead-left, mining a planted rock with the beam (default) or fighting (slugs
+in the air, a hit on the shell).
+
+**Interface for the HUD.** `Game::contacts()` → `Vec<(DVec3, u8)>` world
+position + kind, mimics then miners, the same shape the sight's marks use.

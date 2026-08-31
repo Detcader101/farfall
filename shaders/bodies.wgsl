@@ -447,8 +447,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                             let light = max(dot(sp.n, sun), 0.0);
                             // Rock, not star: dull grey-brown, and where a
                             // rock is well under a pixel it melts into the
-                            // grain rather than staying a bright point.
-                            let rock = vec3<f32>(0.26, 0.24, 0.21) * (light * 1.1 + 0.08);
+                            // grain rather than staying a bright point. A
+                            // Sun-lit facet glints as the rock turns: a
+                            // twinkle, brief and sharp, on the specks.
+                            let half = normalize(sun - ray);
+                            let facet = pow(max(dot(sp.n, half), 0.0), 24.0);
+                            let turn = pow(0.5 + 0.5 * sin(bd.params.z * (0.7 + 2.0 * fract(along * 0.013)) + r_off * 0.0071), 8.0);
+                            let glint = facet * turn * 2.5 * light;
+                            let rock = vec3<f32>(0.26, 0.24, 0.21) * (light * 1.1 + 0.08) + vec3<f32>(1.0, 0.95, 0.85) * glint;
                             let far = 1.0 - smoothstep(120.0, 400.0, px_m);
                             let k = sp.cover * near * far * in_ring;
                             rgb = mix(rgb, rock, k);
@@ -497,7 +503,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (alpha < 0.002 && dot(rgb, rgb) < 1e-6) {
         discard;
     }
-    let out = tonemap(rgb, exposure);
+    let out = radiance(rgb, exposure);
     // Premultiplied: the glare adds over the stars, the discs replace them.
     return vec4<f32>(out + dither_px(in.pos.xy) * alpha, alpha);
 }

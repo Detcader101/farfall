@@ -207,7 +207,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let sweep_y = -2.4 + 4.6 * fract(now * 0.23);
             let sweep = smoothstep(0.35, 0.0, abs(q.y - sweep_y));
             let body = 0.06 + 0.10 * bands + 0.5 * sweep;
-            colour += cyan * (rim * 1.6 + body) + white * rim * rim * 0.7;
+            // Interference shimmer: fine fringes beating over the volume,
+            // the projection's coherence showing through.
+            let fringe = sin(dot(q, vec3<f32>(9.0, 5.0, 7.0)) + now * 2.1) * sin(dot(q, vec3<f32>(-6.0, 11.0, 4.0)) - now * 1.3);
+            let shimmer = 0.88 + 0.12 * fringe;
+            colour += (cyan * (rim * 1.6 + body) + white * rim * rim * 0.7) * shimmer;
             // Mounted things read a shade warmer than the hull.
             var on_mount = 0.0;
             for (var i = 0u; i < 4u; i += 1u) {

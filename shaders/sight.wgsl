@@ -22,6 +22,10 @@ struct Sight {
     d: vec4<f32>,
     // each barrel's pip NDC xy, z = shown
     pips: array<vec4<f32>, 4>,
+    // each mimic's marker: NDC xy, outward angle, mode + kind * 4
+    // (mode 0 off, 1 on the ship, 2 an edge arrow;
+    //  kind 0 hail, 1 hostile, 2 wreck, 3 miner, 4 hostile miner)
+    marks: array<vec4<f32>, 12>,
 }
 
 @group(0) @binding(0) var<uniform> st: Sight;
@@ -70,10 +74,9 @@ fn arc(p: vec2<f32>, r: f32, frac: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // strength 0 hides the gun sight but never the mimic markers: the
+    // marker is the way to FIND a ship, not part of the gun.
     let strength = st.a.y;
-    if (strength <= 0.0) {
-        discard;
-    }
     let aspect = st.a.x;
     let now = st.a.z;
     // Work in vertical NDC units so circles are round.
@@ -149,15 +152,61 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         lit += line(cross, 0.002) * step(max(abs(g.x), abs(g.y)), 0.02) * 0.9;
     }
 
-    if (lit <= 0.001) {
-        discard;
+    // The mimics' markers: on the glass a small diamond about the ship;
+    // off it an arrow on the safe-area rectangle pointing the way round.
+    // Cyan for a hail, red (and pulsing) for a hostile, ash for a wreck,
+    // ivory for a miner at work.
+    var mk = vec3<f32>(0.0);
+    for (var i = 0u; i < 12u; i += 1u) {
+        let m = st.marks[i];
+        if (m.w < 0.5) { continue; }
+        let kind = floor(m.w / 4.0);
+        let mode = m.w - kind * 4.0;
+        let d = q - vec2<f32>(m.x * aspect, m.y);
+        var glow = 0.0;
+        if (mode > 1.5) {
+            // The arrow: a doubled chevron, tip on the rectangle, pointing
+            // outward. Into the arrow's frame: +y outward, +x its right.
+            let outw = vec2<f32>(sin(m.z), cos(m.z));
+            let side = vec2<f32>(outw.y, -outw.x);
+            let l = vec2<f32>(dot(d, side), dot(d, outw));
+            glow += line(segment(l, vec2<f32>(0.0, 0.0), vec2<f32>(-0.024, -0.032)), 0.0035)
+                  + line(segment(l, vec2<f32>(0.0, 0.0), vec2<f32>(0.024, -0.032)), 0.0035);
+            glow += (line(segment(l, vec2<f32>(0.0, -0.022), vec2<f32>(-0.024, -0.054)), 0.0028)
+                   + line(segment(l, vec2<f32>(0.0, -0.022), vec2<f32>(0.024, -0.054)), 0.0028))
+                  * 0.7;
+        } else {
+            // Over the ship: a diamond, open in the middle so it never
+            // hides what it marks.
+            glow += line(abs(abs(d.x) + abs(d.y) - 0.030), 0.0026);
+        }
+        var mtint = cyan;
+        var pulse = 1.0;
+        if (kind > 3.5) {
+            // A miner turned on us: the same danger red.
+            mtint = red;
+            pulse = 0.7 + 0.3 * sin(now * 6.0);
+        } else if (kind > 2.5) {
+            // A miner at work: ivory, a working light, not a warning.
+            mtint = vec3<f32>(0.95, 0.90, 0.72);
+        } else if (kind > 1.5) {
+            mtint = vec3<f32>(0.55, 0.65, 0.70) * 0.6;
+        } else if (kind > 0.5) {
+            mtint = red;
+            pulse = 0.7 + 0.3 * sin(now * 6.0);
+        }
+        mk += mtint * glow * pulse;
     }
+
     // Hologram texture: scanlines on the glass and a faint flicker.
     let scan = 0.9 + 0.1 * sin(in.ndc.y * 700.0);
     let flick = 0.95 + 0.05 * sin(now * 37.0);
     // Jammed or empty: the sight blinks.
     let blink = select(1.0, 0.5 + 0.5 * step(0.5, fract(now * 2.5)), jammed || empty);
     let bright = select(1.0, 1.35, clamped);
-    let colour = tint * lit * strength * bright * scan * flick * blink;
+    let colour = (tint * lit * strength * bright * blink + mk) * scan * flick;
+    if (max(colour.r, max(colour.g, colour.b)) <= 0.001) {
+        discard;
+    }
     return vec4<f32>(colour, 1.0);
 }

@@ -121,7 +121,17 @@ fn fbm5(p: vec3<f32>) -> f32 {
 
 // ------------------------------------------------------------------ output
 
-// Exposure + soft shoulder. No history buffers, no temporal accumulation (P1).
+// What a WORLD pass writes: exposed linear radiance, uncurved, into the
+// HDR scene target — the post pass (post.wgsl) does the bloom and the
+// tonemap once, for everything outside the glass. Clamped well inside
+// half-float range so a resolve or a bloom tap never meets an inf.
+fn radiance(col: vec3<f32>, exposure: f32) -> vec3<f32> {
+    return min(max(col, vec3<f32>(0.0)) * exposure, vec3<f32>(4096.0));
+}
+
+// Exposure + soft shoulder, for the SHIP passes (the cabin), which draw
+// after the post pass into an 8-bit target and so curve themselves. No
+// history buffers, no temporal accumulation (P1).
 fn tonemap(col: vec3<f32>, exposure: f32) -> vec3<f32> {
     return vec3<f32>(1.0) - exp(-max(col, vec3<f32>(0.0)) * exposure);
 }
@@ -365,6 +375,8 @@ fn dial_tilted_normal(dash_n: vec3<f32>, tilt: f32) -> vec3<f32> {
 // The dash's plane, shared with the cockpit: a point on it and its normal.
 const DIAL_DASH_C: vec3<f32> = vec3<f32>(0.0, -0.50, -1.05);
 const DIAL_DASH_N: vec3<f32> = vec3<f32>(0.0, 0.9563, 0.2924);
+// The dash metal stands this far above the plane (cockpit.wgsl DASH_SURFACE).
+const DIAL_DASH_SURFACE: f32 = 0.04;
 
 // ---- Instrument drawing, shared by the dials ----
 // Capsule SDF: distance to segment ab, for needle and digit segments.

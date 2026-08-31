@@ -75,7 +75,7 @@ impl CabinUniforms {
     /// the cabin is fixed to the ship, so the rays are turned by it.
     /// `sun_ship`: the Sun's direction in the ship's frame. `sockets`: the
     /// directions (ship frame) of the holograms that get a socket on the
-    /// dash — the shown dials, up to four.
+    /// dash — the shown dials, up to six (the shader has six pads).
     pub fn new(
         cam: &CameraFrame,
         head: Quat,
@@ -115,7 +115,7 @@ impl CabinUniforms {
                 cam.aspect,
                 look.style.min(3) as f32,
                 if look.on { 1.0 } else { 0.0 },
-                sockets.len().min(4) as f32,
+                sockets.len().min(6) as f32,
             ],
             // The Sun's direction quantised to about a degree: the cabin is
             // re-marched only when its inputs change, and a ship turning
@@ -155,6 +155,16 @@ impl CabinUniforms {
     }
 }
 
+impl BlitUniforms {
+    /// The clock, for the plumes' ripples: the composite runs every
+    /// frame, so time may live here where the cabin's own block keeps
+    /// none.
+    pub fn with_time(mut self, time_s: f32) -> Self {
+        self.misc[2] = time_s.rem_euclid(1000.0);
+        self
+    }
+}
+
 fn quantise(v: Vec3, step: f32) -> Vec3 {
     (v / step).round() * step
 }
@@ -163,10 +173,20 @@ fn quantise(v: Vec3, step: f32) -> Vec3 {
 /// DASH_N in cockpit.wgsl and DIAL_DASH_* in common.wgsl.
 pub const DASH_C: Vec3 = Vec3::new(0.0, -0.50, -1.05);
 pub const DASH_N: Vec3 = Vec3::new(0.0, 0.9563, 0.2924);
+/// The dash's metal surface stands this far above the DASH_C plane (the
+/// slab's rounding); instruments are seated on the surface — DASH_SURFACE
+/// in cockpit.wgsl.
+pub const DASH_SURFACE_M: f32 = 0.04;
 /// The gyro ball's radius (metres at stock size) and how far under the
-/// dash its centre sits — the JET bowl's own centre (cockpit.wgsl).
+/// dash its centre sits — shallow, so most of the sphere stands proud of
+/// the metal: a ball on the dash, not in a bowl (BALL_* in cockpit.wgsl).
 pub const BALL_RADIUS_M: f32 = 0.17;
-pub const BALL_DEPTH_M: f32 = 0.10;
+pub const BALL_DEPTH_M: f32 = 0.04;
+/// A DIAL's face plate on the dash (metres at stock size): its radius and
+/// how far its top stands proud of the surface — DIAL_PLATE_* in
+/// cockpit.wgsl. Nothing is hollowed for it; the plate sits on the metal.
+pub const DIAL_PLATE_R_M: f32 = 0.226;
+pub const DIAL_PLATE_TOP_M: f32 = 0.008;
 
 /// Metres of dash per drawing unit of a dial: a dial's drawing radius is
 /// 0.155 units; at this scale that is a 20 cm instrument.
@@ -174,7 +194,7 @@ pub const DIAL_SCALE_M: f32 = 1.3;
 /// Where the holograms float (the cockpit's HOLO_M).
 pub const HOLO_M: f32 = 1.05;
 
-/// Where a hologram's direction meets the dash (the socket, the well), or
+/// Where a hologram's direction meets the dash (the instrument's seat), or
 /// a point just under the hologram if it misses the dash — the mirror of
 /// socket_centre() in cockpit.wgsl.
 pub fn socket_centre(dir: Vec3) -> Vec3 {
@@ -201,9 +221,9 @@ pub fn on_dash(dir: Vec3) -> bool {
     t > 0.3 && t < 2.2 && p.x.abs() < 1.0
 }
 
-/// A DIAL's placement in the dash, for the instrument shaders: the head's
-/// basis in the ship's frame and the dial's centre, a hair under the dash
-/// surface so the face sits in its well.
+/// A DIAL's placement on the dash, for the instrument shaders: the head's
+/// basis in the ship's frame and the dial's centre — the top of its face
+/// plate, a few millimetres proud of the dash surface.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Placement {
@@ -241,19 +261,21 @@ impl Placement {
         self
     }
 
-    /// The gyro's ball: a sphere of this radius (metres, centre.w) at the
-    /// bowl's centre under the hologram's direction, or None off the dash.
+    /// The gyro's ball: a sphere of this radius (metres, centre.w) set a
+    /// little under the dash beneath the hologram's direction, standing
+    /// proud of it, or None off the dash.
     pub fn ball(head: Quat, tan_half_fov: f32, dir: Vec3, size: f32) -> Option<Placement> {
         if !on_dash(dir) {
             return None;
         }
+        let size = size.clamp(0.25, 4.0);
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
-        let centre = socket_centre(dir) - DASH_N * BALL_DEPTH_M;
+        let centre = socket_centre(dir) + DASH_N * (DASH_SURFACE_M - BALL_DEPTH_M * size);
         Some(Placement {
             right: v4(head * Vec3::X, 1.0),
             up: v4(head * Vec3::Y, 0.0),
             fwd: v4(head * Vec3::NEG_Z, tan_half_fov),
-            centre: v4(centre, BALL_RADIUS_M * size.clamp(0.25, 4.0)),
+            centre: v4(centre, BALL_RADIUS_M * size),
         })
     }
 
@@ -263,8 +285,11 @@ impl Placement {
         (DASH_N * c + Vec3::X.cross(DASH_N) * s).normalize()
     }
 
-    /// In the dash under the hologram's direction `dir` (ship frame), for
-    /// a head turned by `head` and a camera of this tan(fov/2).
+    /// On the dash under the hologram's direction `dir` (ship frame), for
+    /// a head turned by `head` and a camera of this tan(fov/2): the top
+    /// of the face plate. A tilted dial is lifted along the dash normal so
+    /// its low edge clears the surface — the cabin's housing rises to
+    /// carry it — the same lift the marcher applies (cockpit.wgsl).
     pub fn in_dash(
         head: Quat,
         tan_half_fov: f32,
@@ -280,13 +305,16 @@ impl Placement {
         } else {
             0.0
         };
+        let size = size.clamp(0.25, 4.0);
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
-        let centre = socket_centre(dir) - Placement::tilted_normal(tilt) * 0.012;
+        let lift = DASH_N * (DASH_SURFACE_M + DIAL_PLATE_R_M * tilt.sin().abs() * size);
+        let centre =
+            socket_centre(dir) + lift + Placement::tilted_normal(tilt) * (DIAL_PLATE_TOP_M * size);
         Some(Placement {
             right: v4(head * Vec3::X, 1.0),
             up: v4(head * Vec3::Y, tilt),
             fwd: v4(head * Vec3::NEG_Z, tan_half_fov),
-            centre: v4(centre, DIAL_SCALE_M * size.clamp(0.25, 4.0)),
+            centre: v4(centre, DIAL_SCALE_M * size),
         })
     }
 }
@@ -803,6 +831,32 @@ mod tests {
         assert_eq!(g.scale, MOVING_SCALE);
     }
 
+    /// The gyro's ball is a sphere ON the dash: its centre a little under
+    /// the surface, so most of it stands proud, seen without any bowl —
+    /// and the point nearest the pilot (where the wings are painted) is
+    /// well above the metal at every size.
+    #[test]
+    fn the_ball_stands_proud_of_the_dash_with_no_bowl() {
+        let down = anchor_direction([0.0, -0.76], 0.7, 1.5);
+        for size in [0.5, 1.0, 2.0] {
+            let ball = Placement::ball(Quat::IDENTITY, 0.7, down, size).unwrap();
+            let centre = Vec3::new(ball.centre[0], ball.centre[1], ball.centre[2]);
+            let radius = ball.centre[3];
+            let depth = DASH_SURFACE_M - (centre - DASH_C).dot(DASH_N);
+            assert!(
+                (depth - BALL_DEPTH_M * size).abs() < 1e-4,
+                "size {size}: depth {depth}"
+            );
+            assert!(radius - depth > radius * 0.7, "most of the ball shows");
+            let to_head = -centre.normalize();
+            let nearest = centre + to_head * radius;
+            assert!(
+                (nearest - DASH_C).dot(DASH_N) - DASH_SURFACE_M > radius * 0.3,
+                "the wings sit clear of the dash: {nearest:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_head_turns_the_rays_not_the_cabin() {
         let cam = CameraFrame {
@@ -870,7 +924,7 @@ mod tests {
         assert!(on_dash(down));
         let place = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0).unwrap();
         assert!(
-            place.centre[1] < -0.4 && place.centre[2] < -0.6,
+            place.centre[1] < -0.3 && place.centre[2] < -0.6,
             "{:?}",
             place.centre
         );
@@ -888,6 +942,21 @@ mod tests {
         // placement carries the angle for the shader.
         let leaned = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.5).unwrap();
         assert_eq!(leaned.up[3], 0.5);
+        // Nothing is hollowed for it: the face's centre is proud of the
+        // dash, and a leaned face is lifted so its low edge clears the
+        // surface too.
+        let height =
+            |c: [f32; 4]| (Vec3::new(c[0], c[1], c[2]) - DASH_C).dot(DASH_N) - DASH_SURFACE_M;
+        assert!(
+            (height(place.centre) - DIAL_PLATE_TOP_M).abs() < 1e-4,
+            "the flat face sits on the dash's surface: {}",
+            height(place.centre)
+        );
+        let low_edge = height(leaned.centre) - DIAL_PLATE_R_M * 0.5f32.sin();
+        assert!(
+            low_edge > 0.0,
+            "a leaned face's low edge clears the dash: {low_edge}"
+        );
         let n = Placement::tilted_normal(0.5);
         assert!(n.z > DASH_N.z && n.y < DASH_N.y, "{n:?}");
         assert!((n.length() - 1.0).abs() < 1e-5);

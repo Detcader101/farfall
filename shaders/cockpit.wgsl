@@ -7,11 +7,12 @@
 // out of it (common.wgsl, sd_fighter_hull), so the hull has a wall, the
 // nose runs out ahead below the glass and the wings sweep back either
 // side; solid canopy arches and rails; a sloping dash and side consoles in
-// dark metal, lit by the Sun through the glass. On the dash sit SOCKETS —
-// recessed pads with a lit rim — one under each instrument the pilot has
-// placed, and from each a beam of light stands up to where the hologram
-// floats. The holograms (drawn after this, on the glass) are the tech; the
-// metal is the ship. TRON in the light, a flight sim in the metal.
+// dark metal, lit by the Sun through the glass. On the dash sit the
+// instruments the pilot has placed — a DIAL's black face plate proud of
+// the surface in a thin bezel, the gyro's ball standing out of the metal,
+// a beam of light up to a TRON hologram — never hollowed into it: no
+// wells, no bowls, no recesses; the instrument is what shows. The dials
+// (drawn after this) are the tech; the metal is the ship.
 //
 // Drawn in the SHIP'S frame: every pixel's ray is turned by the pilot's
 // head, so looking round is looking round the cabin.
@@ -23,8 +24,8 @@ struct Cockpit {
     up: vec4<f32>,
     // xyz: the head's forward axis in ship frame (-Z is the nose). w: tan(fov/2)
     fwd: vec4<f32>,
-    // x: aspect, y: gauge style (0 TRON sockets and beams, 1 JET bowls
-    // and bezels, 2 DIAL flush wells), z: on 0..1, w: number of sockets
+    // x: aspect, y: gauge style (0 TRON beams, 1 JET rings, 2 DIAL plates
+    // and bezels, 3 WARTHOG unlit bezels), z: on 0..1, w: number of sockets
     misc: vec4<f32>,
     // xyz: the Sun's direction in ship frame. w: exposure
     sun: vec4<f32>,
@@ -68,13 +69,30 @@ const HOLO_M: f32 = 1.05;
 // The dash top: a plane, sloped toward the pilot. Sockets are set into it.
 const DASH_C: vec3<f32> = vec3<f32>(0.0, -0.50, -1.05);
 const DASH_N: vec3<f32> = vec3<f32>(0.0, 0.9563, 0.2924); // 17 degrees back
+// The dash's metal surface stands this far above the DASH_C plane: the
+// slab is a rounded box and its rounding inflates the top. Instruments
+// are seated on the surface, not on the plane (cabin.rs: DASH_SURFACE_M).
+const DASH_SURFACE: f32 = 0.04;
+// A DIAL on the dash (metres at stock size; cabin.rs mirrors them): the
+// face plate's radius and how far its top stands proud of the surface,
+// the bezel's ring radius, half-thickness and outer radius.
+const DIAL_PLATE_R: f32 = 0.226;
+const DIAL_PLATE_TOP: f32 = 0.008;
+const DIAL_BEZEL_MID: f32 = 0.234;
+const DIAL_BEZEL_W: f32 = 0.008;
+const DIAL_BEZEL_R: f32 = 0.242;
+// The gyro's BALL: radius, its centre's depth under the dash, and the
+// radius of the circle where it meets the surface (the seam ring).
+const BALL_R: f32 = 0.17;
+const BALL_DEPTH: f32 = 0.04;
+const BALL_SEAM_R: f32 = 0.1652;
 
 // ---------------------------------------------------------------- cabin
 
 struct Hit {
     d: f32,
-    // 0 hull metal, 1 dash/console metal, 2 arch/rail, 3 socket rim,
-    // 4 a dial's face plate, 5 the gyro's ball
+    // 0 hull metal, 1 dash/console metal, 2 arch/rail, 3 a dial's bezel
+    // ring, 4 a dial's face plate, 5 the gyro's ball
     kind: f32,
 }
 
@@ -139,13 +157,18 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
     let grip = sd_ellipsoid_c(p, vec3<f32>(0.0, -0.58, -0.5), vec3<f32>(0.035, 0.07, 0.04));
     let throttle = sd_round_box(p - vec3<f32>(-0.74, -0.53, -0.3), vec3<f32>(0.045, 0.06, 0.03), 0.012);
     furniture = min(furniture, min(min(stick, grip), throttle));
-    // Sockets: shallow recesses in the furniture under each hologram, with
-    // a raised rim.
+    // Instruments ON the dash, never in it: nothing is hollowed out of the
+    // furniture for a dial — no well, no bowl, no recess. A DIAL's black
+    // face plate sits a few millimetres proud of the surface inside a thin
+    // bezel; the gyro's BALL stands out of the dash as a real sphere with
+    // a thin seam ring where it meets the metal; a JET hologram floats
+    // over a thin flush ring; a TRON hologram over bare metal and its
+    // beam. What the pilot sees is the instrument, with at most a rim.
     let n = i32(ck.misc.w);
     var rim = 1e9;
     var face = 1e9;
     var ball = 1e9;
-    // Only near the dash and consoles are there sockets to cut.
+    // Only near the dash and consoles are there instruments to add.
     let near_dash = furniture < 0.2;
     for (var i = 0; i < 6; i += 1) {
         if (i >= n || !near_dash) { break; }
@@ -158,60 +181,47 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
         let tilt_code = floor(hundredths / 1000.0);
         let size = max((hundredths - 1000.0 * tilt_code) / 100.0, 0.25);
         let tilt = radians(tilt_code - 60.0);
-        let c = socket_centre(pd.xyz);
-        // The socket's geometry in its own scaled space: distances come
-        // back multiplied by the size, so the march stays honest.
+        // Seated on the metal's surface, under the hologram's direction.
+        let c = socket_centre(pd.xyz) + DASH_N * DASH_SURFACE;
+        // The instrument's geometry in its own scaled space: distances
+        // come back multiplied by the size, so the march stays honest.
         let q = (p - c) / size;
         let along = dot(q, DASH_N);
         let radial = length(q - DASH_N * along);
         if (style > 1.5) {
-            // DIAL: a flush well behind a raised bezel, the instrument's
-            // face a black plate at its floor — opaque, nothing of the
-            // dash's insides shows — drawn over by the gauge pass in the
-            // same plane. Tilted toward the pilot, the whole instrument
-            // leans on its axis: a housing rises out of the dash on the
-            // far side to carry it. The cut reaches above the surface
-            // too, or it is flush and cuts nothing.
+            // DIAL / WARTHOG: the face plate on the dash inside its bezel.
+            // Tilted toward the pilot the whole instrument leans on its
+            // axis and is lifted so its low edge clears the surface — a
+            // short housing rises out of the dash to carry it. Nothing
+            // is cut; the gauge pass draws the markings on the plate's
+            // top, in the same plane (cabin.rs mirrors these numbers).
             let tn = dial_tilted_normal(DASH_N, tilt);
-            let ta = dot(q, tn);
-            let tr = length(q - tn * ta);
-            let housing = max(tr - 0.252, abs(ta + 0.05) - 0.06) * size;
+            let qt = q - DASH_N * (DIAL_PLATE_R * abs(sin(tilt)));
+            let ta = dot(qt, tn);
+            let tr = length(qt - tn * ta);
+            let housing = max(tr - DIAL_BEZEL_R, abs(ta + 0.25) - 0.25) * size;
             furniture = min(furniture, housing);
-            // The well is cut clear through whatever dash rises over the
-            // leaned face (a 60° lean buries its near edge 18 cm deep),
-            // wide enough that the markings stay on the plate, inside
-            // the bezel.
-            let well = max(tr - 0.225, abs(ta - 0.11) - 0.125) * size;
-            furniture = max(furniture, -well);
-            let plate = max(tr - 0.226, abs(ta + 0.017) - 0.003) * size;
+            let plate = max(tr - DIAL_PLATE_R, abs(ta - DIAL_PLATE_TOP * 0.5) - DIAL_PLATE_TOP * 0.5) * size;
             face = min(face, plate);
-            let bezel = (length(vec2<f32>(tr - 0.237, ta - 0.012)) - 0.016) * size;
+            let bezel = (length(vec2<f32>(tr - DIAL_BEZEL_MID, ta - DIAL_PLATE_TOP)) - DIAL_BEZEL_W) * size;
             rim = min(rim, bezel);
+        } else if (style > 2.5) {
+            // BALL: the gyro's sphere, its centre a little under the dash
+            // so most of it stands proud; the gyro pass paints the world
+            // on the part above the surface. A thin seam ring hides the
+            // join with the metal.
+            let sphere = (length(q + DASH_N * BALL_DEPTH) - BALL_R) * size;
+            ball = min(ball, sphere);
+            let seam = (length(vec2<f32>(radial - BALL_SEAM_R, along)) - DIAL_BEZEL_W) * size;
+            rim = min(rim, seam);
         } else if (style > 0.5) {
-            // JET: a spherical bowl hollowed into the dash, the classic
-            // round instrument's well, with a raised bezel at its mouth
-            // the hologram sits in. BALL (style 3): the gyro's sphere
-            // itself sits in the bowl, a solid the gyro pass paints.
-            if (style > 2.5) {
-                let sphere = (length(q + DASH_N * 0.10) - 0.17) * size;
-                ball = min(ball, sphere);
-            }
-            // — the classic
-            // round instrument's well, with a raised bezel at its mouth
-            // the hologram sits in. The dial is drawn after the cabin, on
-            // the glass, so there is nothing here to fight it for depth.
-            let bowl = (length(q + DASH_N * 0.10) - 0.21) * size;
-            furniture = max(furniture, -bowl);
-            let bezel = (length(vec2<f32>(radial - 0.185, along - 0.015)) - 0.016) * size;
+            // JET: the hologram floats over a thin flush ring — the round
+            // instrument's rim without its well.
+            let bezel = (length(vec2<f32>(radial - 0.185, along)) - DIAL_BEZEL_W) * size;
             rim = min(rim, bezel);
-        } else {
-            // TRON: a shallow recess, a thin lit rim, a beam up to the
-            // hologram.
-            let recess = max(radial - 0.085, abs(along) - 0.025) * size;
-            furniture = max(furniture, -recess);
-            let ring = (length(vec2<f32>(radial - 0.095, along - 0.012)) - 0.012) * size;
-            rim = min(rim, ring);
         }
+        // TRON: bare dash under the hologram; the beam alone stands up
+        // to it (beam_light).
     }
     if (furniture < h.d) { h = Hit(furniture, 1.0); }
     if (rim < h.d) { h = Hit(rim, 3.0); }
@@ -437,16 +447,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // brushed ring with a thread of light at its inner edge.
         if (hit.kind > 2.5 && hit.kind < 3.5) {
             if (ck.misc.y > 2.5) {
-                // WARTHOG: a machined bezel, unlit — the A-10's black
-                // panel has no light of its own.
-                lit = lit * 1.4 + vec3<f32>(0.012, 0.012, 0.011) * ao;
+                // WARTHOG: a machined aluminium bezel, unlit — the A-10's
+                // black panel has no light of its own; it shows by the
+                // Sun and the sky in its brushed metal.
+                lit = lit * 1.9 + vec3<f32>(0.018, 0.018, 0.017) * (0.4 + 0.6 * ndl) * ao;
             } else {
                 lit = select(cyan * 1.0 * glow_k, lit * 1.6 + cyan * 0.12 * glow_k, ck.misc.y > 0.5);
             }
         }
         // Emissive lines where the surface runs near one of the light
-        // lines; a hint of the cabin light everywhere.
-        let line = exp(-sd_lines(p) / 0.008);
+        // lines; a hint of the cabin light everywhere — but not on an
+        // instrument: a dial's face, its bezel and the gyro's ball are
+        // the instrument's own, and a panel seam running under a dial
+        // must not paint a cyan wedge across its black face.
+        let line = exp(-sd_lines(p) / 0.008) * step(hit.kind, 2.5);
         lit += cyan * line * 0.9 * glow_k;
         // Engine light on the nacelles seen from behind: not from here.
         colour = tonemap(lit * metal_k * 1.5, exposure);

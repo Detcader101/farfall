@@ -33,13 +33,25 @@ pub fn radius(d_m: f64) -> f32 {
 /// half height is `half_w * aspect`). The rest of the screen is dimmed
 /// around it.
 pub fn pane_rect(aspect: f32, centre: [f32; 2]) -> [f32; 3] {
+    pane_rect_sized(aspect, centre, PANE_HALF_H)
+}
+
+/// The full map pane's half height, NDC.
+pub const PANE_HALF_H: f32 = 0.44;
+/// The mini map's half height, NDC: a gauge, not a screen.
+pub const MINI_HALF_H: f32 = 0.17;
+/// Where the mini map sits on the glass: the top-right corner, clear of
+/// the arch (the readout has the top-left).
+pub const MINI_ANCHOR: [f32; 2] = [0.80, 0.78];
+
+/// A pane of a given half height (see [`pane_rect`]).
+pub fn pane_rect_sized(aspect: f32, centre: [f32; 2], half_h: f32) -> [f32; 3] {
     let aspect = if aspect.is_finite() && aspect > 0.0 {
         aspect
     } else {
         1.0
     };
-    const HALF_H: f32 = 0.44;
-    let half_w = (HALF_H / aspect).min(0.4);
+    let half_w = (half_h / aspect).min(0.4);
     let c = |v: f32| {
         if v.is_finite() {
             v.clamp(-0.95, 0.95)
@@ -149,13 +161,18 @@ pub struct MapLook {
     pub time_s: f32,
     /// The pane's centre on the glass.
     pub centre: [f32; 2],
+    /// The pane's half height (NDC): the full map, or the mini map.
+    pub half_h: f32,
+    /// Dim the rest of the screen round the pane (the full map does; a
+    /// gauge does not).
+    pub dim: bool,
 }
 
 impl MapUniforms {
     pub fn new(w: &MapWorld, l: &MapLook) -> Self {
         let (eye, right, up, fwd) = l.view.camera();
         let tan_half = (40.0f32).to_radians().tan();
-        let pane = pane_rect(l.aspect, l.centre);
+        let pane = pane_rect_sized(l.aspect, l.centre, l.half_h);
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
         let q = w.ship_orient.as_quat();
         // The ring of arrival as a map radius about the destination: in log
@@ -163,7 +180,7 @@ impl MapUniforms {
         let ring = radius(w.dest_arrival_m).max(0.04);
         Self {
             eye: v4(eye, l.visibility.clamp(0.0, 1.0)),
-            right: v4(right, 0.0),
+            right: v4(right, if l.dim { 1.0 } else { 0.0 }),
             up: v4(up, 0.0),
             fwd: v4(fwd, tan_half),
             pane: [pane[0], pane[1], pane[2], l.aspect],
@@ -268,6 +285,8 @@ mod tests {
             aspect: 1.5,
             time_s: 3.0,
             centre: [0.4, 0.1],
+            half_h: PANE_HALF_H,
+            dim: true,
         };
         let u = MapUniforms::new(&w, &l);
         assert_eq!(u.eye[3], 1.0);

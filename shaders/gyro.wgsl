@@ -26,8 +26,10 @@ struct Gyro {
     // octahedral (the geometric ball).
     c: vec4<f32>,
     // x: 0 hologram, 1 JET (a shaded disc), 2 the geometric ball — a
-    // sphere in the dash (p3: centre, w radius in metres) painted with
-    // the world's frame; yzw: the world's up in the ship's frame.
+    // sphere on the dash (p3: centre, w radius in metres) painted with
+    // the world's frame — 3 the WARTHOG ball (brighter, white markings);
+    // yzw: the world's up in the ship's frame (ball only; y is the
+    // WARTHOG flag on a disc).
     d: vec4<f32>,
     // DIAL placement, as the gauges: right, up, fwd (w tan half fov), centre
     // (w metres per unit; 0 = on the glass).
@@ -96,6 +98,12 @@ fn ball_3d(ndc: vec2<f32>, aspect: f32, vis: f32) -> vec4<f32> {
     }
     let t = b - sqrt(disc);
     let hit = ray * t;
+    // The ball stands out of the dash: only what is above the surface is
+    // there to see — below it is the dash's own metal, which the cabin
+    // has drawn. No bowl, no cavity.
+    if (dot(hit, DIAL_DASH_N) < dot(DIAL_DASH_C, DIAL_DASH_N) + DIAL_DASH_SURFACE - 0.002) {
+        discard;
+    }
     let n = (hit - c) / rad;
     // Anti-aliasing width on the unit sphere: a pixel's footprint.
     let aa = max(fwidth(n.x) + fwidth(n.y) + fwidth(n.z), 1e-4) * 0.7;
@@ -112,33 +120,37 @@ fn ball_3d(ndc: vec2<f32>, aspect: f32, vis: f32) -> vec4<f32> {
 
     var glow = 0.0;
     var hot = 0.0;
-    // Horizon and pitch lines: every 10°, the horizon itself heavier.
-    let horizon = 1.0 - smoothstep(0.0, aa * 1.8, abs(lat) - 0.004);
+    // Horizon and pitch lines: every 10°, the horizon itself heavier, the
+    // 30° lines heavier than the rest.
+    let horizon = 1.0 - smoothstep(0.0, aa * 1.6, abs(lat) - 0.006);
     let pitch_line = abs(fract(lat / 0.17453 + 0.5) - 0.5) * 0.17453;
+    let pitch_major = abs(fract(lat / 0.5236 + 0.5) - 0.5) * 0.5236;
     let pl = 1.0 - smoothstep(0.0, aa * 1.6, pitch_line - 0.0025);
+    let pm = 1.0 - smoothstep(0.0, aa * 1.6, pitch_major - 0.0035);
     // Meridians every 30°, fading toward the poles where they crowd.
     let mer = abs(fract(lon / 0.5236 + 0.5) - 0.5) * 0.5236 * cos(lat);
     let ml = (1.0 - smoothstep(0.0, aa * 1.6, mer - 0.002)) * (1.0 - smoothstep(1.2, 1.5, abs(lat)));
-    glow += 0.55 * pl + 0.3 * ml;
-    hot += 0.9 * horizon;
+    glow += 0.5 * pl + 0.35 * pm + 0.12 * ml;
+    hot += 1.0 * horizon;
 
     // Sky and earth, shaded as a sphere by a lamp up-left of the head.
     let lamp = normalize(-0.5 * gyro.p0.xyz + 0.6 * gyro.p1.xyz - 0.7 * gyro.p2.xyz);
-    let shade = 0.25 + 0.75 * max(dot(n, lamp), 0.0);
-    let spec = pow(max(dot(n, normalize(lamp - ray)), 0.0), 40.0);
+    let shade = 0.35 + 0.65 * max(dot(n, lamp), 0.0);
+    let spec = pow(max(dot(n, normalize(lamp - ray)), 0.0), 64.0);
     let rim = pow(1.0 - max(dot(n, -ray), 0.0), 3.0);
     let sky = smoothstep(-0.004, 0.004, lat);
-    // The WARTHOG ball is a real ADI: brighter blue over brown.
-    let warthog = gyro.d.y > 0.5;
-    let sky_rgb = select(vec3<f32>(0.16, 0.32, 0.58), vec3<f32>(0.24, 0.46, 0.78), warthog);
-    let earth_rgb = select(vec3<f32>(0.36, 0.22, 0.10), vec3<f32>(0.46, 0.26, 0.10), warthog);
-    var colour = mix(earth_rgb, sky_rgb, sky) * shade * 1.6
-        + vec3<f32>(0.6, 0.6, 0.55) * rim * 0.25
-        + vec3<f32>(1.0, 0.97, 0.9) * spec * 0.35;
+    // The WARTHOG ball is a real ADI: brighter blue over brown (d.x = 3).
+    let warthog = gyro.d.x > 2.5;
+    let sky_rgb = select(vec3<f32>(0.14, 0.30, 0.56), vec3<f32>(0.18, 0.42, 0.78), warthog);
+    let earth_rgb = select(vec3<f32>(0.30, 0.17, 0.07), vec3<f32>(0.40, 0.21, 0.07), warthog);
+    var colour = mix(earth_rgb, sky_rgb, sky) * shade
+        + vec3<f32>(0.6, 0.6, 0.55) * rim * 0.12
+        + vec3<f32>(1.0, 0.97, 0.9) * spec * 0.18;
 
     // The ship: fixed wings and a dot at the point of the ball nearest
     // the pilot, in that point's tangent frame, the same drawing as the
-    // disc's at the ball's scale.
+    // disc's at the ball's scale — with a dark border round them, so the
+    // wings read on the earth and the sky and across the horizon alike.
     let f = -normalize(c);
     let e1 = normalize(cross(gyro.p1.xyz, f));
     let e2 = cross(f, e1);
@@ -149,14 +161,17 @@ fn ball_3d(ndc: vec2<f32>, aspect: f32, vis: f32) -> vec4<f32> {
         let wr = seg(uv, vec2<f32>(0.018, 0.0), vec2<f32>(0.075, 0.0));
         let tl = seg(uv, vec2<f32>(-0.018, 0.0), vec2<f32>(-0.018, -0.012));
         let tr = seg(uv, vec2<f32>(0.018, 0.0), vec2<f32>(0.018, -0.012));
-        let w = min(min(wl, wr), min(tl, tr));
+        let w = min(min(min(wl, wr), min(tl, tr)), length(uv) - 0.0018);
         let front = step(0.0, dot(n, f));
-        hot += line(w, 0.0014, aa2 * 1.6) * front;
-        hot += (1.0 - smoothstep(0.0030, 0.0030 + aa2 * 1.6, length(uv))) * front;
+        let border = (1.0 - smoothstep(0.0, aa2 * 1.6, w - 0.0040)) * front;
+        colour *= 1.0 - 0.85 * border;
+        glow *= 1.0 - border;
+        hot *= 1.0 - border;
+        hot += line(w, 0.0015, aa2 * 1.6) * front;
     }
-    let ivory = vec3<f32>(0.82, 0.78, 0.62);
-    let cream = vec3<f32>(0.96, 0.92, 0.80);
-    colour += ivory * glow * 0.55 + cream * hot * 0.9;
+    let ivory = select(vec3<f32>(0.82, 0.78, 0.62), vec3<f32>(0.94, 0.94, 0.90), warthog);
+    let cream = select(vec3<f32>(0.96, 0.92, 0.80), vec3<f32>(1.0, 1.0, 0.97), warthog);
+    colour += ivory * glow * 0.7 + cream * hot * 1.0;
     return vec4<f32>(colour * vis, 1.0);
 }
 
