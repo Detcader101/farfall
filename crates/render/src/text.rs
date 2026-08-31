@@ -14,12 +14,14 @@ pub const GLYPH_H: usize = 5;
 /// One font pixel of tracking between glyphs.
 pub const ADVANCE: usize = GLYPH_W + 1;
 
-/// Bitmap dimensions, in font pixels. 128 columns is ~32 characters; 64 rows
-/// is ten text lines at the standard 6-pixel pitch. (At 16 rows, every HUD
-/// line below the third was silently clipped — including the altitude and
-/// speed readouts, which simply never appeared.)
+/// Bitmap dimensions, in font pixels. 128 columns is ~32 characters; 96 rows
+/// is sixteen text lines at the standard 6-pixel pitch. (At 16 rows, every
+/// HUD line below the third was silently clipped — including the altitude
+/// and speed readouts, which simply never appeared. At 64 rows the readout's
+/// eleventh line, y=60, lost its bottom glyph row the same silent way: a
+/// line needs `y + GLYPH_H` rows, not `y`.)
 pub const COLS: usize = 128;
-pub const ROWS: usize = 64;
+pub const ROWS: usize = 96;
 /// `COLS` bits per row, as four `u32`s (a `vec4<u32>` on the GPU).
 pub const ROW_WORDS: usize = COLS / 32;
 
@@ -166,6 +168,19 @@ mod tests {
                 assert!(!b.get(x, y));
             }
         }
+    }
+
+    /// The readout's last line (y=60, the landing countdown) must keep its
+    /// bottom glyph row: a glyph drawn at y needs rows y..y+GLYPH_H, and the
+    /// bitmap silently drops out-of-bounds pixels rather than growing.
+    #[test]
+    fn the_bottom_readout_line_keeps_its_glyph_feet() {
+        let mut b = TextBitmap::new();
+        b.draw(0, 60, "L");
+        // 'L' row 4 is 0b111: the full foot, at absolute row 64.
+        assert!(b.get(0, 64) && b.get(1, 64) && b.get(2, 64));
+        let (_, h) = b.used_extent();
+        assert_eq!(h, 65);
     }
 
     /// '1' must actually look like a 1: a stem with a serif foot.

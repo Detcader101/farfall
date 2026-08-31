@@ -2409,8 +2409,20 @@ impl Game {
     /// The gun sight this frame: off with a panel up or in design.
     fn sight_uniforms(&self, pose: &ViewPose) -> SightUniforms {
         let cam = &pose.cam;
-        if self.panel_open() || self.settings.arms_sight <= 0.0 {
+        if self.panel_open() {
             return SightUniforms::none(cam);
+        }
+        // The mimics' markers ride this pass whatever the sight setting:
+        // strength 0 hides the gun's reticle, never the way to a ship.
+        let t = self.state.time_s;
+        let ship_inv = self.state.ship.orient.inverse();
+        let eye = self.eye_m(pose);
+        let mut marks = [None; farfall_render::sight::MARKS];
+        for (slot, m) in marks
+            .iter_mut()
+            .zip(self.mimics.ships.iter().filter(|m| !m.shrouded(t)))
+        {
+            *slot = Some(((ship_inv * (m.pos - eye)).as_vec3(), m.kind()));
         }
         let (aim, clamped) = self.aim_ship();
         let w = self.arms.selected;
@@ -2441,6 +2453,7 @@ impl Game {
                 jammed: self.arms.jammed_of(w),
                 empty: self.arms.ammo_of(w) == 0,
                 strength: self.settings.arms_sight,
+                marks,
             },
         )
     }

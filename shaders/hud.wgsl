@@ -17,7 +17,7 @@
 // shape of the glass.
 
 const COLS: u32 = 128u;
-const ROWS: u32 = 64u;
+const ROWS: u32 = 96u;
 
 struct Hud {
     // xy: anchor on the canopy in NDC (top-left of the text block),
@@ -34,7 +34,7 @@ struct Hud {
     // block; w: the highlighted row's height in font px.
     sway: vec4<f32>,
     // COLS bits per row, four u32 per row.
-    rows: array<vec4<u32>, 64>,
+    rows: array<vec4<u32>, 96>,
 }
 
 @group(0) @binding(0) var<uniform> hud: Hud;
