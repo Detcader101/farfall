@@ -73,8 +73,9 @@ pub struct Device {
 /// Sticks the game knows by their USB ids: the name is shown in the
 /// wizard and the STICK page, and a known stick starts from its own map.
 const KNOWN: &[(u16, u16, &str)] = &[
-    (0x044F, 0xB67C, "THRUSTMASTER T.FLIGHT HOTAS 4"),
-    (0x044F, 0xB67B, "T.FLIGHT HOTAS 4 (PS4 MODE - SET PC)"),
+    // Short enough for a DEVICE row and a FOUND: line: no "THRUSTMASTER".
+    (0x044F, 0xB67C, "T.FLIGHT HOTAS 4"),
+    (0x044F, 0xB67B, "HOTAS 4 IN PS4 MODE: SET PC"),
     (0x044F, 0xB108, "THRUSTMASTER T.FLIGHT HOTAS X"),
     (0x044F, 0xB10A, "THRUSTMASTER T.16000M"),
     (0x044F, 0x0402, "THRUSTMASTER WARTHOG STICK"),
@@ -257,9 +258,13 @@ pub enum Layout {
 }
 
 /// The T.Flight HOTAS 4's physical controls by winmm index (measured).
+/// U (index 3) is reported by the driver but nothing on the unit moves
+/// it, so coverage never counts it as a control without a job.
 const HOTAS4_AXES: [&str; 6] = ["STICK X", "STICK Y", "LEVER", "AXIS U", "ROCKER", "TWIST"];
+const HOTAS4_DEAD_AXES: [u8; 1] = [3];
 const HOTAS4_BUTTONS: [&str; 12] = [
-    "TRIGGER", "L1", "R3", "L3", "FACE<", "FACEV", "FACE>", "FACE^", "R2", "L2", "BASE L", "BASE R",
+    "TRIGGER", "L1", "R3", "L3", "FACE L", "FACE D", "FACE R", "FACE U", "R2", "L2", "BASE L",
+    "BASE R",
 ];
 
 /// Where the throttle lever's zero is: the middle (back half is reverse
@@ -374,12 +379,15 @@ impl StickMap {
     /// four) or, without one, from the layout.
     pub fn coverage(&self, device: Option<&Device>) -> (usize, usize, Vec<String>) {
         let (axes, buttons): (Vec<u8>, Vec<u8>) = match (device, self.layout) {
-            (Some(d), _) => {
+            (Some(d), layout) => {
                 let mut b: Vec<u8> = (0..d.buttons.min(usize::from(HAT_BIT)) as u8).collect();
                 if d.hat {
                     b.extend(HAT_BIT..HAT_BIT + 4);
                 }
-                ((0..d.axes.min(MAX_AXES) as u8).collect(), b)
+                let axes = (0..d.axes.min(MAX_AXES) as u8)
+                    .filter(|a| layout != Layout::Hotas4 || !HOTAS4_DEAD_AXES.contains(a))
+                    .collect();
+                (axes, b)
             }
             (None, Layout::Hotas4) => (
                 vec![0, 1, 2, 4, 5],
@@ -1268,16 +1276,16 @@ impl Default for Wizard {
     }
 }
 
-/// A 21-character bar: `[.........|.........]` with the value's mark.
+/// A 21-character bar: `[.........:.........]` with the value's mark.
 fn bar(v: f32) -> String {
     let v = if v.is_finite() {
         v.clamp(-1.0, 1.0)
     } else {
         0.0
     };
-    let mut s: Vec<u8> = b"[.........|.........]".to_vec();
+    let mut s: Vec<u8> = b"[.........:.........]".to_vec();
     let i = ((v + 1.0) * 0.5 * 18.0).round() as usize + 1;
-    s[i.min(19)] = b'#';
+    s[i.min(19)] = b'*';
     String::from_utf8(s).unwrap_or_default()
 }
 
@@ -1723,10 +1731,10 @@ mod tests {
         m2.bind_button(Named::Chase, None);
         m2.bind_axis(Flight::Strafe, AxisMap::NONE);
         let (jobs, total, free) = m2.coverage(Some(&dev));
-        assert_eq!(total, 22, "the device counts U too");
+        assert_eq!(total, 21, "the driver's U axis is not a control");
         assert_eq!(jobs, 19);
         assert!(free.contains(&"BASE L".to_string()) && free.contains(&"ROCKER".to_string()));
-        assert!(free.contains(&"AXIS U".to_string()));
+        assert!(!free.contains(&"AXIS U".to_string()));
         // A stick nobody knows: coverage needs the device.
         let mut g = StickMap::empty();
         assert_eq!(g.coverage(None).1, 0);
@@ -1911,9 +1919,9 @@ mod tests {
                 assert!(l.len() <= 32, "{l:?} is wider than the panel");
             }
         }
-        assert_eq!(bar(0.0), "[.........#.........]");
-        assert_eq!(bar(-1.0), "[#........|.........]");
-        assert_eq!(bar(1.0), "[.........|........#]");
+        assert_eq!(bar(0.0), "[.........*.........]");
+        assert_eq!(bar(-1.0), "[*........:.........]");
+        assert_eq!(bar(1.0), "[.........:........*]");
         assert_eq!(bar(f32::NAN).len(), 21);
     }
 

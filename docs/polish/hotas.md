@@ -82,13 +82,13 @@ named control bindable to a stick button, a step-by-step setup wizard, docs.
 
 - `cargo.exe test -p farfall-app`: stick.rs 12 tests, input.rs 1, menu.rs 1
   (see the test log lines in the final report).
-- Captures **owed** (a HALT on benches was called before they could be taken;
-  the commands are ready to run the moment captures are allowed again —
-  `B=/mnt/c/Users/jayja/farfall-captures/bench.sh; EXE=…/hotas/target/release/farfall.exe; OUT=…/farfall-captures/hotas`):
-  - `stick-page` — `$B $EXE $OUT stick-page FARFALL_BENCH_MENU=2`: the STICK page (DEVICE
-    THRUSTMASTER T.FLIGHT HOTAS 4 (the real stick, found by winmm), STICK ON,
-    SETUP WIZARD, the six axis rows, DEADZONE 8%, CURVE 1.50, THROTTLE ZERO
-    CENTRE, TRIGGER B0.
+- Captures in `farfall-captures/hotas/`, all looked at; every one's `.log`
+  carries `stick: found T.FLIGHT HOTAS 4 (044F:B67C, 6 axes, 12 buttons, a
+  hat)` — the real stick, read by winmm at start of every run:
+  - `stick-page-1.png` — `FARFALL_BENCH_MENU=2`: the STICK page (DEVICE
+    T.FLIGHT HOTAS 4 (the real stick, found by winmm), STICK ON,
+    SETUP WIZARD, the six axis rows by their physical names, DEADZONE 8%,
+    CURVE 1.50, THROTTLE ZERO CENTRE, TRIGGER.
   - `wizard-pitch` — `FARFALL_BENCH_STICK=0`: step 1/34, PITCH: "PULL THE STICK
     BACK (NOSE UP)", DETECTED STICK Y +, the live bar.
   - `wizard-deadzone` — `FARFALL_BENCH_STICK=7`: the DEADZONE knob with the drift bar.
@@ -96,18 +96,28 @@ named control bindable to a stick button, a step-by-step setup wizard, docs.
   - `wizard-boost` — `FARFALL_BENCH_STICK=10`: BOOST: DETECTED L1, the key it stands in for.
   - `wizard-summary` — `FARFALL_BENCH_STICK=33`: the map, the trigger, and the coverage line.
   - `keys-page` — `FARFALL_BENCH_MENU=1`: KEYS with the stick binds beside the keys.
-  Every wizard page and every STICK/KEYS row is measured against the 32×16
-  panel in tests (`every_wizard_page_fits_the_panel`,
+  Every wizard page and every STICK/KEYS row is also measured against the
+  32×16 panel in tests (`every_wizard_page_fits_the_panel`,
   `the_stick_page_and_its_wizard_are_in_the_menu`,
-  `every_row_of_every_page_fits_the_panel`), so what the captures will add is
-  the eyeballing, not the fit.
+  `every_row_of_every_page_fits_the_panel`).
+  What looking at the captures corrected: the known name lost its
+  THRUSTMASTER so the DEVICE row and the FOUND: line fit; the driver's U
+  axis (nothing on the unit moves it) no longer counts as a FREE control
+  (`COMPLETE: 21 OF 21 HAVE A JOB`); the bar's `|`/`#` and the face
+  buttons' `^` were not in the 3×5 font — now `:`/`*` and FACE L D R U.
+  One KEYS capture came back with its first row in PRESS KEY (rebinding);
+  a rerun with every stick edge logged showed no button edge and a clean
+  page — not the stick; a one-off from the bench desktop's focus/click,
+  not reproduced since.
 - The real device: the stick is plugged in on this PC (Windows PnP shows
   `HID\VID_044F&PID_B67C`, PC mode) and a winmm probe from PowerShell read it as
   id 0, 6 axes, 12 buttons, a hat, all axes at rest (32767) — the same call
   `stick::platform::find/read` makes. The game's own line
-  (`stick: found THRUSTMASTER T.FLIGHT HOTAS 4 (044F:B67C, 6 axes, 12 buttons,
-  a hat)` at start, and `stick: pitch … -> thrust […] torque […]` once a second
-  while any axis passes 0.3 or a button is down) is owed with the captures.
+  (`stick: found …` at start) shows in all the capture logs. Nobody was at
+  the stick during the runs, so no movement line (`stick: pitch … ->
+  thrust […] torque […]`, once a second while any axis passes 0.3) and no
+  button-edge line (`stick: L1 down`) was produced — those are the first
+  things to look for in the log on a real flight.
 
 ## What is left / open problems
 

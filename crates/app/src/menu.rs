@@ -1455,7 +1455,7 @@ mod tests {
         assert_eq!(s.stick.button_for(Named::Boost), Some(5));
         assert_eq!(s.stick.button_for(Named::Landing), None, "B5 left LANDING");
         assert!(!m.rebinding());
-        assert_eq!(m.value_of(boost, &s), "LSHIFT FACEV");
+        assert_eq!(m.value_of(boost, &s), "LSHIFT FACE D");
         for it in m.items() {
             assert!(
                 m.line(it, false, &s).len() <= COLS,

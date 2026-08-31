@@ -60,7 +60,7 @@ The device is identified by its USB ids from `JOYCAPSW.wMid/wPid` (winmm's own
 name is "Microsoft PC-joystick driver" for everything) and by parsing the
 `Gamepad.id` string in the browser (Chrome's `(Vendor: 044f Product: b67c)`,
 Firefox's `044f-b67c-`). A known id shows its name on the STICK page and in the
-wizard: **THRUSTMASTER T.FLIGHT HOTAS 4**. PID `B67B` is the same stick with its
+wizard: **T.FLIGHT HOTAS 4**. PID `B67B` is the same stick with its
 base switch on PS4 — the wizard says so; set it to PC.
 
 ## The default map (T.Flight HOTAS 4, PC mode, winmm order)
@@ -146,7 +146,7 @@ a visible hole rather than an omission:
 
 Once the stick has been identified (`stick.layout = hotas4`, set by the reader
 from the USB id), every page names the physical control rather than the raw
-index: TRIGGER, L1, R3, L3, FACE< FACEV FACE> FACE^, R2, L2, BASE L, BASE R,
+index: TRIGGER, L1, R3, L3, FACE L, FACE D, FACE R, FACE U, R2, L2, BASE L, BASE R,
 HAT-U/R/D/L; STICK X, STICK Y, LEVER, ROCKER, TWIST. A stick nobody knows shows
 B0… and AXIS 0 (X)… (winmm letters) or AXIS 0… (browser).
 

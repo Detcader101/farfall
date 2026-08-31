@@ -5097,6 +5097,11 @@ impl App {
             let (Some(gpu), Some(game)) = (self.gpu.as_mut(), self.game.as_mut()) else {
                 return;
             };
+            log::info!(
+                "stick: {} {}",
+                game.settings.stick.button_name(Some(b)),
+                if down { "down" } else { "up" }
+            );
             if down && game.menu.open && game.menu.rebinding() {
                 let ev = game.menu.stick_button(b, &mut game.settings);
                 apply_menu_event(game, gpu, event_loop, ev);
