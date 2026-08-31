@@ -169,6 +169,36 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         rgb += cyan * column;
     }
 
+    // The engines' plumes on the miniature: a needle of light out of
+    // each nozzle, as long as the effort, blue-white, cyan under the
+    // hyper field — light gathered by closest approach, no march.
+    {
+        let effort = holo.misc.x;
+        let hyper = holo.misc.y;
+        let drive = max(effort, hyper * 0.55);
+        if (drive > 0.01) {
+            let len = (2.0 + 9.0 * effort + 6.0 * hyper) * s;
+            for (var i = 0; i < 2; i += 1) {
+                let x = select(-0.62, 0.62, i == 1);
+                let a = centre + vec3<f32>(x, -0.85, 7.6) * s;
+                let e = vec3<f32>(0.0, 0.0, len);
+                let ac = a - ray * dot(a, ray);
+                let bc = e - ray * dot(e, ray);
+                let u = clamp(-dot(ac, bc) / max(dot(bc, bc), 1e-8), 0.0, 1.0);
+                let q = a + e * u;
+                let tt = max(dot(q, ray), 0.0);
+                let d = length(q - ray * tt) / s;
+                let r_skin = 0.32 + 0.6 * u;
+                let tail = pow(1.0 - u, 1.3);
+                let dd = d / r_skin;
+                let skin = exp(-dd * dd * 2.0) * tail * (0.7 + 0.5 * sin(u * 30.0 - time * 40.0));
+                let core = exp(-(d * d) / 0.02) * tail;
+                let col = mix(vec3<f32>(0.35, 0.55, 1.0), vec3<f32>(0.3, 0.9, 1.0), hyper);
+                rgb += (col * skin * 0.9 + vec3<f32>(0.9, 0.95, 1.0) * core * 1.6) * drive;
+            }
+        }
+    }
+
     // March the miniature. Translucent: the first surface is shaded, and
     // the ray goes on to the next so the far side shows through.
     var t = t_in;
@@ -185,6 +215,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             // Scanlines through the volume, drifting up: the hologram is
             // drawn in light, layer by layer.
             let scan = 0.80 + 0.20 * sin(p.y * 900.0 - time * 4.0);
+            // Interference shimmer: two fine fringes beating across the
+            // volume, the projection's coherence showing through.
+            let fringe = sin(dot(p, vec3<f32>(610.0, 330.0, 470.0)) + time * 2.1)
+                * sin(dot(p, vec3<f32>(-380.0, 720.0, 250.0)) - time * 1.3);
+            let shimmer = 0.88 + 0.12 * fringe;
             var lit = vec3<f32>(0.0);
             if (hit.y == KIND_SHIP) {
                 // Sunlight on the little hull, so its shape reads; the rim
@@ -209,7 +244,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             } else {
                 lit = vec3<f32>(1.0, 0.95, 0.80) * 1.4;
             }
-            rgb += lit * scan * mix(1.0, 0.45, f32(passes));
+            rgb += lit * scan * shimmer * mix(1.0, 0.45, f32(passes));
             passes += 1u;
             if (passes >= 2u) {
                 break;

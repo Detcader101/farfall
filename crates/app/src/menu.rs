@@ -112,6 +112,7 @@ enum Item {
     Exposure,
     TonemapCurve,
     Fringe,
+    Dust,
     /// The nebula block: glow, then which one and its shape and colours.
     Nebula,
     NebulaSeed,
@@ -195,6 +196,7 @@ impl Item {
             Item::Exposure => "EXPOSURE",
             Item::TonemapCurve => "TONEMAP",
             Item::Fringe => "FRINGE",
+            Item::Dust => "DUST",
             Item::Nebula => "NEBULA",
             Item::NebulaSeed => "NEBULA SEED",
             Item::NebulaScale => "NEBULA SCALE",
@@ -310,6 +312,13 @@ impl Item {
             Item::Fringe => {
                 if s.fringe > 0.0 {
                     format!("{:.0}%", s.fringe * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::Dust => {
+                if s.dust > 0.0 {
+                    format!("{:.0}%", s.dust * 100.0)
                 } else {
                     "OFF".to_string()
                 }
@@ -527,6 +536,7 @@ impl Menu {
                 Item::Exposure,
                 Item::TonemapCurve,
                 Item::Fringe,
+                Item::Dust,
                 Item::Nebula,
                 Item::NebulaSeed,
                 Item::NebulaScale,
@@ -1202,6 +1212,15 @@ impl Menu {
                     return MenuEvent::Nothing;
                 }
                 s.fringe = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::Dust => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.dust + step).clamp(0.0, 2.0);
+                if (next - s.dust).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.dust = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Camera => {
