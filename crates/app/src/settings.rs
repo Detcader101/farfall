@@ -219,6 +219,13 @@ pub struct Settings {
     pub fps_floor: f32,
     /// The daytime sky's strength low down, 1 = stock.
     pub sky: f32,
+    /// The ground's live relief: 0 the baked continents only, 1 stock,
+    /// 2 an octave finer.
+    pub terrain_detail: f32,
+    /// The cloud deck: a multiplier on the preset's coverage, 0 clears it.
+    pub clouds: f32,
+    /// The night side's cities, 0 (dark) .. 2; 1 = stock.
+    pub city_lights: f32,
     /// The lens flare's strength, 1 = stock, 0 none.
     pub flare: f32,
     /// The nebula's glow, 0 (off) .. 3; 1 = stock.
@@ -350,6 +357,9 @@ impl Default for Settings {
             cockpit_res: 0.5,
             fps_floor: 60.0,
             sky: 1.0,
+            terrain_detail: 1.0,
+            clouds: 1.0,
+            city_lights: 1.0,
             nebula: 1.0,
             nebula_seed: 7,
             nebula_scale: 3.0,
@@ -733,6 +743,27 @@ impl Settings {
                         }
                     }
                 }
+                "graphics.terrain-detail" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.terrain_detail = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.clouds" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.clouds = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.city-lights" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.city_lights = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
                 "graphics.nebula" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -982,6 +1013,12 @@ impl Settings {
         out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
+        out.push_str(&format!(
+            "graphics.terrain-detail = {:.2}\n",
+            self.terrain_detail
+        ));
+        out.push_str(&format!("graphics.clouds = {:.2}\n", self.clouds));
+        out.push_str(&format!("graphics.city-lights = {:.2}\n", self.city_lights));
         out.push_str(&format!("graphics.flare = {:.2}\n", self.flare));
         out.push_str(&format!("graphics.nebula = {:.2}\n", self.nebula));
         out.push_str(&format!("graphics.nebula-seed = {}\n", self.nebula_seed));
@@ -1155,12 +1192,28 @@ mod tests {
     }
 
     #[test]
+    fn the_ground_keys_clamp_and_default_to_stock() {
+        let s = Settings::parse(
+            "graphics.terrain-detail = 7\ngraphics.clouds = -2\ngraphics.city-lights = 1.5\n",
+        );
+        assert_eq!(s.terrain_detail, 2.0);
+        assert_eq!(s.clouds, 0.0);
+        assert_eq!(s.city_lights, 1.5);
+        let d = Settings::parse("");
+        assert_eq!((d.terrain_detail, d.clouds, d.city_lights), (1.0, 1.0, 1.0));
+        assert_eq!(Settings::parse("graphics.clouds = nan").clouds, 1.0);
+    }
+
+    #[test]
     fn edits_round_trip() {
         let mut s = Settings {
             msaa: 2,
             scale: 0.75,
             auto_scale: true,
             vsync: false,
+            terrain_detail: 1.5,
+            clouds: 0.5,
+            city_lights: 2.0,
             ..Default::default()
         };
         s.bindings.bind(Action::PitchUp, KeyCode::KeyI);

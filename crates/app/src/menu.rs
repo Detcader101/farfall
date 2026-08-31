@@ -106,6 +106,10 @@ enum Item {
     CockpitRes,
     FpsFloor,
     Sky,
+    /// The ground's live relief, the cloud deck, the night side's cities.
+    TerrainDetail,
+    Clouds,
+    CityLights,
     Flare,
     /// The nebula block: glow, then which one and its shape and colours.
     Nebula,
@@ -182,6 +186,9 @@ impl Item {
             Item::CockpitRes => "CABIN DETAIL",
             Item::FpsFloor => "FPS FLOOR",
             Item::Sky => "SKY",
+            Item::TerrainDetail => "TERRAIN DETAIL",
+            Item::Clouds => "CLOUDS",
+            Item::CityLights => "CITY LIGHTS",
             Item::Flare => "LENS FLARE",
             Item::Nebula => "NEBULA",
             Item::NebulaSeed => "NEBULA SEED",
@@ -255,6 +262,21 @@ impl Item {
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
             Item::Sky => format!("{:.0}%", s.sky * 100.0),
+            Item::TerrainDetail => format!("{:.0}%", s.terrain_detail * 100.0),
+            Item::Clouds => {
+                if s.clouds > 0.0 {
+                    format!("{:.0}%", s.clouds * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::CityLights => {
+                if s.city_lights > 0.0 {
+                    format!("{:.0}%", s.city_lights * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
             Item::Nebula => {
                 if s.nebula > 0.0 {
                     format!("{:.0}%", s.nebula * 100.0)
@@ -475,6 +497,9 @@ impl Menu {
                 Item::CockpitRes,
                 Item::FpsFloor,
                 Item::Sky,
+                Item::TerrainDetail,
+                Item::Clouds,
+                Item::CityLights,
                 Item::Flare,
                 Item::Nebula,
                 Item::NebulaSeed,
@@ -1112,6 +1137,9 @@ impl Menu {
                 s.sky = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::TerrainDetail => step_f32(&mut s.terrain_detail, forward, 0.25, 0.0, 2.0),
+            Item::Clouds => step_f32(&mut s.clouds, forward, 0.25, 0.0, 2.0),
+            Item::CityLights => step_f32(&mut s.city_lights, forward, 0.25, 0.0, 2.0),
             Item::Nebula => step_f32(&mut s.nebula, forward, 0.25, 0.0, 3.0),
             Item::NebulaSeed => {
                 // Wraps: there is always another nebula.
@@ -1473,6 +1501,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_ground_knobs_step_to_off_and_hold_at_double() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        for _ in 0..5 {
+            m.adjust(Item::Clouds, false, &mut s);
+            m.adjust(Item::CityLights, false, &mut s);
+            m.adjust(Item::TerrainDetail, true, &mut s);
+        }
+        assert_eq!((s.clouds, s.city_lights, s.terrain_detail), (0.0, 0.0, 2.0));
+        assert_eq!(Item::Clouds.value(&s), "OFF");
+        assert_eq!(Item::CityLights.value(&s), "OFF");
+        assert_eq!(Item::TerrainDetail.value(&s), "200%");
+        assert_eq!(m.adjust(Item::Clouds, false, &mut s), MenuEvent::Nothing);
+        assert_eq!(
+            m.adjust(Item::TerrainDetail, true, &mut s),
+            MenuEvent::Nothing
+        );
+        m.adjust(Item::Clouds, true, &mut s);
+        assert_eq!(Item::Clouds.value(&s), "25%");
     }
 
     #[test]
