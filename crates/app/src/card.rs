@@ -1,0 +1,215 @@
+//! The CONTROLS card: the essential keys on one screen, shown on the
+//! first run (no settings file yet), on F1 any time, and at every start
+//! if the pilot asks (ui.controls-card). Any key puts it away.
+//!
+//! A flat card in the menu's language — the header rule, the ivory
+//! footnote — laid out here in font pixels under test: two columns, the
+//! flight keys on the left, the view, the panels and the arms on the
+//! right, every key read from the live bindings so a rebound key shows
+//! as it is. The full list with what each control does is the menu's
+//! HELP page; this is the card in the glovebox.
+
+use crate::input::{key_name, Action, Bindings, Named};
+use farfall_render::text::{block_height, block_width, TextBitmap, MENU_COLS};
+
+/// The card's width in characters, and each column's.
+pub const COLS: usize = MENU_COLS;
+const LEFT_COLS: usize = 24;
+/// The key column's width in each half.
+const LEFT_KEY_COLS: usize = 10;
+const RIGHT_KEY_COLS: usize = 7;
+
+/// A line's left or right half: a heading, a key and what it does, or
+/// nothing.
+enum Cell {
+    Head(&'static str),
+    Key(String, &'static str),
+    Blank,
+}
+
+fn pair(b: &Bindings, a: Action, c: Action) -> String {
+    format!("{} {}", key_name(b.key_for(a)), key_name(b.key_for(c)))
+}
+
+fn one(b: &Bindings, n: Named) -> String {
+    key_name(b.named(n)).to_string()
+}
+
+fn left(b: &Bindings) -> Vec<Cell> {
+    vec![
+        Cell::Head("FLIGHT"),
+        Cell::Key(pair(b, Action::ThrustForward, Action::ThrustBack), "THRUST"),
+        Cell::Key(pair(b, Action::StrafeLeft, Action::StrafeRight), "STRAFE"),
+        Cell::Key(pair(b, Action::ThrustUp, Action::ThrustDown), "UP / DOWN"),
+        Cell::Key(pair(b, Action::PitchUp, Action::PitchDown), "PITCH"),
+        Cell::Key(pair(b, Action::YawLeft, Action::YawRight), "YAW"),
+        Cell::Key(pair(b, Action::RollLeft, Action::RollRight), "ROLL"),
+        Cell::Key(one(b, Named::Boost), "BOOST (HOLD)"),
+        Cell::Key(one(b, Named::Brake), "AIR BRAKE"),
+        Cell::Key(one(b, Named::Despin), "KILL SPIN"),
+        Cell::Key(one(b, Named::Assist), "FLIGHT ASSIST"),
+        Cell::Key(one(b, Named::Hold), "HOLD TARGET"),
+        Cell::Head("DRIVES"),
+        Cell::Key(one(b, Named::Hyper), "CHAOS DRIVE"),
+        Cell::Key(one(b, Named::WarpStop), "WARP STOP"),
+        Cell::Key(one(b, Named::Engage), "WORMHOLE"),
+    ]
+}
+
+fn right(b: &Bindings) -> Vec<Cell> {
+    vec![
+        Cell::Head("VIEW"),
+        Cell::Key("RMB".to_string(), "LOOK ROUND (HOLD)"),
+        Cell::Key(one(b, Named::LookLock), "LOCK THE LOOK"),
+        Cell::Key(one(b, Named::Chase), "CHASE CAMERA"),
+        Cell::Key(one(b, Named::Holo), "SHIP HOLOGRAM"),
+        Cell::Key(
+            format!("{} {}", one(b, Named::HoloOut), one(b, Named::HoloIn)),
+            "HOLOGRAM RANGE",
+        ),
+        Cell::Key(one(b, Named::Design), "DESIGN THE DASH"),
+        Cell::Head("PANELS"),
+        Cell::Key(one(b, Named::Map), "SYSTEM MAP"),
+        Cell::Key(one(b, Named::Bay), "SHIP BAY"),
+        Cell::Key(one(b, Named::Landing), "LANDING MODE"),
+        Cell::Key("ESC".to_string(), "SETTINGS MENU"),
+        Cell::Head("ARMS"),
+        Cell::Key("LMB".to_string(), "FIRE"),
+        Cell::Key(
+            format!(
+                "{} {} {}",
+                one(b, Named::Weapon1),
+                one(b, Named::Weapon2),
+                one(b, Named::NextWeapon)
+            ),
+            "CANNON RAIL NEXT",
+        ),
+        Cell::Blank,
+    ]
+}
+
+/// A key cut to its column: a pair of long names would run into the
+/// text (the KEYS page always shows the whole name).
+fn cut(key: &str, cols: usize) -> String {
+    key.chars().take(cols).collect()
+}
+
+fn cell_text(c: &Cell, key_cols: usize) -> String {
+    match c {
+        Cell::Head(h) => h.to_string(),
+        Cell::Key(k, what) => format!("{:<w$}{what}", cut(k, key_cols), w = key_cols),
+        Cell::Blank => String::new(),
+    }
+}
+
+/// The card's lines, top to bottom.
+pub fn lines(b: &Bindings) -> Vec<String> {
+    let mut out = vec!["FARFALL   CONTROLS".to_string(), String::new()];
+    let (l, r) = (left(b), right(b));
+    for i in 0..l.len().max(r.len()) {
+        let lt = l
+            .get(i)
+            .map_or(String::new(), |c| cell_text(c, LEFT_KEY_COLS));
+        let rt = r
+            .get(i)
+            .map_or(String::new(), |c| cell_text(c, RIGHT_KEY_COLS));
+        let mut line = format!("{lt:<w$}{rt}", w = LEFT_COLS);
+        line.truncate(line.trim_end().len());
+        out.push(line);
+    }
+    out.push(String::new());
+    out.push(format!(
+        "{:<w$}F1 SHOWS THIS AGAIN",
+        "PRESS ANY KEY TO FLY",
+        w = LEFT_COLS
+    ));
+    out
+}
+
+/// Which of the card's lines are headings (for a brighter tint: none
+/// yet; the columns read by their layout).
+pub fn extent() -> (usize, usize) {
+    (
+        block_width(COLS),
+        block_height(lines(&Bindings::default()).len()),
+    )
+}
+
+/// The rules: under the title, over the footnote.
+pub fn rules(b: &Bindings) -> [Option<f32>; 2] {
+    let n = lines(b).len();
+    let pitch = farfall_render::text::LINE as f32;
+    [Some(pitch - 1.5), Some((n as f32 - 1.0) * pitch - 1.5)]
+}
+
+/// Draw the card into the bitmap.
+pub fn render(text: &mut TextBitmap, b: &Bindings) {
+    text.clear();
+    for (i, line) in lines(b).iter().enumerate() {
+        text.draw_line(0, i, line);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use farfall_render::text::{has_glyph, ROWS};
+    use winit::keyboard::KeyCode;
+
+    /// Every line fits the card and the card fits the bitmap, with the
+    /// stock keys and with the longest names bound everywhere.
+    #[test]
+    fn the_card_fits_with_any_binding() {
+        let mut long = Bindings::default();
+        for a in Action::ALL {
+            long.bind(a, KeyCode::Backquote);
+        }
+        for n in Named::ALL {
+            long.bind_named(n, KeyCode::NumpadEnter);
+        }
+        for b in [Bindings::default(), long] {
+            let lines = lines(&b);
+            for line in &lines {
+                assert!(line.chars().count() <= COLS, "{line:?}");
+                for c in line.chars() {
+                    assert!(c == ' ' || has_glyph(c), "{c:?} in {line:?}");
+                }
+            }
+            assert!(block_height(lines.len()) <= ROWS);
+            let mut t = TextBitmap::new();
+            render(&mut t, &b);
+            let (w, h) = t.used_extent();
+            let (ew, eh) = extent();
+            assert!(w <= ew && h <= eh, "{w}x{h} in {ew}x{eh}");
+        }
+    }
+
+    /// The card names the essentials — the thrust, attitude, the
+    /// look, the map, the menu — and reads the live keys.
+    #[test]
+    fn the_card_shows_the_essentials_with_their_live_keys() {
+        let text = lines(&Bindings::default()).join("\n");
+        for word in [
+            "THRUST",
+            "PITCH",
+            "ROLL",
+            "BOOST",
+            "LOOK ROUND",
+            "SYSTEM MAP",
+            "SETTINGS MENU",
+            "FIRE",
+            "CHAOS DRIVE",
+            "PRESS ANY KEY",
+            "F1",
+        ] {
+            assert!(text.contains(word), "no {word} on the card");
+        }
+        assert!(text.contains("W S       THRUST"));
+        let mut b = Bindings::default();
+        b.bind(Action::ThrustForward, KeyCode::KeyI);
+        assert!(lines(&b).join("\n").contains("I S       THRUST"));
+        assert!(text.contains("M      SYSTEM MAP"));
+        let [top, bottom] = rules(&Bindings::default());
+        assert!(top.unwrap() < bottom.unwrap());
+    }
+}

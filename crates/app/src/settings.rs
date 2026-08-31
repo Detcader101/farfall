@@ -21,9 +21,11 @@ fn parse_pair(v: &str) -> Option<[f32; 2]> {
     (x.is_finite() && y.is_finite()).then_some([x, y])
 }
 
-/// Where the settings menu's text starts and the map pane is centred,
-/// until the pilot drags them.
-pub const MENU_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
+/// Where the settings menu's card is centred and the map pane is centred,
+/// until the pilot drags them. The card is a fixed size in canopy units
+/// (its width over the aspect on the screen), so it is kept by its
+/// centre and stays centred on any screen.
+pub const MENU_ANCHOR_DEFAULT: [f32; 2] = [0.0, 0.04];
 pub const MAP_ANCHOR_DEFAULT: [f32; 2] = [0.42, 0.12];
 /// The SHIP bay's panel: right of the hologram, up.
 pub const BAY_ANCHOR_DEFAULT: [f32; 2] = [0.95, 0.90];
@@ -34,7 +36,8 @@ pub const BAY_SIZE_DEFAULT: f32 = 0.28;
 pub const BAY_SIZE_MIN: f32 = 0.14;
 pub const BAY_SIZE_MAX: f32 = 0.45;
 pub const BAY_SCANLINES_MAX: f32 = 400.0;
-pub const READOUT_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
+/// The readout: the top-left corner of the glass, clear of the arch.
+pub const READOUT_ANCHOR_DEFAULT: [f32; 2] = [-0.96, 0.94];
 
 fn clamp_anchor(a: [f32; 2]) -> [f32; 2] {
     [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)]
@@ -178,9 +181,16 @@ pub const COCKPIT_RES_CHOICES: [f32; 3] = [0.5, 0.75, 1.0];
 
 /// Frame-rate floors on offer (0: none). The cabin's moving detail gives
 /// way while turning the head would cost more than the floor allows.
-pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.55, -0.55];
+/// The holo3PP stands on the dash right of the cluster, between the
+/// speed dial and the G meter, and back toward the sill.
+pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.52, -0.46];
 pub const HOLO_SIZE_MIN: f32 = 0.16;
 pub const HOLO_SIZE_MAX: f32 = 0.50;
+/// HOLO RANGE: how much space the hologram shows round the ship, as a
+/// multiple of the stock (the ship shrinks by the same factor).
+pub const HOLO_RANGE_MIN: f32 = 1.0;
+pub const HOLO_RANGE_MAX: f32 = 4.0;
+pub const HOLO_RANGE_STEP: f32 = 0.5;
 pub const FPS_FLOOR_CHOICES: [f32; 5] = [0.0, 30.0, 60.0, 90.0, 120.0];
 
 /// The landing hoops' spacings on offer, metres.
@@ -284,6 +294,12 @@ pub struct Settings {
     pub holo_view: bool,
     /// The hologram's size (its radius is this times half a metre).
     pub holo_size: f32,
+    /// How much space the hologram shows round the ship, 1 (the ship
+    /// fills it) .. 4 (four times the room, the ship a quarter the size).
+    pub holo_range: f32,
+    /// The CONTROLS card at every start (it always shows on the first
+    /// run, and F1 shows it any time).
+    pub controls_card: bool,
     /// The hologram's emitter: a glass anchor (canopy NDC) whose direction
     /// meets the dash at the socket.
     pub holo_anchor: [f32; 2],
@@ -401,8 +417,10 @@ impl Default for Settings {
             map_rings: 4,
             map_grid: true,
             camera_chase: false,
-            holo_view: false,
-            holo_size: 0.30,
+            holo_view: true,
+            holo_size: 0.24,
+            holo_range: 1.0,
+            controls_card: false,
             holo_anchor: HOLO_ANCHOR_DEFAULT,
             plan: Plan::default(),
             arms_power: 0.5,
@@ -439,9 +457,125 @@ impl Default for Settings {
 
 pub const MSAA_CHOICES: [u32; 4] = [1, 2, 4, 8];
 
+/// Every key the settings file may hold, by name or by pattern (a `*`
+/// stands for one segment: an action's key, a dial's key). The menu's
+/// coverage test walks this list: a key here with no menu row is a
+/// setting a pilot cannot find, save the panel anchors, which are set by
+/// dragging the panel itself.
+#[cfg(test)]
+pub const KEYS: &[&str] = &[
+    "graphics.msaa",
+    "graphics.scale",
+    "graphics.vsync",
+    "graphics.auto-scale",
+    "graphics.fov",
+    "graphics.fps-floor",
+    "graphics.sky",
+    "graphics.flare",
+    "graphics.bloom",
+    "graphics.exposure",
+    "graphics.tonemap",
+    "graphics.fringe",
+    "graphics.dust",
+    "graphics.nebula",
+    "graphics.nebula-seed",
+    "graphics.nebula-scale",
+    "graphics.nebula-density",
+    "graphics.nebula-clouds",
+    "graphics.nebula-hue",
+    "graphics.nebula-hue2",
+    "graphics.nebula-spread",
+    "camera.chase",
+    "holo.view",
+    "holo.size",
+    "holo.range",
+    "cam.shake",
+    "cam.drive-shake",
+    "cockpit.frame",
+    "cockpit.glow",
+    "cockpit.hull",
+    "cockpit.res",
+    "ui.gauges",
+    "ui.gauge-style",
+    "ui.guide",
+    "ui.shield",
+    "ui.hoop-size",
+    "ui.landing-hoops",
+    "ui.safe-edge",
+    "ui.controls-card",
+    "ui.pointer-size",
+    "ui.*",
+    "ui.*.size",
+    "ui.*.style",
+    "ui.*.fade",
+    "ui.*.tilt",
+    "map.rings",
+    "map.grid",
+    "warp.destination",
+    "warp.safe-radii",
+    "sound.hull",
+    "control.*",
+    "control.look-sens",
+    "arms.power",
+    "arms.glow",
+    "arms.sight",
+    "arms.shards",
+    "arms.shard-life",
+    "arms.scar-size",
+    "arms.scar-cool",
+    "arms.ore",
+    "mimics.chance",
+    "mimics.hostility",
+    "hold.gain",
+    "hold.face",
+    "ship.hardpoint.*",
+    "ship.holo-hue",
+    "ship.holo-saturation",
+    "ship.holo-scanlines",
+    "ship.holo-size",
+    "ship.holo-spin",
+    "mimics.size",
+    "miners.count",
+    "miners.growth",
+];
+
+/// The anchors: set by dragging a panel, never by a row.
+#[cfg(test)]
+pub const DRAGGED_KEYS: &[&str] = &[
+    "ui.panel-menu",
+    "ui.panel-map",
+    "ui.panel-readout",
+    "ui.panel-holo",
+    "ui.panel-bay-card",
+];
+
+/// Does a key match a listed name or pattern?
+#[cfg(test)]
+pub fn key_matches(pattern: &str, key: &str) -> bool {
+    let (mut p, mut k) = (pattern.split('.'), key.split('.'));
+    loop {
+        match (p.next(), k.next()) {
+            (None, None) => return true,
+            (Some(ps), Some(ks)) if ps == "*" || ps == ks => {}
+            _ => return false,
+        }
+    }
+}
+
 impl Settings {
     pub fn path() -> Option<PathBuf> {
         std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".farfall").join("settings.cfg"))
+    }
+
+    /// Is there a settings file (or saved web settings) at all? Its
+    /// absence is the first run: the CONTROLS card shows itself.
+    pub fn file_exists() -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            return crate::web::storage_get("farfall.settings").is_some();
+        }
+        #[allow(unreachable_code)]
+        Self::path().is_some_and(|p| p.is_file())
     }
 
     /// Read the file, or defaults if there is none.
@@ -765,6 +899,18 @@ impl Settings {
                         }
                     }
                 }
+                "holo.range" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.holo_range = f.clamp(HOLO_RANGE_MIN, HOLO_RANGE_MAX);
+                        }
+                    }
+                }
+                "ui.controls-card" => match v {
+                    "on" => s.controls_card = true,
+                    "off" => s.controls_card = false,
+                    _ => {}
+                },
                 "sound.hull" => match v {
                     "on" => s.hull_sound = true,
                     "off" => s.hull_sound = false,
@@ -1140,6 +1286,11 @@ impl Settings {
             if self.holo_view { "on" } else { "off" }
         ));
         out.push_str(&format!("holo.size = {:.2}\n", self.holo_size));
+        out.push_str(&format!("holo.range = {:.1}\n", self.holo_range));
+        out.push_str(&format!(
+            "ui.controls-card = {}\n",
+            if self.controls_card { "on" } else { "off" }
+        ));
         out.push_str(&format!(
             "ui.panel-holo = {:.3},{:.3}\n",
             self.holo_anchor[0], self.holo_anchor[1]
@@ -1335,6 +1486,8 @@ mod tests {
         s.camera_chase = true;
         s.holo_view = true;
         s.holo_size = 0.40;
+        s.holo_range = 2.5;
+        s.controls_card = true;
         s.holo_anchor = [-0.375, 0.25];
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);
@@ -1363,6 +1516,52 @@ mod tests {
             GaugeStyle::Tron
         );
         assert_eq!(Settings::parse("").gauge_style, GaugeStyle::Warthog);
+    }
+
+    /// The KEYS list is the ledger of the file: every line the file writes
+    /// is on it (or is a dragged anchor), and every fixed name on it is a
+    /// line the file writes. A key written but unlisted would slip past
+    /// the menu's coverage test.
+    #[test]
+    fn the_key_list_is_the_file() {
+        let mut s = Settings::default();
+        s.dials[Instrument::Speed as usize].size = 1.5;
+        let written: Vec<String> = s
+            .render()
+            .lines()
+            .filter_map(|l| l.split_once('=').map(|(k, _)| k.trim().to_string()))
+            .collect();
+        for k in &written {
+            assert!(
+                KEYS.iter().chain(DRAGGED_KEYS).any(|p| key_matches(p, k)),
+                "{k} is written but not listed"
+            );
+        }
+        for p in KEYS {
+            if !p.contains('*') {
+                assert!(
+                    written.iter().any(|k| k == p),
+                    "{p} is listed but never written"
+                );
+            }
+        }
+        assert!(key_matches("ui.*.size", "ui.speed.size"));
+        assert!(!key_matches("ui.*", "ui.speed.size"));
+        assert!(!key_matches("control.*", "ui.speed"));
+    }
+
+    #[test]
+    fn the_hologram_range_and_the_card_are_kept() {
+        let s = Settings::parse("holo.range = 9\nui.controls-card = on\n");
+        assert_eq!(s.holo_range, HOLO_RANGE_MAX);
+        assert!(s.controls_card);
+        let d = Settings::default();
+        assert!(d.holo_view, "the holo3PP is a stock gauge");
+        assert!(
+            !d.controls_card,
+            "the card shows itself on the first run only"
+        );
+        assert_eq!(d.holo_range, 1.0);
     }
 
     #[test]

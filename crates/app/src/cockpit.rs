@@ -28,10 +28,12 @@ pub enum Instrument {
     Ladder,
     /// Finder rings around the Moon and the Sun.
     BodyTags,
+    /// The system map in miniature, a small pane on the glass.
+    Map,
 }
 
 impl Instrument {
-    pub const ALL: [Instrument; 12] = [
+    pub const ALL: [Instrument; 13] = [
         Instrument::Speed,
         Instrument::Altitude,
         Instrument::Gyro,
@@ -44,6 +46,7 @@ impl Instrument {
         Instrument::HoopSound,
         Instrument::BodyTags,
         Instrument::Readout,
+        Instrument::Map,
     ];
 
     pub fn name(self) -> &'static str {
@@ -60,6 +63,7 @@ impl Instrument {
             Instrument::HoopSound => "HOOP SOUND",
             Instrument::Ladder => "PITCH LADDER",
             Instrument::BodyTags => "BODY TAGS",
+            Instrument::Map => "MINI MAP",
         }
     }
 
@@ -78,6 +82,7 @@ impl Instrument {
             Instrument::HoopSound => "hoop-sound",
             Instrument::Ladder => "ladder",
             Instrument::BodyTags => "body-tags",
+            Instrument::Map => "map",
         }
     }
 
@@ -218,6 +223,7 @@ impl Default for Layout {
         l.set(Instrument::HoopSound, Slot::On);
         l.set(Instrument::Ladder, Slot::On);
         l.set(Instrument::BodyTags, Slot::On);
+        l.set(Instrument::Map, Slot::On);
         l
     }
 }
@@ -351,6 +357,7 @@ mod tests {
         assert!(l.anchor(Instrument::Altitude).is_some());
         assert!(l.shown(Instrument::Horizon));
         assert!(l.shown(Instrument::Trajectory));
+        assert!(l.shown(Instrument::Map), "the mini map is a stock gauge");
     }
 
     #[test]

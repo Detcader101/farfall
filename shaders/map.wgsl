@@ -20,7 +20,8 @@
 struct Map {
     // xyz: camera eye, map units. w: visibility 0..1
     eye: vec4<f32>,
-    // camera basis; w of fwd: tan(fov/2)
+    // camera basis; w of right: dim the screen round the pane (1) or not
+    // (0, a gauge); w of fwd: tan(fov/2)
     right: vec4<f32>,
     up: vec4<f32>,
     fwd: vec4<f32>,
@@ -205,6 +206,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (vis < 0.01) {
         discard;
     }
+    // A gauge (the mini map) dims nothing round itself.
+    let dim_on = map.right.w;
     let aspect = map.pane.w;
     let cyan = vec3<f32>(0.22, 0.85, 1.0);
     let amber = vec3<f32>(1.0, 0.62, 0.18);
@@ -220,6 +223,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let corner = step(0.82, min(abs(local.x) / half.x, abs(local.y) / half.y));
     let frame = edge * (0.35 + 0.65 * corner);
     if (inside < 0.001 && frame < 0.001) {
+        if (dim_on < 0.5) {
+            discard;
+        }
         return vec4<f32>(vec3<f32>(0.0), DIM_ALPHA * vis);
     }
 
@@ -293,7 +299,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     let ground = vec3<f32>(0.01, 0.02, 0.04);
-    let alpha = mix(DIM_ALPHA, PANE_ALPHA, inside) * vis;
+    let alpha = mix(DIM_ALPHA * dim_on, PANE_ALPHA, inside) * vis;
     let lit = (colour * inside + cyan * frame * 0.9) * vis;
     return vec4<f32>(ground * alpha * inside + lit, alpha);
 }
