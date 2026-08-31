@@ -55,10 +55,18 @@ pub struct DialTweak {
     /// Leaned toward the pilot about its own horizontal axis, degrees
     /// (−60..60): angles the face to read from where the pilot sits.
     pub tilt_deg: f32,
+    /// Leaned sideways about its own upright, degrees (−60..60): the
+    /// face turned toward a seat off to one side.
+    pub lean_deg: f32,
+    /// The face turned in its own plane, degrees (−180..180). The plate
+    /// and its markings turn together, so the needle still reads true.
+    pub rotate_deg: f32,
 }
 
 pub const TILT_MIN: f32 = -60.0;
 pub const TILT_MAX: f32 = 60.0;
+pub const ROTATE_MIN: f32 = -180.0;
+pub const ROTATE_MAX: f32 = 180.0;
 
 impl DialTweak {
     pub const DEFAULT: DialTweak = DialTweak {
@@ -66,6 +74,8 @@ impl DialTweak {
         style: None,
         stay: None,
         tilt_deg: 0.0,
+        lean_deg: 0.0,
+        rotate_deg: 0.0,
     };
 }
 
@@ -536,6 +546,8 @@ pub const KEYS: &[&str] = &[
     "ui.*.style",
     "ui.*.fade",
     "ui.*.tilt",
+    "ui.*.lean",
+    "ui.*.rotate",
     "map.rings",
     "map.grid",
     "warp.destination",
@@ -1206,6 +1218,20 @@ impl Settings {
                                         }
                                     }
                                 }
+                                "lean" => {
+                                    if let Ok(f) = v.parse::<f32>() {
+                                        if f.is_finite() {
+                                            d.lean_deg = f.clamp(TILT_MIN, TILT_MAX);
+                                        }
+                                    }
+                                }
+                                "rotate" => {
+                                    if let Ok(f) = v.parse::<f32>() {
+                                        if f.is_finite() {
+                                            d.rotate_deg = f.clamp(ROTATE_MIN, ROTATE_MAX);
+                                        }
+                                    }
+                                }
                                 "fade" => {
                                     d.stay = match v {
                                         "auto" => None,
@@ -1468,6 +1494,8 @@ impl Settings {
                     }
                 ));
                 out.push_str(&format!("ui.{}.tilt = {:.0}\n", i.key(), d.tilt_deg));
+                out.push_str(&format!("ui.{}.lean = {:.0}\n", i.key(), d.lean_deg));
+                out.push_str(&format!("ui.{}.rotate = {:.0}\n", i.key(), d.rotate_deg));
             }
         }
         out.push_str(&format!(
@@ -1592,6 +1620,8 @@ mod tests {
             style: Some(GaugeStyle::Dial),
             stay: Some(true),
             tilt_deg: 45.0,
+            lean_deg: -20.0,
+            rotate_deg: 90.0,
         };
         s.dials[Instrument::Gyro as usize].stay = Some(false);
         s.menu_anchor = [-0.25, 0.5];
@@ -1727,6 +1757,23 @@ mod tests {
         assert_eq!(s.dials[Instrument::Gyro as usize].tilt_deg, -12.0);
         assert_eq!(s.dials[Instrument::GForce as usize].tilt_deg, 0.0);
         assert!(s.render().contains("ui.gyro.tilt = -12\n"));
+    }
+
+    /// The other two orientation axes: a sideways lean held to the tilt's
+    /// reach, a rotation to the half turn either way, garbage refused.
+    #[test]
+    fn a_lean_and_a_rotation_are_held_within_reach() {
+        let s = Settings::parse(
+            "ui.speed.lean = 95\nui.gyro.lean = -25\nui.speed.rotate = 260\n\
+             ui.gyro.rotate = -45\nui.g-meter.rotate = nan\n",
+        );
+        assert_eq!(s.dials[Instrument::Speed as usize].lean_deg, TILT_MAX);
+        assert_eq!(s.dials[Instrument::Gyro as usize].lean_deg, -25.0);
+        assert_eq!(s.dials[Instrument::Speed as usize].rotate_deg, ROTATE_MAX);
+        assert_eq!(s.dials[Instrument::Gyro as usize].rotate_deg, -45.0);
+        assert_eq!(s.dials[Instrument::GForce as usize].rotate_deg, 0.0);
+        assert!(s.render().contains("ui.gyro.lean = -25\n"));
+        assert!(s.render().contains("ui.gyro.rotate = -45\n"));
     }
 
     /// A settings file from before `settings.version` that still carries

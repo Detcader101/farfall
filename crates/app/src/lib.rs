@@ -288,6 +288,10 @@ struct DialEffective {
     stay: bool,
     /// Leaned toward the pilot, radians.
     tilt: f32,
+    /// Leaned sideways about its own upright, radians.
+    lean: f32,
+    /// The face turned in its own plane, radians.
+    rotate: f32,
 }
 
 /// The ship as it was at a WARP STOP: where the after-image comes from.
@@ -787,7 +791,7 @@ impl Gpu {
                 let a = layout.anchor(i)?;
                 let dir = farfall_render::cabin::anchor_direction(a, ref_tan, cam.aspect);
                 if let Some(p) =
-                    farfall_render::cabin::Placement::in_dash(head, t, dir, tw.size, tw.tilt)
+                    farfall_render::cabin::Placement::in_dash(head, t, dir, tw.size, tw.tilt, tw.lean)
                 {
                     return Some(p);
                 }
@@ -810,7 +814,8 @@ impl Gpu {
             )
             .jet(jet(Instrument::Speed))
             .warthog(warthog(Instrument::Speed))
-            .placed(placed(Instrument::Speed)),
+            .placed(placed(Instrument::Speed))
+            .oriented(tweak(Instrument::Speed).lean, tweak(Instrument::Speed).rotate),
         );
         let (alt_anchor, alt_on) = slot_of(layout, look, cam, ref_tan, Instrument::Altitude);
         self.passes.alt_gauge.update(
@@ -826,7 +831,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::Altitude))
             .warthog(warthog(Instrument::Altitude))
-            .placed(placed(Instrument::Altitude)),
+            .placed(placed(Instrument::Altitude))
+            .oriented(
+                tweak(Instrument::Altitude).lean,
+                tweak(Instrument::Altitude).rotate,
+            ),
         );
         let (g_anchor, g_on) = slot_of(layout, look, cam, ref_tan, Instrument::GForce);
         self.passes.g_gauge.update(
@@ -842,7 +851,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::GForce))
             .warthog(warthog(Instrument::GForce))
-            .placed(placed(Instrument::GForce)),
+            .placed(placed(Instrument::GForce))
+            .oriented(
+                tweak(Instrument::GForce).lean,
+                tweak(Instrument::GForce).rotate,
+            ),
         );
         let (gv_anchor, gv_on) = slot_of(layout, look, cam, ref_tan, Instrument::GVector);
         self.passes.gvec.update(
@@ -858,7 +871,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::GVector))
             .warthog(warthog(Instrument::GVector))
-            .placed(placed(Instrument::GVector)),
+            .placed(placed(Instrument::GVector))
+            .oriented(
+                tweak(Instrument::GVector).lean,
+                tweak(Instrument::GVector).rotate,
+            ),
         );
         let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, ref_tan, Instrument::Gyro);
         // Each dial's patch of the target: a full-screen pass that discards
@@ -888,6 +905,7 @@ impl Gpu {
             .jet(jet(Instrument::Gyro))
             .warthog(warthog(Instrument::Gyro))
             .placed(placed(Instrument::Gyro))
+            .oriented(tweak(Instrument::Gyro).lean, tweak(Instrument::Gyro).rotate)
             .ball_if(game.gyro_ball(cam, tweak(Instrument::Gyro))),
         );
         // The design guide: the glass ruled, every shown dial's anchor and
@@ -1958,6 +1976,7 @@ impl Game {
                     },
                     size: tw.size,
                     tilt: tw.tilt,
+                    lean: tw.lean,
                 }
             })
             .take(6)
@@ -2183,6 +2202,8 @@ impl Game {
             style: settings::style_for(tw.style.unwrap_or(self.settings.gauge_style), i),
             stay: tw.stay.unwrap_or(self.settings.gauges_stay),
             tilt: tw.tilt_deg.to_radians(),
+            lean: tw.lean_deg.to_radians(),
+            rotate: tw.rotate_deg.to_radians(),
         }
     }
 
@@ -2245,6 +2266,18 @@ impl Game {
             KeyCode::Period => {
                 d.tilt_deg = (d.tilt_deg + 5.0).min(settings::TILT_MAX);
             }
+            KeyCode::Semicolon => {
+                d.lean_deg = (d.lean_deg - 5.0).max(settings::TILT_MIN);
+            }
+            KeyCode::Quote => {
+                d.lean_deg = (d.lean_deg + 5.0).min(settings::TILT_MAX);
+            }
+            KeyCode::Digit9 => {
+                d.rotate_deg = (d.rotate_deg - 15.0).max(settings::ROTATE_MIN);
+            }
+            KeyCode::Digit0 => {
+                d.rotate_deg = (d.rotate_deg + 15.0).min(settings::ROTATE_MAX);
+            }
             KeyCode::KeyF => {
                 d.stay = match d.stay {
                     None => Some(true),
@@ -2278,8 +2311,10 @@ impl Game {
                         if d.stay.is_none() { " (AUTO)" } else { "" },
                         d.tilt_deg
                     ),
+                    format!("LEAN {:+.0}  ROT {:+.0}", d.lean_deg, d.rotate_deg),
                     "- = SIZE  TAB STYLE  F FADE".to_string(),
-                    ", . TILT  BKSP RESET  K DONE".to_string(),
+                    ", . TILT  ; ' LEAN  9 0 ROT".to_string(),
+                    "BKSP RESET  K DONE".to_string(),
                 ]
             }
             None => vec![
@@ -6175,6 +6210,44 @@ mod tests {
             game.drag,
             Some((Dragged::Dial(Instrument::Speed), _))
         ));
+    }
+
+    /// The DESIGN keys turn a dial all three ways — tilt (,/.), sideways
+    /// lean (;/'), in-plane rotation (9/0) — each held to its reach, and
+    /// Backspace puts the whole tweak back to stock.
+    #[test]
+    fn design_keys_lean_and_rotate_a_dial_and_backspace_resets() {
+        let mut game = Game::new();
+        game.design = true;
+        game.look.aim(0.0, 0.0);
+        game.window_size = (1500.0, 1000.0);
+        game.settings.readout_anchor = [-0.9, 0.9];
+        let cam = game.camera(1.5);
+        let a = game.settings.layout.anchor(Instrument::Speed).unwrap();
+        let t = game.ref_tan();
+        let k = t / (cam.fov_y * 0.5).tan();
+        game.cursor = Some(((a[0] * k + 1.0) * 750.0, (1.0 - a[1] * k) * 500.0));
+        assert_eq!(game.design_target(1.5), Some(Instrument::Speed));
+        game.design_key(KeyCode::Quote, 1.5);
+        game.design_key(KeyCode::Quote, 1.5);
+        game.design_key(KeyCode::Digit9, 1.5);
+        game.design_key(KeyCode::Comma, 1.5);
+        let d = game.settings.dials[Instrument::Speed as usize];
+        assert_eq!(d.lean_deg, 10.0);
+        assert_eq!(d.rotate_deg, -15.0);
+        assert_eq!(d.tilt_deg, -5.0);
+        for _ in 0..40 {
+            game.design_key(KeyCode::Quote, 1.5);
+            game.design_key(KeyCode::Digit0, 1.5);
+        }
+        let d = game.settings.dials[Instrument::Speed as usize];
+        assert_eq!(d.lean_deg, settings::TILT_MAX);
+        assert_eq!(d.rotate_deg, settings::ROTATE_MAX);
+        game.design_key(KeyCode::Backspace, 1.5);
+        assert_eq!(
+            game.settings.dials[Instrument::Speed as usize],
+            settings::DialTweak::DEFAULT
+        );
     }
 
     #[test]

@@ -466,6 +466,8 @@ enum Item {
     DialStyle,
     DialFade,
     DialTilt,
+    DialLean,
+    DialRotate,
     Camera,
     HoloView,
     HoloSize,
@@ -603,6 +605,8 @@ impl Item {
             Item::DialStyle => "  STYLE",
             Item::DialFade => "  FADE",
             Item::DialTilt => "  TILT",
+            Item::DialLean => "  LEAN",
+            Item::DialRotate => "  ROTATE",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
@@ -726,6 +730,10 @@ impl Item {
             Item::DialStyle => "THIS DIAL'S OWN STYLE, OR THE COCKPIT'S (AUTO).",
             Item::DialFade => "THIS DIAL STAYS LIT, FADES, OR DOES AS THE COCKPIT DOES (AUTO).",
             Item::DialTilt => "THIS DIAL LEANED TOWARD YOU ABOUT ITS OWN AXIS, DEGREES.",
+            Item::DialLean => "THIS DIAL LEANED SIDEWAYS ABOUT ITS OWN UPRIGHT, DEGREES.",
+            Item::DialRotate => {
+                "THIS DIAL'S FACE TURNED IN ITS OWN PLANE, DEGREES. THE NEEDLE STILL READS TRUE."
+            }
             Item::MapRings => "RINGS DRAWN ROUND EACH BODY ON THE MAP.",
             Item::MapGrid => "THE MAP'S REFERENCE GRID.",
             Item::LookSens => "HOW FAR THE HEAD TURNS PER MOUSE MOVEMENT.",
@@ -806,6 +814,14 @@ impl Item {
             Item::DialTilt => Instrument::ALL
                 .iter()
                 .map(|i| format!("ui.{}.tilt", i.key()))
+                .collect(),
+            Item::DialLean => Instrument::ALL
+                .iter()
+                .map(|i| format!("ui.{}.lean", i.key()))
+                .collect(),
+            Item::DialRotate => Instrument::ALL
+                .iter()
+                .map(|i| format!("ui.{}.rotate", i.key()))
                 .collect(),
             Item::Camera => one("camera.chase"),
             Item::HoloView => one("holo.view"),
@@ -960,7 +976,9 @@ impl Item {
             | Item::DialSize
             | Item::DialStyle
             | Item::DialFade
-            | Item::DialTilt => String::new(),
+            | Item::DialTilt
+            | Item::DialLean
+            | Item::DialRotate => String::new(),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}X", s.look_sensitivity),
@@ -1219,6 +1237,8 @@ impl Menu {
                     Item::DialStyle,
                     Item::DialFade,
                     Item::DialTilt,
+                    Item::DialLean,
+                    Item::DialRotate,
                 ];
                 v.extend(
                     Instrument::ALL
@@ -1892,6 +1912,26 @@ impl Menu {
                 d.tilt_deg = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::DialLean => {
+                let d = &mut s.dials[self.dial as usize];
+                let next = (d.lean_deg + if forward { 5.0 } else { -5.0 })
+                    .clamp(crate::settings::TILT_MIN, crate::settings::TILT_MAX);
+                if (next - d.lean_deg).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                d.lean_deg = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::DialRotate => {
+                let d = &mut s.dials[self.dial as usize];
+                let next = (d.rotate_deg + if forward { 15.0 } else { -15.0 })
+                    .clamp(crate::settings::ROTATE_MIN, crate::settings::ROTATE_MAX);
+                if (next - d.rotate_deg).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                d.rotate_deg = next;
+                MenuEvent::Changed(Change::Layout)
+            }
             Item::DialFade => {
                 let d = &mut s.dials[self.dial as usize];
                 d.stay = match (d.stay, forward) {
@@ -2124,6 +2164,8 @@ impl Menu {
             }
             .to_string(),
             Item::DialTilt => format!("{:+.0} DEG", d.tilt_deg),
+            Item::DialLean => format!("{:+.0} DEG", d.lean_deg),
+            Item::DialRotate => format!("{:+.0} DEG", d.rotate_deg),
             other => other.value(s),
         }
     }
@@ -2422,6 +2464,8 @@ mod tests {
         for d in s.dials.iter_mut() {
             d.size = crate::settings::DIAL_SIZE_MAX;
             d.tilt_deg = crate::settings::TILT_MIN;
+            d.lean_deg = crate::settings::TILT_MIN;
+            d.rotate_deg = crate::settings::ROTATE_MIN;
             d.style = Some(crate::settings::GaugeStyle::Dial);
             d.stay = Some(false);
         }

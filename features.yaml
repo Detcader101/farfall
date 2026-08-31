@@ -33,7 +33,7 @@ settings_keys:
   graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.dust, graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread, graphics.terrain-detail, graphics.clouds, graphics.city-lights]
   camera: [camera.chase, holo.view, holo.size, cam.shake, cam.drive-shake, holo.range]
   cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
-  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
+  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt / .lean / .rotate", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
   rule: every key above has a menu row (crates/app/src/menu.rs::every_settings_key_has_a_menu_row walks settings.rs::KEYS), save the panel anchors, which are set by dragging
   map: [map.rings, map.grid]
   warp: [warp.destination, warp.safe-radii]
