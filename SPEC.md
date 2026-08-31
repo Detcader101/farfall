@@ -356,6 +356,8 @@ Each milestone ends with a demonstrable artifact and its acceptance tests green.
 
 ## 11. Open questions (each with the experiment that settles it)
 
+- **Multiplayer (direction, not commitment):** peer-to-peer sessions on the deterministic sim (the golden hash IS the anti-desync contract), with a rendezvous/relay node per region — the family's ShedNet estate can host the Europe relay. Experiment that settles it: two clients lock-stepping the sim over a relay for 10 minutes with identical hashes. Shareable HUD files (see ui.* export) double as the first player-to-player artefact.
+
 1. **Octahedral star-cell distortion** — visible star-size variation near seams?
    → M0 ship it, judge by eye; fallback is 3-plane cube hashing. (cheap)
 2. **Golden hash across compilers** — does a rustc upgrade change hashes? → pin
