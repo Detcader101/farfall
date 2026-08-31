@@ -227,7 +227,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let solid = smoothstep(0.42, 1.0, reveal);
     let field = (1.0 - solid) * (0.4 + 0.6 * smoothstep(0.0, 0.3, reveal));
     let rgb = hull * solid + holo * field;
-    let out = tonemap(rgb, mm.look.x);
+    let out = radiance(rgb, mm.look.x);
     // Premultiplied: the hull is solid; the field is light and lets the
     // rock behind show through.
     let alpha = max(solid, 0.0);

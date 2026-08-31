@@ -53,7 +53,7 @@ use farfall_render::{
     },
     bake::BakedMaps,
     belt::{belt_pass, BeltPass, BeltUniforms, RockView},
-    blit::{BlitPass, PostUniforms},
+    blit::BlitPass,
     bodies::{BodiesPass, BodiesUniforms},
     gauge::{
         gauge_pass, gvec_pass, AltitudeFade, GForceFade, GaugeFade, GaugePass, GaugeUniforms,
@@ -71,6 +71,7 @@ use farfall_render::{
     nebula::{NebulaBake, NebulaKnobs, NebulaParams},
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
     pointer::{pointer_pass, PointerPass, PointerUniforms},
+    post::{PostPass, PostUniforms},
     shield::{shield_pass, Impact, ShieldPass, ShieldUniforms},
     starfield::StarfieldPass,
     text::TextBitmap,
@@ -406,6 +407,9 @@ const MACH1_MPS: f64 = 340.0;
 ///                           pitch/yaw/roll demands -1..1, for the plumes)
 ///   FARFALL_BENCH_FULL=1   (benchmark only: borderless fullscreen, the real
 ///                           pixel count)
+///   FARFALL_BENCH_SIZE=w,h (benchmark only: a window of exactly this many
+///                           pixels, bigger than the display if need be — the
+///                           2880x1800 floor measured on a 1080p desk)
 ///   FARFALL_BENCH_SPIN=n   (benchmark only: the head turns a full circle over
 ///                           the bench and n frames are captured on the way —
 ///                           a look round the whole cabin)
@@ -418,6 +422,7 @@ const MACH1_MPS: f64 = 340.0;
 ///                           seconds in, so the sequence can be captured)
 ///   FARFALL_SKIP=a,b       (profiling only: leave out passes by name —
 ///                           starfield, bodies, planet, plasma, trajectory, cockpit, gauge,
+///                           post (the picture: one plain fetch instead), bloom (the chain),
 ///                           hud, blit —
 ///                           so each one's cost can be measured by its absence)
 struct Config {
@@ -430,6 +435,8 @@ struct Config {
     scale: f32,
     skip: Vec<String>,
     bench_warp_at: Option<f64>,
+    /// FARFALL_BENCH_SIZE=w,h: the bench window's size in pixels.
+    bench_size: Option<(u32, u32)>,
     /// FARFALL_BENCH_SPIN=n: the head turns a full circle over the bench
     /// and n frames are captured on the way round.
     bench_spin: u32,
@@ -480,6 +487,19 @@ impl Config {
             // that matters.
             windowed = true;
         }
+        // A window of a given size, which may be bigger than the display:
+        // the 2880×1800 floor measured on a 1080p desk.
+        let bench_size = std::env::var("FARFALL_BENCH_SIZE")
+            .ok()
+            .filter(|_| bench)
+            .and_then(|v| {
+                let (w, h) = v.split_once(',')?;
+                Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?))
+            })
+            .filter(|&(w, h)| w >= 64 && h >= 64);
+        if bench_size.is_some() {
+            windowed = true;
+        }
         let bench_seconds = std::env::var("FARFALL_BENCH_SECONDS")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
@@ -508,6 +528,7 @@ impl Config {
                 .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default(),
             scale,
+            bench_size,
         }
     }
 }
@@ -592,12 +613,16 @@ impl Passes {
         nebula: &wgpu::TextureView,
         cabin_res: f32,
     ) -> Self {
+        // Two targets, one sample count: everything outside the glass
+        // writes radiance into the HDR world; the cabin, the dials and the
+        // holo3PP draw after the post pass into the 8-bit ship target.
+        let world = SceneTarget::WORLD_FORMAT;
         let thermal = ThermalPass::new(device);
-        let plasma = PlasmaPass::new(device, format, msaa, &thermal, baked);
+        let plasma = PlasmaPass::new(device, world, msaa, &thermal, baked);
         Self {
-            starfield: StarfieldPass::new(device, format, msaa, STAR_DENSITY, baked, nebula),
-            bodies: BodiesPass::new(device, format, msaa),
-            planet: PlanetPass::new(device, format, msaa, baked),
+            starfield: StarfieldPass::new(device, world, msaa, STAR_DENSITY, baked, nebula),
+            bodies: BodiesPass::new(device, world, msaa),
+            planet: PlanetPass::new(device, world, msaa, baked),
             gauge: gauge_pass(device, format, msaa),
             alt_gauge: gauge_pass(device, format, msaa),
             g_gauge: gauge_pass(device, format, msaa),
@@ -608,22 +633,52 @@ impl Passes {
             cabin: farfall_render::cabin::CabinPass::new(device, format, msaa, cabin_res),
             thermal,
             plasma,
-            trajectory: TrajectoryPass::new(device, format, msaa),
-            shield: shield_pass(device, format, msaa),
-            ghost: ghost_pass(device, format, msaa),
-            belt: belt_pass(device, format, msaa),
-            jet: jet_pass(device, format, msaa),
+            trajectory: TrajectoryPass::new(device, world, msaa),
+            shield: shield_pass(device, world, msaa),
+            ghost: ghost_pass(device, world, msaa),
+            belt: belt_pass(device, world, msaa),
+            jet: jet_pass(device, world, msaa),
             holo: holo_pass(device, format, msaa),
-            tracer: tracer_pass(device, format, msaa),
-            debris: debris_pass(device, format, msaa),
-            scar: scar_pass(device, format, msaa),
+            tracer: tracer_pass(device, world, msaa),
+            debris: debris_pass(device, world, msaa),
+            scar: scar_pass(device, world, msaa),
             sight: sight_pass(device, format, msaa),
-            mimic: mimic_pass(device, format, msaa),
+            mimic: mimic_pass(device, world, msaa),
         }
     }
 }
 
 impl Gpu {
+    /// The scene textures were recreated: point the post pass at the new
+    /// world and the blit at the new ship target, or they sample a
+    /// destroyed view.
+    fn rebind_scene(&mut self) {
+        self.post.rebind(&self.device, &self.scene);
+        if let Some(view) = self.scene.colour_view() {
+            self.blit.rebind(&self.device, view);
+        }
+    }
+
+    /// The post pass's uniforms for this frame: the drive's look on the
+    /// world, the picture settings, the exposure's drift.
+    fn update_post(&self, game: &mut Game, aspect: f32, time_s: f32) {
+        let l = game.warp_look();
+        let s = &game.settings;
+        let look = farfall_render::post::Look {
+            bloom: s.bloom,
+            exposure: s.exposure,
+            tonemap: s.tonemap,
+            fringe: s.fringe,
+        };
+        self.post.update(
+            &self.queue,
+            &PostUniforms::new(l.fisheye, l.invert, l.particles, l.charge, aspect, time_s)
+                .with_speed(game.speed_look())
+                .with_look(&look)
+                .with_adapt_blend(self.post.adapt_blend(game.frame_dt))
+                .with_bypass(!self.cfg.draws("post")),
+        );
+    }
     /// The holo3PP's frame: the miniature's scene in the ship's frame,
     /// seen from the pilot's head.
     fn update_holo(&self, game: &Game, aspect: f32) {
@@ -641,6 +696,9 @@ struct Gpu {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     scene: SceneTarget,
+    /// The picture: bloom, exposure, tonemap and the drive's distortion,
+    /// done to the world before the ship is drawn over it.
+    post: PostPass,
     blit: BlitPass,
     passes: Passes,
     /// Owns the baked textures the passes sample.
@@ -922,6 +980,7 @@ impl Gpu {
         if self.cfg.msaa != settings.msaa {
             self.cfg.msaa = settings.msaa;
             self.scene = SceneTarget::new(settings.msaa, self.config.format, self.scene.scale());
+            self.post = PostPass::new(&self.device, self.config.format, settings.msaa);
             self.passes = Passes::new(
                 &self.device,
                 self.config.format,
@@ -3799,6 +3858,11 @@ impl App {
             "FARFALL"
         };
         let mut attrs = Window::default_attributes().with_title(title);
+        if let Some((w, h)) = cfg.bench_size {
+            attrs = attrs
+                .with_inner_size(winit::dpi::PhysicalSize::new(w, h))
+                .with_decorations(false);
+        }
         if !cfg.windowed && cfg!(not(target_arch = "wasm32")) {
             // Borderless fullscreen on the current monitor: no mode switch, so
             // alt-tab stays instant and the resolution is the desktop's.
@@ -3895,6 +3959,7 @@ impl App {
         );
         let scene = SceneTarget::new(cfg.msaa, config.format, cfg.scale);
         let blit = BlitPass::new(&device, config.format);
+        let post = PostPass::new(&device, config.format, cfg.msaa);
         // Bake the static world fields before the first frame. Everything the
         // planet pass reads per pixel is generated here, by shader, once.
         let baked = BakedMaps::bake(&device, &queue);
@@ -3946,6 +4011,7 @@ impl App {
             surface,
             config,
             scene,
+            post,
             blit,
             passes,
             baked,
@@ -4364,9 +4430,7 @@ fn redraw(
                         .scene
                         .ensure(&gpu.device, gpu.config.width, gpu.config.height)
                     {
-                        if let Some(view) = gpu.scene.colour_view() {
-                            gpu.blit.rebind(&gpu.device, view);
-                        }
+                        gpu.rebind_scene();
                     }
                     let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                     let pose = game.pose(aspect);
@@ -4511,10 +4575,11 @@ fn redraw(
                         .ghost
                         .update(&gpu.queue, &game.ghost_uniforms(&pose));
                     gpu.passes.jet.update(&gpu.queue, &game.jet_uniforms(&pose));
+                    gpu.update_post(game, aspect, cam.time_s);
                     {
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("scene headless"),
-                            color_attachments: &[Some(gpu.scene.colour_attachment())],
+                            color_attachments: &[Some(gpu.scene.world_attachment())],
                             depth_stencil_attachment: None,
                             timestamp_writes: None,
                             occlusion_query_set: None,
@@ -4535,6 +4600,10 @@ fn redraw(
                         gpu.passes.trajectory.draw(&mut pass);
                         gpu.passes.shield.draw(&mut pass);
                         gpu.passes.ghost.draw(&mut pass);
+                    }
+                    {
+                        // The picture, then the ship over it.
+                        let mut pass = gpu.post.begin_ship_pass(&mut encoder, &gpu.scene, true);
                         if !game.chase_active() {
                             // The horizon and its ladder are at infinity:
                             // the dash hides what falls below its sill.
@@ -4634,8 +4703,7 @@ fn redraw(
             // The scene textures were recreated; a bind group still
             // pointing at the old view would sample a destroyed
             // resource.
-            let view = gpu.scene.colour_view().expect("scene target");
-            gpu.blit.rebind(&gpu.device, view);
+            gpu.rebind_scene();
             gpu.perf.stats.skip_next_frame();
         }
 
@@ -4709,19 +4777,7 @@ fn redraw(
         let hud_scale = (eh as f32 / 260.0).clamp(2.0, 8.0).floor();
         let px_canopy = hud_scale * 2.0 / eh as f32 * game.text_fov_scale(&cam);
         {
-            let l = game.warp_look();
-            gpu.blit.update(
-                &gpu.queue,
-                &PostUniforms::new(
-                    l.fisheye,
-                    l.invert,
-                    l.particles,
-                    l.charge,
-                    aspect,
-                    cam.time_s,
-                )
-                .with_speed(game.speed_look()),
-            );
+            gpu.update_post(game, aspect, cam.time_s);
             gpu.map
                 .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
         }
@@ -4768,10 +4824,11 @@ fn redraw(
             gpu.passes.cabin.update(&gpu.queue, &mut encoder, &cu, &bu);
         }
         {
-            // Pass 1: the expensive world, at whatever scale is set.
+            // Pass 1: the expensive world, at whatever scale is set, in
+            // radiance.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
-                color_attachments: &[Some(gpu.scene.colour_attachment())],
+                color_attachments: &[Some(gpu.scene.world_attachment())],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -4816,9 +4873,17 @@ fn redraw(
             if gpu.cfg.draws("ghost") {
                 gpu.passes.ghost.draw(&mut pass);
             }
+        }
+        {
+            // Pass 1b: the picture — bloom, exposure, tonemap and the
+            // drive's distortion, done to the world — then the ship drawn
+            // over it, so the dash and the dials never warp or bloom.
+            let mut pass =
+                gpu.post
+                    .begin_ship_pass(&mut encoder, &gpu.scene, gpu.cfg.draws("bloom"));
             if gpu.cfg.draws("gauge") && !game.chase_active() {
                 // At infinity, so under the dash: the cabin covers what
-                // falls below its sill.
+                // falls below its sill. On the ship side, so it never blooms.
                 gpu.passes.horizon.draw(&mut pass);
             }
             if gpu.cfg.draws("cockpit") && !game.chase_active() {

@@ -497,7 +497,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (alpha < 0.002 && dot(rgb, rgb) < 1e-6) {
         discard;
     }
-    let out = tonemap(rgb, exposure);
+    let out = radiance(rgb, exposure);
     // Premultiplied: the glare adds over the stars, the discs replace them.
     return vec4<f32>(out + dither_px(in.pos.xy) * alpha, alpha);
 }

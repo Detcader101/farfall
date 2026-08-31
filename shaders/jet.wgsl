@@ -136,7 +136,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         + vec3<f32>(0.30, 0.13, 0.05) * 0.12;
     rgb += engine * near_nozzle;
 
-    let out = tonemap(rgb, jet.eye.w);
+    let out = radiance(rgb, jet.eye.w);
     // Premultiplied, alpha 1: the ship is solid — stars end at the hull.
     return vec4<f32>(out, 1.0);
 }

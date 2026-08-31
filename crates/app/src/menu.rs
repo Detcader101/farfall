@@ -18,7 +18,7 @@ use crate::settings::{
     Settings, COCKPIT_RES_CHOICES, FOV_MAX, FOV_MIN, FPS_FLOOR_CHOICES, HOOP_SIZE_MAX,
     HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
 };
-use crate::settings::{BAY_SCANLINES_MAX, BAY_SIZE_MAX, BAY_SIZE_MIN};
+use crate::settings::{BAY_SCANLINES_MAX, BAY_SIZE_MAX, BAY_SIZE_MIN, EXPOSURE_MAX, EXPOSURE_MIN};
 use farfall_render::text::TextBitmap;
 use winit::keyboard::KeyCode;
 
@@ -107,6 +107,11 @@ enum Item {
     FpsFloor,
     Sky,
     Flare,
+    /// The picture: the post pass's bloom, exposure, curve and glass rim.
+    Bloom,
+    Exposure,
+    TonemapCurve,
+    Fringe,
     /// The nebula block: glow, then which one and its shape and colours.
     Nebula,
     NebulaSeed,
@@ -183,6 +188,10 @@ impl Item {
             Item::FpsFloor => "FPS FLOOR",
             Item::Sky => "SKY",
             Item::Flare => "LENS FLARE",
+            Item::Bloom => "BLOOM",
+            Item::Exposure => "EXPOSURE",
+            Item::TonemapCurve => "TONEMAP",
+            Item::Fringe => "FRINGE",
             Item::Nebula => "NEBULA",
             Item::NebulaSeed => "NEBULA SEED",
             Item::NebulaScale => "NEBULA SCALE",
@@ -272,6 +281,29 @@ impl Item {
             Item::Flare => {
                 if s.flare > 0.0 {
                     format!("{:.0}%", s.flare * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::Bloom => {
+                if s.bloom > 0.0 {
+                    format!("{:.0}%", s.bloom * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::Exposure => {
+                let ev = s.exposure.max(1e-3).log2();
+                if ev.abs() < 0.01 {
+                    "0 EV".to_string()
+                } else {
+                    format!("{ev:+.2} EV")
+                }
+            }
+            Item::TonemapCurve => s.tonemap.name().to_string(),
+            Item::Fringe => {
+                if s.fringe > 0.0 {
+                    format!("{:.0}%", s.fringe * 100.0)
                 } else {
                     "OFF".to_string()
                 }
@@ -476,6 +508,10 @@ impl Menu {
                 Item::FpsFloor,
                 Item::Sky,
                 Item::Flare,
+                Item::Bloom,
+                Item::Exposure,
+                Item::TonemapCurve,
+                Item::Fringe,
                 Item::Nebula,
                 Item::NebulaSeed,
                 Item::NebulaScale,
@@ -1083,6 +1119,42 @@ impl Menu {
                 s.flare = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::Bloom => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.bloom + step).clamp(0.0, 2.0);
+                if (next - s.bloom).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.bloom = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::Exposure => {
+                // A quarter of a stop a step, either way.
+                let k = if forward {
+                    2f32.powf(0.25)
+                } else {
+                    2f32.powf(-0.25)
+                };
+                let next = (s.exposure * k).clamp(EXPOSURE_MIN, EXPOSURE_MAX);
+                if (next - s.exposure).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.exposure = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::TonemapCurve => {
+                s.tonemap = s.tonemap.next(forward);
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::Fringe => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.fringe + step).clamp(0.0, 2.0);
+                if (next - s.fringe).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.fringe = next;
+                MenuEvent::Changed(Change::Layout)
+            }
             Item::Camera => {
                 s.camera_chase = !s.camera_chase;
                 MenuEvent::Changed(Change::Layout)
@@ -1529,6 +1601,13 @@ mod tests {
                     // The nebula block sits together, after the sky knobs.
                     let at = |it: Item| items.iter().position(|i| *i == it).unwrap();
                     assert!(at(Item::Nebula) > at(Item::Flare));
+                    // The picture block — bloom, exposure, curve, rim —
+                    // sits together between the flare and the nebula.
+                    assert_eq!(at(Item::Bloom), at(Item::Flare) + 1);
+                    assert_eq!(at(Item::Exposure), at(Item::Bloom) + 1);
+                    assert_eq!(at(Item::TonemapCurve), at(Item::Bloom) + 2);
+                    assert_eq!(at(Item::Fringe), at(Item::Bloom) + 3);
+                    assert!(at(Item::Nebula) > at(Item::Fringe));
                     assert_eq!(at(Item::NebulaSeed), at(Item::Nebula) + 1);
                     assert_eq!(at(Item::NebulaSpread), at(Item::Nebula) + 7);
                     assert_eq!(*items.last().unwrap(), Item::Quit, "QUIT is the last thing");

@@ -30,7 +30,7 @@ controls:
 
 # Every key ~/.farfall/settings.cfg may hold, by group (crates/app/src/settings.rs).
 settings_keys:
-  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread]
+  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread]
   camera: [camera.chase, holo.view, holo.size, cam.shake, cam.drive-shake]
   cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
   ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
@@ -548,7 +548,7 @@ features:
     e2e: "FARFALL_BENCH_SHIP=1 capture — the arrow over the hologram at 62%,36% (scene test); clicked through the GFX page by hand"
 
   - id: render-pipeline
-    name: "The frame's plumbing: bake.wgsl bakes the noise/star maps once at start; the scene renders at graphics.scale into a target, blit.wgsl upscales it with the post look (exposure, warp effects) and the HUD draws native on top; cabin_blit.wgsl composites the cached cabin march (id cabin-cached) over the sky. FARFALL_SKIP=a,b leaves passes out for profiling; FARFALL_SCALE overrides the scale; [ and ] step it in flight (RENDER SCALE +/- binds)"
+    name: "The frame's plumbing: bake.wgsl bakes the noise/star maps once at start; the world renders at graphics.scale into an HDR (Rgba16Float) target, post.wgsl blooms, exposes and tonemaps it (id hdr-post) and does the drive's distortion to it, the cabin and dials draw over that into an 8-bit target, blit.wgsl upscales it and the HUD draws native on top; cabin_blit.wgsl composites the cached cabin march (id cabin-cached) over the sky. FARFALL_SKIP=a,b leaves passes out for profiling; FARFALL_SCALE overrides the scale; [ and ] step it in flight (RENDER SCALE +/- binds)"
     state: complete
     settings: [graphics.scale, graphics.msaa, graphics.vsync, control.scale-down, control.scale-up]
     tests: ["crates/render/tests/shader_validation.rs", "crates/app/src/settings.rs::edits_round_trip", "crates/app/src/input.rs::no_two_default_binds_share_a_key"]
@@ -575,3 +575,29 @@ features:
     tests: ["crates/render/src/cabin.rs::the_ball_stands_proud_of_the_dash_with_no_bowl", "crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin", "crates/app/src/settings.rs::warthog_is_the_default_and_the_menu_still_cycles_every_style", "crates/render/tests/shader_validation.rs", "crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense"]
     settings: [ui.gauge-style, "ui.<dial>.style"]
     e2e: "farfall-captures/gauges: r3-default (WARTHOG cluster on the dash, no cavities), r3-head (FARFALL_BENCH_HEAD=30,-15 — plates and ball seen at an angle, nothing hollow), r3-tron / r3-jet / r3-dial, r3-g (FARFALL_BENCH_G=1,0.5,2), r3-landing (hoops + ladder), r3-spin-1..4, r3-full perf"
+
+  - id: hdr-post
+    name: "HDR picture (polish pass, fable/postfx): the world renders into a float Rgba16Float target (MSAA as before) and every world pass writes exposed linear radiance (common.wgsl radiance()) instead of curving itself; post.wgsl then does it once — a bloom mip chain (13-tap down / 9-tap tent up, threshold with a soft knee in radiance, partial Karis so a lone star seeds a halo not a firefly; the chain starts at half the scene so its cost follows the render scale governor), exposure (EXPOSURE, ±2 stops in quarter steps, with a slow built-in drift off the frame's mean log luminance riding in the chain's alpha: a starry sky lifted a third of a stop at most, a sunlit planet held back half), a filmic curve (TONEMAP: AGX — highlights roll to white through their hue — / SOFT / OFF), a hair of chromatic fringing at the glass rim only (FRINGE) and a hash dither to 8 bits. The cabin, dials, holo3PP, map, bay and text draw AFTER it into the 8-bit ship target / the swapchain, so none of them bloom, curve or fringe. FARFALL_SKIP=post|bloom for the cost"
+    state: complete
+    settings: [graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe]
+    tests: ["crates/render/src/post.rs::the_bloom_chain_halves_until_a_level_would_be_too_small", "crates/render/src/post.rs::the_look_is_clamped_and_never_nan", "crates/render/src/post.rs::tonemap_keys_round_trip_and_cycle", "crates/app/src/settings.rs::edits_round_trip", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense", crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/postfx: cockpit, arms, hyper, nebula, alt500, chase, full — the Sun, tracers, plumes and the drive field bloom; the dials do not (see docs/polish/postfx.md)"
+
+  - id: drive-outside-the-glass
+    name: "The drives' picture — the wormhole's mirror-sphere FLIP and inversion, the chaos field's liquid refraction and ripples, the speed streaks and their chromatic split, the cool rim — moved from the swapchain blit to the post pass, so it is done to the WORLD before the cabin, the dials, the holo3PP and the text are drawn: the drive is seen through the glass, the dash and the gauges hold still and crisp through the whole sequence (Jay Jay: 'shaders not on POV but outside the ship')"
+    state: complete
+    tests: [crates/render/tests/shader_validation.rs, "crates/app/src/warp.rs::the_sequence_jumps_exactly_once_at_the_flips_peak"]
+    e2e: "farfall-captures/postfx/hyper-*.png — the streaks and the field stop at the sill; the dials read (baseline/hyper-1.png smeared them)"
+
+  - id: stars-fine
+    name: "The starfield as points: sub-pixel gaussian cores (sigma ~0.6 px) instead of the old 3-px blobs, a steeper magnitude law (most stars faint, a few brilliant, the rare one blazing) so only the bright ones bloom, the tint by temperature strongest on the bright ones where the eye actually sees colour, and the nebula carrying the sky behind them"
+    state: complete
+    tests: [crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/postfx/cockpit-*.png and nebula-*.png against baseline/cockpit-1.png (the 'snow')"
+
+  - id: shake-subtle
+    name: "The felt shake down to a hint: cam.drive-shake stock 40% → 12% (the chaos drive's jostle of the stick is a warning, not a beating), the helmet camera's sway/roll per g, tremor and gun kick at roughly a third of what they were, its cap 0.12 rad. Every knob stays: CAMERA SHAKE and DRIVE SHAKE on the CABIN page go to 200%. The gauges are drawn in the same head frame as the dash, so they never move relative to it"
+    state: complete
+    settings: [cam.shake, cam.drive-shake]
+    tests: ["crates/app/src/shake.rs::thrust_and_load_bring_a_tremor_and_the_setting_scales_everything", "crates/app/src/shake.rs::a_gun_kicks_the_view_the_rail_more_and_it_is_capped", "crates/app/src/settings.rs::defaults_round_trip"]
+    e2e: "flown: the dash reads under full thrust and through a hyper run"

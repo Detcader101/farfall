@@ -173,7 +173,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Below the surface (no collision escape yet): dense unlit murk, opaque.
     if (d_centre <= radius) {
-        return vec4<f32>(tonemap(planet.atmosphere.rgb * 0.02, exposure), 1.0);
+        return vec4<f32>(radiance(planet.atmosphere.rgb * 0.02, exposure), 1.0);
     }
     let h_cam = d_centre - radius;
 
@@ -364,10 +364,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let over_behind = clamp(1.0 - exp(-dot(emit_behind, lum_w) * 13.0), 0.0, 1.0);
 
     // ---- compose: ground, far air, deck, near air ----------------------
-    let surface_ldr = tonemap(surface, exposure);
-    let cloud_ldr = tonemap(cloud_rgb, exposure);
-    let front_ldr = tonemap(emit_front / max(over_front, 1e-4), exposure);
-    let behind_ldr = tonemap(emit_behind / max(over_behind, 1e-4), exposure);
+    let surface_ldr = radiance(surface, exposure);
+    let cloud_ldr = radiance(cloud_rgb, exposure);
+    let front_ldr = radiance(emit_front / max(over_front, 1e-4), exposure);
+    let behind_ldr = radiance(emit_behind / max(over_behind, 1e-4), exposure);
 
     var rgb = surface_ldr * coverage;
     var alpha = coverage;
