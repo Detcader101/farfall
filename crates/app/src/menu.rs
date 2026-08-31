@@ -475,6 +475,8 @@ enum Item {
     LookSens,
     Destination,
     SafeDist,
+    /// How long the jump's liquid sequence runs.
+    WarpLength,
     Engage,
     /// The ARMS page: the reactor's share, and the light.
     ArmsPower,
@@ -607,6 +609,7 @@ impl Item {
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
             Item::Destination => "DESTINATION",
+            Item::WarpLength => "WARP LENGTH",
             Item::SafeDist => "SAFE DISTANCE",
             Item::Engage => "ENGAGE DRIVE",
             Item::ControlsCard => "CARD AT START",
@@ -731,6 +734,7 @@ impl Item {
             Item::LookSens => "HOW FAR THE HEAD TURNS PER MOUSE MOVEMENT.",
             Item::Destination => "WHERE THE WORMHOLE DRIVE TAKES YOU.",
             Item::SafeDist => "HOW FAR OUT FROM THE DESTINATION YOU ARRIVE, IN ITS RADII.",
+            Item::WarpLength => "HOW LONG THE JUMP RUNS: 100% IS EIGHT SECONDS.",
             Item::Engage => "CLOSE THE MENU AND FIRE THE WORMHOLE DRIVE AT THIS PLAN.",
             Item::ControlsCard => "SHOW THE CONTROLS CARD AT EVERY START. F1 SHOWS IT ANY TIME.",
             Item::Bind(_)
@@ -816,6 +820,7 @@ impl Item {
             Item::LookSens => one("control.look-sens"),
             Item::Destination => one("warp.destination"),
             Item::SafeDist => one("warp.safe-radii"),
+            Item::WarpLength => one("warp.length"),
             Item::ArmsPower => one("arms.power"),
             Item::ArmsGlow => one("arms.glow"),
             Item::ArmsShards => one("arms.shards"),
@@ -973,6 +978,11 @@ impl Item {
                     format!("{:.2} R", s.plan.safe_radii)
                 }
             }
+            Item::WarpLength => format!(
+                "{:.0}% ({:.0}S)",
+                s.warp_length * 100.0,
+                crate::warp::SEQUENCE_S * s.warp_length
+            ),
             Item::Engage => String::new(),
             Item::ArmsPower => format!("{:.0}%", s.arms_power * 100.0),
             Item::ArmsGlow => {
@@ -1248,6 +1258,7 @@ impl Menu {
             Page::Map => vec![
                 Item::Destination,
                 Item::SafeDist,
+                Item::WarpLength,
                 Item::Engage,
                 Item::MapRings,
                 Item::MapGrid,
@@ -1561,6 +1572,16 @@ impl Menu {
                 if (s.plan.safe_radii - before).abs() < 1e-9 {
                     return MenuEvent::Nothing;
                 }
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::WarpLength => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next =
+                    (s.warp_length + step).clamp(crate::warp::LENGTH_MIN, crate::warp::LENGTH_MAX);
+                if (next - s.warp_length).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.warp_length = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Engage => MenuEvent::Nothing,
@@ -2674,6 +2695,7 @@ mod tests {
                 }
                 Page::Map => {
                     assert!(on(Item::Destination) && on(Item::SafeDist) && on(Item::Engage));
+                    assert!(on(Item::WarpLength), "the jump's length is set here");
                     assert!(on(Item::MapRings) && on(Item::MapGrid));
                 }
                 Page::Ship => {
@@ -2944,6 +2966,10 @@ mod tests {
         let r0 = s.plan.safe_radii;
         m.key(KeyCode::ArrowRight, &mut s);
         assert!(s.plan.safe_radii > r0);
+        m.key(KeyCode::ArrowDown, &mut s);
+        let l0 = s.warp_length;
+        m.key(KeyCode::ArrowRight, &mut s);
+        assert!(s.warp_length > l0, "the jump's length is set on the panel");
         m.key(KeyCode::ArrowDown, &mut s);
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Engage);
         assert!(!m.open);

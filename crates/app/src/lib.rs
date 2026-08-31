@@ -703,6 +703,7 @@ impl Gpu {
             &self.queue,
             &PostUniforms::new(l.fisheye, l.invert, l.particles, l.charge, aspect, time_s)
                 .with_speed(game.speed_look())
+                .with_drive(l.stretch, l.pull, l.reform)
                 .with_look(&look)
                 .with_adapt_blend(self.post.adapt_blend(game.frame_dt))
                 .with_bypass(!self.cfg.draws("post")),
@@ -2151,12 +2152,15 @@ impl Game {
     }
 
     /// How fast it looks, 0..1, for the picture's streaks and cool rim:
-    /// the Chaos Drive's field first, else the speed against the wall.
+    /// the Chaos Drive's field first, else the speed against the wall —
+    /// or the wormhole sequence's own stretch, space drawing into threads.
     fn speed_look(&self) -> f32 {
         // Only real speed shows: from a third of the way to the wall.
         let wall = (self.state.ship.vel_mps.length() / sim::RELATIVITY_FROM_MPS) as f32;
         let fast = ((wall - 0.3) / 0.7).clamp(0.0, 1.0) * 0.5;
-        (self.hyper * (0.5 + 0.5 * self.hyper_level() as f32)).max(fast)
+        (self.hyper * (0.5 + 0.5 * self.hyper_level() as f32))
+            .max(fast)
+            .max(self.warp.look().stretch)
     }
 
     /// The drive's look this frame: the wormhole sequence, with the hyper
@@ -3278,6 +3282,9 @@ impl Game {
             self.hyper += (want - self.hyper) * k;
         }
         self.look.update(frame_dt.min(0.25) as f32);
+        // The WARP LENGTH setting reaches the drive here; a running
+        // sequence keeps the length it started with.
+        self.warp.set_length(self.settings.warp_length);
         if self.warp.update(frame_dt.min(0.25) as f32) {
             if self.pending_slip {
                 self.pending_slip = false;

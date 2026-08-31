@@ -21,8 +21,10 @@
 //                 a second or two: the adapted luminance the exposure
 //                 drifts on.
 //   fs_main       the world fetched through the drive's distortion — the
-//                 FLIP's mirror sphere, the field's liquid, the speed
-//                 streaks and their chromatic split — plus the glass rim's
+//                 FLIP's mirror sphere, the PULL's fold toward the nose,
+//                 the field's liquid, the REFORM's settling rings as the
+//                 destination pours in, the speed streaks and their
+//                 chromatic split — plus the glass rim's
 //                 own hair of fringing; the bloom added; exposure (the
 //                 setting times the drift); the tonemap; dithered to 8 bits.
 //
@@ -51,6 +53,11 @@ struct Post {
     // x: bloom threshold in the world's radiance, y: knee width,
     // z: bypass (profiling: 1 = one fetch, nothing done), w: unused
     knee: vec4<f32>,
+    // The wormhole sequence's staged lanes, all 0..1, all zero when idle:
+    // x: stretch (space into threads — the app feeds it to the speed lane
+    // too), y: pull (the view folding toward the nose), z: reform (the
+    // destination pouring in as fluid), w: unused
+    drive: vec4<f32>,
 }
 
 struct VsOut {
@@ -352,9 +359,35 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         uv = fract(uv);
     }
 
+    let pull = post.drive.y;
+    let reform = post.drive.z;
+    if (pull > 1e-4) {
+        // The fold toward the nose: the picture drawn in on itself,
+        // hardest partway out, with a slow turn — space bending through
+        // the door before the flip.
+        let pp = (uv - 0.5) * vec2<f32>(aspect, 1.0) * 2.0;
+        let pr = length(pp);
+        let bend = 1.0 - pull * 0.55 * pr / (1.0 + pr * pr);
+        let ang = pull * 0.6 * (1.0 - min(pr, 1.0));
+        let ca = cos(ang);
+        let sa = sin(ang);
+        let rot = vec2<f32>(pp.x * ca - pp.y * sa, pp.x * sa + pp.y * ca);
+        uv = rot * bend / vec2<f32>(aspect, 1.0) * 0.5 + 0.5;
+    }
+    if (reform > 1e-4) {
+        // The settling: rings of liquid running out from the eye as the
+        // new sky pours in, and stilling as it lands.
+        let pp = (uv - 0.5) * vec2<f32>(aspect, 1.0);
+        let pr = length(pp);
+        let ring = sin(pr * 42.0 - time * 6.5) * exp(-pr * 1.6);
+        let dir = select(vec2<f32>(0.0), pp / pr, pr > 1e-4);
+        uv += dir * ring * 0.013 * reform / vec2<f32>(aspect, 1.0);
+    }
+
     // The liquid field: the charge and the flow both run it, the flow
-    // harder; the speed adds a faint one of its own.
-    let field = max(flow, max(charge * 0.6, speed * 0.35));
+    // harder; the speed adds a faint one of its own, the reform a strong
+    // one — the destination arrives as fluid.
+    let field = max(flow, max(charge * 0.6, max(speed * 0.35, reform * 0.8)));
     let p = (uv - 0.5) * vec2<f32>(aspect, 1.0);
     var off = vec2<f32>(0.0);
     if (field > 1e-4) {
@@ -370,7 +403,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The chromatic split: the drive's, and the glass's own — a hair of
     // it, only toward the rim, where the canopy is thick and oblique.
     let glass = smoothstep(0.55, 1.45, rq);
-    let split = (0.004 * charge + 0.010 * speed) * rq + 0.0035 * fringe * glass * glass;
+    // The drive's own split grows through the PULL and settles through
+    // the REFORM — the fringes of the fold, then of the landing.
+    let split = (0.004 * charge + 0.010 * speed + 0.011 * pull + 0.007 * reform) * rq
+        + 0.0035 * fringe * glass * glass;
 
     var c: vec3<f32>;
     if (speed > 1e-4) {
@@ -404,6 +440,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (charge > 1e-4) {
         let rim = smoothstep(0.3, 0.95, rq) * charge;
         c += vec3<f32>(0.80, 0.92, 1.0) * rim * 0.14;
+    }
+    if (reform > 1e-4) {
+        // The new sky settling: a cool wash at the rim that stills with it.
+        c += vec3<f32>(0.75, 0.88, 1.0) * smoothstep(0.25, 1.0, rq) * reform * 0.10;
     }
     if (speed > 1e-4) {
         c += vec3<f32>(0.35, 0.6, 1.0) * clamp(length(off) * 6.0 - 0.08, 0.0, 0.35) * speed * 1.5;

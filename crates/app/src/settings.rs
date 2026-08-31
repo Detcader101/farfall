@@ -9,7 +9,7 @@
 use crate::bay::{Mount, STOCK};
 use crate::cockpit::{Instrument, Layout, Slot};
 use crate::input::{key_from_name, key_name, Action, Bindings, Named};
-use crate::warp::{Destination, Plan};
+use crate::warp::{Destination, Plan, LENGTH_MAX, LENGTH_MIN};
 pub use farfall_render::post::Tonemap;
 use std::path::PathBuf;
 
@@ -321,6 +321,9 @@ pub struct Settings {
     pub holo_anchor: [f32; 2],
     /// The wormhole drive's destination and safe distance.
     pub plan: Plan,
+    /// The jump sequence's length: a scale on the stock eight seconds,
+    /// 0.5 (four seconds) .. 2 (sixteen); 1 = stock.
+    pub warp_length: f32,
     /// The reactor's share for the arms, 0..1, and their light's strength
     /// (tracers, flashes, bursts), 0 (off) .. 2.
     pub arms_power: f32,
@@ -444,6 +447,7 @@ impl Default for Settings {
             controls_card: false,
             holo_anchor: HOLO_ANCHOR_DEFAULT,
             plan: Plan::default(),
+            warp_length: 1.0,
             arms_power: 0.5,
             arms_glow: 1.0,
             arms_shards: 24,
@@ -537,6 +541,7 @@ pub const KEYS: &[&str] = &[
     "map.grid",
     "warp.destination",
     "warp.safe-radii",
+    "warp.length",
     "sound.hull",
     "control.*",
     "control.look-sens",
@@ -688,6 +693,13 @@ impl Settings {
                 "warp.safe-radii" => {
                     if let Ok(f) = v.parse::<f64>() {
                         s.plan.set_safe(f);
+                    }
+                }
+                "warp.length" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.warp_length = f.clamp(LENGTH_MIN, LENGTH_MAX);
+                        }
                     }
                 }
                 "control.look-sens" => {
@@ -1395,6 +1407,7 @@ impl Settings {
         ));
         out.push_str(&format!("warp.destination = {}\n", self.plan.dest.key()));
         out.push_str(&format!("warp.safe-radii = {:.3}\n", self.plan.safe_radii));
+        out.push_str(&format!("warp.length = {:.2}\n", self.warp_length));
         for i in Instrument::ALL {
             match self.layout.free(i) {
                 Some([x, y]) => out.push_str(&format!(
@@ -1572,6 +1585,7 @@ mod tests {
         s.holo_anchor = [-0.375, 0.25];
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);
+        s.warp_length = 1.5;
         assert_eq!(Settings::parse(&s.render()), s);
     }
 
