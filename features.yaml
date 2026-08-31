@@ -742,3 +742,9 @@ features:
     settings: [holo.range, control.holo-out, control.holo-in]
     tests: ["crates/render/src/holo.rs::marks_sit_at_their_bearing_by_their_distance_over_the_reach", "crates/render/src/holo.rs::holo_lanes_hold_their_places", "crates/app/src/menu.rs::the_hologram_range_and_the_card_have_rows", crates/render/tests/shader_validation.rs]
     e2e: "pending — FARFALL_BENCH_MIMIC=hostile capture with the hologram"
+
+  - id: cockpit-arms
+    name: "The cockpit sees the bay's fit: the mounts on the visible airframe through the glass — a cannon's twin barrels off WING L from the pilot's seat, the rail's barrel and coils, an empty hardpoint's bare pylon — the same sd_mount geometry (lifted into common.wgsl) and the same Rust transform table (bay::fit_views over Hardpoint::pos) as the SHIP bay's hologram, so a refit in the bay changes the glass at once as a sharp in-place redraw; the chase view and the holo3PP's ship (the jet pass) carry the fit too; mounts join the cabin march only inside their hardpoints' bounding spheres, so an empty sky ray costs what it did"
+    state: tests-pass
+    tests: ["crates/app/src/bay.rs::every_pass_reads_the_same_fit_table", "crates/render/src/cabin.rs::the_bay_fit_reaches_the_glass_and_redraws_in_place", "crates/render/src/jet.rs::jet_lanes_hold_their_places", "crates/render/tests/shader_validation.rs"]
+    e2e: "farfall-captures/cockpit-arms/ ca-glass-{nose,wl-cannon,wl-rail,wr-cannon,wr-empty}-1.png (the fit on the airframe through the glass, both wings, a bare pylon), ca-bay-fit-1.png (the bay panel and hologram agreeing), ca-chase-fit-1.png (the chase view astern); perf held at ~325-360 fps"

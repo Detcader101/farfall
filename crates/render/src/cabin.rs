@@ -1,6 +1,7 @@
 //! The wireframe cabin (`shaders/cockpit.wgsl`): a canopy dome, a sill, a
 //! dash and a bulkhead drawn around the pilot's head in the ship's frame.
 
+use crate::hologram::MountView;
 use crate::instrument::InstrumentPass;
 use crate::CameraFrame;
 use glam::{Quat, Vec3};
@@ -16,6 +17,10 @@ pub struct CabinUniforms {
     pads: [[f32; 4]; 6],
     /// xyz: the eye's seat, metres from the head origin (ship frame).
     eye: [f32; 4],
+    /// xyz: each hardpoint, ship frame (m) — the one transform table
+    /// (bay.rs Hardpoint::pos via fit_views); w: its mount's kind
+    /// (0 empty, 1 cannon, 2 rail). The glass shows the bay's fit.
+    hp: [[f32; 4]; 4],
 }
 
 /// What the composite needs each frame: the head's basis for the thruster
@@ -82,8 +87,13 @@ impl CabinUniforms {
         sun_ship: Vec3,
         look: CabinLook,
         sockets: &[Socket],
+        fit: &[MountView; 4],
     ) -> Self {
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
+        let mut hp = [[0.0; 4]; 4];
+        for (slot, m) in hp.iter_mut().zip(fit.iter()) {
+            *slot = [m.at.x, m.at.y, m.at.z, m.kind as f32];
+        }
         let mut pads = [[0.0; 4]; 6];
         for (slot, sk) in pads.iter_mut().zip(sockets.iter()) {
             let d = sk.dir.normalize_or_zero();
@@ -123,6 +133,7 @@ impl CabinUniforms {
             sun: v4(quantise(sun_ship.normalize_or_zero(), 0.02), cam.exposure),
             pads,
             eye: [0.0; 4],
+            hp,
         }
     }
 
@@ -795,6 +806,61 @@ pub enum CabinWork {
 mod tests {
     use super::*;
 
+    /// The stock fit at the true hardpoint places (bay.rs Hardpoint::pos):
+    /// rail on the nose, a cannon on each wing, the belly bare.
+    fn stock_fit() -> [MountView; 4] {
+        [
+            MountView {
+                at: Vec3::new(0.0, -0.45, -4.2),
+                kind: 2,
+            },
+            MountView {
+                at: Vec3::new(-2.6, -0.35, -0.6),
+                kind: 1,
+            },
+            MountView {
+                at: Vec3::new(2.6, -0.35, -0.6),
+                kind: 1,
+            },
+            MountView {
+                at: Vec3::new(0.0, -1.95, 1.4),
+                kind: 0,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_bay_fit_reaches_the_glass_and_redraws_in_place() {
+        let cam = CameraFrame {
+            orient: Quat::IDENTITY,
+            fov_y: 1.0,
+            aspect: 1.5,
+            time_s: 2.0,
+            exposure: 1.0,
+        };
+        let look = CabinLook {
+            glow: 1.0,
+            metal: 0.8,
+            on: true,
+            thrust: [0.0; 4],
+            style: 0,
+        };
+        let fit = stock_fit();
+        let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &[], &fit);
+        // Each hardpoint rides its lane: the place and the kind.
+        assert_eq!(still.hp[1], [-2.6, -0.35, -0.6, 1.0], "cannon on WING L");
+        assert_eq!(still.hp[0][3], 2.0, "the rail on the nose");
+        assert_eq!(still.hp[3][3], 0.0, "the belly's bare pylon");
+        // Refit in the bay: the uniforms change (a re-march at once), but
+        // the view has not moved — the sharp cabin is redrawn in place,
+        // never blurred by the moving-size path.
+        let mut refit = fit;
+        refit[1].kind = 2;
+        let changed = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &[], &refit);
+        assert_ne!(still, changed);
+        assert!(!still.view_moved(&changed));
+    }
+
     #[test]
     fn the_governor_trades_moving_detail_for_the_floor_and_gives_it_back() {
         let mut g = Governor::new();
@@ -887,7 +953,8 @@ mod tests {
                 tilt: 0.0,
             },
         ];
-        let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
+        let fit = stock_fit();
+        let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets, &fit);
         assert_eq!(&still.fwd[..3], &[0.0, 0.0, -1.0]);
         assert_eq!(still.misc[3], 2.0);
         assert_eq!(
@@ -911,7 +978,8 @@ mod tests {
             thrust: [9.0, 0.0, 0.0, 0.0],
             style: 2,
         };
-        let turned = CabinUniforms::new(&cam, Quat::from_rotation_y(-0.5), Vec3::Y, loud, &[]);
+        let turned =
+            CabinUniforms::new(&cam, Quat::from_rotation_y(-0.5), Vec3::Y, loud, &[], &fit);
         assert!(turned.fwd[0] > 0.4, "{:?}", turned.fwd);
         assert_eq!(turned.right[3], 3.0);
         assert_eq!(turned.up[3], 0.0);
@@ -964,10 +1032,10 @@ mod tests {
         assert_eq!(Placement::glass_sized(1.5).right[3], 1.5);
         assert_eq!(Placement::glass_sized(1.0).tilted(0.5).up[3], 0.5);
         assert_eq!(Placement::glass_sized(1.0).tilted(9.0).up[3], TILT_MAX);
-        assert_eq!(UNIFORM_BYTES, 12 * 16); // the eye vec4 joined the pads
+        assert_eq!(UNIFORM_BYTES, 16 * 16); // eye, then the four hardpoints
                                             // Unchanged inputs compare equal (no clock inside), a turned head
                                             // is a moved view, a changed socket is not.
-        let again = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
+        let again = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets, &fit);
         assert_eq!(still, again);
         assert!(still.view_moved(&turned));
         let other_sockets = [Socket {
@@ -976,7 +1044,8 @@ mod tests {
             size: 1.0,
             tilt: 0.0,
         }];
-        let resocketed = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &other_sockets);
+        let resocketed =
+            CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &other_sockets, &fit);
         assert!(!still.view_moved(&resocketed));
         assert_ne!(still, resocketed);
         // A slow drift of the Sun below a degree is no change at all.
@@ -986,6 +1055,7 @@ mod tests {
             Vec3::new(0.004, 1.0, 0.0),
             look,
             &sockets,
+            &fit,
         );
         assert_eq!(still, sun_drift);
     }

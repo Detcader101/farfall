@@ -1,7 +1,9 @@
 // cockpit.wgsl — the cabin the pilot sits in (pass: cockpit)
 //
 // Lane: A. Cost class: moderate — a short SDF march per pixel over the
-// cabin and the ship's own nose and wings, bounded to a few metres.
+// cabin and the ship's own nose and wings, bounded to a few metres. The
+// bay's fit joins the march only inside each hardpoint's bounding sphere
+// (sd_mounts), so an empty sky ray still pays what it always did.
 //
 // This is a physical cockpit: a fighter's fuselage with the cabin carved
 // out of it (common.wgsl, sd_fighter_hull), so the hull has a wall, the
@@ -41,6 +43,10 @@ struct Cockpit {
     // xyz: the eye's seat, metres from the pilot's head origin (ship
     // frame) — a headset's two eyes sit either side of it. w: unused.
     eye: vec4<f32>,
+    // xyz: each hardpoint, ship frame (m) — bay.rs Hardpoint::pos via
+    // fit_views, the one transform table. w: 0 empty (bare pylon),
+    // 1 cannon, 2 rail.
+    hp: array<vec4<f32>, 4>,
 }
 
 @group(0) @binding(0) var<uniform> ck: Cockpit;
@@ -119,9 +125,31 @@ fn socket_centre(dir: vec3<f32>) -> vec3<f32> {
     return dir * HOLO_M - vec3<f32>(0.0, 0.16, 0.0);
 }
 
+// The mounts the SHIP bay fitted, hanging off the airframe outside the
+// glass (common.wgsl sd_mount — the bay hologram's own geometry): joined
+// to the march only within each hardpoint's bounding sphere; beyond it
+// the sphere's distance is a safe lower bound and the cabin costs what
+// it did.
+fn sd_mounts(p: vec3<f32>) -> f32 {
+    var d = 1e9;
+    for (var i = 0; i < 4; i += 1) {
+        let hp = ck.hp[i];
+        let b = length(p - hp.xyz - MOUNT_BOUND_C) - MOUNT_BOUND_R;
+        if (b > 0.25) {
+            d = min(d, b);
+        } else {
+            d = min(d, sd_mount(p, hp.xyz, hp.w));
+        }
+    }
+    return d;
+}
+
 fn sd_cabin(p: vec3<f32>) -> Hit {
     // The ship's hull, with the cabin carved out of it.
     var h = Hit(sd_fighter_hull(p), 0.0);
+    // The bay's fit on the airframe: a mount reads as hull metal.
+    let mfit = sd_mounts(p);
+    if (mfit < h.d) { h = Hit(mfit, 0.0); }
     // Everything inside the cabin sits in one box: outside it, its
     // distance is bound enough.
     let inside = sd_round_box(p - vec3<f32>(0.0, -0.2, -0.3), vec3<f32>(1.1, 1.0, 1.7), 0.0);
@@ -360,9 +388,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 near = min(near, sd_frame(exit * (0.5 + 0.25 * f32(i))));
             }
             if (near > 0.12) {
-                // Open sky: written transparent, not discarded, so a
-                // redraw in place leaves no stale pixel behind.
-                return vec4<f32>(0.0);
+                // A mount can stand past the brow (a wing gun, the nose
+                // rail): a ray passing near a hardpoint's bounding
+                // sphere must march after all.
+                var clear = true;
+                for (var i = 0; i < 4; i += 1) {
+                    let c = ck.hp[i].xyz + MOUNT_BOUND_C - ck.eye.xyz;
+                    let along = max(dot(c, ray), 0.0);
+                    if (length(c - ray * along) < MOUNT_BOUND_R) {
+                        clear = false;
+                    }
+                }
+                if (clear) {
+                    // Open sky: written transparent, not discarded, so a
+                    // redraw in place leaves no stale pixel behind.
+                    return vec4<f32>(0.0);
+                }
             }
         }
     }

@@ -68,7 +68,6 @@ use farfall_render::{
     holo::{holo_centre, holo_pass, HoloPass, HoloScene, HoloUniforms, HOLO_RADIUS_M},
     hologram::{
         hologram_pass, Callout, HologramCamera, HologramPass, HologramScene, HologramUniforms,
-        MountView,
     },
     hud::{HudBlock, HudPass},
     instrument::InstrumentPass,
@@ -383,6 +382,10 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_ROLL=rad (benchmark only: rolled about the look axis)
 ///                           for where the nose points (else the planet)
 ///   FARFALL_BENCH_SHIP=1   (benchmark only: open the SHIP bay for a capture)
+///   FARFALL_BENCH_FIT=n,l,r,b (benchmark only: the four hardpoints' mounts by
+///                           key — empty, cannon, rail — in hardpoint order
+///                           nose, wing L, wing R, belly; the cockpit, the
+///                           bay and the chase view all show it)
 ///   FARFALL_BENCH_STYLE=k  (benchmark only: the cockpit's gauge style by key — tron, jet, dial, warthog)
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
@@ -1807,20 +1810,9 @@ impl Game {
             }
         }
         let v = &self.bay_view;
-        let mut mounts = [MountView {
-            at: Vec3::ZERO,
-            kind: 0,
-        }; farfall_render::hologram::HARDPOINTS];
-        for ((m, h), fit) in mounts
-            .iter_mut()
-            .zip(bay::Hardpoint::ALL.iter())
-            .zip(self.settings.mounts.iter())
-        {
-            *m = MountView {
-                at: h.pos().as_vec3(),
-                kind: fit.kind(),
-            };
-        }
+        // One source: the same table the cockpit's glass and the chase
+        // view read (bay::fit_views).
+        let mounts = bay::fit_views(&self.settings.mounts);
         HologramUniforms::new(&HologramScene {
             camera: HologramCamera::orbit(v.yaw, v.pitch, v.dist, BAY_TAN_HALF_FOV),
             pane_centre: [cx, cy],
@@ -1969,7 +1961,8 @@ impl Game {
             style: self.settings.gauge_style.index(),
             thrust: self.thrust_look(),
         };
-        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets);
+        let fit = bay::fit_views(&self.settings.mounts);
+        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets, &fit);
         let bu = cu.blit(look).with_time(cam.time_s);
         (cu, bu)
     }
@@ -3088,7 +3081,8 @@ impl Game {
             self.hyper,
         )
         .with_rcs(thrust[1], thrust[2], thrust[3])
-        .with_body_fill(body_dir, body_sin * body_sin);
+        .with_body_fill(body_dir, body_sin * body_sin)
+        .with_fit(&bay::fit_views(&self.settings.mounts));
         if pose.eye_ship == DVec3::ZERO {
             u
         } else {
@@ -4505,6 +4499,16 @@ impl App {
             game.settings.gauge_style = style;
             for d in game.settings.dials.iter_mut() {
                 d.style = None;
+            }
+        }
+        if let Ok(v) = std::env::var("FARFALL_BENCH_FIT") {
+            if game.frozen {
+                for (slot, k) in game.settings.mounts.iter_mut().zip(v.split(',')) {
+                    if let Some(m) = bay::Mount::from_key(k.trim()) {
+                        *slot = m;
+                    }
+                }
+                game.arms.mounts = game.settings.mounts;
             }
         }
         if game.frozen && std::env::var("FARFALL_BENCH_SHIP").is_ok() {
