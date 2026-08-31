@@ -3,13 +3,27 @@
 //! crate. Unlike settings, a bad line here is not a "fall back to
 //! default" case: [`Save::parse`] refuses the whole file rather than
 //! half-apply it, because a half-restored world (a ship at a hand-edited
-//! position but the old velocity) is worse than none. The seal is
-//! `world.hash`, `sim::state_hash` of the parsed ship state — anything
-//! that moves the ship's numbers without updating the hash to match (a
-//! stray edit, a truncated write) fails the whole load.
+//! position but the old velocity) is worse than none.
+//!
+//! The seal is `world.hash`, over the WHOLE file, not just the ship: see
+//! [`whole_file_seal`]. `render` computes it from its own body; `parse`
+//! builds a candidate `Save` from every field first, re-renders THAT
+//! candidate's body, hashes it the same way, and compares. A legitimate
+//! file's body re-renders byte for byte identical to what produced its
+//! `world.hash` — that is the round trip's whole point — so a hand-edit
+//! to anything under that line, `hull` or `arms.ammo` or `belt.dead` just
+//! as much as `ship.pos`, moves the re-rendered bytes and fails the
+//! comparison. There is no partial success: either every field came back
+//! exactly as written, or nothing did.
 //!
 //! Floats are written with Rust's own shortest round-trip formatting
-//! (`{:?}`), which is exact: `parse(render(x)) == x`, bit for bit.
+//! (`{:?}`), which is exact: `parse(render(x)) == x`, bit for bit. The
+//! one field that is not written back exactly as stored is the ship's
+//! orientation: `sealed_orient` renormalises it if (and only if) its
+//! length is merely close to 1, which is why `render` writes and
+//! hashes the SEALED form rather than whatever is literally on `self` —
+//! otherwise a value already very near unit length (every orientation
+//! the sim itself ever produces) would fail its own seal.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -60,46 +74,74 @@ pub struct Save {
 }
 
 impl Save {
-    /// The ship orientation, sealed the same way `parse` seals one parsed
-    /// from text — see [`seal_orient`]. `render`'s hash and `parse`'s
-    /// validation must agree on a hand-edited-but-within-tolerance
-    /// orientation, and this is how: both hash the sealed form of the
-    /// same four numbers, never the raw stored quaternion directly.
-    fn world_state(&self) -> sim::WorldState {
+    /// The orientation as `world_state`/`render_body` actually use it:
+    /// sealed via [`seal_orient`] rather than whatever is literally
+    /// stored on `self`. Written form and hashed form must always be the
+    /// SAME four numbers — see [`whole_file_seal`]'s doc for why — so
+    /// both go through this, never `self.ship_orient` directly.
+    fn sealed_orient(&self) -> DQuat {
         let o = self.ship_orient;
-        let sealed = seal_orient(o.x, o.y, o.z, o.w).unwrap_or(o);
+        seal_orient(o.x, o.y, o.z, o.w).unwrap_or(o)
+    }
+
+    fn world_state(&self) -> sim::WorldState {
         sim::WorldState {
             time_s: self.time_s,
             ship: sim::ShipState {
                 pos_m: self.ship_pos,
                 vel_mps: self.ship_vel,
-                orient: sealed,
+                orient: self.sealed_orient(),
                 ang_vel_radps: self.ship_spin,
             },
         }
     }
 
-    /// The seal: `sim::state_hash` of the ship state this save carries.
+    /// The ship-state hash alone (`sim::state_hash`) — one ingredient of
+    /// [`Self::seal`], the whole-file value actually written and checked
+    /// as `world.hash`.
     pub fn state_hash(&self) -> u64 {
         sim::state_hash(&self.world_state())
     }
 
+    /// The value written (and checked) as `world.hash`: see
+    /// [`whole_file_seal`].
+    pub fn seal(&self) -> u64 {
+        whole_file_seal(self.state_hash(), &self.render_body())
+    }
+
     pub fn render(&self) -> String {
+        let body = self.render_body();
         let mut out = String::from(
             "# farfall world — written by the game on quit and every 30 s \
              of sim time; delete it or use NEW GAME to start over\n",
         );
         out.push_str("world.version = 1\n");
-        out.push_str(&format!("world.hash = {:016x}\n", self.state_hash()));
+        out.push_str(&format!(
+            "world.hash = {:016x}\n",
+            whole_file_seal(self.state_hash(), &body)
+        ));
+        out.push_str(&body);
+        out
+    }
+
+    /// Every line `render` writes AFTER the `world.hash` line, exactly as
+    /// `render` produces them. This is the text [`whole_file_seal`] hashes
+    /// (alongside the ship-state hash) on both the write side (here) and
+    /// the read side (`parse`, which builds a candidate `Save` and calls
+    /// this on it) — the whole scheme rests on a legitimate file's body
+    /// re-rendering byte for byte from what `parse` reads back out of it.
+    fn render_body(&self) -> String {
+        let mut out = String::new();
         out.push_str(&format!("sim.time = {}\n", f64s(self.time_s)));
         out.push_str(&format!("ship.pos = {}\n", vec3(self.ship_pos)));
         out.push_str(&format!("ship.vel = {}\n", vec3(self.ship_vel)));
+        let so = self.sealed_orient();
         out.push_str(&format!(
             "ship.orient = {},{},{},{}\n",
-            f64s(self.ship_orient.x),
-            f64s(self.ship_orient.y),
-            f64s(self.ship_orient.z),
-            f64s(self.ship_orient.w)
+            f64s(so.x),
+            f64s(so.y),
+            f64s(so.z),
+            f64s(so.w)
         ));
         out.push_str(&format!("ship.spin = {}\n", vec3(self.ship_spin)));
         out.push_str(&format!("flight.assist = {}\n", bools(self.assist)));
@@ -154,9 +196,13 @@ impl Save {
     /// Parse a world file. `None` on anything wrong at all — a missing or
     /// unsupported version, a non-finite number, an orientation that is
     /// not within `1e-6` of unit length (renormalised when it is), or a
-    /// `world.hash` that does not match the ship state the rest of the
-    /// file describes. There is no partial success: either every field
-    /// came back exactly as written, or nothing did.
+    /// `world.hash` that does not match [`Self::seal`] of every field the
+    /// rest of the file describes. There is no partial success: either
+    /// every field came back exactly as written, or nothing did — and
+    /// that now covers the WHOLE file, not just the ship (see
+    /// [`whole_file_seal`]'s doc): a hand-edit to `hull`, `arms.ammo`,
+    /// `haul.tonnes`, `belt.dead`, anything, is caught the same way a
+    /// hand-edit to `ship.pos` always was.
     pub fn parse(text: &str) -> Option<Save> {
         let mut fields: HashMap<&str, &str> = HashMap::new();
         let mut mimic_lines: Vec<(usize, &str)> = Vec::new();
@@ -178,26 +224,13 @@ impl Save {
         if get("world.version")? != "1" {
             return None;
         }
-        let saved_hash = parse_hex_u64(get("world.hash")?)?;
+        let saved_seal = parse_hex_u64(get("world.hash")?)?;
 
         let time_s = parse_f64(get("sim.time")?)?;
         let ship_pos = parse_vec3(get("ship.pos")?)?;
         let ship_vel = parse_vec3(get("ship.vel")?)?;
         let ship_orient = parse_quat(get("ship.orient")?)?;
         let ship_spin = parse_vec3(get("ship.spin")?)?;
-
-        let state = sim::WorldState {
-            time_s,
-            ship: sim::ShipState {
-                pos_m: ship_pos,
-                vel_mps: ship_vel,
-                orient: ship_orient,
-                ang_vel_radps: ship_spin,
-            },
-        };
-        if sim::state_hash(&state) != saved_hash {
-            return None;
-        }
 
         let assist = parse_bool(get("flight.assist")?)?;
         let landing = parse_bool(get("flight.landing")?)?;
@@ -226,7 +259,10 @@ impl Save {
             mimics.push(parse_mimic(v)?);
         }
 
-        Some(Save {
+        // Every field is in hand: only now can the candidate's own body be
+        // rendered, to check it seals to what the file claims. Any field
+        // above missing or invalid already returned `None` via `?`.
+        let candidate = Save {
             time_s,
             ship_pos,
             ship_vel,
@@ -253,7 +289,11 @@ impl Save {
             belt_wounds,
             mimics_revealed,
             mimics,
-        })
+        };
+        if candidate.seal() != saved_seal {
+            return None;
+        }
+        Some(candidate)
     }
 
     /// Write the file (or, on the web, localStorage). Failure is logged,
@@ -265,7 +305,7 @@ impl Save {
             log::info!(
                 "world: saved t={:.1}s hash={:016x}",
                 self.time_s,
-                self.state_hash()
+                self.seal()
             );
             return;
         }
@@ -293,10 +333,42 @@ impl Save {
         log::info!(
             "world: saved t={:.1}s hash={:016x} -> {}",
             self.time_s,
-            self.state_hash(),
+            self.seal(),
             path.display()
         );
     }
+}
+
+/// FNV-1a 64 — the same constants `sim::state_hash` uses — over the
+/// ship-state hash's own bytes, then every byte of the rendered body:
+/// this is `world.hash`, the whole-file seal.
+///
+/// `render` computes this once, from its own body, to know what to write.
+/// `parse` recomputes it from the candidate `Save` it just finished
+/// building, by rendering THAT candidate's own body and hashing the
+/// result the same way, then compares against the file's
+/// `world.hash`. The two agree exactly when the candidate's body
+/// re-renders byte for byte identical to what produced the file's own
+/// hash — which is always true for a legitimate, untampered file (that
+/// is the round trip's whole point) and false the moment any field under
+/// `world.hash` has been hand-edited without also recomputing it: `hull`,
+/// `arms.ammo`, `haul.tonnes`, `belt.dead`, anything at all, not only the
+/// ship state a narrower seal would have covered.
+fn whole_file_seal(ship_state_hash: u64, body: &str) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = OFFSET;
+    let mut eat = |b: u8| {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(PRIME);
+    };
+    for b in ship_state_hash.to_le_bytes() {
+        eat(b);
+    }
+    for &b in body.as_bytes() {
+        eat(b);
+    }
+    h
 }
 
 /// Where the world file lives, native only (the web build keeps it in
@@ -707,28 +779,66 @@ mod tests {
         assert_eq!(Save::parse(&future), None, "unknown version refuses");
     }
 
+    /// The old seal (`sim::state_hash` of the ship alone) would have let
+    /// every one of these through silently — SPEC §7.6 promises "refused
+    /// whole", and that has to mean the whole file, not just the ship.
+    #[test]
+    fn a_hand_edit_to_the_hull_the_ammo_or_the_haul_is_refused_whole() {
+        let text = sample().render();
+        for (needle, edited) in [
+            ("hull = 0.8", "hull = 0.5"),
+            ("arms.ammo = 600,23", "arms.ammo = 999999,23"),
+            (
+                "haul.tonnes = 1.5,0.0,2.25,3.0",
+                "haul.tonnes = 9.0,0.0,2.25,3.0",
+            ),
+            (
+                "belt.dead = 1:-2:3:0;4:5:-6:2",
+                "belt.dead = 1:-2:3:0;4:5:-6:9",
+            ),
+            ("mimics.revealed = 7:8:9:1", "mimics.revealed = 7:8:9:9"),
+        ] {
+            let tampered = text.replacen(needle, edited, 1);
+            assert_ne!(tampered, text, "the edit for {needle:?} actually landed");
+            assert_eq!(
+                Save::parse(&tampered),
+                None,
+                "hand-edited {needle:?} without updating world.hash"
+            );
+        }
+    }
+
     #[test]
     fn an_orientation_off_unit_length_is_renormalised_within_tolerance_and_refused_beyond_it() {
-        // A hand-edit that nudges the quaternion just inside 1e-6 of unit
-        // length (deliberately NOT pre-normalised — the point is a raw,
-        // slightly-off value): `render`'s hash and `parse`'s check both
-        // go through the same seal, so this is accepted and comes back
-        // exactly unit length.
-        let mut nudged = sample();
-        nudged.ship_orient = DQuat::from_xyzw(0.0, 0.0, 0.0, 1.000_000_1);
-        let parsed =
-            Save::parse(&nudged.render()).expect("within tolerance, renormalised and accepted");
+        // `render` always writes the SEALED orientation (see the module
+        // doc), so `sample()`'s exactly-unit one comes out as "1.0" —
+        // hand-edit that line to something merely close to unit length,
+        // the way an actual hand edit would, without touching
+        // `world.hash`: `seal` renormalises it back to the very same
+        // quaternion on the read side, so the file's body re-renders
+        // identically and the (unchanged) hash still matches — forgiven.
+        let text = sample().render();
+        let nudged = text.replacen(
+            "ship.orient = 0.0,0.0,0.0,1.0",
+            "ship.orient = 0.0,0.0,0.0,1.0000001",
+            1,
+        );
+        assert_ne!(nudged, text, "the edit actually landed");
+        let parsed = Save::parse(&nudged).expect("within tolerance, renormalised and accepted");
         assert_eq!(parsed.ship_orient.length(), 1.0);
+        assert_eq!(
+            parsed,
+            Save::parse(&text).unwrap(),
+            "the tiny edit renormalises onto the exact same orientation the original had"
+        );
 
         // Well outside tolerance: refused outright, whatever the hash says.
-        let mut way_off = sample();
-        way_off.ship_orient = DQuat::from_xyzw(0.0, 0.0, 0.0, 1.0);
-        let text = way_off.render().replacen(
+        let way_off = text.replacen(
             "ship.orient = 0.0,0.0,0.0,1.0",
             "ship.orient = 0.0,0.0,0.0,2.0",
             1,
         );
-        assert_eq!(Save::parse(&text), None);
+        assert_eq!(Save::parse(&way_off), None);
     }
 
     #[test]

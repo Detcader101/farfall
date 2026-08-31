@@ -92,13 +92,12 @@ fn install_autosave_listeners() {
 
 /// The running app's world, saved right now if RESUME allows it.
 fn save_world_now() {
-    APP.with(|a| {
-        if let Some(app) = a.borrow().clone() {
-            if let Some(game) = app.borrow().game.as_ref() {
-                game.maybe_store_world();
-            }
+    let app = APP.with(|a| a.borrow().clone());
+    if let Some(app) = app {
+        if let Some(game) = app.borrow().game.as_ref() {
+            game.maybe_store_world();
         }
-    });
+    }
 }
 
 /// The web app: the native one behind a shared handle, so the page's XR

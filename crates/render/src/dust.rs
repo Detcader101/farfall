@@ -151,7 +151,14 @@ impl DustUniforms {
 }
 
 pub struct DustPass {
+    /// The space motes: drawn into the HDR world target.
     pipeline: wgpu::RenderPipeline,
+    /// The cabin motes: drawn after the post pass, into the ship target
+    /// (`draw_cabin` runs inside `begin_ship_pass`, which is the
+    /// swapchain format, not the world's) — same shader and blend, a
+    /// second pipeline because a wgpu pipeline is bound to one render
+    /// target format.
+    cabin_pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
@@ -159,7 +166,8 @@ pub struct DustPass {
 impl DustPass {
     pub fn new(
         device: &wgpu::Device,
-        target_format: wgpu::TextureFormat,
+        world_format: wgpu::TextureFormat,
+        ship_format: wgpu::TextureFormat,
         sample_count: u32,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -207,36 +215,45 @@ impl DustPass {
             },
             alpha: wgpu::BlendComponent::OVER,
         };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("dust"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(additive),
-                    write_mask: wgpu::ColorWrites::COLOR,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: sample_count,
-                ..Default::default()
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        // A wgpu pipeline is bound to one render-target format: `draw_space`
+        // writes into the HDR world target, `draw_cabin` runs after the
+        // post pass inside the ship-format pass (the swapchain's), so each
+        // needs its own — same shader, entry points and blend otherwise.
+        let make_pipeline = |format: wgpu::TextureFormat, label: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(additive),
+                        write_mask: wgpu::ColorWrites::COLOR,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: sample_count,
+                    ..Default::default()
+                },
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = make_pipeline(world_format, "dust");
+        let cabin_pipeline = make_pipeline(ship_format, "dust cabin");
         Self {
             pipeline,
+            cabin_pipeline,
             uniforms,
             bind_group,
         }
@@ -262,7 +279,7 @@ impl DustPass {
         if u.cright[3] < 0.5 || u.look[1] <= 0.0 {
             return;
         }
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(&self.cabin_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..6, SPACE_MOTES..SPACE_MOTES + CABIN_MOTES);
     }
