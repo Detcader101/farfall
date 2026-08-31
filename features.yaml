@@ -33,7 +33,7 @@ settings_keys:
   graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.dust, graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread, graphics.terrain-detail, graphics.clouds, graphics.city-lights]
   camera: [camera.chase, holo.view, holo.size, cam.shake, cam.drive-shake, holo.range]
   cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
-  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
+  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt / .lean / .rotate", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
   rule: every key above has a menu row (crates/app/src/menu.rs::every_settings_key_has_a_menu_row walks settings.rs::KEYS), save the panel anchors, which are set by dragging
   map: [map.rings, map.grid]
   warp: [warp.destination, warp.safe-radii, warp.length]
@@ -755,3 +755,38 @@ features:
     state: tests-pass
     tests: ["crates/app/src/bay.rs::every_pass_reads_the_same_fit_table", "crates/render/src/cabin.rs::the_bay_fit_reaches_the_glass_and_redraws_in_place", "crates/render/src/jet.rs::jet_lanes_hold_their_places", "crates/render/tests/shader_validation.rs"]
     e2e: "farfall-captures/cockpit-arms/ ca-glass-{nose,wl-cannon,wl-rail,wr-cannon,wr-empty}-1.png (the fit on the airframe through the glass, both wings, a bare pylon), ca-bay-fit-1.png (the bay panel and hologram agreeing), ca-chase-fit-1.png (the chase view astern); perf held at ~325-360 fps"
+
+  - id: settings-persist-and-hyper-camera
+    name: "Polish pass, design (fable/design): settings persist on a plain Windows launch — Settings::path falls back to USERPROFILE when HOME is unset (Explorer/shortcut launches set no HOME, so nothing was ever saved or loaded there); the file gains settings.version, and a versionless file still carrying the old 40% DRIVE SHAKE stock adopts the new 12% while any other value is kept as the pilot's choice; and while the hyper field is up the helmet camera's deflection is scaled down and capped at a quarter of its free limit so the dash reads all the way to the slip — the chaos drive still bucks the ship, which is the warning"
+    state: complete
+    settings: [cam.drive-shake]
+    tests: ["crates/app/src/settings.rs::an_old_files_stock_drive_shake_adopts_the_new_stock", "crates/app/src/shake.rs::the_hyper_field_reins_the_camera_in"]
+    e2e: "farfall-captures/design: mode-shake vs mode-hyper-shake (same parked 3,2,1-degree helmet camera; under the field the dash sits near level and reads through the streaks) and hyper-shake-spin-1..4"
+
+  - id: dial-lean-rotate
+    name: "A dial can face any way: sideways LEAN (;/' in DESIGN, ui.<dial>.lean, ±60°) and in-plane ROTATE (9/0, ui.<dial>.rotate, ±180°) beside the tilt — on the dash the face plane itself turns (dial_plane_uv takes the oriented normal, the DIAL/WARTHOG housing follows via the repacked socket code), on the glass the hologram foreshortens both ways and its face turns (dial_glass_uv, shared by gauge/gvec/gyro); the plate and its markings turn together so the needle reads true; LEAN and ROTATE rows on the DIALS page"
+    state: complete
+    settings: ["ui.<dial>.lean", "ui.<dial>.rotate"]
+    tests: ["crates/app/src/settings.rs::a_lean_and_a_rotation_are_held_within_reach", "crates/render/src/gauge.rs::a_dial_carries_its_lean_and_rotation", "crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin", "crates/app/src/lib.rs::design_keys_lean_and_rotate_a_dial_and_backspace_resets", crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/design: design-lean and hud-fhud — the speed dial leaned 30 and rotated 45 on the dash, plate and markings turned together, the G meter tilted 20; hud-map-drag shows the same dial upright for contrast"
+
+  - id: design-elements-holo-map-readout
+    name: "The holo3PP, the mini map and the readout are design elements like the dials: DESIGN mode's pointer finds each (own card), -/= sizes them (holo.size; ui.map.size scales the mini map pane; ui.readout.size scales the readout text), Backspace resets each, the guide marks all eight anchors, the mini map stays up in DESIGN and drags anywhere with its anchor kept as 'ui.map = on at x,y'; HOLO VIEW/SIZE/RANGE rows live on the DIALS page now"
+    state: complete
+    settings: ["ui.map (slot + dragged anchor)", ui.map.size, ui.readout.size, holo.size, ui.panel-holo, ui.panel-readout]
+    tests: ["crates/app/src/lib.rs::design_mode_takes_the_holo_the_mini_map_and_the_readout", "crates/app/src/cockpit.rs::a_dragged_dial_keeps_its_own_anchor_until_the_slot_is_cycled"]
+    e2e: "farfall-captures/design: design-guide (the guide ringing the dials, the mini map, the holo and the readout; the card says POINT AT ANY GLASS PIECE), hud-map-drag (the mini map dragged to -0.30,0.20), design-lean (the mini map grown 1.5x at 0.10,0.55)"
+
+  - id: hud-file
+    name: "The cockpit as a shareable file: SAVE HUD / LOAD HUD on the DIALS page write and wear ~/.farfall/huds/hud-N.fhud — a small self-describing key=value file (header + hud.version 1) carrying every ui.* key, holo.* and the mini map's look, nothing of graphics/controls/world; an omitted key means stock, DEFAULT is the stock cockpit, SAVE overwrites the file worn last; sharing = sending the file; FARFALL_HUD=path wears one for a run. The first player-to-player artefact (SPEC §11)"
+    state: complete
+    settings: []
+    tests: ["crates/app/src/hud_file.rs::a_hud_file_round_trips_the_whole_cockpit_and_nothing_else", "crates/app/src/hud_file.rs::hud_files_are_numbered_and_sorted_naturally", "crates/app/src/menu.rs::the_dials_page_saves_and_loads_hud_files"]
+    e2e: "farfall-captures/design: hud-fhud — a generated .fhud worn via FARFALL_HUD in flight, the whole staged cockpit on the glass"
+
+  - id: bench-matrix-coverage
+    name: "bench-matrix.sh covers every feature with a frame: rows mode-hyper-shake (hyper field + the helmet camera parked non-zero), mode-disembark (LANDED + DISEMBARK's readout answer), gfx-dust / gfx-dust-belt (FARFALL_BENCH_DUST=k, a new frozen-only knob), design-lean (DESIGN mode wearing a staged .fhud with a leaned+rotated dial and a moved, grown mini map), hud-fhud (the same file worn in flight) and hud-map-drag (the mini map dragged off its corner via a one-line .fhud); the fixtures are generated by the script itself"
+    state: complete
+    settings: []
+    tests: []
+    e2e: "farfall-captures/design: mode-hyper-shake, mode-disembark (LANDED ... DISEMBARK NOT YET on the readout), gfx-dust, design-lean, hud-fhud, hud-map-drag — each row exercised once and looked at"

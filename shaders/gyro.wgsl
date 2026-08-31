@@ -37,6 +37,9 @@ struct Gyro {
     p1: vec4<f32>,
     p2: vec4<f32>,
     p3: vec4<f32>,
+    // x: sideways lean, y: in-plane rotation (radians); zw unused. The
+    // geometric ball ignores both — a sphere has no face to turn.
+    e: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> gyro: Gyro;
@@ -188,20 +191,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let in_dash = gyro.p3.w > 0.0;
     var p = (canopy(in.ndc, aspect) - canopy(gyro.b.zw, aspect)) / max(gyro.p0.w, 0.25);
     if (in_dash) {
-        let duv = dial_plane_uv(in.ndc, aspect, gyro.p0, gyro.p1, gyro.p2, gyro.p3, DIAL_DASH_N);
+        let duv = dial_plane_uv(in.ndc, aspect, gyro.p0, gyro.p1, gyro.p2, gyro.p3,
+                                DIAL_DASH_N, gyro.e.x, gyro.e.y);
         if (duv.z < 0.5) {
             discard;
         }
         p = duv.xy;
     }
-    // Tilted (p1.w, radians): in the dash the face plane itself leans,
-    // handled above; on the glass a hologram leaned off the pilot's line
-    // of sight foreshortens, top edge nearer.
+    // Oriented (p1.w tilt, e.x lean, e.y rotation): in the dash the face
+    // plane itself turns, handled above; on the glass the hologram
+    // foreshortens and its face turns (common.wgsl).
     if (!in_dash) {
-        let tilt = gyro.p1.w;
-        let lean = max(cos(tilt), 0.35);
-        let persp = 1.0 - 0.35 * sin(tilt) * p.y / 0.2;
-        p = vec2<f32>(p.x * persp, p.y / lean * persp);
+        p = dial_glass_uv(p, gyro.p1.w, gyro.e.x, gyro.e.y);
     }
     if (length(p) > RADIUS * 1.35) {
         discard;

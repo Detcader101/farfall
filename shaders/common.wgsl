@@ -390,12 +390,14 @@ fn sd_fighter_hull(q: vec3<f32>) -> f32 {
 // half the fov), and the dial's centre (w: metres per drawing unit).
 // The dial's basis: U along the ship's x, V = N x U on the dash plane.
 fn dial_plane_uv(ndc: vec2<f32>, aspect: f32, right: vec4<f32>, up: vec4<f32>,
-                 fwd: vec4<f32>, centre: vec4<f32>, dash_n: vec3<f32>) -> vec3<f32> {
+                 fwd: vec4<f32>, centre: vec4<f32>, dash_n: vec3<f32>,
+                 lean: f32, rot: f32) -> vec3<f32> {
     let tan_half = fwd.w;
     let ray = normalize(fwd.xyz + right.xyz * (ndc.x * tan_half * aspect) + up.xyz * (ndc.y * tan_half));
     // The face's plane: the dash's, leaned toward the pilot by the tilt
-    // (up.w, radians) about the dial's own horizontal axis.
-    let normal = dial_tilted_normal(dash_n, up.w);
+    // (up.w, radians) about the dial's own horizontal axis, then leaned
+    // sideways about its own upright.
+    let normal = dial_oriented_normal(dash_n, up.w, lean);
     let denom = dot(ray, normal);
     if (denom > -1e-4) {
         return vec3<f32>(0.0, 0.0, 0.0);
@@ -405,10 +407,18 @@ fn dial_plane_uv(ndc: vec2<f32>, aspect: f32, right: vec4<f32>, up: vec4<f32>,
         return vec3<f32>(0.0, 0.0, 0.0);
     }
     let hit = ray * t - centre.xyz;
-    let u_axis = vec3<f32>(1.0, 0.0, 0.0);
+    // The dial's own axes in its plane: the ship's x projected onto the
+    // face (exactly x when there is no lean), the upright from the
+    // normal, and the whole frame turned by the in-plane rotation so the
+    // plate and its markings turn together.
+    let u_axis = normalize(vec3<f32>(1.0, 0.0, 0.0) - normal * normal.x);
     let v_axis = normalize(cross(normal, u_axis));
     let scale = max(centre.w, 1e-4);
-    return vec3<f32>(dot(hit, u_axis) / scale, dot(hit, v_axis) / scale, 1.0);
+    let u0 = dot(hit, u_axis) / scale;
+    let v0 = dot(hit, v_axis) / scale;
+    let cr = cos(rot);
+    let sr = sin(rot);
+    return vec3<f32>(cr * u0 + sr * v0, -sr * u0 + cr * v0, 1.0);
 }
 
 // The dash normal leaned toward the pilot by `tilt` radians about +X —
@@ -417,6 +427,29 @@ fn dial_tilted_normal(dash_n: vec3<f32>, tilt: f32) -> vec3<f32> {
     let c = cos(tilt);
     let s = sin(tilt);
     return normalize(dash_n * c + cross(vec3<f32>(1.0, 0.0, 0.0), dash_n) * s);
+}
+
+// The dash normal tilted, then leaned sideways by `lean` about the
+// dial's own upright. The tilted normal has no x component, so the lean
+// lands wholly on +X — the mirror of Placement::oriented_normal.
+fn dial_oriented_normal(dash_n: vec3<f32>, tilt: f32, lean: f32) -> vec3<f32> {
+    let n1 = dial_tilted_normal(dash_n, tilt);
+    return normalize(n1 * cos(lean) + vec3<f32>(1.0, 0.0, 0.0) * sin(lean));
+}
+
+// A glass hologram's face turned all three ways: maps the canopy-local
+// point p into the dial's own coordinates. Tilt foreshortens the height
+// (top edge nearer), lean the width (side edge nearer), and the rotation
+// turns the whole face — plate and markings together, so a needle at a
+// given reading still points at the same mark.
+fn dial_glass_uv(p: vec2<f32>, tilt: f32, lean: f32, rot: f32) -> vec2<f32> {
+    let lt = max(cos(tilt), 0.35);
+    let ll = max(cos(lean), 0.35);
+    let persp = (1.0 - 0.35 * sin(tilt) * p.y / 0.2) * (1.0 - 0.35 * sin(lean) * p.x / 0.2);
+    let q = vec2<f32>(p.x / ll * persp, p.y / lt * persp);
+    let c = cos(rot);
+    let s = sin(rot);
+    return vec2<f32>(c * q.x + s * q.y, -s * q.x + c * q.y);
 }
 
 // The dash's plane, shared with the cockpit: a point on it and its normal.

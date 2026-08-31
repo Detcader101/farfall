@@ -99,6 +99,10 @@ pub enum MenuEvent {
     Quit,
     /// Close the menu and fire the wormhole drive at the plan.
     Engage,
+    /// Write the cockpit to a HUD file (the app owns the disk).
+    SaveHud,
+    /// Wear the pick'th saved HUD file (0: the stock cockpit).
+    LoadHud(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -466,6 +470,11 @@ enum Item {
     DialStyle,
     DialFade,
     DialTilt,
+    DialLean,
+    DialRotate,
+    /// The HUD as a file: write it, or wear a saved/shared one.
+    HudSave,
+    HudLoad,
     Camera,
     HoloView,
     HoloSize,
@@ -605,6 +614,10 @@ impl Item {
             Item::DialStyle => "  STYLE",
             Item::DialFade => "  FADE",
             Item::DialTilt => "  TILT",
+            Item::DialLean => "  LEAN",
+            Item::DialRotate => "  ROTATE",
+            Item::HudSave => "SAVE HUD",
+            Item::HudLoad => "LOAD HUD",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
@@ -729,6 +742,16 @@ impl Item {
             Item::DialStyle => "THIS DIAL'S OWN STYLE, OR THE COCKPIT'S (AUTO).",
             Item::DialFade => "THIS DIAL STAYS LIT, FADES, OR DOES AS THE COCKPIT DOES (AUTO).",
             Item::DialTilt => "THIS DIAL LEANED TOWARD YOU ABOUT ITS OWN AXIS, DEGREES.",
+            Item::DialLean => "THIS DIAL LEANED SIDEWAYS ABOUT ITS OWN UPRIGHT, DEGREES.",
+            Item::DialRotate => {
+                "THIS DIAL'S FACE TURNED IN ITS OWN PLANE, DEGREES. THE NEEDLE STILL READS TRUE."
+            }
+            Item::HudSave => {
+                "WRITE THIS COCKPIT TO A SMALL FILE IN ~/.FARFALL/HUDS. SEND THE FILE TO SHARE IT."
+            }
+            Item::HudLoad => {
+                "WEAR A SAVED OR SHARED HUD FILE, OR DEFAULT. DROP A FRIEND'S .FHUD IN THAT FOLDER."
+            }
             Item::MapRings => "RINGS DRAWN ROUND EACH BODY ON THE MAP.",
             Item::MapGrid => "THE MAP'S REFERENCE GRID.",
             Item::LookSens => "HOW FAR THE HEAD TURNS PER MOUSE MOVEMENT.",
@@ -811,6 +834,14 @@ impl Item {
                 .iter()
                 .map(|i| format!("ui.{}.tilt", i.key()))
                 .collect(),
+            Item::DialLean => Instrument::ALL
+                .iter()
+                .map(|i| format!("ui.{}.lean", i.key()))
+                .collect(),
+            Item::DialRotate => Instrument::ALL
+                .iter()
+                .map(|i| format!("ui.{}.rotate", i.key()))
+                .collect(),
             Item::Camera => one("camera.chase"),
             Item::HoloView => one("holo.view"),
             Item::HoloSize => one("holo.size"),
@@ -844,7 +875,13 @@ impl Item {
             Item::PointerSize => one("ui.pointer-size"),
             Item::SafeEdge => one("ui.safe-edge"),
             Item::ControlsCard => one("ui.controls-card"),
-            Item::Quit | Item::DialSelect | Item::Engage | Item::Heading(_) | Item::Help(_) => {
+            Item::Quit
+            | Item::DialSelect
+            | Item::Engage
+            | Item::HudSave
+            | Item::HudLoad
+            | Item::Heading(_)
+            | Item::Help(_) => {
                 vec![]
             }
         }
@@ -965,7 +1002,11 @@ impl Item {
             | Item::DialSize
             | Item::DialStyle
             | Item::DialFade
-            | Item::DialTilt => String::new(),
+            | Item::DialTilt
+            | Item::DialLean
+            | Item::DialRotate
+            | Item::HudSave
+            | Item::HudLoad => String::new(),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}X", s.look_sensitivity),
@@ -1120,6 +1161,8 @@ pub struct Menu {
     msaa_ok: [bool; 4],
     /// The dial the DIALS page's per-dial block edits.
     dial: Instrument,
+    /// LOAD HUD's place in its cycle: 0 DEFAULT, n the nth saved file.
+    hud_pick: usize,
 }
 
 impl Default for Menu {
@@ -1133,6 +1176,7 @@ impl Default for Menu {
             rebinding: false,
             msaa_ok: [true; 4],
             dial: Instrument::Speed,
+            hud_pick: 0,
         }
     }
 }
@@ -1162,9 +1206,6 @@ impl Menu {
                 Item::FpsFloor,
                 Item::Fov,
                 Item::Camera,
-                Item::HoloView,
-                Item::HoloSize,
-                Item::HoloRange,
                 Item::CockpitRes,
                 Item::Sky,
                 Item::TerrainDetail,
@@ -1229,7 +1270,18 @@ impl Menu {
                     Item::DialStyle,
                     Item::DialFade,
                     Item::DialTilt,
+                    Item::DialLean,
+                    Item::DialRotate,
                 ];
+                // The HUD as a shareable file, then the holo3PP's rows —
+                // it is a gauge and lives with the dials.
+                v.extend([
+                    Item::HudSave,
+                    Item::HudLoad,
+                    Item::HoloView,
+                    Item::HoloSize,
+                    Item::HoloRange,
+                ]);
                 v.extend(
                     Instrument::ALL
                         .iter()
@@ -1503,6 +1555,7 @@ impl Menu {
                     self.open = false;
                     MenuEvent::Engage
                 }
+                Item::HudSave => MenuEvent::SaveHud,
                 i if i.rebindable() => {
                     self.rebinding = true;
                     MenuEvent::Nothing
@@ -1913,6 +1966,38 @@ impl Menu {
                 d.tilt_deg = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::DialLean => {
+                let d = &mut s.dials[self.dial as usize];
+                let next = (d.lean_deg + if forward { 5.0 } else { -5.0 })
+                    .clamp(crate::settings::TILT_MIN, crate::settings::TILT_MAX);
+                if (next - d.lean_deg).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                d.lean_deg = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::DialRotate => {
+                let d = &mut s.dials[self.dial as usize];
+                let next = (d.rotate_deg + if forward { 15.0 } else { -15.0 })
+                    .clamp(crate::settings::ROTATE_MIN, crate::settings::ROTATE_MAX);
+                if (next - d.rotate_deg).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                d.rotate_deg = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            // SAVE HUD acts on Enter alone: an arrow across the row must
+            // not scatter files.
+            Item::HudSave => MenuEvent::Nothing,
+            Item::HudLoad => {
+                let total = crate::hud_file::list().len() + 1;
+                self.hud_pick = if forward {
+                    (self.hud_pick + 1) % total
+                } else {
+                    (self.hud_pick + total - 1) % total
+                };
+                MenuEvent::LoadHud(self.hud_pick)
+            }
             Item::DialFade => {
                 let d = &mut s.dials[self.dial as usize];
                 d.stay = match (d.stay, forward) {
@@ -2145,6 +2230,15 @@ impl Menu {
             }
             .to_string(),
             Item::DialTilt => format!("{:+.0} DEG", d.tilt_deg),
+            Item::DialLean => format!("{:+.0} DEG", d.lean_deg),
+            Item::DialRotate => format!("{:+.0} DEG", d.rotate_deg),
+            Item::HudLoad => {
+                if self.hud_pick == 0 {
+                    "DEFAULT".to_string()
+                } else {
+                    format!("HUD {}", self.hud_pick)
+                }
+            }
             other => other.value(s),
         }
     }
@@ -2443,6 +2537,8 @@ mod tests {
         for d in s.dials.iter_mut() {
             d.size = crate::settings::DIAL_SIZE_MAX;
             d.tilt_deg = crate::settings::TILT_MIN;
+            d.lean_deg = crate::settings::TILT_MIN;
+            d.rotate_deg = crate::settings::ROTATE_MIN;
             d.style = Some(crate::settings::GaugeStyle::Dial);
             d.stay = Some(false);
         }
@@ -2626,7 +2722,7 @@ mod tests {
             match page {
                 Page::Graphics => {
                     assert!(on(Item::Msaa) && on(Item::Fov) && on(Item::CockpitRes));
-                    assert!(on(Item::FpsFloor) && on(Item::HoloRange));
+                    assert!(on(Item::FpsFloor));
                     // The nebula block sits together, after the sky knobs.
                     let at = |it: Item| items.iter().position(|i| *i == it).unwrap();
                     assert!(at(Item::Nebula) > at(Item::Flare));
@@ -2674,7 +2770,12 @@ mod tests {
                 Page::Gauges => {
                     assert!(on(Item::GaugeStyle) && on(Item::GaugesStay) && on(Item::Guide));
                     assert!(on(Item::DialTilt) && on(Item::Slot(Instrument::Gyro)));
+                    assert!(on(Item::DialLean) && on(Item::DialRotate));
                     assert!(on(Item::Slot(Instrument::Map)), "the mini map is a gauge");
+                    assert!(
+                        on(Item::HoloView) && on(Item::HoloSize) && on(Item::HoloRange),
+                        "the holo3PP is a gauge"
+                    );
                     assert!(
                         !on(Item::Slot(Instrument::Hoops)),
                         "hoops live with the cabin"
@@ -2795,7 +2896,7 @@ mod tests {
                 continue;
             };
             let k = k.trim();
-            if DRAGGED_KEYS.contains(&k) {
+            if DRAGGED_KEYS.contains(&k) || crate::settings::FILE_ONLY_KEYS.contains(&k) {
                 continue;
             }
             assert!(claimed.iter().any(|c| c == k), "no menu row edits {k}");
@@ -2998,11 +3099,33 @@ mod tests {
         assert_eq!(side.page, Page::Map, "a side panel has no tabs");
     }
 
+    /// SAVE HUD writes on Enter alone (an arrow across the row must not
+    /// scatter files); LOAD HUD cycles DEFAULT and the saved files and
+    /// asks the app to wear the pick. The menu touches no disk itself.
+    #[test]
+    fn the_dials_page_saves_and_loads_hud_files() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.open_on(Page::Gauges);
+        let at = m.items().iter().position(|&i| i == Item::HudSave).unwrap();
+        m.set_cursor(at);
+        assert_eq!(m.key(KeyCode::ArrowRight, &mut s), MenuEvent::Nothing);
+        assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::SaveHud);
+        m.key(KeyCode::ArrowDown, &mut s);
+        assert_eq!(m.items()[m.cursor], Item::HudLoad);
+        assert_eq!(m.value_of(Item::HudLoad, &s), "DEFAULT");
+        assert!(matches!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::LoadHud(_)
+        ));
+        assert_eq!(s, Settings::default(), "the menu itself changes nothing");
+    }
+
     #[test]
     fn the_hologram_range_and_the_card_have_rows() {
         let mut m = Menu::new();
         let mut s = Settings::default();
-        m.open_on(Page::Graphics);
+        m.open_on(Page::Gauges);
         let at = m
             .items()
             .iter()

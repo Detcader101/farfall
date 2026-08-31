@@ -51,6 +51,9 @@ pub struct GyroUniforms {
     c: [f32; 4],
     d: [f32; 4],
     place: crate::cabin::Placement,
+    /// x: sideways lean, y: in-plane rotation (radians); zw unused. The
+    /// geometric ball ignores both — a sphere has no face to turn.
+    e: [f32; 4],
 }
 
 /// Octahedral encoding of a unit vector, the mirror of common.wgsl.
@@ -111,6 +114,14 @@ impl GyroUniforms {
         self.place = place.unwrap_or(crate::cabin::Placement::GLASS);
         self
     }
+
+    /// The dial's other two orientation axes, radians (see
+    /// [`crate::gauge::GaugeUniforms::oriented`]).
+    pub fn oriented(mut self, lean_rad: f32, rotate_rad: f32) -> Self {
+        let clean = |v: f32| if v.is_finite() { v } else { 0.0 };
+        self.e = [clean(lean_rad), clean(rotate_rad), 0.0, 0.0];
+        self
+    }
 }
 
 impl GyroUniforms {
@@ -129,6 +140,7 @@ impl GyroUniforms {
             c: [sway[0], sway[1], time_s, 0.0],
             d: [0.0; 4],
             place: crate::cabin::Placement::GLASS,
+            e: [0.0; 4],
         }
     }
 }
@@ -322,11 +334,14 @@ pub struct GuideUniforms {
     c: [f32; 4],
     d: [f32; 4],
     e: [f32; 4],
+    f: [f32; 4],
 }
 
 impl GuideUniforms {
-    /// `anchors`: up to six dial anchors (NDC); `gaze`: where the head
-    /// points on the glass; `reach`: the pick-up distance (NDC).
+    /// `anchors`: up to eight element anchors (NDC) — the dials, and the
+    /// other glass pieces DESIGN mode can take (holo3PP, mini map,
+    /// readout); `gaze`: where the head points on the glass; `reach`:
+    /// the pick-up distance (NDC).
     pub fn new(
         aspect: f32,
         on: bool,
@@ -336,7 +351,7 @@ impl GuideUniforms {
         looking: bool,
         anchors: &[[f32; 2]],
     ) -> Self {
-        let mut slots = [[-10.0f32, -10.0]; 6];
+        let mut slots = [[-10.0f32, -10.0]; 8];
         for (slot, a) in slots.iter_mut().zip(anchors.iter()) {
             *slot = *a;
         }
@@ -346,6 +361,7 @@ impl GuideUniforms {
             c: [slots[0][0], slots[0][1], slots[1][0], slots[1][1]],
             d: [slots[2][0], slots[2][1], slots[3][0], slots[3][1]],
             e: [slots[4][0], slots[4][1], slots[5][0], slots[5][1]],
+            f: [slots[6][0], slots[6][1], slots[7][0], slots[7][1]],
         }
     }
 }
