@@ -133,6 +133,10 @@ fn scale_invariance() {
             mu: base.uranus.mu * s * s * s,
             from_sun: base.uranus.from_sun * s,
         },
+        // Dimensionless, and the wind stays similar on its own: every wind
+        // speed is a multiple of √(g·H), which scales by s like every other
+        // velocity here.
+        wind_strength: base.wind_strength,
         ship: farfall_sim::ShipParams {
             cd_area_m2: base.ship.cd_area_m2 / s,
             cd_area_side_m2: base.ship.cd_area_side_m2 / s,
@@ -233,7 +237,13 @@ fn golden_hash() {
 //                       solid. Near the planet the tide is ~1e-7 m/s², which
 //                       is enough to move the last bits of the hash and
 //                       nothing else.
-const GOLDEN: u64 = 0xe8f76101b8054115;
+//   0x30ef42aba9be89c3  the atmosphere got wind: every aero term now acts on
+//                       v − wind(pos, t), a deterministic layered field (zonal
+//                       bands, a jet stream, travelling cells, slow gusts).
+//                       The golden scenario sits at 20 km, inside the air, so
+//                       its trajectory moved; wind_strength 0 still reproduces
+//                       the previous hash bit for bit (tests/wind.rs pins it).
+const GOLDEN: u64 = 0x30ef42aba9be89c3;
 
 /// Not an assertion — prints the current golden value for setup/updates:
 /// `cargo test -p farfall-sim print_golden -- --ignored --nocapture`
