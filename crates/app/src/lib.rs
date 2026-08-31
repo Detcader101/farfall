@@ -880,6 +880,11 @@ impl Gpu {
     /// measures head movement rather than walking off the window.
     fn set_look_cursor(&self, looking: bool) {
         use winit::window::CursorGrabMode;
+        // A benchmark never takes the mouse: it is a measurement window on
+        // someone's second screen, not a game.
+        if self.cfg.bench {
+            return;
+        }
         self.window.set_cursor_visible(!looking);
         let mode = if looking {
             CursorGrabMode::Locked
@@ -4988,6 +4993,9 @@ impl ApplicationHandler for App {
     }
 
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        if self.gpu.as_ref().is_some_and(|g| g.cfg.bench) {
+            return;
+        }
         // Raw motion, not cursor position: the cursor is grabbed while
         // looking, and raw counts keep coming at the screen edge.
         if let DeviceEvent::MouseMotion { delta } = event {
@@ -5013,6 +5021,15 @@ impl ApplicationHandler for App {
                 game.log_exit("window closed");
                 event_loop.exit();
             }
+            // A benchmark is deaf: no key, mouse or wheel reaches the game,
+            // so a stray keypress on the other screen never changes what is
+            // being measured or steals a freelook.
+            WindowEvent::KeyboardInput { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::Focused(_)
+                if gpu.cfg.bench => {}
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;
