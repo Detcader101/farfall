@@ -652,15 +652,35 @@ impl Settings {
         }
         #[allow(unreachable_code)]
         let Some(path) = Self::path() else {
-            return Self::default();
+            return Self::with_env_hud(Self::default());
         };
-        match std::fs::read_to_string(&path) {
+        let s = match std::fs::read_to_string(&path) {
             Ok(text) => {
                 let s = Self::parse(&text);
                 log::info!("settings: loaded {}", path.display());
                 s
             }
             Err(_) => Self::default(),
+        };
+        Self::with_env_hud(s)
+    }
+
+    /// FARFALL_HUD=path: wear a HUD layout file (.fhud) for this run —
+    /// the bench's way to stage a cockpit, and a way to try a shared one.
+    /// (On the web there is no environment: var() errs, this is a no-op.)
+    fn with_env_hud(s: Self) -> Self {
+        let Ok(p) = std::env::var("FARFALL_HUD") else {
+            return s;
+        };
+        match std::fs::read_to_string(&p) {
+            Ok(text) => {
+                log::info!("hud: wearing {p}");
+                crate::hud_file::apply(&s, &text)
+            }
+            Err(e) => {
+                log::warn!("hud: could not read {p}: {e}");
+                s
+            }
         }
     }
 

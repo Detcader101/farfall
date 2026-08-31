@@ -15,6 +15,7 @@ mod capture;
 mod card;
 mod cockpit;
 mod hold;
+mod hud_file;
 mod input;
 mod landing;
 mod look;
@@ -146,6 +147,25 @@ fn apply_menu_event(
             // A no-op unless a nebula knob moved.
             gpu.nebula
                 .bake(&gpu.device, &gpu.queue, nebula_params(&game.settings));
+        }
+        MenuEvent::SaveHud => match hud_file::save(&game.settings, game.hud_loaded) {
+            Some((n, path)) => {
+                game.hud_loaded = Some(n);
+                log::info!("hud: saved {}", path.display());
+            }
+            None => log::warn!("hud: nowhere to save (no home directory)"),
+        },
+        MenuEvent::LoadHud(pick) => {
+            if pick == 0 {
+                game.settings = hud_file::apply(&game.settings, "");
+                game.hud_loaded = None;
+                log::info!("hud: the stock cockpit");
+            } else if let Some((n, s)) = hud_file::load(&game.settings, pick) {
+                game.settings = s;
+                game.hud_loaded = Some(n);
+                log::info!("hud: wearing hud-{n}");
+            }
+            game.settings.save();
         }
         MenuEvent::Quit => {
             game.log_exit("menu quit");
@@ -460,6 +480,8 @@ const MACH1_MPS: f64 = 340.0;
 ///                           post pass, the map and the text, instead of the
 ///                           scene target)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
+///   FARFALL_HUD=path       (wear a saved HUD layout file (.fhud) for this
+///                           run — see crates/app/src/hud_file.rs)
 ///   FARFALL_MUTE=1         (no audio stream at all)
 ///   FARFALL_BENCH_WARP=s   (benchmark only: engage the wormhole drive s
 ///                           seconds in, so the sequence can be captured)
@@ -1289,6 +1311,9 @@ struct Game {
     /// locked, the dial under the gaze selected and its own settings on a
     /// card beside it.
     design: bool,
+    /// The HUD file worn or saved last (its hud-<n> number), so SAVE HUD
+    /// overwrites it rather than piling up copies.
+    hud_loaded: Option<u32>,
     /// The CONTROLS card is up: any key puts it away.
     card_open: bool,
     /// LANDING mode (G): the hoops close up and judge the touchdown.
@@ -1454,6 +1479,7 @@ impl Game {
                 (xs.len() == 4).then(|| [xs[0], xs[1], xs[2], xs[3]])
             }),
             design: false,
+            hud_loaded: None,
             card_open: false,
             landing: false,
             touchdown: None,
