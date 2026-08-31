@@ -47,19 +47,28 @@ pub fn density(belt: f32, air: f32, hyper: f32, setting: f32) -> f32 {
 
 /// What the dust rests in: the local circular orbit about the nearest
 /// body — so a ship coasting in orbit sees its motes hang still, and one
-/// under thrust or falling sees them stream. `rel`: the body's centre
-/// from the ship (m); `mu`: its gravitational parameter; `body_vel`: the
-/// body's own velocity; `ship_vel`: the ship's. Returns the ship's
-/// velocity relative to that rest, m/s.
-pub fn drift(rel: DVec3, mu: f64, body_vel: DVec3, ship_vel: DVec3) -> DVec3 {
+/// under thrust or falling sees them stream — except in the body's air,
+/// which is still in this world: there the motes rest with the body, so a
+/// cruise at 250 m/s low over the ground streams them at 250 m/s and not
+/// at the 540 m/s it is short of orbit. `rel`: the body's centre from the
+/// ship (m); `mu`: its gravitational parameter; `body_vel`: the body's own
+/// velocity; `ship_vel`: the ship's; `air`: how deep in the air, 0 in
+/// vacuum to 1 at the ground. Returns the ship's velocity relative to that
+/// rest, m/s.
+pub fn drift(rel: DVec3, mu: f64, body_vel: DVec3, ship_vel: DVec3, air: f64) -> DVec3 {
     let r = rel.length();
+    let v_rel = ship_vel - body_vel;
     if r.is_nan() || r <= 1.0 || mu.is_nan() || mu <= 0.0 {
-        return ship_vel - body_vel;
+        return v_rel;
     }
     let radial = rel / r;
-    let v_rel = ship_vel - body_vel;
     let tangent = (v_rel - radial * v_rel.dot(radial)).normalize_or_zero();
-    let circular = (mu / r).sqrt();
+    let air = if air.is_finite() {
+        air.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let circular = (mu / r).sqrt() * (1.0 - air);
     v_rel - tangent * circular
 }
 
@@ -324,14 +333,44 @@ mod tests {
         let rel = DVec3::new(0.0, -7.0e6, 0.0);
         let circ = (mu / 7.0e6f64).sqrt();
         let orbit = DVec3::new(circ, 0.0, 0.0);
-        assert!(drift(rel, mu, DVec3::ZERO, orbit).length() < 1e-6);
-        let d = drift(rel, mu, DVec3::ZERO, orbit + DVec3::new(300.0, 0.0, 0.0));
+        assert!(drift(rel, mu, DVec3::ZERO, orbit, 0.0).length() < 1e-6);
+        let d = drift(
+            rel,
+            mu,
+            DVec3::ZERO,
+            orbit + DVec3::new(300.0, 0.0, 0.0),
+            0.0,
+        );
         assert!((d.x - 300.0).abs() < 1e-6, "{d}");
         // Riding with a moving body counts from the body's own velocity.
         let body_v = DVec3::new(0.0, 0.0, 5000.0);
-        assert!(drift(rel, mu, body_v, orbit + body_v).length() < 1e-6);
+        assert!(drift(rel, mu, body_v, orbit + body_v, 0.0).length() < 1e-6);
         // No body to speak of: the ship's velocity is the drift.
-        assert_eq!(drift(DVec3::ZERO, 0.0, DVec3::ZERO, DVec3::X), DVec3::X);
+        assert_eq!(
+            drift(DVec3::ZERO, 0.0, DVec3::ZERO, DVec3::X, 0.0),
+            DVec3::X
+        );
+    }
+
+    /// In the air the motes rest with the ground, not with orbit: a cruise
+    /// at 250 m/s streams them at 250 m/s, and a hover sees them still —
+    /// the same hover in vacuum would see the whole orbital speed go by.
+    #[test]
+    fn dust_rests_with_the_ground_in_the_air() {
+        let mu = 3.986e14;
+        let rel = DVec3::new(0.0, -7.0e6, 0.0);
+        let cruise = DVec3::new(250.0, 0.0, 0.0);
+        let d = drift(rel, mu, DVec3::ZERO, cruise, 1.0);
+        assert!((d - cruise).length() < 1e-6, "{d}");
+        // The same cruise in vacuum is the whole orbital speed short.
+        let circ = (mu / 7.0e6f64).sqrt();
+        let vacuum = drift(rel, mu, DVec3::ZERO, cruise, 0.0);
+        assert!((vacuum.x - (250.0 - circ)).abs() < 1e-3, "{vacuum}");
+        // Half way in, half the orbit; garbage air is vacuum.
+        let half = drift(rel, mu, DVec3::ZERO, cruise, 0.5);
+        assert!((half.x - (250.0 - circ * 0.5)).abs() < 1e-3, "{half}");
+        let nan = drift(rel, mu, DVec3::ZERO, cruise, f64::NAN);
+        assert!((nan - vacuum).length() < 1e-6);
     }
 
     #[test]

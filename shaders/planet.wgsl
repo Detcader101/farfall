@@ -101,12 +101,18 @@ const H_RAY: f32 = 0.07;
 // The haze: a thin layer that gives the horizon its glow.
 const H_MIE: f32 = 0.012;
 // The haze's vertical optical depth as a share of the Rayleigh one.
-const MIE_K: f32 = 0.15;
-const MIE_G: f32 = 0.72;
+const MIE_K: f32 = 0.06;
+const MIE_G: f32 = 0.55;
 // The shell's top, six Rayleigh scale heights up.
 const TOP: f32 = 0.42;
-// The Sun's radiance at the top of the air, in the scene's units.
-const SUN_I: f32 = 26.0;
+// The Sun's irradiance at the top of the air, in the scene's units. The
+// ground and the deck are lit from the same number (SUN_E = SUN_I / π is
+// a white Lambertian's radiance under it), so the air and the ground it
+// veils keep their proportion: at 26 the haze along a horizontal
+// kilometre outshone the sunlit ground behind it several times over and
+// 500 m was a whiteout.
+const SUN_I: f32 = 5.0;
+const SUN_E: f32 = SUN_I / PI;
 // Samples per half-segment of the march (eight per segment).
 const SAMPLES: i32 = 4;
 
@@ -477,7 +483,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let day = smoothstep(-0.05, 0.09, n_dot_l);
         let sun_here = sun_trans(hit - centre, radius, beta_r, beta_m);
         let diffuse = max(dot(n_shade, sun), 0.0) * (0.6 + 0.4 * smoothstep(-0.2, 0.3, n_dot_l));
-        surface = albedo * (diffuse * 1.5 * sun_here + tint * 0.10 * day + 0.006);
+        surface = albedo * (diffuse * SUN_E * sun_here + tint * 0.10 * day + 0.006);
 
         // Specular on water only.
         let half_vec = normalize(sun - ray);
@@ -527,7 +533,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 let lit = max(ndl, 0.0);
                 let sun_deck = sun_trans(ray * t_c - centre, radius, beta_r, beta_m);
                 let deck_day = smoothstep(-0.15, 0.2, ndl);
-                cloud_rgb = planet.cloud_look.rgb * (lit * 1.3 * sun_deck + tint * 0.18 * deck_day + 0.008);
+                // From under the deck its Sun-lit top is out of sight: the
+                // underside gets what comes through the cloud, so a dense
+                // bank is a grey ceiling, a thin one nearly as bright as
+                // its top (a lit white ceiling was most of the whiteout at
+                // 500 m).
+                let under = select(1.0, 1.0 - 0.8 * clamp(dens, 0.0, 1.0), inside_deck);
+                cloud_rgb = planet.cloud_look.rgb * (lit * SUN_E * 0.85 * sun_deck * under + tint * 0.18 * deck_day + 0.008);
 
                 // From outside, the deck has its own limb and needs the same
                 // analytic edge as the body. From inside it has no edge at all
@@ -574,7 +586,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let through = front.trans * (1.0 - cloud_a) * behind.trans * (1.0 - coverage);
     let alpha_geom = 1.0 - clamp(dot(through, lum_w), 0.0, 1.0);
     let air_lum = dot(front.insc + front.trans * (1.0 - cloud_a) * behind.insc, lum_w);
-    let over = 1.0 - exp(-air_lum * 13.0);
+    // The scale is set against the sky's radiance: a noon sky at 3 km
+    // (air_lum ~0.1) hides all but the brightest stars, the deep blue at
+    // 12 km (~0.03) lets the bright ones through, and the black at 80 km
+    // none of it.
+    let over = 1.0 - exp(-air_lum * 80.0);
     let alpha = 1.0 - (1.0 - alpha_geom) * (1.0 - over);
 
     if (alpha < 0.002) {
