@@ -3792,6 +3792,18 @@ impl App {
             "FARFALL"
         };
         let mut attrs = Window::default_attributes().with_title(title);
+        if cfg.bench {
+            // A benchmark window is born unfocused and, if asked, on another
+            // screen (FARFALL_WINDOW_POS=x,y in desktop pixels): it must never
+            // take the keyboard or the mouse from whoever is working here.
+            attrs = attrs.with_active(false);
+            if let Some(pos) = std::env::var("FARFALL_WINDOW_POS")
+                .ok()
+                .and_then(|v| parse_vec2(&v))
+            {
+                attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(pos.0, pos.1));
+            }
+        }
         if !cfg.windowed && cfg!(not(target_arch = "wasm32")) {
             // Borderless fullscreen on the current monitor: no mode switch, so
             // alt-tab stays instant and the resolution is the desktop's.
@@ -5900,4 +5912,12 @@ mod tests {
     fn action_count_matches_bindings() {
         assert_eq!(Action::COUNT, 12);
     }
+}
+
+/// "x,y" as two integers, for FARFALL_WINDOW_POS.
+fn parse_vec2(s: &str) -> Option<(i32, i32)> {
+    let mut it = s.split(',').map(|p| p.trim().parse::<i32>().ok());
+    let x = it.next()??;
+    let y = it.next()??;
+    Some((x, y))
 }
