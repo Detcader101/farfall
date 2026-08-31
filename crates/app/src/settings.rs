@@ -305,6 +305,13 @@ pub struct Settings {
     /// HOSTILITY: the share of those that shoot rather than hail, 0..1.
     pub mimics_chance: f32,
     pub mimics_hostility: f32,
+    /// MIMIC SIZE: a mimic hull over our own fighter, 0.5..3 (1 stock: the
+    /// same ship).
+    pub mimics_size: f32,
+    /// MINERS: how many miner ships work the ring about us, 0..8, and
+    /// MINER GROWTH: how fast they haul and so grow, 0.25..4 (1 stock).
+    pub miners_count: u32,
+    pub miners_growth: f32,
     /// HOLD GAIN: how hard the lock holds, 0.2..3; HOLD FACING: the nose
     /// kept on the target.
     pub hold_gain: f32,
@@ -404,6 +411,9 @@ impl Default for Settings {
             arms_ore: 1.0,
             mimics_chance: 1.0,
             mimics_hostility: 0.5,
+            mimics_size: 1.0,
+            miners_count: 4,
+            miners_growth: 1.0,
             hold_gain: 1.0,
             hold_face: true,
             arms_sight: 1.0,
@@ -684,6 +694,25 @@ impl Settings {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.mimics_hostility = f.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                "mimics.size" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.mimics_size = f.clamp(0.5, 3.0);
+                        }
+                    }
+                }
+                "miners.count" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        s.miners_count = n.min(crate::miner::MAX_MINERS as u32);
+                    }
+                }
+                "miners.growth" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.miners_growth = f.clamp(0.25, 4.0);
                         }
                     }
                 }
@@ -1080,6 +1109,9 @@ impl Settings {
             "mimics.hostility = {:.2}\n",
             self.mimics_hostility
         ));
+        out.push_str(&format!("mimics.size = {:.2}\n", self.mimics_size));
+        out.push_str(&format!("miners.count = {}\n", self.miners_count));
+        out.push_str(&format!("miners.growth = {:.2}\n", self.miners_growth));
         out.push_str(&format!("hold.gain = {:.2}\n", self.hold_gain));
         out.push_str(&format!(
             "hold.face = {}\n",
@@ -1235,6 +1267,9 @@ mod tests {
         s.arms_ore = 1.5;
         s.mimics_chance = 0.25;
         s.mimics_hostility = 0.75;
+        s.mimics_size = 1.75;
+        s.miners_count = 7;
+        s.miners_growth = 2.5;
         s.hold_gain = 1.75;
         s.hold_face = false;
         s.arms_sight = 0.5;

@@ -20,6 +20,7 @@ mod look;
 mod map;
 mod menu;
 mod mimic;
+mod miner;
 mod settings;
 mod shake;
 mod warp;
@@ -399,6 +400,12 @@ const MACH1_MPS: f64 = 340.0;
 ///                           flash and every kind of burst ahead)
 ///   FARFALL_BENCH_STRIKES=n (benchmark only: n strikes on the shield at
 ///                           staggered ages, for its ripples)
+///   FARFALL_BENCH_MIMIC=reveal|hail|attack|wreck (benchmark only: a ship
+///                           out of a rock ahead-left in that state)
+///   FARFALL_BENCH_MINERS=tier[,mine|fight] (benchmark only: a miner of
+///                           tier 0..3 ahead-left, its beam on a planted
+///                           rock, or come about with its fire in the air;
+///                           a second one far off as a speck)
 ///   FARFALL_BENCH_SHAKE=y,p,r (benchmark only: the helmet camera parked at
 ///                           this yaw, pitch, roll in degrees)
 ///   FARFALL_BENCH_G=x,y,z  (benchmark only: a felt load in g — right, up,
@@ -1267,6 +1274,8 @@ struct Game {
     /// The mimics — ships in the rocks — and what the guns bring in.
     mimics: mimic::Mimics,
     haul: mimic::Haul,
+    /// The miners working the ring.
+    miners: miner::Miners,
     /// HOLD: the smart lock on the flight controls.
     hold: hold::Hold,
     /// Was the field up last frame (to feel its collapse).
@@ -1405,6 +1414,7 @@ impl Game {
             fire_held: false,
             mimics: mimic::Mimics::default(),
             haul: mimic::Haul::default(),
+            miners: miner::Miners::default(),
             hold: hold::Hold::default(),
             hyper_was: false,
             bench_hyper: false,
@@ -2252,9 +2262,33 @@ impl Game {
             self.belt.wounds.remove(&id);
             self.belt.dead.insert(id);
         }
-        let breaks = self
+        let mut breaks = self
             .mimics
             .take_fire(&mut self.arms, &mut self.haul, t, sim::DT);
+        // The miners: placed when the ring goes live, shot at like any
+        // ship, and stepped with the pilot's held rock kept off their list.
+        self.miners.populate(&own, &self.belt);
+        breaks.extend(self.miners.take_fire(
+            &mut self.arms,
+            &mut self.haul,
+            &mut self.mimics,
+            t,
+            sim::DT,
+        ));
+        let held = match self.hold.target {
+            Some((hold::Target::Rock(id), _)) => Some(id),
+            _ => None,
+        };
+        let chance = self.mimics.chance;
+        self.miners.step(
+            t,
+            sim::DT,
+            &own,
+            &mut self.belt,
+            held,
+            chance,
+            &mut self.mimics,
+        );
         for (at, vel, seed) in breaks {
             // A wreck comes apart like a rock does: shards off the break.
             let rock = belt::Rock {
@@ -2302,7 +2336,10 @@ impl Game {
             orient: self.state.ship.orient,
             aim: self.aim_world(),
         };
-        if self.hold.engage(&own, own.aim, &self.belt, &self.mimics) {
+        if self
+            .hold
+            .engage(&own, own.aim, &self.belt, &self.mimics, &self.miners)
+        {
             let (t, off) = self.hold.target.unwrap();
             log::info!("hold: locked on a {} at {:.0} m", t.name(), off.length());
         } else {
@@ -2332,6 +2369,20 @@ impl Game {
         self.haul.text(self.state.time_s, 6.0)
     }
 
+    /// Every other ship in the air, for anything that marks them (the
+    /// sight, the hologram): world position and kind — 0 hailing, 1
+    /// hostile, 2 wreck, 3 a miner, 4 a hostile miner — mimics out of
+    /// their shrouds first, then the miners.
+    fn contacts(&self, t: f64) -> Vec<(DVec3, u8)> {
+        self.mimics
+            .ships
+            .iter()
+            .filter(|m| !m.shrouded(t))
+            .map(|m| (m.pos, m.kind()))
+            .chain(self.miners.ships.iter().map(|m| (m.pos, m.kind())))
+            .collect()
+    }
+
     /// The mimics' line: what was said, what is happening, the hull.
     fn mimic_text(&self) -> Option<String> {
         self.mimics.text()
@@ -2342,7 +2393,7 @@ impl Game {
     fn mimic_uniforms(&self, pose: &ViewPose) -> MimicUniforms {
         let cam = &pose.cam;
         let head = pose.head;
-        if self.mimics.ships.is_empty() {
+        if self.mimics.ships.is_empty() && self.miners.ships.is_empty() {
             return MimicUniforms::none(cam, head);
         }
         let ship_inv = self.state.ship.orient.inverse();
@@ -2356,14 +2407,45 @@ impl Game {
             .iter()
             .filter(|m| !m.shrouded(t) || m.reveal(t) > 0.0)
             .map(|m| MimicView {
-                at: to_ship(m.pos),
-                rot: (ship_inv * m.orient).as_quat(),
-                reveal: m.reveal(t),
-                effort: m.effort,
-                kind: m.kind(),
-                wound: m.wound(),
-                seed: m.seed,
+                size: self.mimics.size.clamp(0.5, 3.0),
+                ..MimicView::plain(
+                    to_ship(m.pos),
+                    (ship_inv * m.orient).as_quat(),
+                    m.reveal(t),
+                    m.effort,
+                    m.kind(),
+                    m.wound(),
+                    m.seed,
+                )
             })
+            .chain(self.miners.ships.iter().map(|m| {
+                // The beam ends on the claim's face, toward the miner.
+                let beam = m.mining().then(|| {
+                    self.belt
+                        .rocks
+                        .iter()
+                        .find(|r| Some(r.id) == m.claim)
+                        .map(|r| {
+                            let toward = (m.pos - r.pos).normalize_or_zero();
+                            to_ship(r.pos + toward * r.radius_m * 0.98)
+                        })
+                });
+                MimicView {
+                    size: m.size() as f32,
+                    tier: m.tier() as u8,
+                    shield: m.sheen,
+                    beam: beam.flatten(),
+                    ..MimicView::plain(
+                        to_ship(m.pos),
+                        (ship_inv * m.orient).as_quat(),
+                        1.0,
+                        m.effort,
+                        m.kind(),
+                        m.wound(),
+                        m.seed,
+                    )
+                }
+            }))
             .collect();
         let rocks: Vec<Occluder> = self
             .belt
@@ -2508,11 +2590,8 @@ impl Game {
         let ship_inv = self.state.ship.orient.inverse();
         let eye = self.eye_m(pose);
         let mut marks = [None; farfall_render::sight::MARKS];
-        for (slot, m) in marks
-            .iter_mut()
-            .zip(self.mimics.ships.iter().filter(|m| !m.shrouded(t)))
-        {
-            *slot = Some(((ship_inv * (m.pos - eye)).as_vec3(), m.kind()));
+        for (slot, (pos, kind)) in marks.iter_mut().zip(self.contacts(t)) {
+            *slot = Some(((ship_inv * (pos - eye)).as_vec3(), kind));
         }
         let (aim, clamped) = self.aim_ship();
         let w = self.arms.selected;
@@ -3047,7 +3126,7 @@ impl Game {
             if self.hold.engaged() {
                 self.hold.gain = self.settings.hold_gain;
                 self.hold.face = self.settings.hold_face;
-                match self.hold.track(&self.belt, &self.mimics) {
+                match self.hold.track(&self.belt, &self.mimics, &self.miners) {
                     Some(tracked) => {
                         let own = arms::Ship {
                             pos: self.state.ship.pos_m,
@@ -3092,6 +3171,12 @@ impl Game {
             self.arms.scar_size = self.settings.arms_scar_size;
             self.arms.scar_cool_s = self.settings.arms_scar_cool;
             self.arms.mounts = self.settings.mounts;
+            self.mimics.chance = self.settings.mimics_chance;
+            self.mimics.hostility = self.settings.mimics_hostility;
+            self.mimics.size = self.settings.mimics_size;
+            self.haul.yield_ = self.settings.arms_ore;
+            self.miners.count = self.settings.miners_count;
+            self.miners.growth = self.settings.miners_growth;
             let trigger = self.fire_held && !self.menu.open && !self.map_open() && !self.design;
             let kick = self.arms.step(
                 self.state.time_s,
@@ -4154,6 +4239,107 @@ impl App {
                 _ => {}
             }
             game.mimics.ships.push(m);
+        }
+        // FARFALL_BENCH_MINERS=tier[,mine|fight]: a miner of that tier
+        // ahead-left, its beam on a rock planted ahead of it (mine, the
+        // default) or come about with its fire in the air (fight); and a
+        // far speck of a second one.
+        let bench_miners = std::env::var("FARFALL_BENCH_MINERS").unwrap_or_default();
+        if game.frozen && !bench_miners.is_empty() {
+            let mut parts = bench_miners.split(',');
+            let tier: usize = parts
+                .next()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+            let tier = tier.min(miner::TIERS - 1);
+            let stage = parts.next().unwrap_or("mine").trim().to_string();
+            let o = game.state.ship.orient;
+            let p = game.state.ship.pos_m;
+            let v = game.state.ship.vel_mps;
+            let t = game.state.time_s;
+            let haul_t = miner::TIER_T[tier] + 5.0;
+            let size = miner::TIER_SIZE[tier];
+            // Close enough to read at any tier: a tier-0 miner where the
+            // mimic bench puts its ship, the big ones a little further out
+            // but still filling the glass more than a fighter does.
+            let at = p + o * DVec3::new(-3.0 * size, 1.2 * size, -28.0 - 11.0 * size);
+            if stage == "fight" {
+                let orient = o * DQuat::from_rotation_y(2.6) * DQuat::from_rotation_x(0.08);
+                let mut m = miner::Miner::planted(
+                    at,
+                    v,
+                    orient,
+                    haul_t,
+                    miner::Phase::Attacking,
+                    miner::Temper::Hostile,
+                    0.61,
+                );
+                m.effort = 0.9;
+                m.sheen = if tier >= 2 { 0.8 } else { 0.0 };
+                m.wound_j = m.tough_j() * 0.3;
+                game.mimics.line = Some(("HULL 88%  UNDER FIRE".to_string(), t + 30.0));
+                for i in 0..5 {
+                    let dir =
+                        (p + o * DVec3::new(0.7 * i as f64 - 1.4, -0.3, 0.0) - at).normalize();
+                    let dist = 10.0 * size + 14.0 * i as f64;
+                    game.mimics.slugs.push(mimic::FoeSlug {
+                        pos: at + dir * dist,
+                        vel: v + dir * arms::Weapon::Cannon.muzzle_mps(),
+                        born_s: t - dist / arms::Weapon::Cannon.muzzle_mps(),
+                    });
+                }
+                game.impacts.insert(
+                    0,
+                    Impact {
+                        dir: Vec3::new(-0.3, 0.1, -1.0).normalize(),
+                        at_s: game.started.elapsed().as_secs_f32() - 0.4,
+                        size: 0.6,
+                    },
+                );
+                game.miners.ships.push(m);
+            } else {
+                // A rock ahead of the miner, the beam on its near face.
+                // The rock off to the miner's right, so the hull is seen
+                // side-on and the beam runs across the glass.
+                let rock_at = at + o * DVec3::new(18.0 + 14.0 * size, -3.0, -14.0 * size);
+                let radius = 12.0 + 5.0 * size;
+                let rock = belt::Rock {
+                    id: (0, 0, 0, 253),
+                    pos: rock_at,
+                    vel: v,
+                    radius_m: radius,
+                    seed: 0.62,
+                    spin: 0.0,
+                };
+                game.belt.rocks.insert(0, rock);
+                let mut m = miner::Miner::planted(
+                    at,
+                    v,
+                    mimic::look_at(rock_at - at, o * DVec3::Y),
+                    haul_t,
+                    miner::Phase::Mining,
+                    miner::Temper::Neutral,
+                    0.27,
+                );
+                m.claim = Some(rock.id);
+                m.effort = 0.25;
+                game.mimics.line = Some((miner::hail_text(0.27, tier).to_string(), t + 30.0));
+                game.miners.ships.push(m);
+            }
+            // A second miner a long way off: a speck with a marker.
+            let far = p + o * DVec3::new(900.0, 260.0, -2_600.0);
+            let mut m2 = miner::Miner::planted(
+                far,
+                v,
+                o,
+                miner::TIER_T[1] + 5.0,
+                miner::Phase::Transit,
+                miner::Temper::Neutral,
+                0.8,
+            );
+            m2.effort = 0.7;
+            game.miners.ships.push(m2);
+            game.miners.placed = true;
         }
         if game.frozen && bench_arms == "sight" {
             game.arms.heat[0] = 0.55;

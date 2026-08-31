@@ -32,7 +32,11 @@ pub const OWN_R_M: f64 = 4.2;
 /// Energy a mimic takes before it is a wreck, joules.
 pub const MIMIC_TOUGH_J: f64 = 2.4e6;
 /// A hostile mimic holds this range, metres, and fires inside `FIRE_M`.
-pub const HOLD_M: f64 = 520.0;
+/// A hailer comes alongside at `HAIL_HOLD_M`: the ranges are what make a
+/// ship the size of our own READ as one — at 500 m a fighter is a dozen
+/// pixels; at 90 m its canopy, beacon and nozzles are plain.
+pub const HOLD_M: f64 = 320.0;
+pub const HAIL_HOLD_M: f64 = 90.0;
 pub const FIRE_M: f64 = 2_400.0;
 /// A hail lasts this long on the readout, then the ship stands off.
 pub const HAIL_S: f64 = 14.0;
@@ -134,7 +138,8 @@ impl Mimic {
     pub fn wound(&self) -> f32 {
         (self.wound_j / MIMIC_TOUGH_J).clamp(0.0, 1.0) as f32
     }
-    /// The look's kind lane: 0 hailing, 1 hostile, 2 wreck.
+    /// The look's kind lane: 0 hailing, 1 hostile, 2 wreck (a miner is 3
+    /// and 4, see `crate::miner`).
     pub fn kind(&self) -> u8 {
         match (self.phase, self.mood) {
             (Phase::Wreck, _) => 2,
@@ -269,6 +274,9 @@ pub struct Mimics {
     pub chance: f32,
     /// HOSTILITY: the share of mimics that shoot, 0..1.
     pub hostility: f32,
+    /// MIMIC SIZE: a hull over our own fighter (1 stock): the look, the
+    /// hit sphere and the hold radius all scale with it.
+    pub size: f32,
     /// Rocks that have shown themselves, so they never do twice.
     pub revealed: HashSet<RockId>,
     /// Counters for the sound: reveals, hails, their shots, wrecks.
@@ -292,6 +300,7 @@ impl Default for Mimics {
             slugs: Vec::new(),
             chance: 1.0,
             hostility: 0.5,
+            size: 1.0,
             revealed: HashSet::new(),
             reveals: 0,
             hails: 0,
@@ -340,7 +349,7 @@ pub fn hail_text(seed: f32) -> &'static str {
 }
 
 /// A rotation whose -Z (the nose) points along `fwd`, with `up` as a hint.
-fn look_at(fwd: DVec3, up: DVec3) -> DQuat {
+pub fn look_at(fwd: DVec3, up: DVec3) -> DQuat {
     let f = fwd.normalize_or_zero();
     if f == DVec3::ZERO {
         return DQuat::IDENTITY;
@@ -354,6 +363,11 @@ fn look_at(fwd: DVec3, up: DVec3) -> DQuat {
 }
 
 impl Mimics {
+    /// A mimic hull's hit sphere, metres, at MIMIC SIZE.
+    pub fn hull_r_m(&self) -> f64 {
+        HULL_R_M * self.size.clamp(0.5, 3.0) as f64
+    }
+
     fn unit(&mut self) -> f32 {
         self.seq = self.seq.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         (self.seq >> 8) as f32 / (1u32 << 24) as f32
@@ -422,6 +436,7 @@ impl Mimics {
         dt: f64,
     ) -> Vec<(DVec3, DVec3, f32)> {
         let mut breaks = Vec::new();
+        let hull_r = self.hull_r_m();
         let mut k = 0;
         while k < arms.slugs.len() {
             let s: Slug = arms.slugs[k];
@@ -432,7 +447,7 @@ impl Mimics {
                 if m.shrouded(t_s) {
                     continue;
                 }
-                if let Some(f) = arms::segment_hits_sphere(a, b, m.pos, HULL_R_M) {
+                if let Some(f) = arms::segment_hits_sphere(a, b, m.pos, hull_r) {
                     if best.is_none_or(|(bf, _)| f < bf) {
                         best = Some((f, mi));
                     }
@@ -541,8 +556,8 @@ impl Mimics {
                 Phase::Hailing => {
                     // Face us, match our velocity, keep a courteous range.
                     want_fwd = Some(dir_us);
-                    let hold = (range - HOLD_M * 1.5) * 0.02;
-                    thrust = dir_us * hold.clamp(-8.0, 8.0) + rel_v * 0.15;
+                    let hold = (range - HAIL_HOLD_M) * 0.04;
+                    thrust = dir_us * hold.clamp(-10.0, 10.0) + rel_v * 0.25;
                     if age > HAIL_S + 4.0 {
                         m.phase = Phase::Leaving;
                         m.phase_s = t_s;
@@ -567,8 +582,8 @@ impl Mimics {
                         }
                         m.burst_left -= 1;
                         let spread = DVec3::new(
-                            (self.unit() as f64 - 0.5) * 0.012,
-                            (self.unit() as f64 - 0.5) * 0.012,
+                            (self.unit() as f64 - 0.5) * 0.016,
+                            (self.unit() as f64 - 0.5) * 0.016,
                             0.0,
                         );
                         let dir = (aim + m.orient * spread).normalize_or_zero();

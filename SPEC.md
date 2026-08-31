@@ -178,6 +178,15 @@ or lit sockets: a face plate sits proud of the metal in a thin bezel, the ball s
 of it, and the instrument itself is what shows. The dash's real surface is 4 cm above
 its nominal plane (the slab's rounding); every seat is measured from the surface.
 
+### 6.5a Other ships (app-side, never sim-side)
+
+Mimics and miners (WEAPONS.md, "Other ships") live in `crates/app`: derived
+from rock hashes plus app state, stepped after the belt each fixed step, drawn
+by the `mimic` pass from the shared fighter SDF at each hull's own pose and
+size. They shove and shoot the ship through impulses after `sim::step`, like a
+strike; the golden hash does not know they exist. A miner is the same ship
+class as ours that grows through tiers as it mines the ring.
+
 ### 6.6 The city, eventually (direction, not commitment)
 
 The end-state city (M5+) is the ultimate test of P1+P2: dense, alive, and readable.
