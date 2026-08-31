@@ -51,9 +51,10 @@ Never launch farfall.exe any other way while Jay Jay is at the PC (it steals foc
 
 ## In flight
 
-- `tuning`: MERGED (`74347db`, gate green; scene suite 18/18 now runs on Windows). Its open items: in-air dust streaks, the plasma veil at orbital speed in thick air, hoops mid-view low down, thick limb glow.
-- `hotas` agent: reconciling — it is merging fable/polish INTO fable/hotas itself (its STICK page predates the 8-tab card menu), then gate + captures + report; merge its branch when it lands. Stick facts: winmm via windows-sys, T.Flight HOTAS 4 detected (044F:B67C), wizard + STICK page built (`2526e46`).
-- Devlog iteration 2: `farfall-captures/devlog/2026-08-31-1452` (44 frames on `74347db`); `devlog/latest.html` self-refreshes and follows iterations. The bench harness now needs `bench-mover.ps1` running (an independent daemon moves BENCHMARK-titled windows to the BENCH desktop — the desktop manager refuses the launcher's own tree; -TitleMatch guards the live game). Public skill/agent repo: github.com/Detcader101/claude-devlog.
+- MERGED today, in order: gauges ec217df · postfx 8f2dd17 · ships 00e2a2a · bench-window 6436d02 · particles 5fd9117 · hud-menu 985cac6 · landing a1db1f0 · world 5930857 · dust fix bec49c0 · tuning 74347db · cockpit-arms ad80019 · warp ff954c9 (8 s liquid jump) · design 1f8af09 (dial lean/rotate, .fhud HUD share files, holo/map/readout as design elements, settings persist via USERPROFILE, cam.drive-shake stock 0.0 — Jay Jay's call).
+- Agents still out: `hotas` (stick + STICK ninth tab + throttle gestures + rail-axis calibration fix 6763882/2526e46/3acddba — merging polish into itself, gate rerunning), `wind` (deterministic wind sim + ribbons; golden hash may move — Jay Jay accepts the saved-world reset), `wing-boom` (mounts onto wing booms — pods decision REVERSED by Jay Jay), `helis` (cold-war-pattern helicopters on planet pads + Reforger control semantics + EXPORT HELI CFG in the format of Detcader101/hotas-reforger — FARFALL as a Reforger binder, MVP staged).
+- Devlog iterations 1+2: `farfall-captures/devlog/2026-08-31-{1331,1452}`; `devlog/latest.html` self-refreshes and follows iterations; pages are NEVER committed to this repo. Bench harness needs `bench-mover.ps1` running (independent daemon, -TitleMatch BENCHMARK so a live game is never moved). Public skill/agent repo: github.com/Detcader101/claude-devlog.
+- Second session lane: fable/a10 (A-10 instruments, lock scope, target-relative axes) on session jayja-6f — ping it at every polish merge; it reconciles design's dial changes on its side.
 
 ## Decisions & why
 
