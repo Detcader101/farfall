@@ -302,6 +302,8 @@ pub struct Settings {
     pub map_rings: u32,
     /// The map's reference grid.
     pub map_grid: bool,
+    /// Helicopters parked on pads down on the planet.
+    pub helis: bool,
     /// The chase camera: the whole view from outside the ship (the dev
     /// third person the holo3PP is measured against).
     pub camera_chase: bool,
@@ -440,6 +442,7 @@ impl Default for Settings {
             landing_pad: true,
             map_rings: 4,
             map_grid: true,
+            helis: true,
             camera_chase: false,
             holo_view: true,
             holo_size: 0.18,
@@ -539,6 +542,7 @@ pub const KEYS: &[&str] = &[
     "ui.*.tilt",
     "map.rings",
     "map.grid",
+    "world.helis",
     "warp.destination",
     "warp.safe-radii",
     "warp.length",
@@ -1114,6 +1118,7 @@ impl Settings {
                         s.map_rings = n.min(crate::map::RINGS_MAX);
                     }
                 }
+                "world.helis" => s.helis = matches!(v, "on" | "true" | "1"),
                 "map.grid" => match v {
                     "on" => s.map_grid = true,
                     "off" => s.map_grid = false,
@@ -1405,6 +1410,11 @@ impl Settings {
             "map.grid = {}\n",
             if self.map_grid { "on" } else { "off" }
         ));
+        out.push_str(&format!(
+            "world.helis = {}\n",
+            if self.helis { "on" } else { "off" }
+        ));
+
         out.push_str(&format!("warp.destination = {}\n", self.plan.dest.key()));
         out.push_str(&format!("warp.safe-radii = {:.3}\n", self.plan.safe_radii));
         out.push_str(&format!("warp.length = {:.2}\n", self.warp_length));
@@ -1497,6 +1507,7 @@ mod tests {
             msaa: 2,
             scale: 0.75,
             auto_scale: true,
+            helis: false,
             vsync: false,
             terrain_detail: 1.5,
             clouds: 0.5,

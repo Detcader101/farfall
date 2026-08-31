@@ -472,6 +472,7 @@ enum Item {
     HoloRange,
     MapRings,
     MapGrid,
+    HeliPads,
     LookSens,
     Destination,
     SafeDist,
@@ -607,6 +608,7 @@ impl Item {
             Item::DialTilt => "  TILT",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
+            Item::HeliPads => "HELI PADS",
             Item::LookSens => "LOOK SENS",
             Item::Destination => "DESTINATION",
             Item::WarpLength => "WARP LENGTH",
@@ -731,6 +733,7 @@ impl Item {
             Item::DialTilt => "THIS DIAL LEANED TOWARD YOU ABOUT ITS OWN AXIS, DEGREES.",
             Item::MapRings => "RINGS DRAWN ROUND EACH BODY ON THE MAP.",
             Item::MapGrid => "THE MAP'S REFERENCE GRID.",
+            Item::HeliPads => "HELICOPTERS WAIT ON PADS. LAND BY ONE TO BOARD.",
             Item::LookSens => "HOW FAR THE HEAD TURNS PER MOUSE MOVEMENT.",
             Item::Destination => "WHERE THE WORMHOLE DRIVE TAKES YOU.",
             Item::SafeDist => "HOW FAR OUT FROM THE DESTINATION YOU ARRIVE, IN ITS RADII.",
@@ -817,6 +820,7 @@ impl Item {
             Item::HoloRange => one("holo.range"),
             Item::MapRings => one("map.rings"),
             Item::MapGrid => one("map.grid"),
+            Item::HeliPads => one("world.helis"),
             Item::LookSens => one("control.look-sens"),
             Item::Destination => one("warp.destination"),
             Item::SafeDist => one("warp.safe-radii"),
@@ -968,6 +972,7 @@ impl Item {
             | Item::DialTilt => String::new(),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
+            Item::HeliPads => if s.helis { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}X", s.look_sensitivity),
             Item::Destination => s.plan.dest.name().to_string(),
             // Uranus is arrived at in its belt whatever the distance says.
@@ -1262,6 +1267,7 @@ impl Menu {
                 Item::Engage,
                 Item::MapRings,
                 Item::MapGrid,
+                Item::HeliPads,
             ],
             // The bay's own card is the fit alone (the hologram is the
             // picture); the menu's SHIP page adds the hologram's look.
@@ -2082,6 +2088,10 @@ impl Menu {
             }
             Item::MapGrid => {
                 s.map_grid = !s.map_grid;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::HeliPads => {
+                s.helis = !s.helis;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::HoopSize => {

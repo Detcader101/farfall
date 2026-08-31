@@ -755,3 +755,10 @@ features:
     state: tests-pass
     tests: ["crates/app/src/bay.rs::every_pass_reads_the_same_fit_table", "crates/render/src/cabin.rs::the_bay_fit_reaches_the_glass_and_redraws_in_place", "crates/render/src/jet.rs::jet_lanes_hold_their_places", "crates/render/tests/shader_validation.rs"]
     e2e: "farfall-captures/cockpit-arms/ ca-glass-{nose,wl-cannon,wl-rail,wr-cannon,wr-empty}-1.png (the fit on the airframe through the glass, both wings, a bare pylon), ca-bay-fit-1.png (the bay panel and hologram agreeing), ca-chase-fit-1.png (the chase view astern); perf held at ~325-360 fps"
+
+  - id: heli-pads
+    name: "Cold-war utility helicopters on the planet: hash-placed pads (deterministic from the world, like the belt's rocks — pad 0 on the tuning coast at 10N 320E), each with a generic Huey-silhouette hull of our own SDFs parked over a painted circle-and-H; land the fighter beside one and the DISEMBARK key boards it — the sim's ShipParams swap to a collective/cyclic/pedals helicopter set (hover at ~61% collective at Earth g, no boost, no drives, the fighter waits where it was left with its beacon on) and swap back on re-boarding; the rotors idle parked and blur by the collective in flight; WORLD page row HELI PADS (world.helis); FARFALL_BENCH_HELI=1 parks the capture beside the coast pad"
+    state: in-progress
+    settings: [world.helis]
+    tests: ["crates/app/src/heli.rs::a_heli_hovers_when_collective_balances_gravity", "crates/app/src/heli.rs::boarding_swaps_params_and_disembark_swaps_back", "crates/app/src/heli.rs::the_drives_are_inert_in_the_helicopter", "crates/app/src/heli.rs::the_pads_are_where_the_hash_says_every_time", "crates/render/src/heli.rs::heli_lanes_hold_their_places", "crates/render/tests/shader_validation.rs"]
+    e2e: "pending — FARFALL_BENCH_HELI=1 captures from the glass and the chase"

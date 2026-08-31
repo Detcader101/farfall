@@ -14,6 +14,7 @@ mod belt;
 mod capture;
 mod card;
 mod cockpit;
+mod heli;
 mod hold;
 mod input;
 mod landing;
@@ -45,6 +46,7 @@ use capture::Capture;
 use farfall_audio::Audio;
 use farfall_render::debris::{debris_pass, DebrisPass, DebrisScene, DebrisUniforms, ShardView};
 use farfall_render::dust::{DustPass, DustScene, DustUniforms};
+use farfall_render::heli::{heli_pass, HeliPass, HeliUniforms, HeliView};
 use farfall_render::mimic::{mimic_pass, MimicPass, MimicUniforms, MimicView};
 use farfall_render::scar::{scar_heat, scar_pass, ScarPass, ScarScene, ScarUniforms, ScarView};
 use farfall_render::sight::{sight_pass, SightPass, SightScene, SightUniforms};
@@ -392,6 +394,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
 ///   FARFALL_BENCH_LANDED=1 (benchmark only: parked on the ground, LANDED,
 ///                           on its gear with the Sun up the sky)
+///   FARFALL_BENCH_HELI=1   (benchmark only: parked LANDED beside the coast
+///                           pad's helicopter, the boarding offer up)
 ///   FARFALL_BENCH_DISEMBARK=1 (benchmark only: DISEMBARK pressed at once,
 ///                           for its answer on the readout)
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
@@ -630,6 +634,8 @@ struct Passes {
     sight: SightPass,
     /// The mimics: ships out of the rocks.
     mimic: MimicPass,
+    /// The helicopters on their pads down on the planet.
+    heli: HeliPass,
 }
 
 impl Passes {
@@ -673,6 +679,7 @@ impl Passes {
             scar: scar_pass(device, world, msaa),
             sight: sight_pass(device, format, msaa),
             mimic: mimic_pass(device, world, msaa),
+            heli: heli_pass(device, world, msaa),
         }
     }
 }
@@ -1274,6 +1281,10 @@ struct Game {
     /// The mimics — ships in the rocks — and what the guns bring in.
     mimics: mimic::Mimics,
     haul: mimic::Haul,
+    /// The helicopters: the pads, who is flying what, the waiting fighter.
+    helis: heli::Helis,
+    /// The fighter's own sim parameters, restored on re-boarding.
+    fighter_ship: sim::ShipParams,
     /// The miners working the ring.
     miners: miner::Miners,
     /// HOLD: the smart lock on the flight controls.
@@ -1372,6 +1383,25 @@ impl Game {
         if bench_landed {
             state.ship = landing::parked(&params, 0);
         }
+        // FARFALL_BENCH_HELI=1: parked beside the coast pad's helicopter,
+        // LANDED, the pad and the boarding offer in frame.
+        if std::env::var("FARFALL_BENCH_HELI").is_ok() {
+            let heli_at = heli::parked(&params, 0);
+            let mut pos = heli_at.pos_m + heli_at.orient * DVec3::new(26.0, 0.0, -4.0);
+            let up = pos.normalize();
+            pos = up * (params.planet.radius_m + sim::GEAR_HEIGHT_M);
+            // Face the helicopter from beside its pad.
+            let aim = (heli_at.pos_m - pos).normalize();
+            let nose = (aim - up * aim.dot(up)).normalize();
+            let right = nose.cross(up).normalize();
+            state.ship = sim::ShipState {
+                pos_m: pos,
+                vel_mps: DVec3::ZERO,
+                orient: DQuat::from_mat3(&glam::DMat3::from_cols(right, up, -nose)),
+                ang_vel_radps: DVec3::ZERO,
+                ground: sim::Ground::Landed { body: 0, up },
+            };
+        }
         let now = Instant::now();
         Self {
             vr: None,
@@ -1426,6 +1456,8 @@ impl Game {
             fire_held: false,
             mimics: mimic::Mimics::default(),
             haul: mimic::Haul::default(),
+            helis: heli::Helis::default(),
+            fighter_ship: params.ship,
             miners: miner::Miners::default(),
             hold: hold::Hold::default(),
             hyper_was: false,
@@ -2318,9 +2350,66 @@ impl Game {
     /// DISEMBARK (I): leave the ship. Today the answer is "not yet" — the
     /// bind, the state and the readout are the hook for the walk-out.
     fn disembark(&mut self) {
+        let landed = matches!(self.state.ship.ground, sim::Ground::Landed { .. });
+        if self.helis.in_heli {
+            // Set down beside the fighter, the same key swaps back.
+            if landed {
+                if let Some(f) = self.helis.fighter {
+                    if (f.pos_m - self.state.ship.pos_m).length() <= heli::BOARD_RANGE_M {
+                        let heli_state = self.state.ship;
+                        if let Some(fighter) = self.helis.disembark(heli_state) {
+                            self.state.ship = fighter;
+                            self.params.ship = self.fighter_ship;
+                            self.input.release_all();
+                            self.disembark_notice = Some(("BOARDED SHIP", Instant::now()));
+                            log::info!("heli: back in the fighter");
+                            return;
+                        }
+                    }
+                }
+                self.disembark_notice = Some(("LAND BY YOUR SHIP TO SWAP", Instant::now()));
+                return;
+            }
+            self.disembark_notice = Some(("DISEMBARK  NOT LANDED", Instant::now()));
+            return;
+        }
+        // Landed beside a pad's helicopter, the key boards it: the sim's
+        // ship becomes the helicopter - parameters and all - and the
+        // fighter waits exactly where it stands.
+        if landed && self.settings.helis {
+            if let Some((i, _)) = self.helis.nearest_heli(&self.params, self.state.ship.pos_m) {
+                let fighter = self.state.ship;
+                self.state.ship = self.helis.board(&self.params, i, fighter);
+                self.params.ship = heli::heli_params();
+                self.input.release_all();
+                self.disembark_notice = Some(("BOARDED HELI", Instant::now()));
+                log::info!("heli: boarded pad {i}'s helicopter");
+                return;
+            }
+        }
         let notice = landing::disembark_notice(self.state.ship.ground);
         self.disembark_notice = Some((notice, Instant::now()));
         log::info!("disembark: {notice}");
+    }
+
+    /// The boarding offer for the readout: landed beside a helicopter (or
+    /// back beside the fighter), the DISEMBARK key reads as BOARD.
+    fn board_offer(&self) -> Option<String> {
+        if !matches!(self.state.ship.ground, sim::Ground::Landed { .. }) {
+            return None;
+        }
+        let key = input::key_name(self.bind(Named::Disembark));
+        if self.helis.in_heli {
+            let f = self.helis.fighter?;
+            ((f.pos_m - self.state.ship.pos_m).length() <= heli::BOARD_RANGE_M)
+                .then(|| format!("{key} BOARD SHIP"))
+        } else if self.settings.helis {
+            self.helis
+                .nearest_heli(&self.params, self.state.ship.pos_m)
+                .map(|_| format!("{key} BOARD HELI"))
+        } else {
+            None
+        }
     }
 
     /// The landing readout lines, newline-joined, if there are any: the
@@ -2328,10 +2417,12 @@ impl Game {
     /// the ground, mode or no mode.
     fn landing_text(&self) -> Option<String> {
         let (altitude_m, vspeed_mps) = self.altitude_vspeed();
+        let offer = self.board_offer();
         let notice = self
             .disembark_notice
             .filter(|(_, at)| at.elapsed() < Duration::from_secs(4))
-            .map(|(n, _)| n);
+            .map(|(n, _)| n)
+            .or(offer.as_deref());
         let view = landing::View {
             mode: self.landing,
             ground: self.state.ship.ground,
@@ -2368,6 +2459,10 @@ impl Game {
 
     /// Fire the drive at the plan. Refused mid-sequence.
     fn engage_warp(&mut self) {
+        if self.helis.in_heli {
+            log::info!("warp: the helicopter has no drives");
+            return;
+        }
         if self.warp.engage() {
             self.input.release_all();
             log::info!(
@@ -2385,7 +2480,8 @@ impl Game {
     /// field collapses: whatever space was doing stops, and the ship is
     /// left at a crawl down its nose. Off, the strain eases.
     fn run_hyper_strain(&mut self, dt: f32) {
-        let held = self.input.controls(self.assist).hyper && !self.warp.active();
+        let held =
+            self.input.controls(self.assist).hyper && !self.warp.active() && !self.helis.in_heli;
         if self.hyper_was && !held {
             log::info!(
                 "chaos drive: released at {:.3e} m/s, entropy {:.0}%",
@@ -2583,7 +2679,10 @@ impl Game {
     fn mimic_uniforms(&self, pose: &ViewPose) -> MimicUniforms {
         let cam = &pose.cam;
         let head = pose.head;
-        if self.mimics.ships.is_empty() && self.miners.ships.is_empty() {
+        if self.mimics.ships.is_empty()
+            && self.miners.ships.is_empty()
+            && self.helis.fighter.is_none()
+        {
             return MimicUniforms::none(cam, head);
         }
         let ship_inv = self.state.ship.orient.inverse();
@@ -2636,7 +2735,20 @@ impl Game {
                     )
                 }
             }))
+            .chain(self.helis.fighter.iter().map(|f| {
+                // The fighter waiting where it was left, its beacon on.
+                MimicView::plain(
+                    to_ship(f.pos_m),
+                    (ship_inv * f.orient).as_quat(),
+                    1.0,
+                    0.0,
+                    0,
+                    0.0,
+                    0.31,
+                )
+            }))
             .collect();
+
         let rocks: Vec<Occluder> = self
             .belt
             .rocks
@@ -3271,7 +3383,9 @@ impl Game {
         // The hyper field forms over a moment and collapses faster.
         {
             let want = if self.bench_hyper
-                || (self.input.controls(self.assist).hyper && !self.warp.active())
+                || (self.input.controls(self.assist).hyper
+                    && !self.warp.active()
+                    && !self.helis.in_heli)
             {
                 1.0
             } else {
@@ -3341,6 +3455,12 @@ impl Game {
             self.input.controls(self.assist)
         };
         controls.hyper_level = self.hyper_level();
+        // In the helicopter the stick is the helicopter's: collective,
+        // cyclic, pedals - and the drives cannot come.
+        if self.helis.in_heli {
+            controls = heli::route_controls(controls);
+        }
+
         // Fuelled by entropy: toward the slip the field shakes the ship —
         // the stick and the throttle jostled by the drive, a little, then
         // a lot, until it goes.
@@ -4023,6 +4143,71 @@ impl Game {
     /// Where a pose's eye sits in the world, metres.
     fn eye_m(&self, pose: &ViewPose) -> DVec3 {
         self.state.ship.pos_m + self.state.ship.orient * pose.eye_ship
+    }
+}
+
+impl Game {
+    /// The helicopters this frame: the pads within draw range (hulls
+    /// idling on their painted circles), any set down elsewhere, and -
+    /// seen from the chase rig - the one being flown, its rotor by the
+    /// collective.
+    fn heli_uniforms(&self, pose: &ViewPose) -> HeliUniforms {
+        let cam = &pose.cam;
+        let head = pose.head;
+        if !self.settings.helis {
+            return HeliUniforms::none(cam, head);
+        }
+        let ship_inv = self.state.ship.orient.inverse();
+        let eye = self.eye_m(pose);
+        let to_ship = |p: DVec3| (ship_inv * (p - eye)).as_vec3();
+        let now = self.started.elapsed().as_secs_f32();
+        let mut views: Vec<(f64, HeliView)> = Vec::new();
+        for i in 0..heli::PADS {
+            let Some(st) = self.helis.heli_state(&self.params, i) else {
+                continue;
+            };
+            let d = (st.pos_m - eye).length();
+            if d > heli::DRAW_M {
+                continue;
+            }
+            // A helicopter set down off its pad rests in a bare field.
+            let on_pad = self.helis.displaced.iter().all(|(p, _)| *p != i);
+            views.push((
+                d,
+                HeliView {
+                    at: to_ship(st.pos_m),
+                    rot: (ship_inv * st.orient).as_quat(),
+                    rotor: 0.12,
+                    seed: (i as f32 * 0.173).fract(),
+                    pad: on_pad,
+                },
+            ));
+        }
+        if self.helis.in_heli && pose.eye_ship != DVec3::ZERO {
+            views.push((
+                0.0,
+                HeliView {
+                    at: to_ship(self.state.ship.pos_m),
+                    rot: (ship_inv * self.state.ship.orient).as_quat(),
+                    rotor: (0.35 + 0.65 * self.effort).clamp(0.0, 1.0),
+                    seed: 0.5,
+                    pad: false,
+                },
+            ));
+        }
+        if views.is_empty() {
+            return HeliUniforms::none(cam, head);
+        }
+        views.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let views: Vec<HeliView> = views
+            .into_iter()
+            .map(|(_, v)| v)
+            .take(farfall_render::heli::HELIS)
+            .collect();
+        // The planet underfoot hides what is past its limb.
+        let occ = (to_ship(DVec3::ZERO), self.params.planet.radius_m as f32);
+        let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        HeliUniforms::new(cam, head, now, sun_ship, &views, occ)
     }
 }
 
@@ -5039,6 +5224,9 @@ fn redraw(
                         .mimic
                         .update(&gpu.queue, &game.mimic_uniforms(&pose));
                     gpu.passes
+                        .heli
+                        .update(&gpu.queue, &game.heli_uniforms(&pose));
+                    gpu.passes
                         .tracer
                         .update(&gpu.queue, &game.tracer_uniforms(&pose));
                     gpu.passes
@@ -5313,6 +5501,9 @@ fn redraw(
             .mimic
             .update(&gpu.queue, &game.mimic_uniforms(&pose));
         gpu.passes
+            .heli
+            .update(&gpu.queue, &game.heli_uniforms(&pose));
+        gpu.passes
             .tracer
             .update(&gpu.queue, &game.tracer_uniforms(&pose));
         gpu.passes
@@ -5422,6 +5613,9 @@ fn redraw(
             }
             if gpu.cfg.draws("mimic") {
                 gpu.passes.mimic.draw(&mut pass);
+            }
+            if gpu.cfg.draws("heli") {
+                gpu.passes.heli.draw(&mut pass);
             }
             if gpu.cfg.draws("scar") {
                 gpu.passes.scar.draw(&mut pass);
