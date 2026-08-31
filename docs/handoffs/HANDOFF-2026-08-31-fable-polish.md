@@ -51,8 +51,9 @@ Never launch farfall.exe any other way while Jay Jay is at the PC (it steals foc
 
 ## In flight
 
-- `tuning` agent: hologram off the gauges; 500 m whiteout / 12 km wash (planet.wgsl × post exposure); shield strikes to a ripple; starfield fold streak; scene goldens.
-- `hotas` agent: gilrs/HID stick input, STICK wizard page, docs/HOTAS.md. Reforger wizard (design source): `C:\Users\jayja\hotas-reforger` = github.com/Detcader101/hotas-reforger.
+- `tuning`: MERGED (`74347db`, gate green; scene suite 18/18 now runs on Windows). Its open items: in-air dust streaks, the plasma veil at orbital speed in thick air, hoops mid-view low down, thick limb glow.
+- `hotas` agent: reconciling — it is merging fable/polish INTO fable/hotas itself (its STICK page predates the 8-tab card menu), then gate + captures + report; merge its branch when it lands. Stick facts: winmm via windows-sys, T.Flight HOTAS 4 detected (044F:B67C), wizard + STICK page built (`2526e46`).
+- Devlog iteration 2: `farfall-captures/devlog/2026-08-31-1452` (44 frames on `74347db`); `devlog/latest.html` self-refreshes and follows iterations. The bench harness now needs `bench-mover.ps1` running (an independent daemon moves BENCHMARK-titled windows to the BENCH desktop — the desktop manager refuses the launcher's own tree; -TitleMatch guards the live game). Public skill/agent repo: github.com/Detcader101/claude-devlog.
 
 ## Decisions & why
 
