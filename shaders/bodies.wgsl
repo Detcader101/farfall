@@ -47,9 +47,12 @@ const RING_INNER: f32 = 1.62;
 const RING_OUTER: f32 = 1.98;
 // The dust haze about the ring plane: half-thickness (the rocks reach ±900 m,
 // the dust a little past them) and the run through it that costs one
-// optical depth — mirrored by bodies.rs::ring_run_m and its tests.
+// optical depth — mirrored by bodies.rs::ring_run_m and its tests. Seen
+// edge-on from inside the belt the run along the plane is the whole chord
+// of the annulus, several hundred kilometres: at 250 km it saturated into a
+// hard-edged white column down the sky, at 700 km it is a soft band.
 const RING_HAZE_M: f32 = 1500.0;
-const RING_HAZE_FREE_M: f32 = 250000.0;
+const RING_HAZE_FREE_M: f32 = 700000.0;
 
 fn belt_hash(x: i32, y: i32, z: i32, k: u32) -> u32 {
     var h = (u32(x) * 0x8da6b343u) ^ (u32(y) * 0xd8163841u) ^ (u32(z) * 0xcb1ab31fu) ^ (k * 0x9e3779b9u);

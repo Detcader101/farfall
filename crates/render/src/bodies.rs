@@ -230,7 +230,7 @@ pub const RING_OUTER: f32 = 1.98;
 /// Half-thickness of the dust haze about the ring plane, metres.
 pub const RING_HAZE_M: f32 = 1500.0;
 /// The run through the haze that costs one optical depth, metres.
-pub const RING_HAZE_FREE_M: f32 = 250_000.0;
+pub const RING_HAZE_FREE_M: f32 = 700_000.0;
 
 /// How far a ray runs inside the ring's haze — the slab intersected with the
 /// annulus — in metres. `centre` is Uranus relative to the camera. This is
