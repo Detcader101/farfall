@@ -139,6 +139,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let grain = 0.85 + 0.3 * (vnoise(nl * 9.0 + seed * 11.0) - 0.5);
     let albedo = vec3<f32>(0.32, 0.30, 0.27) * grain;
     let lit = albedo * (light * 1.6 + fill * 0.12);
-    let colour = tonemap(lit, bt.look.x);
+    let colour = radiance(lit, bt.look.x);
     return vec4<f32>(colour + vec3<f32>(dither_px(in.pos.xy)), 1.0);
 }

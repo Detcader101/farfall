@@ -207,11 +207,15 @@ fn burst_light(ray: vec3<f32>, i: u32, now: f32, tan_half: f32, rock_t: f32) -> 
     let sparks = spray(rel, r, seed, age, 9.0) * k * 1.5;
     let q = rel / max(r, 0.1);
     let dust = exp(-(d * d) / (r * r * 1.2)) * (0.4 + 0.6 * fbm3(q * 3.0 + seed * 20.0)) * k * k * 0.5;
+    // Fine glowing grit thrown out with the sparks: a field of tiny
+    // embers swelling with the cloud, guttering as it cools.
+    let grit = pow(vnoise(q * 16.0 + vec3<f32>(seed * 90.0)) * vnoise(q * 27.0 + vec3<f32>(3.0, seed * 40.0, 1.0)), 5.0)
+        * exp(-(d * d) / (r * r)) * k * k * 30.0;
     let spark_col = select(vec3<f32>(1.0, 0.6, 0.2), vec3<f32>(0.7, 0.8, 1.0), rail);
     let flash_col = select(vec3<f32>(1.0, 0.8, 0.6), vec3<f32>(0.85, 0.9, 1.0), rail);
     let dust_col = vec3<f32>(0.5, 0.42, 0.36);
     let range = clamp(200.0 / max(dist, 1.0), 0.3, 1.0);
-    return (flash_col * flash + spark_col * sparks + dust_col * dust) * range * near;
+    return (flash_col * flash + spark_col * sparks + dust_col * dust + vec3<f32>(1.0, 0.62, 0.28) * grit) * range * near;
 }
 
 @fragment

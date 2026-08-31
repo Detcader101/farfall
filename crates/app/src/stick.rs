@@ -14,7 +14,7 @@
 //! bottom, so the mapping, the shaping and the wizard are all under test.
 
 use crate::input::Named;
-use farfall_render::text::TextBitmap;
+use farfall_render::text::{TextBitmap, MENU_COLS};
 use winit::keyboard::KeyCode;
 
 /// Raw axes a sample carries. winmm has six; a browser may report more.
@@ -742,8 +742,8 @@ impl StickItem {
             StickItem::Device => match device {
                 Some(d) => {
                     let l = d.label();
-                    if l.len() > 18 {
-                        l[l.len() - 18..].to_string()
+                    if l.len() > 26 {
+                        l[l.len() - 26..].to_string()
                     } else {
                         l
                     }
@@ -761,6 +761,62 @@ impl StickItem {
             }
             .to_string(),
             StickItem::Fire => m.button_name(m.fire),
+        }
+    }
+
+    /// One line on what the row does, for the menu's footer.
+    pub fn describe(self) -> &'static str {
+        match self {
+            StickItem::Device => {
+                "THE STICK THE GAME FOUND, BY ITS USB ID. PLUG ONE IN AND IT IS READ AT ONCE."
+            }
+            StickItem::Enabled => "THE STICK FLIES THE SHIP, OR IS IGNORED ENTIRELY.",
+            StickItem::Wizard => {
+                "WALK THE STICK CONTROL BY CONTROL: MOVE WHAT EACH STEP ASKS FOR AND IT IS LEARNED."
+            }
+            StickItem::Axis(Flight::Pitch) => {
+                "WHICH STICK AXIS PITCHES THE NOSE. ENTER FLIPS ITS DIRECTION."
+            }
+            StickItem::Axis(Flight::Yaw) => {
+                "WHICH AXIS YAWS THE NOSE - THE TWIST ON A HOTAS. ENTER FLIPS IT."
+            }
+            StickItem::Axis(Flight::Roll) => "WHICH AXIS ROLLS THE SHIP. ENTER FLIPS IT.",
+            StickItem::Axis(Flight::Throttle) => {
+                "WHICH AXIS IS THE MAIN THROTTLE, ALONG THE NOSE. ENTER FLIPS IT."
+            }
+            StickItem::Axis(Flight::Strafe) => {
+                "WHICH AXIS STRAFES - THE ROCKER ON A HOTAS THROTTLE. ENTER FLIPS IT."
+            }
+            StickItem::Axis(Flight::Lift) => {
+                "WHICH AXIS THRUSTS UP AND DOWN; NONE LEAVES IT ON THE R AND F KEYS."
+            }
+            StickItem::Deadzone => {
+                "TRAVEL ABOUT CENTRE THAT COUNTS AS NOTHING, SO A RESTING STICK RESTS."
+            }
+            StickItem::Curve => {
+                "1.00 IS LINEAR; HIGHER IS FINER NEAR CENTRE AND STILL FULL AT THE STOP."
+            }
+            StickItem::ThrottleZero => {
+                "WHERE THE LEVER MEANS ZERO: THE CENTRE (THE BACK HALF REVERSES) OR THE BOTTOM."
+            }
+            StickItem::Fire => "THE STICK BUTTON THAT FIRES THE GUNS.",
+        }
+    }
+
+    /// The settings keys this row edits (the menu's coverage ledger).
+    #[cfg(test)]
+    pub fn keys(self) -> Vec<String> {
+        match self {
+            // The reader sets the layout from the stick's USB id; the
+            // DEVICE row is where that state shows.
+            StickItem::Device => vec!["stick.layout".to_string()],
+            StickItem::Enabled => vec!["stick.enabled".to_string()],
+            StickItem::Wizard => Vec::new(),
+            StickItem::Axis(f) => vec![format!("stick.{}", f.key())],
+            StickItem::Deadzone => vec!["stick.deadzone".to_string()],
+            StickItem::Curve => vec!["stick.curve".to_string()],
+            StickItem::ThrottleZero => vec!["stick.throttle-zero".to_string()],
+            StickItem::Fire => vec!["stick.fire".to_string()],
         }
     }
 
@@ -851,6 +907,7 @@ const BUTTON_ORDER: [Named; Named::COUNT] = [
     Named::WarpStop,
     Named::Assist,
     Named::Landing,
+    Named::Disembark,
     Named::Map,
     Named::Hold,
     Named::NextWeapon,
@@ -858,6 +915,8 @@ const BUTTON_ORDER: [Named; Named::COUNT] = [
     Named::Weapon2,
     Named::Chase,
     Named::Holo,
+    Named::HoloOut,
+    Named::HoloIn,
     Named::LookLock,
     Named::Appearance,
     Named::Engage,
@@ -1132,19 +1191,22 @@ impl Wizard {
         }
     }
 
-    /// The wizard's page, sixteen rows of thirty-two, into the text
-    /// bitmap the menu uses.
+    /// The wizard's page: the menu card's shape — `MENU_COLS` columns,
+    /// sixteen lines — drawn into the text bitmap in the menu's place.
     pub fn render(&self, text: &mut TextBitmap, m: &StickMap, device: Option<&Device>) {
-        const ROW: usize = 6;
+        const W: usize = MENU_COLS;
+        /// The card's lines: a header, twelve rows, a footer, two more.
+        const LINES: usize = 16;
+        let clip = |s: &str| s.chars().take(W).collect::<String>();
         text.clear();
+        text.draw_line(0, 0, "STICK WIZARD");
         let step_line = format!("STEP {}/{}", self.at + 1, self.steps.len());
-        text.draw(0, 0, "STICK WIZARD");
-        text.draw(4 * (32 - step_line.len()), 0, &step_line);
+        text.draw_line(W.saturating_sub(step_line.len()), 0, &step_line);
         let dev = match device {
             Some(d) => format!("FOUND: {}", d.label()),
             None => "NO STICK FOUND - PLUG ONE IN".to_string(),
         };
-        text.draw(0, ROW, &dev[..dev.len().min(32)]);
+        text.draw_line(0, 1, &clip(&dev));
 
         let mut lines: Vec<String> = Vec::new();
         match self.step() {
@@ -1238,7 +1300,7 @@ impl Wizard {
                     lines.push(format!("{jobs} OF {total} HAVE A JOB. FREE:"));
                     let mut row = String::new();
                     for name in free {
-                        if row.len() + name.len() + 1 > 32 {
+                        if row.len() + name.len() + 1 > W {
                             row.push_str(" ..");
                             break;
                         }
@@ -1252,7 +1314,7 @@ impl Wizard {
             }
         }
         for (i, l) in lines.iter().enumerate().take(9) {
-            text.draw(0, (i + 3) * ROW, &l[..l.len().min(32)]);
+            text.draw_line(0, i + 3, &clip(l));
         }
         let foot = match self.step() {
             Step::Summary => ["ENTER FINISH  B BACK", ""],
@@ -1265,8 +1327,8 @@ impl Wizard {
             ],
             _ => ["ENTER KEEP  X CLEAR  S SKIP", "B BACK  ESC FINISH"],
         };
-        text.draw(0, 13 * ROW, foot[0]);
-        text.draw(0, 14 * ROW, foot[1]);
+        text.draw_line(0, LINES - 3, foot[0]);
+        text.draw_line(0, LINES - 2, foot[1]);
     }
 }
 
@@ -1916,7 +1978,7 @@ mod tests {
         // The lines themselves: every prompt within the panel's width.
         for f in Flight::ALL {
             for l in f.prompt() {
-                assert!(l.len() <= 32, "{l:?} is wider than the panel");
+                assert!(l.len() <= 48, "{l:?} is wider than the panel");
             }
         }
         assert_eq!(bar(0.0), "[.........*.........]");

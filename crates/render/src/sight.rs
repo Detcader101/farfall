@@ -14,8 +14,8 @@ use crate::CameraFrame;
 pub const CONVERGE_M: f32 = 300.0;
 /// Up to this many barrels get a pip.
 pub const BARRELS: usize = 4;
-/// Up to this many mimic ships get a marker (crate::mimic's lane count).
-pub const MARKS: usize = 4;
+/// Up to this many ships get a marker (the mimic pass's lane count: mimics and miners).
+pub const MARKS: usize = 12;
 /// The marker safe area: an edge arrow sits on this rectangle (NDC), well
 /// inside the rim so it survives any glass curvature or overscan.
 pub const MARK_EDGE: f32 = 0.88;
@@ -234,7 +234,10 @@ mod tests {
         // Ahead and a touch right: on the glass, over the ship.
         let (pos, _, mode) = edge_mark(Vec3::new(0.2, 0.0, -1.0), tan, aspect);
         assert_eq!(mode, 1.0);
-        assert!(pos[0] > 0.0 && pos[0] < MARK_EDGE && pos[1] == 0.0, "{pos:?}");
+        assert!(
+            pos[0] > 0.0 && pos[0] < MARK_EDGE && pos[1] == 0.0,
+            "{pos:?}"
+        );
         // Hard right, past the glass: pinned to the right edge, arrow
         // pointing right (angle +90 degrees, shader convention).
         let (pos, ang, mode) = edge_mark(Vec3::new(1.0, 0.0, -0.1), tan, aspect);

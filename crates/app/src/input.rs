@@ -139,10 +139,16 @@ pub enum Named {
     ScaleDown,
     ScaleUp,
     Hold,
+    /// The hologram shows more of the space round the ship, or less.
+    HoloOut,
+    HoloIn,
+    /// Leave the ship, once it is landed. Today it answers "not yet": the
+    /// bind and the state machine are the hook the walk-out hangs on.
+    Disembark,
 }
 
 impl Named {
-    pub const COUNT: usize = 23;
+    pub const COUNT: usize = 26;
     pub const ALL: [Named; Named::COUNT] = [
         Named::Boost,
         Named::Brake,
@@ -167,6 +173,9 @@ impl Named {
         Named::ScaleDown,
         Named::ScaleUp,
         Named::Hold,
+        Named::HoloOut,
+        Named::HoloIn,
+        Named::Disembark,
     ];
 
     /// Menu label.
@@ -195,6 +204,9 @@ impl Named {
             Named::ScaleDown => "RENDER SCALE -",
             Named::ScaleUp => "RENDER SCALE +",
             Named::Hold => "HOLD",
+            Named::HoloOut => "HOLO WIDER",
+            Named::HoloIn => "HOLO CLOSER",
+            Named::Disembark => "DISEMBARK",
         }
     }
 
@@ -224,6 +236,9 @@ impl Named {
             Named::ScaleDown => "scale-down",
             Named::ScaleUp => "scale-up",
             Named::Hold => "hold",
+            Named::HoloOut => "holo-out",
+            Named::HoloIn => "holo-in",
+            Named::Disembark => "disembark",
         }
     }
 
@@ -255,6 +270,13 @@ impl Named {
             Named::ScaleDown => KeyCode::BracketLeft,
             Named::ScaleUp => KeyCode::BracketRight,
             Named::Hold => KeyCode::KeyO,
+            // Comma and period: DESIGN mode borrows them for tilt only while
+            // it is on.
+            Named::HoloOut => KeyCode::Comma,
+            Named::HoloIn => KeyCode::Period,
+            // I is the one letter the dash did not already answer to
+            // (Enter is the menu's and is reserved).
+            Named::Disembark => KeyCode::KeyI,
         }
     }
 }
@@ -359,11 +381,12 @@ impl Bindings {
     }
 }
 
-/// Keys the game keeps for itself: the menu and its navigation.
+/// Keys the game keeps for itself: the menu and its navigation, and F1
+/// for the CONTROLS card.
 pub fn is_reserved(key: KeyCode) -> bool {
     matches!(
         key,
-        KeyCode::Escape | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace
+        KeyCode::Escape | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::F1
     )
 }
 

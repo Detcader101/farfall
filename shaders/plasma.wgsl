@@ -134,7 +134,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let hull_rim = smoothstep(0.0, 0.38, rim);
     rgb += blackbody(hull_kk) * g_hull * (0.02 + 0.30 * hull_rim);
 
-    let out = tonemap(rgb, exposure);
+    let out = radiance(rgb, exposure);
     // Additive: alpha carries nothing, the blend is ONE + ONE.
     return vec4<f32>(out + dither_px(in.pos.xy), 0.0);
 }

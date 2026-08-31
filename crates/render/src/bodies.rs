@@ -219,3 +219,150 @@ mod tests {
         assert_eq!(std::mem::size_of::<BodiesUniforms>(), 9 * 16);
     }
 }
+
+/// Uranus' ring as `bodies.wgsl` draws it: an annulus from [`RING_INNER`] to
+/// [`RING_OUTER`] radii about [`RING_AXIS`], with a haze of dust
+/// [`RING_HAZE_M`] either side of its plane. Mirrors `warp::RING_*` in the
+/// app and the constants at the top of the shader.
+pub const RING_AXIS: Vec3 = Vec3::new(0.97, 0.14, 0.2);
+pub const RING_INNER: f32 = 1.62;
+pub const RING_OUTER: f32 = 1.98;
+/// Half-thickness of the dust haze about the ring plane, metres.
+pub const RING_HAZE_M: f32 = 1500.0;
+/// The run through the haze that costs one optical depth, metres.
+pub const RING_HAZE_FREE_M: f32 = 700_000.0;
+
+/// How far a ray runs inside the ring's haze — the slab intersected with the
+/// annulus — in metres. `centre` is Uranus relative to the camera. This is
+/// the shader's ring maths line for line: the ray is charged for its run
+/// between the slab's faces, clipped to the annulus (and stopped at the
+/// hole's near wall), from wherever the camera is. From inside the belt that
+/// makes the ring a band on its own horizon, continuous across the plane —
+/// the old mid-plane hit test drew the plane's great circle as a hard edge.
+pub fn ring_run_m(centre: Vec3, radius_m: f32, ray: Vec3) -> f32 {
+    if radius_m <= 0.0 {
+        return 0.0;
+    }
+    let axis = RING_AXIS.normalize();
+    let ray = ray.normalize();
+    let denom = ray.dot(axis);
+    let ch = centre.dot(axis);
+    let dn_mag = denom.abs().max(1e-5);
+    let dn = if denom < 0.0 { -dn_mag } else { dn_mag };
+    let eta = if denom > 0.0 {
+        RING_HAZE_M
+    } else {
+        -RING_HAZE_M
+    };
+    let t_face = (eta + ch) / dn;
+    let t_in = (-eta + ch) / dn;
+    let o_f = -(centre - axis * ch);
+    let d_f = ray - axis * denom;
+    let a = d_f.dot(d_f).max(1e-8);
+    let b = 2.0 * o_f.dot(d_f);
+    let oo = o_f.dot(o_f);
+    let r_out = radius_m * RING_OUTER;
+    let r_in = radius_m * RING_INNER;
+    let disc_o = b * b - 4.0 * a * (oo - r_out * r_out);
+    if t_face <= 0.0 || disc_o <= 0.0 {
+        return 0.0;
+    }
+    let so = disc_o.sqrt();
+    let mut lo = ((-b - so) / (2.0 * a)).max(0.0).max(t_in.min(t_face));
+    let mut hi = ((-b + so) / (2.0 * a)).min(t_face);
+    let disc_i = b * b - 4.0 * a * (oo - r_in * r_in);
+    if disc_i > 0.0 {
+        let si = disc_i.sqrt();
+        let u1 = (-b - si) / (2.0 * a);
+        let u2 = (-b + si) / (2.0 * a);
+        if u1 > lo {
+            hi = hi.min(u1);
+        } else if u2 > lo {
+            lo = lo.max(u2);
+        }
+    }
+    (hi - lo).max(0.0)
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::*;
+
+    const RR: f32 = 253_620.0;
+
+    fn frame() -> (Vec3, Vec3, Vec3) {
+        let axis = RING_AXIS.normalize();
+        let e1 = axis.cross(Vec3::Y).normalize();
+        let e2 = axis.cross(e1).normalize();
+        (axis, e1, e2)
+    }
+
+    /// The camera in the belt, at the ring's mid radius, on its plane.
+    fn in_the_belt() -> Vec3 {
+        let (_, e1, _) = frame();
+        -e1 * (1.8 * RR)
+    }
+
+    #[test]
+    fn from_inside_the_belt_the_haze_is_a_band_continuous_across_the_plane() {
+        let (axis, _, e2) = frame();
+        let c = in_the_belt();
+        // A tangential ray along the belt exits the outer edge after
+        // sqrt(1.98^2 - 1.8^2) radii whichever side of the plane it leans.
+        let tangential = (1.98f32 * 1.98 - 1.8 * 1.8).sqrt() * RR;
+        let up = ring_run_m(c, RR, e2 * 0.002f32.cos() + axis * 0.002f32.sin());
+        let down = ring_run_m(c, RR, e2 * 0.002f32.cos() - axis * 0.002f32.sin());
+        let level = ring_run_m(c, RR, e2);
+        assert!((up - down).abs() < 1.0, "{up} vs {down}");
+        assert!(
+            (level - tangential).abs() < 500.0,
+            "{level} vs {tangential}"
+        );
+        assert!((up - tangential).abs() < 500.0, "{up} vs {tangential}");
+        // Leaning away from the plane the run shortens: the band thins.
+        let steep = ring_run_m(c, RR, (e2 + axis * 0.2).normalize());
+        assert!(steep < level * 0.1 && steep > RING_HAZE_M, "{steep}");
+        // Straight up is out of the haze in one half-thickness.
+        assert!((ring_run_m(c, RR, axis) - RING_HAZE_M).abs() < 0.01);
+        assert!((ring_run_m(c, RR, -axis) - RING_HAZE_M).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_run_stops_at_the_holes_wall() {
+        let (_, e1, _) = frame();
+        // Toward Uranus along the plane: 1.8 - 1.62 radii of belt, then the
+        // gap — the far side of the ring is beyond it and not charged.
+        let run = ring_run_m(in_the_belt(), RR, -e1);
+        assert!((run - 0.18 * RR).abs() < 50.0, "{run}");
+        // Away from Uranus: 1.98 - 1.8 radii to the outer edge.
+        let out = ring_run_m(in_the_belt(), RR, e1);
+        assert!((out - 0.18 * RR).abs() < 50.0, "{out}");
+    }
+
+    #[test]
+    fn from_far_above_the_ring_only_rays_through_the_annulus_are_charged() {
+        let (axis, e1, _) = frame();
+        // Camera five radii up the axis: Uranus is straight down.
+        let c = -axis * (5.0 * RR);
+        assert_eq!(ring_run_m(c, RR, axis), 0.0, "away from the ring");
+        assert_eq!(ring_run_m(c, RR, -axis), 0.0, "through the hole");
+        // A slanted ray through the annulus at 1.8 radii crosses the whole
+        // slab: twice the half-thickness over the cosine.
+        let target = c + e1 * (1.8 * RR);
+        let cos = 5.0 / (25.0f32 + 1.8 * 1.8).sqrt();
+        let run = ring_run_m(c, RR, target);
+        assert!((run - 2.0 * RING_HAZE_M / cos).abs() < 1.0, "{run}");
+        // Past the outer edge: nothing.
+        assert_eq!(ring_run_m(c, RR, c + e1 * (2.5 * RR)), 0.0);
+    }
+
+    #[test]
+    fn crossing_the_slabs_face_changes_nothing_suddenly() {
+        let (axis, _, e2) = frame();
+        let ray = (e2 + axis * 0.3).normalize();
+        let just_in = ring_run_m(in_the_belt() - axis * (RING_HAZE_M - 1.0), RR, -ray);
+        let just_out = ring_run_m(in_the_belt() - axis * (RING_HAZE_M + 1.0), RR, -ray);
+        assert!((just_in - just_out).abs() < 10.0, "{just_in} vs {just_out}");
+        assert_eq!(ring_run_m(Vec3::ZERO, 0.0, ray), 0.0, "no ring at all");
+    }
+}

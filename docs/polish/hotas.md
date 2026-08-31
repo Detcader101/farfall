@@ -89,12 +89,12 @@ named control bindable to a stick button, a step-by-step setup wizard, docs.
     T.FLIGHT HOTAS 4 (the real stick, found by winmm), STICK ON,
     SETUP WIZARD, the six axis rows by their physical names, DEADZONE 8%,
     CURVE 1.50, THROTTLE ZERO CENTRE, TRIGGER.
-  - `wizard-pitch` — `FARFALL_BENCH_STICK=0`: step 1/34, PITCH: "PULL THE STICK
+  - `wizard-pitch` — `FARFALL_BENCH_STICK=0`: step 1/37, PITCH: "PULL THE STICK
     BACK (NOSE UP)", DETECTED STICK Y +, the live bar.
   - `wizard-deadzone` — `FARFALL_BENCH_STICK=7`: the DEADZONE knob with the drift bar.
   - `wizard-trigger` — `FARFALL_BENCH_STICK=9`: TRIGGER: DETECTED TRIGGER.
   - `wizard-boost` — `FARFALL_BENCH_STICK=10`: BOOST: DETECTED L1, the key it stands in for.
-  - `wizard-summary` — `FARFALL_BENCH_STICK=33`: the map, the trigger, and the coverage line.
+  - `wizard-summary` — `FARFALL_BENCH_STICK=36`: the map, the trigger, and the coverage line.
   - `keys-page` — `FARFALL_BENCH_MENU=1`: KEYS with the stick binds beside the keys.
   Every wizard page and every STICK/KEYS row is also measured against the
   32×16 panel in tests (`every_wizard_page_fits_the_panel`,
@@ -133,3 +133,28 @@ named control bindable to a stick button, a step-by-step setup wizard, docs.
   `App::key_input` (pure move); menu.rs additions are grouped and small
   (`Page::Stick`, `Item::Stick`, header fit); the base branch's
   `crates/render/src/sight.rs` is not fmt-clean (I reverted fmt's touch on it).
+
+## The merge with fable/polish (74347db, eight branches in)
+
+Done in this worktree, `fable/polish` merged INTO `fable/hotas`, per the lead.
+What was reconciled:
+
+- **The STICK page is the ninth tab** of the new 48-column card menu — GFX
+  KEYS STICK CABIN DIALS ARMS MAP SHIP HELP (45 columns of header, fits).
+  Every stick row gained a `describe()` sentence for the card's footer and a
+  `keys()` claim for the settings ledger (`every_settings_key_has_a_menu_row`
+  holds: `stick.*` keys are in `settings::KEYS`; a KEYS-page named row claims
+  `control.<n>` *and* `stick.button.<n>`; the DEVICE row claims
+  `stick.layout`, which the reader sets).
+- **`App::key_input` carries fable/polish's whole keyboard arm** (the CONTROLS
+  card close-on-any-key and F1, the new HOLO WIDER/CLOSER binds, DISEMBARK)
+  with the wizard's hook after the card's — so a stick button still IS its
+  key, and one bound to any of the new controls just works. The arm in
+  `window_event` stays one line.
+- **The wizard renders in the card's shape** — 48 columns, 16 lines, the
+  5×7 font's `draw_line` — in the menu's place, inheriting the new panel.
+  Three new named controls make it 37 steps.
+- Their side kept: the trigger gained `stick_fire` back; the bench doc lists
+  `FARFALL_BENCH_MENU` 0..8 (2 = STICK), `_STICK` and `_CARD` together;
+  README's controls paragraph carries both the HOTAS sentence and the new
+  WARTHOG gauge text; `edits_round_trip` now tweaks the stick block too.

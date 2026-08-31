@@ -1,8 +1,8 @@
 // nebula.wgsl — the nebula: coloured gas across the sky, baked once
 // (SPEC §6.5; P2's "bake, don't re-derive").
 //
-// Lane: A (fragment only). Cost class: one-off bake of a 1024×512 equirect
-// with mips whenever a shape knob changes, then ONE fetch per pixel inside
+// Lane: A (fragment only). Cost class: one-off bake of a 4096×2048 equirect
+// with mips whenever a shape knob changes (~100 ms of GPU, a discrete event), then ONE fetch per pixel inside
 // the starfield pass (starfield.wgsl `nebula()`). Nothing per frame here.
 //
 // Technique: a handful of soft lobes on the sphere pick where the clouds
@@ -109,23 +109,50 @@ fn fs_bake(in: VsOut) -> @location(0) vec4<f32> {
     var field = 0.5 + (fbm5(p + s) - 0.5) * 2.4;
     let gas = smoothstep(1.0 - density, 1.0 - density + 0.55, field);
 
-    // Filaments: a finer field, ridged (1 - |2n-1|) so it makes threads,
-    // brightest where the banks are thickest.
-    let fine = fbm5(p * 2.7 + s + vec3<f32>(31.0, 17.0, 5.0));
-    let ridge = 1.0 - abs(fine * 2.0 - 1.0);
-    let cores = pow(ridge, 5.0) * gas;
+    // Filaments: a finer warp, then five octaves of ridged noise (1 - |2n-1|,
+    // squared: sharp bright threads on a dark ground) — the emission cores,
+    // brightest where the banks are thickest. The bake can afford the
+    // octaves; the fetch never sees them as anything but one texel.
+    let warp2 = vec3<f32>(
+        fbm3(p * 3.3 + s + vec3<f32>(21.0, 4.0, 11.0)),
+        fbm3(p * 3.3 + s + vec3<f32>(2.0, 27.0, 14.0)),
+        fbm3(p * 3.3 + s + vec3<f32>(15.0, 8.0, 33.0)),
+    ) - vec3<f32>(0.5);
+    let q = p + warp2 * 0.45;
+    var ridge_sum = 0.0;
+    var amp = 0.5;
+    var freq = 2.7;
+    var norm = 0.0;
+    for (var i = 0; i < 5; i += 1) {
+        let v = vnoise(q * freq + s + vec3<f32>(31.0, 17.0, 5.0));
+        let r = 1.0 - abs(v * 2.0 - 1.0);
+        ridge_sum += amp * r * r;
+        norm += amp;
+        amp *= 0.55;
+        freq *= 2.1;
+    }
+    let ridge = ridge_sum / norm;
+    let cores = pow(ridge, 2.6) * gas;
+    // The finest threads: one high octave of ridged noise, a lace over the
+    // gas that only shows at full resolution.
+    let lace = pow(1.0 - abs(vnoise(q * 41.0 + s) * 2.0 - 1.0), 5.0);
 
-    // Dust lanes: cold, dark gas in front of the glow.
+    // Dust lanes: cold, dark gas in front of the glow — a broad lane with a
+    // ragged, finer edge.
     let dust = fbm3(p * 3.1 + s + vec3<f32>(41.0, 3.0, 27.0));
-    let lane = smoothstep(0.58, 0.82, dust) * 0.85;
+    let dust_fine = fbm3(p * 11.0 + s + vec3<f32>(3.0, 44.0, 9.0));
+    let lane = smoothstep(0.56, 0.80, dust + (dust_fine - 0.5) * 0.18) * 0.88;
 
     // Hue drifts across the cloud along a slow field.
     let t = fbm3(dir * scale * 0.45 + s + vec3<f32>(13.1, 2.2, 8.8));
     let hue = mix(nb.col_a.xyz, nb.col_b.xyz, smoothstep(0.3, 0.7, t));
-    // Emission cores are the hue pushed toward white.
+    // Emission cores are the hue pushed toward white; the lace a little
+    // more so.
     let core_col = mix(hue, vec3<f32>(1.0), 0.35);
+    let lace_col = mix(hue, vec3<f32>(1.0), 0.55);
 
-    let glow = (hue * gas * 0.35 + core_col * cores * 0.9) * (1.0 - lane);
+    let glow = (hue * gas * 0.32 + core_col * cores * 0.95 + lace_col * lace * gas * 0.35)
+        * (1.0 - lane);
     // Absolute scale: the Milky Way's baked glow peaks near 0.045, so 1.0
     // intensity puts a bright bank at about three times the galaxy and a
     // veil well below it.

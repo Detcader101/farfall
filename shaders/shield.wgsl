@@ -2,11 +2,18 @@
 //
 // A shell around the ship, a few metres out, invisible until something
 // hits it. Each strike raises a ripple from its point of impact: a ring
-// of blue holographic light spreading evenly over the shell at a fixed
-// speed and fading as it goes, and around it the shell's own honeycomb
-// shows through for a moment — the field ablating, Star Trek fashion.
+// of blue light spreading evenly over the shell at a fixed speed and
+// fading as it goes — a liquid wave, its crest white-hot, caustics
+// wrinkling the field inside it — and behind the crest the shell's own
+// honeycomb shows through for a moment, cell by cell, the field ablating
+// Star Trek fashion — a ring of cells round each strike, never the whole
+// shell. Under the hyper drive the whole shell is a liquid skin: space
+// streaming over it aft from the nose in bands, a refractive sheen
+// wandering over it, a violet fringe at the graze; the honeycomb stays
+// all but hidden under it.
 // Drawn on the world side of the glass (before the cabin), additively:
-// where nothing has hit, nothing is there.
+// where nothing has hit, nothing is there. Written as radiance — the
+// crests go well over 1.0 for the post pass's bloom.
 
 const IMPACTS: u32 = 8u;
 
@@ -63,9 +70,22 @@ fn honeycomb(uv: vec2<f32>, cell: f32) -> f32 {
     let s = vec2<f32>(1.0, 1.7320508) * cell;
     let a = (fract(uv / s) - 0.5) * s;
     let b = (fract((uv - s * 0.5) / s) - 0.5) * s;
-    let da = hex_edge(a / cell * 1.0);
-    let db = hex_edge(b / cell * 1.0);
+    // Adjacent centres sit a cell apart, so a hex's apothem is half a
+    // cell: the edge distance comes back in apothems, 0 on an edge and
+    // 1 at a centre.
+    // hex_edge's hexagon is flat-topped; this tiling is pointy-topped
+    // (rows a cell apart across flat sides), so the axes swap.
+    let da = hex_edge(a.yx / (cell * 0.5));
+    let db = hex_edge(b.yx / (cell * 0.5));
     return min(da, db);
+}
+
+// Caustics: two noise fields sliding over each other, their product
+// sharpened into the bright ropes light makes through rippling water.
+fn caustic(uv: vec2<f32>, now: f32, scale: f32) -> f32 {
+    let a = vnoise(vec3<f32>(uv * scale, now * 1.7));
+    let b = vnoise(vec3<f32>(uv * scale * 1.9 + vec2<f32>(3.1, 7.7), -now * 2.3));
+    return pow(clamp(a * b * 3.4, 0.0, 1.5), 2.4);
 }
 
 @fragment
@@ -94,8 +114,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let speed = max(sh.look.y, 0.1);
     let cell = max(sh.look.z, 0.05);
 
+    var crest = 0.0;
     var glow = 0.0;
     var comb = 0.0;
+    var wet = 0.0;
     for (var i = 0u; i < IMPACTS; i += 1u) {
         if (i >= n_hits) { break; }
         let h = sh.hits[i];
@@ -104,26 +126,40 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let age = now - t0;
         if (age < 0.0 || age > 3.0) { continue; }
         let d = acos(clamp(dot(n, h.xyz), -1.0, 1.0)) * rad;
-        // The ring: a front at speed × age, a few cells wide, softer and
-        // wider as it goes; a faint afterglow inside it.
+        // The wave: a sharp crest at speed × age, a broader swell behind
+        // it, a second crest in its wake — softer and wider as it goes.
         let front = speed * age;
-        let width = 0.10 + 0.12 * age;
+        let width = 0.05 + 0.07 * age;
         let x = (d - front) / width;
         let ring = exp(-x * x);
-        // A second, fainter ring a little behind the first: the wake.
-        let x2 = (d - front * 0.72) / (width * 1.6);
-        let wake = exp(-x2 * x2) * 0.35;
-        let fade = exp(-age * 1.2) * (0.4 + 0.6 * size);
-        glow += (ring + wake) * fade;
-        // The honeycomb shows in a band behind the ring and at the impact
-        // itself, where the field is working hardest.
-        let band = smoothstep(front - 1.2 - 1.5 * size, front, d) * (1.0 - smoothstep(front, front + 0.15, d));
-        let at_hit = (1.0 - smoothstep(0.0, 0.5 + 1.0 * size, d)) * exp(-age * 2.0);
-        comb += (band * 0.8 + at_hit) * fade;
+        let xs = (d - front + width * 2.5) / (width * 4.0);
+        let swell = exp(-xs * xs) * 0.5;
+        let x2 = (d - front * 0.70) / (width * 2.2);
+        let wake = exp(-x2 * x2) * 0.4;
+        let fade = exp(-age * 1.1) * (0.5 + 0.5 * size);
+        // The wave's energy thins as the ring grows round the shell: the
+        // crest and its swell are strongest near the strike.
+        let thin = 0.35 + 0.65 * exp(-d / 2.5);
+        crest += ring * fade * thin;
+        glow += (swell + wake) * fade * thin;
+        // The honeycomb shows only in a ring just behind the crest — half
+        // a metre to a metre of shell — and at the impact itself, dying
+        // with distance from the strike and faster with time than the
+        // wave: a few cells lit round each hit, never the whole shell
+        // (three strikes used to tile the sky). The field is wet —
+        // caustic — through the same ring.
+        let band = smoothstep(front - 0.4 - 0.3 * size, front - 0.05, d) * (1.0 - smoothstep(front - 0.05, front + 0.10, d));
+        let reach = exp(-d / (0.6 + 0.6 * size));
+        let at_hit = (1.0 - smoothstep(0.0, 0.3 + 0.4 * size, d)) * exp(-age * 2.5);
+        let comb_fade = exp(-age * 1.8) * (0.5 + 0.5 * size);
+        comb += (band * reach * 0.9 + at_hit) * comb_fade;
+        wet += band * reach * fade;
     }
     // The hyper drive: space streaming over the whole shell. The field
-    // lights from the nose back, the honeycomb everywhere under bands of
-    // light sweeping aft at speed, brightest where the stream meets it.
+    // lights from the nose back under bands of light sweeping aft at
+    // speed, a liquid sheen wandering over it — a wet skin, the honeycomb
+    // no more than a ghost in it (a lattice over the whole sky hid the
+    // world it was there to protect).
     var stream = 0.0;
     if (hyper > 0.001) {
         let nose = vec3<f32>(0.0, 0.0, -1.0);
@@ -132,11 +168,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let along = acos(clamp(head_on, -1.0, 1.0)) * rad;
         let bands = 0.5 + 0.5 * sin(along * 6.0 - now * 40.0);
         let bands2 = 0.5 + 0.5 * sin(along * 13.0 - now * 71.0 + n.x * 9.0);
-        stream = hyper * (0.25 + 0.75 * from_front) * (0.35 + 0.4 * bands + 0.25 * bands2);
-        comb += stream * 0.7;
-        glow += stream * 0.28;
+        let sheen = vnoise(vec3<f32>(n.x * 4.0, n.y * 4.0, along * 1.4 - now * 9.0));
+        stream = hyper * (0.25 + 0.75 * from_front) * (0.3 + 0.35 * bands + 0.2 * bands2 + 0.5 * pow(sheen, 3.0));
+        comb += stream * 0.04;
+        glow += stream * 0.16;
+        wet += stream * 0.6;
     }
-    if (glow + comb < 0.002) {
+    if (crest + glow + comb < 0.002) {
         discard;
     }
     // The chart: tangent coordinates about the nearest hit (the first
@@ -148,13 +186,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let uv = vec2<f32>(dot(p - c, e1), dot(p - c, e2));
     let edge = honeycomb(uv, cell);
     let aa = max(fwidth(edge), 1e-4);
-    let lines = 1.0 - smoothstep(0.0, aa * 2.0 + cell * 0.05, edge);
-    let cells = 0.12 * (1.0 - smoothstep(0.0, cell * 0.5, edge));
-    let blue = vec3<f32>(0.30, 0.65, 1.0);
-    let white = vec3<f32>(0.85, 0.95, 1.0);
+    let lines = 1.0 - smoothstep(0.0, aa * 1.5 + 0.07, edge);
+    let cells = 0.5 * (1.0 - smoothstep(0.0, 0.7, edge));
+    let caus = caustic(uv, now, 2.2);
+    let blue = vec3<f32>(0.25, 0.60, 1.30);
+    let cyan = vec3<f32>(0.45, 0.90, 1.20);
+    let white = vec3<f32>(1.10, 1.30, 1.60);
+    let violet = vec3<f32>(0.55, 0.30, 1.00);
     // The shell is seen at a grazing angle near its rim: a touch more there.
     let graze = pow(1.0 - abs(dot(n, ray)), 2.0);
-    let colour = (blue * (glow * 0.7 + comb * (lines * 1.2 + cells)) + white * glow * glow * 0.35)
+    let colour = (
+            white * crest * 0.85
+            + cyan * crest * caus * 1.0
+            + blue * glow * 0.45
+            + blue * comb * (lines * 1.6 + cells * (0.35 + 1.4 * caus))
+            + cyan * wet * caus * 0.6
+            + violet * hyper * graze * 0.5
+        )
         * (1.0 + 0.6 * graze)
         * strength;
     return vec4<f32>(colour, 1.0);
