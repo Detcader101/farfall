@@ -9,6 +9,7 @@
 use crate::bay::{Mount, STOCK};
 use crate::cockpit::{Instrument, Layout, Slot};
 use crate::input::{key_from_name, key_name, Action, Bindings, Named};
+use crate::stick::StickMap;
 use crate::warp::{Destination, Plan};
 use std::path::PathBuf;
 
@@ -315,6 +316,8 @@ pub struct Settings {
     pub pointer_size: f32,
     /// Where the SHIP bay's panel sits (top-left, canopy NDC).
     pub bay_anchor: [f32; 2],
+    /// The stick: which raw axis and button is which control (stick.*).
+    pub stick: StickMap,
 }
 
 impl Settings {
@@ -396,6 +399,7 @@ impl Default for Settings {
             bay_spin: true,
             pointer_size: POINTER_SIZE_DEFAULT,
             bay_anchor: BAY_ANCHOR_DEFAULT,
+            stick: StickMap::default(),
         }
     }
 }
@@ -499,6 +503,9 @@ impl Settings {
                             s.look_sensitivity = f.clamp(0.1, 5.0);
                         }
                     }
+                }
+                k if k.starts_with("stick.") => {
+                    s.stick.parse_key(k, v);
                 }
                 "ui.panel-menu" => {
                     if let Some(a) = parse_pair(v) {
@@ -960,6 +967,7 @@ impl Settings {
             "control.look-sens = {:.2}\n",
             self.look_sensitivity
         ));
+        self.stick.render(&mut out);
         out.push_str(&format!("ui.hoop-size = {:.2}\n", self.hoop_size));
         out.push_str(&format!(
             "ui.panel-menu = {:.3},{:.3}\n",

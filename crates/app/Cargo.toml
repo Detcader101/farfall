@@ -26,9 +26,15 @@ web-time = "1.1"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# The stick on Windows: winmm's joyGetPosEx through the windows-sys crate
+# winit already brings in (MIT OR Apache-2.0) — no new dependency tree.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Media_Multimedia"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 console_log = "1"
 console_error_panic_hook = "0.1"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "Storage", "CssStyleDeclaration"] }
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "Storage", "CssStyleDeclaration", "Navigator", "Gamepad", "GamepadButton"] }

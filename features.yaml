@@ -38,6 +38,7 @@ settings_keys:
   warp: [warp.destination, warp.safe-radii]
   sound: [sound.hull]
   controls: ["control.<axis>", "control.<named>", control.look-sens]
+  stick: [stick.enabled, stick.pitch, stick.yaw, stick.roll, stick.throttle, stick.strafe, stick.lift, stick.deadzone, stick.curve, stick.throttle-zero, stick.layout, stick.fire, "stick.button.<named>"]
   arms: [arms.power, arms.glow, arms.sight, arms.shards, arms.shard-life, arms.scar-size, arms.scar-cool, arms.ore]
   mimics: [mimics.chance, mimics.hostility]
   hold: [hold.gain, hold.face]
@@ -57,7 +58,8 @@ bench:
     FARFALL_BENCH_ALT: frozen altitude in metres over the planet
     FARFALL_BENCH_HEAD: head yaw,pitch in degrees
     FARFALL_BENCH_SPIN: the head turns a full circle over the run, n times
-    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND: the map, the settings menu (paged n times), DESIGN mode, LANDING mode up
+    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND: the map, the settings menu (paged n times; 2 is the STICK page), DESIGN mode, LANDING mode up
+    FARFALL_BENCH_STICK=n: the stick wizard open at step n (0-based) with a stand-in detection on it
     FARFALL_BENCH_CHASE / _HOLO: the chase camera, the holo3PP
     FARFALL_BENCH_NEBULA=1|off: a full sky of nebula at twice the stock glow, or off for a baseline
     FARFALL_BENCH_HYPER / _WARP=s / _GHOST=age: the chaos drive's field up; the wormhole drive engaged at s; a WARP STOP after-image this old
@@ -351,6 +353,14 @@ features:
     settings: [control.map, control.atmosphere, control.engage, control.landing, control.design, control.look-lock, control.trajectory, control.assist, control.chase, control.holo, control.capture]
     tests: ["crates/app/src/input.rs::no_two_default_binds_share_a_key", "crates/app/src/input.rs::rebinding_swaps_uniformly_across_actions_and_named_controls", crates/app/src/menu.rs, crates/app/src/settings.rs]
     e2e: "menu capture — the KEYS page walks every bind"
+
+  - id: hotas-stick
+    name: "A HOTAS / joystick flies the ship (crates/app/src/stick.rs): on Windows through winmm (windows-sys, already in the tree — no new dependency), in the browser through the Gamepad API; the Thrustmaster T.Flight HOTAS 4 is recognised by its USB id and works out of the box with a measured default map (X roll, Y pitch, Z throttle inverted, V rocker strafe, R twist yaw; trigger fires, L1 boost, R3 brake, L3 despin, the throttle's face buttons map/landing/next weapon/assist, R2 chaos drive, L2 warp stop, base buttons chase/holo, the hat look-lock/rail/hold/cannon). Axes are shaped (symmetric deadzone, power curve, invert, throttle zero at centre or bottom) into the same body axes the keys drive and summed with them, clamped; a stick button IS the key its named control is bound to (one key path, App::key_input), so every action is bindable to a button. A STICK page (device line, on/off, the wizard, each flight axis, deadzone, curve, throttle zero, trigger) and the KEYS page showing stick binds beside keys (a stick button pressed on a PRESS KEY row binds itself). The SETUP WIZARD walks the stick control by control — move the axis / press the button, the wizard detects which and which way, ENTER keeps, I inverts, X clears, S skips, B back, ESC finishes — to a summary; re-runnable any time; saved as stick.* keys as it goes"
+    state: tests-pass
+    settings: [stick.enabled, stick.pitch, stick.yaw, stick.roll, stick.throttle, stick.strafe, stick.lift, stick.deadzone, stick.curve, stick.throttle-zero, stick.layout, stick.fire, "stick.button.<named>"]
+    tests: ["crates/app/src/stick.rs::hotas4_defaults_fly_the_ship_the_right_way", "crates/app/src/stick.rs::every_shaped_value_stays_finite_and_in_range", "crates/app/src/stick.rs::deadzone_is_symmetric_and_full_travel_still_reaches_one", "crates/app/src/stick.rs::the_wizard_learns_an_axis_from_the_move_it_sees", "crates/app/src/stick.rs::the_wizard_binds_buttons_skips_and_goes_back", "crates/app/src/stick.rs::every_wizard_page_fits_the_panel", "crates/app/src/stick.rs::the_map_round_trips_through_the_settings_file", "crates/app/src/input.rs::the_stick_sums_with_the_keys_within_range", "crates/app/src/menu.rs::the_stick_page_and_its_wizard_are_in_the_menu"]
+    e2e: "farfall-captures/hotas/: the STICK page, wizard steps (axis, deadzone, trigger, button, summary); the real HOTAS 4 found by winmm at start (RUST_LOG=info 'stick: found THRUSTMASTER T.FLIGHT HOTAS 4 (044F:B67C, 6 axes, 16 buttons)'); not yet flown by hand on the stick — see docs/polish/hotas.md"
+    notes: "docs/HOTAS.md: the design (device map vs actions, lifted from hotas-reforger), the default map as a table, the settings keys, adding another stick. Linux/macOS have no reader yet (gilrs is the road, behind the same platform::{find, read} pair)"
 
   - id: holo3pp
     name: "The holo3PP (N, holo.view — clear of H, which is the chaos drive), and the chase camera it is measured against (Y, camera.chase): third person without ever leaving first person, and not a screen. holo.wgsl marches a real 3D hologram over an emitter in the dash — the fighter itself (the same SDF as cabin/map/ghost/jet) in miniature at its true attitude, translucent cyan with rim light, a Sun-lit side so its shape reads, scanlines drifting up through the volume, the nozzles glowing with effort/hyper; around it the things the canopy cannot show: the velocity vector (relative to the nearest body; a rod as long as the log of the speed), the nearest body as an amber wire globe at its true bearing and TRUE angular size (the ground swells up under the little ship as it descends), the Sun's bearing as a bead. It is a real object in the ship's frame: turn the head and it has parallax, look down on it. Light, not glass — it adds over the cabin. Its emitter is a glass anchor whose direction meets the dash at the socket (the same placement as the dials), draggable along the dash, sized by HOLO SIZE; default lower right, out of the forward view. Every world pass draws from a ViewPose (camera + a head rotation + an eye seat in the ship's frame), so the chase view is only a camera — the ship-attached shaders (shield shell, after-image, belt) fold the eye offset through with_eye lanes and stay glued to the hull; jet.wgsl draws the ship itself from outside. Chase (Y) swings the whole screen behind the ship; cockpit passes skip. GFX menu: CAMERA, HOLO VIEW, HOLO SIZE"
