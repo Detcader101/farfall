@@ -1285,6 +1285,8 @@ struct Game {
     stick_log: u32,
     /// The throttle gestures: lever hard back brakes, a slam bursts.
     stick_gestures: stick::Gestures,
+    /// FARFALL_BENCH_DEMAND: a parked demand the poll must not stomp.
+    bench_demand: bool,
     /// The mimics — ships in the rocks — and what the guns bring in.
     mimics: mimic::Mimics,
     haul: mimic::Haul,
@@ -1443,6 +1445,7 @@ impl Game {
             wizard: None,
             stick_log: 0,
             stick_gestures: stick::Gestures::default(),
+            bench_demand: false,
             mimics: mimic::Mimics::default(),
             haul: mimic::Haul::default(),
             miners: miner::Miners::default(),
@@ -4996,6 +4999,7 @@ impl App {
             // The mirror's senses: +p pitch up (+x torque), +r roll right
             // (-z), +y yaw right (-y), +t thrust ahead (-z).
             game.input.set_stick([0.0, 0.0, -t, p, -y, -r]);
+            game.bench_demand = true;
         }
         if game.frozen && std::env::var("FARFALL_BENCH_LAND").is_ok() {
             game.toggle_landing();
@@ -5721,6 +5725,10 @@ impl App {
         let Some(game) = self.game.as_mut() else {
             return;
         };
+        // A parked bench demand stands; the real stick must not stomp it.
+        if game.bench_demand {
+            return;
+        }
         let Some(sample) = game.stick.poll() else {
             game.menu.set_stick(None);
             game.input.set_stick([0.0; 6]);

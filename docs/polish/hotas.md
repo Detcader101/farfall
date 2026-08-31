@@ -96,6 +96,16 @@ named control bindable to a stick button, a step-by-step setup wizard, docs.
   - `wizard-boost` — `FARFALL_BENCH_STICK=10`: BOOST: DETECTED L1, the key it stands in for.
   - `wizard-summary` — `FARFALL_BENCH_STICK=36`: the map, the trigger, and the coverage line.
   - `keys-page` — `FARFALL_BENCH_MENU=1`: KEYS with the stick binds beside the keys.
+  - Post-merge, on the 48-column card: `stick-page-1.png` again (nine tabs,
+    ROW 1/15, the LEVER BRAKE / LEVER JUMP rows, the description footer).
+  - `landed-rest-1.png` + `.log` — `FARFALL_BENCH_LANDED=1` with the real
+    stick at rest: the found-line and ZERO stick movement lines — the
+    landing-strafe drift is gone (on a fresh plug-in the log would say
+    `stick: axis 4 rests at full deflection - ignored until it moves`).
+  - `cabin-stick-neutral-1.png` / `cabin-stick-demand-1.png` —
+    `FARFALL_BENCH_HEAD=0,-35`, the latter with
+    `FARFALL_BENCH_DEMAND=1,0.7,0.5,0.8`: the console column straight, then
+    leaned back-and-right, the grip twisted, the lever slid forward.
   Every wizard page and every STICK/KEYS row is also measured against the
   32×16 panel in tests (`every_wizard_page_fits_the_panel`,
   `the_stick_page_and_its_wizard_are_in_the_menu`,

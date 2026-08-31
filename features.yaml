@@ -403,7 +403,7 @@ features:
     state: tests-pass
     settings: [stick.throttle-brake, stick.throttle-jump, cockpit.stick]
     tests: ["crates/app/src/stick.rs::a_smooth_throttle_push_never_jumps", "crates/app/src/stick.rs::a_slam_jumps_for_two_seconds_and_releases", "crates/app/src/stick.rs::the_lever_hard_back_holds_the_air_brake", "crates/app/src/input.rs::the_stick_sums_with_the_keys_within_range", crates/render/tests/shader_validation.rs]
-    e2e: "planned: a capture of the console stick deflected under a forced demand, and Jay Jay's next flight for the gestures"
+    e2e: "farfall-captures/hotas/cabin-stick-neutral-1.png vs cabin-stick-demand-1.png (FARFALL_BENCH_DEMAND=1,0.7,0.5,0.8, HEAD=0,-35): the console column leaned back-and-right, grip twisted, lever slid - looked at; the gestures themselves await Jay Jay's next flight"
     notes: "the gestures read the lever's true position (post-invert, pre-deadzone) from the admitted sample, so the calibration gate keeps an untouched railed lever out of both zones"
 
   - id: holo3pp
