@@ -129,8 +129,8 @@ impl Shake {
         // Under the hyper field the whole deflection is scaled down and
         // its cap pulled in (a quarter of MAX_RAD at full field).
         let cap = MAX_RAD * (1.0 - 0.75 * self.damp);
-        let d = ((self.pos + n) * (1.0 - 0.55 * self.damp))
-            .clamp(Vec3::splat(-cap), Vec3::splat(cap));
+        let d =
+            ((self.pos + n) * (1.0 - 0.55 * self.damp)).clamp(Vec3::splat(-cap), Vec3::splat(cap));
         Quat::from_rotation_y(d.x) * Quat::from_rotation_x(d.y) * Quat::from_rotation_z(d.z)
     }
 
@@ -231,10 +231,7 @@ mod tests {
         assert!(held.rotation().angle_between(Quat::IDENTITY) > parked * 2.0);
         // Garbage never frees or NaNs the camera.
         held.hyper_damp(f32::NAN);
-        assert!(held
-            .rotation()
-            .angle_between(Quat::IDENTITY)
-            .is_finite());
+        assert!(held.rotation().angle_between(Quat::IDENTITY).is_finite());
     }
 
     #[test]

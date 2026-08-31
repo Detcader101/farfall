@@ -437,6 +437,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_NEBULA=1|off (benchmark only: a full sky of nebula at
 ///                           twice the stock glow, or off for a baseline)
+///   FARFALL_BENCH_DUST=k   (benchmark only: the DUST setting for this run,
+///                           0..2 — the motes and space dust on their own)
 ///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
 ///                           many seconds old AT THE CAPTURE — halfway
 ///                           through the bench — ahead and a little banked;
@@ -828,9 +830,9 @@ impl Gpu {
             ) {
                 let a = layout.anchor(i)?;
                 let dir = farfall_render::cabin::anchor_direction(a, ref_tan, cam.aspect);
-                if let Some(p) =
-                    farfall_render::cabin::Placement::in_dash(head, t, dir, tw.size, tw.tilt, tw.lean)
-                {
+                if let Some(p) = farfall_render::cabin::Placement::in_dash(
+                    head, t, dir, tw.size, tw.tilt, tw.lean,
+                ) {
                     return Some(p);
                 }
             }
@@ -853,7 +855,10 @@ impl Gpu {
             .jet(jet(Instrument::Speed))
             .warthog(warthog(Instrument::Speed))
             .placed(placed(Instrument::Speed))
-            .oriented(tweak(Instrument::Speed).lean, tweak(Instrument::Speed).rotate),
+            .oriented(
+                tweak(Instrument::Speed).lean,
+                tweak(Instrument::Speed).rotate,
+            ),
         );
         let (alt_anchor, alt_on) = slot_of(layout, look, cam, ref_tan, Instrument::Altitude);
         self.passes.alt_gauge.update(
@@ -4783,6 +4788,16 @@ impl App {
         }
         if game.frozen && std::env::var("FARFALL_BENCH_HOLO").is_ok() {
             game.settings.holo_view = true;
+        }
+        // The dust on its own: a bench row for the motes.
+        if let Ok(v) = std::env::var("FARFALL_BENCH_DUST") {
+            if game.frozen {
+                if let Ok(f) = v.trim().parse::<f32>() {
+                    if f.is_finite() {
+                        game.settings.dust = f.clamp(0.0, 2.0);
+                    }
+                }
+            }
         }
         // The nebula: "off" for a baseline, anything else a full sky of it —
         // the stock glow doubled, every cloud, spread wide — so a capture
