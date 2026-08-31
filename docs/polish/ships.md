@@ -95,9 +95,18 @@ Note on the first round of captures: two of them showed `HOLD ROCK 0 M` /
 ON`: key presses leaking into the bench window while Jay Jay was playing.
 Not a bug; re-captured.
 
-Gate: `cargo.exe fmt --all`, `clippy -D warnings`, `cargo.exe test
---workspace`, `cargo.exe check --target wasm32-unknown-unknown` — see the
-final report for the run.
+Perf (1920×1080 4×MSAA, vsync off, 8 s, `FARFALL_SPAWN=belt`):
+`perf-miners-full` (a tier-3 miner mining ahead + a far one, 12-lane pass,
+beam and specks) 2.35 ms avg frame / 425 fps; `perf-belt-full` (no miners)
+1.79 ms / 560 fps. The miners cost ~0.5 ms at 1080p — under 1.5 ms at
+2880×1800, well inside the 60 fps floor. The per-pixel cost is 12 bounding
+sphere tests plus a march only where a hull is; the beam and speck maths run
+only for lanes that have them and only test the rocks where they glow.
+
+Gate: `cargo.exe fmt --all --check`, `clippy --workspace --all-targets -D
+warnings`, `cargo.exe test --workspace`, `cargo.exe check --workspace
+--target wasm32-unknown-unknown` — all green at the final commit (the last
+run is quoted in the final report).
 
 Tests added (behaviour-named, `crates/app/src/miner.rs`):
 `a_miner_grows_through_its_tiers_as_its_haul_crosses_the_thresholds`,
