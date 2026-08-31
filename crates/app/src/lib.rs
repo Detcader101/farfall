@@ -658,7 +658,7 @@ impl Passes {
             holo: holo_pass(device, format, msaa),
             tracer: tracer_pass(device, world, msaa),
             debris: debris_pass(device, world, msaa),
-            dust: DustPass::new(device, world, msaa),
+            dust: DustPass::new(device, world, format, msaa),
             scar: scar_pass(device, world, msaa),
             sight: sight_pass(device, format, msaa),
             mimic: mimic_pass(device, world, msaa),
