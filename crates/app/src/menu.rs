@@ -434,6 +434,10 @@ enum Item {
     CockpitRes,
     FpsFloor,
     Sky,
+    /// The ground's live relief, the cloud deck, the night side's cities.
+    TerrainDetail,
+    Clouds,
+    CityLights,
     Flare,
     /// The picture: the post pass's bloom, exposure, curve and glass rim.
     Bloom,
@@ -543,6 +547,9 @@ impl Item {
             Item::CockpitRes => "CABIN DETAIL",
             Item::FpsFloor => "FPS FLOOR",
             Item::Sky => "SKY",
+            Item::TerrainDetail => "TERRAIN DETAIL",
+            Item::Clouds => "CLOUDS",
+            Item::CityLights => "CITY LIGHTS",
             Item::Flare => "LENS FLARE",
             Item::Bloom => "BLOOM",
             Item::Exposure => "EXPOSURE",
@@ -649,6 +656,9 @@ impl Item {
     fn fixed_description(self) -> &'static str {
         match self {
             Item::Msaa => "MULTISAMPLE ANTI-ALIASING: SMOOTHER EDGES FOR MORE GPU WORK.",
+            Item::TerrainDetail => "HOW MUCH RELIEF AND TEXTURE THE GROUND SHOWS AS YOU COME DOWN.",
+            Item::Clouds => "THE CLOUD DECK AND ITS SHADOWS ON THE GROUND.",
+            Item::CityLights => "CITY LIGHTS ON THE NIGHT SIDE.",
             Item::LandingAssist => "THE FLIGHT COMPUTER HOLDS YOU UPRIGHT ON THE WAY DOWN.",
             Item::LandingPad => "A RING ON THE GROUND AT THE PREDICTED TOUCHDOWN.",
             Item::Bloom => "HOW MUCH THE BRIGHT THINGS GLOW: THE SUN, THE FLASHES, THE BRIGHTEST STARS.",
@@ -739,6 +749,9 @@ impl Item {
         let one = |k: &str| vec![k.to_string()];
         match self {
             Item::Msaa => one("graphics.msaa"),
+            Item::TerrainDetail => one("graphics.terrain-detail"),
+            Item::Clouds => one("graphics.clouds"),
+            Item::CityLights => one("graphics.city-lights"),
             Item::LandingAssist => one("landing.assist"),
             Item::LandingPad => one("landing.pad"),
             Item::Bloom => one("graphics.bloom"),
@@ -854,6 +867,21 @@ impl Item {
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
             Item::Sky => format!("{:.0}%", s.sky * 100.0),
+            Item::TerrainDetail => format!("{:.0}%", s.terrain_detail * 100.0),
+            Item::Clouds => {
+                if s.clouds > 0.0 {
+                    format!("{:.0}%", s.clouds * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::CityLights => {
+                if s.city_lights > 0.0 {
+                    format!("{:.0}%", s.city_lights * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
             Item::Nebula => {
                 if s.nebula > 0.0 {
                     format!("{:.0}%", s.nebula * 100.0)
@@ -1129,6 +1157,9 @@ impl Menu {
                 Item::HoloRange,
                 Item::CockpitRes,
                 Item::Sky,
+                Item::TerrainDetail,
+                Item::Clouds,
+                Item::CityLights,
                 Item::Flare,
                 Item::Bloom,
                 Item::Exposure,
@@ -1967,6 +1998,9 @@ impl Menu {
                 s.sky = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::TerrainDetail => step_f32(&mut s.terrain_detail, forward, 0.25, 0.0, 2.0),
+            Item::Clouds => step_f32(&mut s.clouds, forward, 0.25, 0.0, 2.0),
+            Item::CityLights => step_f32(&mut s.city_lights, forward, 0.25, 0.0, 2.0),
             Item::Nebula => step_f32(&mut s.nebula, forward, 0.25, 0.0, 3.0),
             Item::NebulaSeed => {
                 // Wraps: there is always another nebula.
@@ -2497,6 +2531,28 @@ mod tests {
         );
         // The same card at the real display's size takes the same share.
         assert!((crate::panel::px_canopy(1800.0) - px).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_ground_knobs_step_to_off_and_hold_at_double() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        for _ in 0..5 {
+            m.adjust(Item::Clouds, false, &mut s);
+            m.adjust(Item::CityLights, false, &mut s);
+            m.adjust(Item::TerrainDetail, true, &mut s);
+        }
+        assert_eq!((s.clouds, s.city_lights, s.terrain_detail), (0.0, 0.0, 2.0));
+        assert_eq!(Item::Clouds.value(&s), "OFF");
+        assert_eq!(Item::CityLights.value(&s), "OFF");
+        assert_eq!(Item::TerrainDetail.value(&s), "200%");
+        assert_eq!(m.adjust(Item::Clouds, false, &mut s), MenuEvent::Nothing);
+        assert_eq!(
+            m.adjust(Item::TerrainDetail, true, &mut s),
+            MenuEvent::Nothing
+        );
+        m.adjust(Item::Clouds, true, &mut s);
+        assert_eq!(Item::Clouds.value(&s), "25%");
     }
 
     #[test]

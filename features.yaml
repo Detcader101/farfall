@@ -30,7 +30,7 @@ controls:
 
 # Every key ~/.farfall/settings.cfg may hold, by group (crates/app/src/settings.rs).
 settings_keys:
-  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.dust, graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread]
+  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.dust, graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread, graphics.terrain-detail, graphics.clouds, graphics.city-lights]
   camera: [camera.chase, holo.view, holo.size, cam.shake, cam.drive-shake, holo.range]
   cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
   ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
@@ -470,7 +470,7 @@ features:
     e2e: "FARFALL_BENCH_STRIKES=5 capture in space — rings spreading over the shell ahead"
 
   - id: nebula
-    name: "The nebula (nebula.wgsl) — coloured gas across the sky: a few soft clouds placed by a seed, each a domain-warped fbm of banks with ridged filaments lit as emission cores and dark dust lanes cut through, two hues drifting into each other; baked once into a 1024x512 equirect with mips whenever a knob moves and fetched once per pixel by the starfield, which also dims stars a little behind thick gas; NEBULA block on the GRAPHICS page: glow (0..300%, OFF), seed, scale, density, clouds, hue, hue 2, spread"
+    name: "The nebula (nebula.wgsl) — coloured gas across the sky: a few soft clouds placed by a seed, each a domain-warped fbm of banks with ridged filaments lit as emission cores and dark dust lanes cut through, two hues drifting into each other; baked once into a 4096x2048 equirect with mips whenever a knob moves (five ridged octaves of filaments, a lace of the finest threads, dust lanes with ragged edges) and fetched once per pixel by the starfield, which also dims stars a little behind thick gas; NEBULA block on the GRAPHICS page: glow (0..300%, OFF), seed, scale, density, clouds, hue, hue 2, spread"
     state: tests-pass
     tests: [crates/render/src/nebula.rs, crates/render/tests/shader_validation.rs, "crates/app/src/settings.rs::nebula_keys_clamp_and_wrap", "crates/app/src/menu.rs::the_nebula_knobs_step_clamp_and_wrap", "crates/app/tests/scenes.rs::the_nebula_colours_the_sky_and_goes_away_when_off"]
     settings: [graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread]
@@ -488,6 +488,40 @@ features:
     tests: ["crates/app/src/settings.rs::edits_round_trip", crates/app/src/menu.rs]
     settings: [graphics.sky]
     e2e: "captures looking up at 0/3/8/15/25 km — full blue at 3, pale at 8, stars through a dim blue at 15, black at 25"
+
+  - id: atmosphere-scatter
+    name: "The air is single scattering, marched (planet.wgsl): an exponential shell with a Rayleigh component whose tint is the preset's colour (blue sky, orange sunsets on EARTHLIKE; amber, green on the others) and a low Mie haze for the horizon glow and the Sun's forward scatter; eight samples per ray clustered at its lowest point, each lit through an analytic Chapman column that is zero in the planet's shadow. One integral gives the daytime dome and its thinning with altitude (the SKY contract: full at 3 km, gone by 25 over a 64 km world), the aerial perspective on the ground, the glowing limb seen from orbit thinning into space, and the terminator's twilight. SKY scales the in-scattered light."
+    state: tests-pass
+    tests: ["crates/render/src/planet.rs::the_dome_thins_with_altitude_as_the_sky_feature_promises", "crates/render/src/planet.rs::the_chapman_column_is_one_at_the_zenith_and_longest_at_the_horizon", crates/render/tests/shader_validation.rs]
+    settings: [graphics.sky]
+    e2e: "pending — benchmarks halted 2026-08-31 before the captures at 500/3000/12000/80000 m and the globe from 400 km could be taken (docs/polish/world.md lists the capture names to look at)"
+
+  - id: terrain-relief
+    name: "The ground has relief: over the baked continents a live fbm adds hills, ridged noise adds mountains where the continents are high, and the height a footprint away along two tangents gives a shaded normal — octaves are added only up to the pixel's footprint (one from orbit, six at a few hundred metres, the last fading in), so orbit stays cheap and the detail arrives on descent. Colour by height, slope and latitude: shallow turquoise water and detailed coasts, sand at the shore, green to arid lowland, grey rock on the steep and the high, snow above a line that falls toward the poles. TERRAIN DETAIL row (graphics.terrain-detail, 0 baked only .. 200% an octave finer)"
+    state: tests-pass
+    tests: ["crates/render/src/planet.rs::the_ground_knobs_are_carried_clamped_and_stock_by_default", "crates/app/src/settings.rs::the_ground_keys_clamp_and_default_to_stock", "crates/app/src/menu.rs::the_ground_knobs_step_to_off_and_hold_at_double", crates/render/tests/shader_validation.rs]
+    settings: [graphics.terrain-detail]
+    e2e: "pending — benchmarks halted 2026-08-31; FARFALL_BENCH_ALT=500/3000 spins and the 2880x1800 cost at 500 m are the evidence to take"
+
+  - id: cloud-detail
+    name: "The cloud deck gets live edge detail (four fbm-LOD octaves over the baked field, footprint-banded so it appears only overhead and low down), casts its shadows on the ground with that detail, and is lit through the air so it reddens at sunset. CLOUDS row (graphics.clouds, a multiplier on the preset's coverage: OFF clears the sky, 200% doubles it)"
+    state: tests-pass
+    tests: ["crates/app/src/settings.rs::the_ground_keys_clamp_and_default_to_stock", "crates/app/src/menu.rs::the_ground_knobs_step_to_off_and_hold_at_double"]
+    settings: [graphics.clouds]
+    e2e: "pending — benchmarks halted 2026-08-31"
+
+  - id: city-lights
+    name: "Night-side cities (the SPEC §6.6 direction): on habitable coastal lowland where the baked settlement field is high, a street grid with brighter avenues every fifth block and lit points on a finer lattice — sodium, white, the odd cyan or magenta — written as radiance past 1 for the bloom; from orbit, where a block is under a pixel, the same as its mean, a warm glow. CITY LIGHTS row (graphics.city-lights, OFF .. 200%)"
+    state: tests-pass
+    tests: ["crates/render/src/planet.rs::the_ground_knobs_are_carried_clamped_and_stock_by_default", "crates/app/src/settings.rs::the_ground_keys_clamp_and_default_to_stock", "crates/app/src/menu.rs::the_ground_knobs_step_to_off_and_hold_at_double"]
+    settings: [graphics.city-lights]
+    e2e: "pending — benchmarks halted 2026-08-31; the night-side low pass (FARFALL_BENCH_POS=-40060,-27160,42640 FARFALL_BENCH_SPIN=6) and the globe from +Z at 400 km are the evidence to take"
+
+  - id: ring-slab
+    name: "Uranus' ring is a slab the belt's own height (bodies.wgsl): every ray is charged for its run inside slab ∩ annulus, so from inside the belt the ring is a soft band of sun-lit dust on its own horizon, brightest at the grazing horizon and toward the Sun, and the far rocks appear on both sides of the plane. This replaces the mid-plane hit that, with the camera on the plane, drew the plane's great circle across the sky as a hard edge with a grey wash on one side — the baseline's 'nebula seam'"
+    state: complete
+    tests: ["crates/render/src/bodies.rs::from_inside_the_belt_the_haze_is_a_band_continuous_across_the_plane", "crates/render/src/bodies.rs::the_run_stops_at_the_holes_wall", "crates/render/src/bodies.rs::from_far_above_the_ring_only_rays_through_the_annulus_are_charged", "crates/render/src/bodies.rs::crossing_the_slabs_face_changes_nothing_suddenly"]
+    e2e: "farfall-captures/world/ring-belt-{1..12}.png (FARFALL_SPAWN=belt spin, 2026-08-31): no seam, a vertical band of haze where the plane is; ring-oblique-1 / ring-far-1 from 800 km and 2.5 Mm up the axis: the dark thread over Uranus unchanged"
 
   - id: crash
     name: "Ship loss on hard impact / Sun contact"

@@ -3579,6 +3579,11 @@ impl Game {
         )
         .with_occluders([rel(&moon), rel(&sun)])
         .with_sky(self.settings.sky)
+        .with_detail(
+            self.settings.terrain_detail,
+            self.settings.clouds,
+            self.settings.city_lights,
+        )
     }
 
     /// What the hull feels this frame: the wind in its own frame and the air

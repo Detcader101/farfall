@@ -69,7 +69,10 @@ pub fn hue_rgb(deg: f32) -> [f32; 3] {
     [r * s + (1.0 - s), g * s + (1.0 - s), b * s + (1.0 - s)]
 }
 
-const SIZE: (u32, u32) = (1024, 512);
+/// Equirect texels. Four thousand across is ~2.5 px per texel at 2880×1800
+/// with a 100° field: the filaments and lace the bake draws survive to the
+/// screen. Rgba16Float with mips, ~85 MB — spent once, never per frame.
+const SIZE: (u32, u32) = (4096, 2048);
 
 pub struct NebulaBake {
     bake_pipeline: wgpu::RenderPipeline,
