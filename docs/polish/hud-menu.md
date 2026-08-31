@@ -82,11 +82,25 @@ three lines. Stock anchor top-left `(-0.96, 0.94)`, clear of the arch.
 
 ## Verification
 
-_Pending: the bench harness was HALTED (locks/HALT) when this branch reached
-its first build. Captures to take in `farfall-captures/hud-menu/`:_
-`cockpit`, `card` (`FARFALL_BENCH_CARD=1`), `menu-0..7`
-(`FARFALL_BENCH_MENU=n`), `land` (`FARFALL_BENCH_LAND=1`), `mimic`
-(`FARFALL_BENCH_MIMIC=hostile`), `full` (`FARFALL_BENCH_FULL=1`).
+**Owed — no capture has been looked at yet.** The bench harness was HALTED
+(`locks/HALT`, Jay Jay's call) from this branch's first build to the end of
+the pass, so every feature below stays `tests-pass` in `features.yaml`, not
+`complete`. The batch to run when captures are allowed is
+`/tmp/.../scratchpad/captures.sh` (or by hand, into `farfall-captures/hud-menu/`):
+
+| capture | knobs | what to check |
+|---|---|---|
+| `cockpit` | — | readout top-left clear of the arch; mini map top-right; hologram between the speed dial and the G meter, not over either |
+| `card` | `FARFALL_BENCH_CARD=1` | the CONTROLS card centred, two columns, ivory footnote |
+| `menu-0..7` | `FARFALL_BENCH_MENU=n` | all eight tabs; 12 rows; scrollbar and ROW n/m on KEYS (1) and HELP (7); full key names; descriptions |
+| `land` | `FARFALL_BENCH_LAND=1` | the LAND line wrapped, nothing clipped |
+| `mimic` | `FARFALL_BENCH_MIMIC=hostile` | a red mark on the hologram at the mimic's bearing; the hail line wrapped |
+| `map`, `bay` | `FARFALL_BENCH_MAP=1`, `FARFALL_BENCH_SHIP=1` | the 32-column side panels still beside their pictures |
+| `full` | `FARFALL_BENCH_FULL=1 FARFALL_VSYNC=off FARFALL_BENCH_SECONDS=8` | the same proportions at the real display size; the perf line |
+
+Likely retunes once seen: `HOLO_ANCHOR_DEFAULT` and `holo_size` (placed by
+geometry, not by eye), `map::MINI_ANCHOR`, the readout backdrop alpha, and the
+scene-test regions in `crates/app/tests/scenes.rs`.
 
 Gate: `cargo test --workspace`, `fmt --check`, `clippy -D warnings`, wasm
 check — all green at every commit on the branch.
