@@ -395,7 +395,8 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_LANDED=1 (benchmark only: parked on the ground, LANDED,
 ///                           on its gear with the Sun up the sky)
 ///   FARFALL_BENCH_HELI=1   (benchmark only: parked LANDED beside the coast
-///                           pad's helicopter, the boarding offer up)
+///                           pad's helicopter, the boarding offer up;
+///                           =fly: boarded instead, hovering over the pad)
 ///   FARFALL_BENCH_DISEMBARK=1 (benchmark only: DISEMBARK pressed at once,
 ///                           for its answer on the readout)
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
@@ -1324,7 +1325,7 @@ struct Game {
 
 impl Game {
     fn new() -> Self {
-        let params = sim::presets::earth_compact();
+        let mut params = sim::presets::earth_compact();
         let altitude = std::env::var("FARFALL_BENCH_ALT")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
@@ -1379,13 +1380,15 @@ impl Game {
         }
         // FARFALL_BENCH_LANDED=1: parked on the ground, LANDED, for the
         // capture of the settled state and its readout.
+        let mut helis = heli::Helis::default();
         let bench_landed = std::env::var("FARFALL_BENCH_LANDED").is_ok();
         if bench_landed {
             state.ship = landing::parked(&params, 0);
         }
         // FARFALL_BENCH_HELI=1: parked beside the coast pad's helicopter,
         // LANDED, the pad and the boarding offer in frame.
-        if std::env::var("FARFALL_BENCH_HELI").is_ok() {
+        let bench_heli = std::env::var("FARFALL_BENCH_HELI").unwrap_or_default();
+        if !bench_heli.is_empty() {
             let heli_at = heli::parked(&params, 0);
             let mut pos = heli_at.pos_m + heli_at.orient * DVec3::new(26.0, 0.0, -4.0);
             let up = pos.normalize();
@@ -1401,6 +1404,16 @@ impl Game {
                 ang_vel_radps: DVec3::ZERO,
                 ground: sim::Ground::Landed { body: 0, up },
             };
+            if bench_heli == "fly" {
+                // =fly: boarded and hovering over the pad, for the
+                // capture of the helicopter as the pilot's own ship.
+                let mut h = helis.board(&params, 0, state.ship);
+                h.pos_m += heli::pad_up(0) * 16.0;
+                h.vel_mps = DVec3::ZERO;
+                h.ground = sim::Ground::Flight;
+                state.ship = h;
+                params.ship = heli::heli_params();
+            }
         }
         let now = Instant::now();
         Self {
@@ -1456,7 +1469,7 @@ impl Game {
             fire_held: false,
             mimics: mimic::Mimics::default(),
             haul: mimic::Haul::default(),
-            helis: heli::Helis::default(),
+            helis,
             fighter_ship: params.ship,
             miners: miner::Miners::default(),
             hold: hold::Hold::default(),
