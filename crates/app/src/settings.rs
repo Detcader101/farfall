@@ -225,6 +225,11 @@ pub struct Settings {
     /// SCALE is then the ceiling, never the floor.
     pub auto_scale: bool,
     pub vsync: bool,
+    /// RESUME: pick up where the last session left off (~/.farfall/world.cfg)
+    /// on start, and write it on every quit and every 30 s of sim time. Off:
+    /// the world file is neither read nor written, and NEW GAME still
+    /// forgets whatever is on disk.
+    pub resume: bool,
     pub bindings: Bindings,
     pub layout: Layout,
     /// Freelook: radians per mouse count, relative to the default.
@@ -416,6 +421,7 @@ impl Default for Settings {
             scale: 1.0,
             auto_scale: false,
             vsync: true,
+            resume: true,
             bindings: Bindings::default(),
             layout: Layout::default(),
             look_sensitivity: 1.0,
@@ -501,6 +507,22 @@ impl Default for Settings {
 }
 
 pub const MSAA_CHOICES: [u32; 4] = [1, 2, 4, 8];
+
+/// Where `.farfall` lives: `$HOME`, or on a machine where only Windows
+/// sets it (this one, from WSL — `HOME` is unset, `USERPROFILE` is not)
+/// `$USERPROFILE`. Neither set: no config directory at all, and every
+/// load/save/store is a harmless no-op (see the callers).
+pub(crate) fn config_dir() -> Option<PathBuf> {
+    config_dir_from(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
+}
+
+fn config_dir_from(
+    home: Option<std::ffi::OsString>,
+    userprofile: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    home.or(userprofile)
+        .map(|h| PathBuf::from(h).join(".farfall"))
+}
 
 /// Every key the settings file may hold, by name or by pattern (a `*`
 /// stands for one segment: an action's key, a dial's key). The menu's
@@ -606,6 +628,7 @@ pub const KEYS: &[&str] = &[
     "miners.growth",
     "landing.assist",
     "landing.pad",
+    "game.resume",
 ];
 
 /// Keys the file carries for itself, with no menu row to reach them.
@@ -655,7 +678,7 @@ pub fn home_dir() -> Option<PathBuf> {
 
 impl Settings {
     pub fn path() -> Option<PathBuf> {
-        home_dir().map(|h| h.join(".farfall").join("settings.cfg"))
+        config_dir().map(|d| d.join("settings.cfg"))
     }
 
     /// Is there a settings file (or saved web settings) at all? Its
@@ -767,6 +790,7 @@ impl Settings {
                 }
                 "graphics.vsync" => s.vsync = matches!(v, "on" | "true" | "1"),
                 "graphics.auto-scale" => s.auto_scale = matches!(v, "on" | "true" | "1"),
+                "game.resume" => s.resume = matches!(v, "on" | "true" | "1"),
                 "ui.safe-edge" => {
                     if let Ok(f) = v.trim_end_matches('%').parse::<f32>() {
                         s.layout.set_safe_edge(f / 100.0);
@@ -1353,6 +1377,10 @@ impl Settings {
             "graphics.auto-scale = {}\n",
             if self.auto_scale { "on" } else { "off" }
         ));
+        out.push_str(&format!(
+            "game.resume = {}\n",
+            if self.resume { "on" } else { "off" }
+        ));
         for a in Action::ALL {
             out.push_str(&format!(
                 "control.{} = {}\n",
@@ -1623,6 +1651,7 @@ mod tests {
             terrain_detail: 1.5,
             clouds: 0.5,
             city_lights: 2.0,
+            resume: false,
             ..Default::default()
         };
         s.bindings.bind(Action::PitchUp, KeyCode::KeyI);
@@ -1876,6 +1905,43 @@ mod tests {
             "graphics.msaa = 3\ngraphics.scale = nope\nui.gyro = on\nnonsense\ncontrol.pitch-up = ESCAPE\n",
         );
         assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn the_home_directory_falls_back_to_userprofile() {
+        use std::ffi::OsString;
+        assert_eq!(
+            config_dir_from(None, None),
+            None,
+            "neither set: no config at all"
+        );
+        assert_eq!(
+            config_dir_from(Some(OsString::from("/home/pilot")), None),
+            Some(PathBuf::from("/home/pilot/.farfall")),
+        );
+        assert_eq!(
+            config_dir_from(None, Some(OsString::from("C:\\Users\\pilot"))),
+            Some(PathBuf::from("C:\\Users\\pilot/.farfall")),
+            "HOME unset (this machine, from WSL): USERPROFILE is the fallback"
+        );
+        assert_eq!(
+            config_dir_from(
+                Some(OsString::from("/home/pilot")),
+                Some(OsString::from("C:\\Users\\pilot"))
+            ),
+            Some(PathBuf::from("/home/pilot/.farfall")),
+            "HOME wins when both are set"
+        );
+    }
+
+    #[test]
+    fn resume_defaults_on() {
+        assert!(
+            Settings::default().resume,
+            "the world persists unless told not to"
+        );
+        let s = Settings::parse("game.resume = off\n");
+        assert!(!s.resume);
     }
 
     #[test]

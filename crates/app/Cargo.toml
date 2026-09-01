@@ -37,4 +37,4 @@ wasm-bindgen-futures = "0.4"
 console_log = "1"
 console_error_panic_hook = "0.1"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "Storage", "CssStyleDeclaration", "Navigator", "Gamepad", "GamepadButton"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "Storage", "CssStyleDeclaration", "Navigator", "Gamepad", "GamepadButton", "Event", "EventTarget", "VisibilityState"] }

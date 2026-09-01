@@ -111,6 +111,8 @@ pub enum MenuEvent {
     LoadHud(usize),
     /// Run the stick wizard (the menu stays up underneath it).
     StickWizard,
+    /// Forget the saved world and stand back at the stock spawn.
+    NewGame,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -444,6 +446,8 @@ enum Item {
     Scale,
     AutoScale,
     Vsync,
+    Resume,
+    NewGame,
     Quit,
     Bind(Action),
     BindNamed(Named),
@@ -572,6 +576,8 @@ impl Item {
             Item::Scale => "RENDER SCALE",
             Item::AutoScale => "AUTO SCALE",
             Item::Vsync => "VSYNC",
+            Item::Resume => "RESUME",
+            Item::NewGame => "NEW GAME",
             Item::Quit => "QUIT GAME",
             Item::HoopSize => "HOOP SIZE",
             Item::LandingHoops => "LANDING HOOPS",
@@ -719,6 +725,8 @@ impl Item {
             Item::CockpitStick => {
                 "THE STICK AND LEVER ON THE CONSOLE MOVE WITH YOUR OWN DEMAND - HOTAS OR KEYS."
             }
+            Item::Resume => "WAKE WHERE YOU LEFT OFF: THE WORLD IS KEPT ON QUIT AND EVERY 30 S.",
+            Item::NewGame => "FORGET THE KEPT WORLD AND STAND AT THE STOCK ORBIT.",
             Item::Quit => "LEAVE THE GAME. EVERYTHING IS ALREADY SAVED.",
             Item::HoopSize => "HOW BIG THE PATH'S HOOPS ARE.",
             Item::LandingHoops => "HOW FAR APART THE HOOPS SIT IN LANDING MODE.",
@@ -913,8 +921,10 @@ impl Item {
             Item::PointerSize => one("ui.pointer-size"),
             Item::SafeEdge => one("ui.safe-edge"),
             Item::ControlsCard => one("ui.controls-card"),
+            Item::Resume => one("game.resume"),
             Item::Quit
             | Item::DialSelect
+            | Item::NewGame
             | Item::Engage
             | Item::HudSave
             | Item::HudLoad
@@ -931,6 +941,8 @@ impl Item {
             Item::Scale => format!("{:.0}%", s.scale * 100.0),
             Item::AutoScale => (if s.auto_scale { "ON" } else { "OFF" }).to_string(),
             Item::Vsync => (if s.vsync { "ON" } else { "OFF" }).to_string(),
+            Item::Resume => (if s.resume { "ON" } else { "OFF" }).to_string(),
+            Item::NewGame => String::new(),
             Item::Quit => String::new(),
             // The stick's bind beside the key's: `LSHIFT B1`; an axis
             // action shows the flight axis that drives it.
@@ -1283,6 +1295,8 @@ impl Menu {
                 Item::NebulaHue2,
                 Item::NebulaSpread,
                 Item::PointerSize,
+                Item::Resume,
+                Item::NewGame,
                 Item::Quit,
             ],
             Page::Controls => {
@@ -1648,6 +1662,10 @@ impl Menu {
                         MenuEvent::Nothing
                     }
                 }
+                Item::NewGame => {
+                    self.open = false;
+                    MenuEvent::NewGame
+                }
                 i if i.rebindable() => {
                     self.rebinding = true;
                     MenuEvent::Nothing
@@ -1692,6 +1710,10 @@ impl Menu {
             }
             Item::Vsync => {
                 s.vsync = !s.vsync;
+                MenuEvent::Changed(Change::Graphics)
+            }
+            Item::Resume => {
+                s.resume = !s.resume;
                 MenuEvent::Changed(Change::Graphics)
             }
             Item::Slot(i) => {
@@ -2302,9 +2324,12 @@ impl Menu {
                 s.controls_card = !s.controls_card;
                 MenuEvent::Changed(Change::Layout)
             }
-            Item::Quit | Item::Bind(_) | Item::BindNamed(_) | Item::Heading(_) | Item::Help(_) => {
-                MenuEvent::Nothing
-            }
+            Item::Quit
+            | Item::NewGame
+            | Item::Bind(_)
+            | Item::BindNamed(_)
+            | Item::Heading(_)
+            | Item::Help(_) => MenuEvent::Nothing,
         }
     }
 
