@@ -31,12 +31,15 @@ impl Hardpoint {
         }
     }
 
-    /// The muzzle's place, ship frame, metres.
+    /// The muzzle's place, ship frame, metres. The wing points sit at
+    /// the nose of the outrigger booms under the wings
+    /// (common.wgsl sd_fighter_exterior draws the boom), so a wing gun
+    /// is carried on the airframe instead of floating at its muzzle.
     pub fn pos(self) -> glam::DVec3 {
         match self {
             Hardpoint::Nose => glam::DVec3::new(0.0, -0.45, -4.2),
-            Hardpoint::WingL => glam::DVec3::new(-2.6, -0.35, -0.6),
-            Hardpoint::WingR => glam::DVec3::new(2.6, -0.35, -0.6),
+            Hardpoint::WingL => glam::DVec3::new(-2.6, -1.0, 0.9),
+            Hardpoint::WingR => glam::DVec3::new(2.6, -1.0, 0.9),
             Hardpoint::Belly => glam::DVec3::new(0.0, -1.95, 1.4),
         }
     }

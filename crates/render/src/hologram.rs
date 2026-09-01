@@ -198,7 +198,7 @@ mod tests {
             kind: 0,
         }; HARDPOINTS];
         mounts[1] = MountView {
-            at: Vec3::new(-2.6, -0.35, -0.6),
+            at: Vec3::new(-2.6, -1.0, 0.9),
             kind: 1,
         };
         HologramScene {
@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(u.fwd[3], 0.45, "tan half fov rides fwd.w");
         assert_eq!(u.pane, [0.1, -0.2, 0.3, 1.6]);
         assert_eq!(u.look, [0.52, 1.0, 120.0, 1.0]);
-        assert_eq!(u.pts[1], [-2.6, -0.35, -0.6, 1.0]);
+        assert_eq!(u.pts[1], [-2.6, -1.0, 0.9, 1.0]);
         assert_eq!(u.pts[0][3], 0.0);
         let mut s = scene();
         s.selected = None;

@@ -144,11 +144,11 @@ mod tests {
                 kind: 2,
             },
             MountView {
-                at: Vec3::new(-2.6, -0.35, -0.6),
+                at: Vec3::new(-2.6, -1.0, 0.9),
                 kind: 1,
             },
             MountView {
-                at: Vec3::new(2.6, -0.35, -0.6),
+                at: Vec3::new(2.6, -1.0, 0.9),
                 kind: 0,
             },
             MountView {
