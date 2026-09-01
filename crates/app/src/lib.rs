@@ -1628,7 +1628,10 @@ impl Game {
             centre: if mini {
                 let cam = self.camera(aspect);
                 let a = self.settings.layout.inset(self.mini_map_anchor());
-                on_glass(&self.look, &cam, self.ref_tan(), a)
+                let c = on_glass(&self.look, &cam, self.ref_tan(), a);
+                // An instrument, not scenery: a far-turned head must
+                // not swing the pane off the screen's edge.
+                map::mini_centre_on_screen(aspect, c, self.mini_map_half_h())
             } else {
                 self.settings.map_anchor
             },
