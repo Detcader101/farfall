@@ -219,6 +219,9 @@ pub const ARMS_SHARDS_MAX: u32 = 48;
 pub struct Settings {
     /// The file format's version (see [`SETTINGS_VERSION`]).
     pub version: u32,
+    /// This run never writes the file back: a bench's settings are its
+    /// own. Runtime state, not a key — parse and render never touch it.
+    pub ephemeral: bool,
     pub msaa: u32,
     pub scale: f32,
     /// The world's scale governs itself to hold the FPS floor: RENDER
@@ -412,6 +415,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             version: SETTINGS_VERSION,
+            ephemeral: false,
             msaa: 4,
             scale: 1.0,
             auto_scale: false,
@@ -672,7 +676,37 @@ impl Settings {
         Self::path().is_some_and(|p| p.is_file())
     }
 
-    /// Read the file, or defaults if there is none.
+    /// FARFALL_BENCH=1 (the same forms `Config::from_env` accepts): the
+    /// bench must be hermetic. The pilot's lived-in file once coloured a
+    /// whole devlog sweep with a 3-dial layout, and his plugged stick's
+    /// full-rail lever slam-fired the chaos drive mid-bench — a capture
+    /// has to look the same on any machine.
+    fn bench_mode() -> bool {
+        matches!(
+            std::env::var("FARFALL_BENCH").as_deref(),
+            Ok("1" | "on" | "true")
+        )
+    }
+
+    /// What this run starts from: the pilot's file — or, on a bench,
+    /// stock, whatever the file says. FARFALL_HUD and the FARFALL_BENCH_*
+    /// knobs still stage a look deliberately, on top of stock. The bench's
+    /// settings are ephemeral: nothing this run does is written back.
+    fn adopt(file: Option<&str>, bench: bool) -> Self {
+        if bench {
+            return Self {
+                ephemeral: true,
+                ..Self::default()
+            };
+        }
+        match file {
+            Some(text) => Self::parse(text),
+            None => Self::default(),
+        }
+    }
+
+    /// Read the file, or defaults if there is none. A bench run starts
+    /// from stock instead — the file is not even read.
     pub fn load() -> Self {
         #[cfg(target_arch = "wasm32")]
         {
@@ -682,12 +716,18 @@ impl Settings {
             };
         }
         #[allow(unreachable_code)]
+        if Self::bench_mode() {
+            log::info!(
+                "settings: bench run - stock settings; the file is neither read nor written"
+            );
+            return Self::with_env_hud(Self::adopt(None, true));
+        }
         let Some(path) = Self::path() else {
             return Self::with_env_hud(Self::default());
         };
         let s = match std::fs::read_to_string(&path) {
             Ok(text) => {
-                let s = Self::parse(&text);
+                let s = Self::adopt(Some(&text), false);
                 log::info!("settings: loaded {}", path.display());
                 s
             }
@@ -716,8 +756,12 @@ impl Settings {
     }
 
     /// Write the file. Failure is logged, never fatal: a read-only home
-    /// must not stop the game.
+    /// must not stop the game. An ephemeral run (the bench) never
+    /// writes: whatever a staged menu or knob changed dies with it.
     pub fn save(&self) {
+        if self.ephemeral {
+            return;
+        }
         #[cfg(target_arch = "wasm32")]
         {
             crate::web::storage_set("farfall.settings", &self.render());
@@ -1583,6 +1627,47 @@ mod tests {
     fn defaults_round_trip() {
         let s = Settings::default();
         assert_eq!(Settings::parse(&s.render()), s);
+    }
+
+    /// The incident this answers: since settings persist, every bench run
+    /// wore the pilot's lived-in cockpit (his 3-dial layout, his angles),
+    /// so a devlog sweep's captures were his, not the game's. A bench
+    /// starts from stock whatever the file says; the pilot's own run
+    /// still reads it.
+    #[test]
+    fn a_bench_run_with_a_lived_in_settings_file_wears_the_stock_cockpit() {
+        let lived_in =
+            "graphics.msaa = 8\nui.speed.tilt = 30\nui.fuel = off\ncam.drive-shake = 0.33\n";
+        let bench = Settings::adopt(Some(lived_in), true);
+        assert_eq!(
+            bench,
+            Settings {
+                ephemeral: true,
+                ..Settings::default()
+            }
+        );
+        let plain = Settings::adopt(Some(lived_in), false);
+        assert_eq!(plain.msaa, 8, "the pilot's run reads the file as ever");
+        assert!(!plain.ephemeral, "and saves as ever");
+        assert_ne!(plain, Settings::default());
+        assert!(
+            !Settings::default().ephemeral,
+            "stock itself is not ephemeral: only the bench's copy is"
+        );
+    }
+
+    /// ...and nothing a bench run does is ever written back: an
+    /// ephemeral Settings' save is a no-op, so the pilot's file reads
+    /// the same before and after — staged menu, knobs and all.
+    #[test]
+    fn an_ephemeral_settings_never_writes_the_file() {
+        let read = || Settings::path().and_then(|p| std::fs::read_to_string(p).ok());
+        let before = read();
+        let mut s = Settings::adopt(None, true);
+        s.msaa = 8;
+        s.controls_card = !s.controls_card;
+        s.save();
+        assert_eq!(before, read(), "the bench wrote the pilot's file");
     }
 
     #[test]
