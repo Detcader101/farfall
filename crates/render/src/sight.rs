@@ -210,8 +210,8 @@ mod tests {
             gimbal_rad: 0.6,
             clamped,
             barrels: [
-                Some(Vec3::new(-2.6, -0.35, -0.6)),
-                Some(Vec3::new(2.6, -0.35, -0.6)),
+                Some(Vec3::new(-2.6, -1.0, 0.9)),
+                Some(Vec3::new(2.6, -1.0, 0.9)),
                 None,
                 None,
             ],

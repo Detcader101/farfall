@@ -862,11 +862,11 @@ mod tests {
                 kind: 2,
             },
             MountView {
-                at: Vec3::new(-2.6, -0.35, -0.6),
+                at: Vec3::new(-2.6, -1.0, 0.9),
                 kind: 1,
             },
             MountView {
-                at: Vec3::new(2.6, -0.35, -0.6),
+                at: Vec3::new(2.6, -1.0, 0.9),
                 kind: 1,
             },
             MountView {
@@ -895,7 +895,7 @@ mod tests {
         let fit = stock_fit();
         let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &[], &fit);
         // Each hardpoint rides its lane: the place and the kind.
-        assert_eq!(still.hp[1], [-2.6, -0.35, -0.6, 1.0], "cannon on WING L");
+        assert_eq!(still.hp[1], [-2.6, -1.0, 0.9, 1.0], "cannon on WING L");
         assert_eq!(still.hp[0][3], 2.0, "the rail on the nose");
         assert_eq!(still.hp[3][3], 0.0, "the belly's bare pylon");
         // Refit in the bay: the uniforms change (a re-march at once), but

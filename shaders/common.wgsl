@@ -299,6 +299,17 @@ fn sd_fighter_exterior(q: vec3<f32>) -> f32 {
     let wq = vec3<f32>(wx - 3.2, q.y + 0.92, q.z - 2.3 - 0.62 * wx);
     let wing = sd_round_box(wq, vec3<f32>(2.6, 0.035, 1.15 - 0.12 * wx), 0.03);
     d = min(d, wing);
+    // The wing booms: a slender outrigger under each wing carrying the
+    // WING hardpoints (bay.rs Hardpoint::pos) — its nose out ahead where
+    // the gun is slung, its tail rising into the wing's underside, so a
+    // wing mount is carried on the airframe instead of floating at its
+    // muzzle. Every lane that draws the exterior (glass, chase, bay,
+    // mimics, holo3PP, map, ghost) gets it from here. It sits inside the
+    // aft bounding box (front z 0.81 > 0.8), so an open-cabin ray still
+    // pays only the box.
+    let bq = vec3<f32>(wx - 2.6, q.y, q.z);
+    let boom = sd_capsule_ab(bq, vec3<f32>(0.0, -1.0, 0.95), vec3<f32>(0.0, -0.93, 3.9), 0.14);
+    d = min(d, boom);
     // Engines: two nacelles under the tail, and the fin between them.
     let eq = vec3<f32>(abs(q.x) - 0.62, q.y + 0.85, q.z);
     let eng = sd_capsule_ab(eq, vec3<f32>(0.0, 0.0, 4.2), vec3<f32>(0.0, 0.0, 7.3), 0.44);
