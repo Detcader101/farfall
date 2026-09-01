@@ -29,7 +29,8 @@ struct Holo {
     // xyz: the nearest body's bearing in ship frame. w: sin of its
     // angular radius (0: none)
     body: vec4<f32>,
-    // xyz: the Sun's bearing in ship frame. w: shown (0 skips)
+    // xyz: the Sun's bearing in ship frame. w: shown and the craft in
+    // one — 0 skips, 1 the fighter, 2 the helicopter (SPEC §6.5b)
     sun: vec4<f32>,
     // x: engine effort 0..1, y: hyper field 0..1, z: socket height above
     // the dash (m), w: HOLO RANGE — the ship is drawn 1/w its size so
@@ -86,9 +87,11 @@ fn sd_octa(p: vec3<f32>, s: f32) -> f32 {
 // The miniature, in ship units about the hologram's centre. Returns
 // (distance, kind).
 fn holo_scene(q: vec3<f32>) -> vec2<f32> {
-    // The ship, shrunk by the range so the scene round it grows.
+    // The ship, shrunk by the range so the scene round it grows — the
+    // craft the pilot actually flies (sun.w - 1).
     let range = max(holo.misc.w, 0.25);
-    var best = vec2<f32>(sd_fighter_exterior(q * range) / range, KIND_SHIP);
+    let craft = clamp(holo.sun.w - 1.0, 0.0, 1.0);
+    var best = vec2<f32>(sd_craft_exterior(q * range, craft) / range, KIND_SHIP);
     // The velocity vector: a rod from the ship's heart, as long as the
     // speed's log, tipped with a bead.
     let len = SHIP_R * 1.15 * holo.vel.w;
@@ -207,7 +210,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let effort = holo.misc.x;
         let hyper = holo.misc.y;
         let drive = max(effort, hyper * 0.55);
-        if (drive > 0.01) {
+        // The helicopter's miniature has no nozzles for plumes either.
+        if (drive > 0.01 && holo.sun.w < 1.5) {
             let len = (2.0 + 9.0 * effort + 6.0 * hyper) * s;
             for (var i = 0; i < 2; i += 1) {
                 let x = select(-0.62, 0.62, i == 1);
@@ -259,7 +263,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 lit = cyan * (0.18 + 0.30 * diff + 0.75 * rim);
                 let qs = q * max(holo.misc.w, 0.25);
                 let eq = vec3<f32>(abs(qs.x) - 0.62, qs.y + 0.85, qs.z);
-                let nozzle = (1.0 - smoothstep(0.30, 0.75, length(eq.xy))) * smoothstep(6.9, 7.4, qs.z);
+                // The helicopter has no nozzles to light (sun.w > 1.5).
+                let nozzle = (1.0 - smoothstep(0.30, 0.75, length(eq.xy)))
+                    * smoothstep(6.9, 7.4, qs.z) * (1.0 - step(1.5, holo.sun.w));
                 lit += (amber * holo.misc.x * 1.6 + vec3<f32>(0.35, 0.65, 1.0) * holo.misc.y * 2.0) * nozzle;
             } else if (hit.y == KIND_VEL) {
                 lit = vec3<f32>(0.75, 1.0, 1.0) * (0.55 + 0.6 * rim);

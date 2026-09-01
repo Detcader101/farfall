@@ -23,6 +23,9 @@ pub struct Readout {
     /// The wind over the hull: speed (m/s) and the arrow it blows along,
     /// relative to the nose. None in vacuum or a calm.
     pub wind: Option<(f32, &'static str)>,
+    /// The collective's position 0..1 while a helicopter is flown —
+    /// a pad's, or the pilot's own craft. None in the fighter.
+    pub collective: Option<f32>,
     /// The status line, if there is one.
     pub status: Option<String>,
 }
@@ -61,6 +64,9 @@ pub fn lines(r: &Readout) -> Vec<String> {
     ];
     if let Some((mps, arrow)) = r.wind {
         out.push(format!("WIND {mps:.0} M/S {arrow}"));
+    }
+    if let Some(c) = r.collective {
+        out.push(format!("COLLECTIVE {:.0}%", (c.clamp(0.0, 1.0)) * 100.0));
     }
     // The flight computer's state lives on the HUD because the log is
     // invisible in fullscreen — X seemed broken when it was merely
@@ -103,8 +109,25 @@ mod tests {
             assist: true,
             bench: true,
             wind: None,
+            collective: None,
             status: status.map(str::to_string),
         }
+    }
+
+    /// Flying a helicopter, the collective's position reads under the
+    /// speed — the one number a hover hangs on.
+    #[test]
+    fn the_collective_reads_as_a_percentage_when_a_heli_is_flown() {
+        let mut r = readout(None);
+        r.collective = Some(0.61);
+        let lines = lines(&r);
+        assert_eq!(lines[5], "COLLECTIVE 61%");
+        assert!(lines.iter().all(|l| l.chars().count() <= COLS));
+        r.collective = None;
+        assert!(
+            !super::lines(&r).iter().any(|l| l.contains("COLLECTIVE")),
+            "the fighter's readout says nothing about a collective"
+        );
     }
 
     /// The wind line sits between VEL and FC, reads whole metres a

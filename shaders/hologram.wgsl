@@ -27,7 +27,8 @@ struct Hologram {
     // (lines per pane height), w: chosen hardpoint (-1 none)
     look: vec4<f32>,
     // x: time (s), y: surface height px, z: fullscreen (no pane frame,
-    // a deep backdrop), w: unused
+    // a deep backdrop), w: the craft on the turntable (0 fighter,
+    // 1 helicopter — SPEC §6.5b)
     misc: vec4<f32>,
     // xyz: each hardpoint, model frame (ship m); w: 0 empty, 1 cannon,
     // 2 rail
@@ -41,11 +42,11 @@ struct Hologram {
 const DIM_ALPHA: f32 = 0.74;
 const PANE_ALPHA: f32 = 0.93;
 const STEPS: u32 = 56u;
-// The box bounding the hull and anything mounted, ship m (wings to
-// ±6.2, the fin up to 1.6, the belly rail down to -2.4, nose -7.2 to
-// the nozzles +7.8).
-const BOUND_LO: vec3<f32> = vec3<f32>(-6.2, -2.4, -7.2);
-const BOUND_HI: vec3<f32> = vec3<f32>(6.2, 1.6, 7.8);
+// The box bounding either hull and anything mounted, ship m (the
+// fighter's wings to ±6.2 and nozzles +7.8; the helicopter's rotor to
+// ±6.3 and its fin up to 2.2, skids down to -2.6).
+const BOUND_LO: vec3<f32> = vec3<f32>(-6.4, -2.7, -7.2);
+const BOUND_HI: vec3<f32> = vec3<f32>(6.4, 2.2, 7.9);
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -76,7 +77,7 @@ fn hue_rgb(h: f32, s: f32) -> vec3<f32> {
 // hull's distance (a safe lower bound for the march) — which is most of
 // the screen, most of the march.
 fn sd_holo(q: vec3<f32>) -> f32 {
-    var d = sd_fighter_exterior(q);
+    var d = sd_craft_exterior(q, holo.misc.w);
     if (d > 4.5) {
         return d;
     }

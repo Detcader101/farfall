@@ -539,7 +539,9 @@ enum Item {
     /// The camera on the head: sway, tremor, jolts.
     CamShake,
     DriveShake,
-    /// The SHIP bay: what each hardpoint carries, and the hologram's look.
+    /// The SHIP bay: the airframe itself, what each hardpoint carries,
+    /// and the hologram's look.
+    Craft,
     Mount(Hardpoint),
     BayHue,
     BaySaturation,
@@ -665,6 +667,7 @@ impl Item {
             Item::SafeDist => "SAFE DISTANCE",
             Item::Engage => "ENGAGE DRIVE",
             Item::ControlsCard => "CARD AT START",
+            Item::Craft => "CRAFT",
             Item::Bind(_)
             | Item::BindNamed(_)
             | Item::Slot(_)
@@ -808,6 +811,7 @@ impl Item {
             Item::WarpLength => "HOW LONG THE JUMP RUNS: 100% IS EIGHT SECONDS.",
             Item::Engage => "CLOSE THE MENU AND FIRE THE WORMHOLE DRIVE AT THIS PLAN.",
             Item::ControlsCard => "SHOW THE CONTROLS CARD AT EVERY START. F1 SHOWS IT ANY TIME.",
+            Item::Craft => "YOUR AIRFRAME: FIGHTER OR HELICOPTER. SWAPPED AT ONCE.",
             Item::Bind(_)
             | Item::BindNamed(_)
             | Item::Slot(_)
@@ -925,6 +929,7 @@ impl Item {
             Item::ArmsSight => one("arms.sight"),
             Item::CamShake => one("cam.shake"),
             Item::DriveShake => one("cam.drive-shake"),
+            Item::Craft => one("ship.craft"),
             Item::Mount(h) => vec![format!("ship.hardpoint.{}", h as usize)],
             Item::BayHue => one("ship.holo-hue"),
             Item::BaySaturation => one("ship.holo-saturation"),
@@ -1189,6 +1194,7 @@ impl Item {
                     "OFF".to_string()
                 }
             }
+            Item::Craft => s.craft.name().to_string(),
             Item::Mount(h) => s.mounts[h as usize].name().to_string(),
             Item::BayHue => format!("{:.0} DEG", s.bay_hue * 360.0),
             Item::BaySaturation => format!("{:.0}%", s.bay_saturation * 100.0),
@@ -1420,7 +1426,8 @@ impl Menu {
             // The bay's own card is the fit alone (the hologram is the
             // picture); the menu's SHIP page adds the hologram's look.
             Page::Ship => {
-                let mut v: Vec<Item> = Hardpoint::ALL.iter().map(|&h| Item::Mount(h)).collect();
+                let mut v: Vec<Item> = vec![Item::Craft];
+                v.extend(Hardpoint::ALL.iter().map(|&h| Item::Mount(h)));
                 if !self.standalone {
                     v.extend([
                         Item::BayHue,
@@ -1516,6 +1523,23 @@ impl Menu {
         match self.items().get(self.cursor) {
             Some(Item::Mount(h)) => Some(*h as usize),
             _ => None,
+        }
+    }
+
+    /// The cursor sits on the CRAFT row (the bay card's top line).
+    pub fn bay_on_craft(&self) -> bool {
+        matches!(self.items().get(self.cursor), Some(Item::Craft))
+    }
+
+    /// Put the cursor on hardpoint `i`'s own row (the bay's clicks pick
+    /// slots by hardpoint, not by row — the CRAFT row sits above them).
+    pub fn select_mount(&mut self, i: usize) {
+        if let Some(at) = self
+            .items()
+            .iter()
+            .position(|it| matches!(it, Item::Mount(h) if *h as usize == i))
+        {
+            self.set_cursor(at);
         }
     }
 
@@ -2028,6 +2052,10 @@ impl Menu {
             }
             Item::HoldFace => {
                 s.hold_face = !s.hold_face;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::Craft => {
+                s.craft = s.craft.next(forward);
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Mount(h) => {
@@ -3275,16 +3303,28 @@ mod tests {
 
     #[test]
     fn the_ship_panel_fits_the_hardpoints_and_never_pages() {
+        use crate::bay::Craft;
         let mut s = Settings::default();
         let mut m = Menu::ship_panel();
         m.toggle();
         assert!(m.open && m.page == Page::Ship);
-        assert_eq!(m.items().len(), Hardpoint::ALL.len());
-        assert_eq!(m.bay_selected(), Some(0), "the nose first");
+        assert_eq!(m.items().len(), Hardpoint::ALL.len() + 1, "CRAFT + slots");
+        assert!(m.bay_on_craft(), "the CRAFT row first");
+        assert_eq!(m.bay_selected(), None, "no pip for the airframe row");
         // Tab is nothing here: the bay is one panel.
         m.key(KeyCode::Tab, &mut s);
         assert_eq!(m.page, Page::Ship);
-        // Round the nose's mounts: rail -> empty -> cannon.
+        // The airframe cycles right on its own row (SPEC §6.5b).
+        assert_eq!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::Changed(Change::Layout)
+        );
+        assert_eq!(s.craft, Craft::Helicopter);
+        m.key(KeyCode::ArrowLeft, &mut s);
+        assert_eq!(s.craft, Craft::Fighter);
+        // Down to the nose: rail -> empty -> cannon, and back.
+        m.key(KeyCode::ArrowDown, &mut s);
+        assert_eq!(m.bay_selected(), Some(0), "the nose under the craft");
         let before = s.mounts[0];
         assert_eq!(
             m.key(KeyCode::ArrowRight, &mut s),
@@ -3303,9 +3343,12 @@ mod tests {
         assert_eq!(m.click(0, 3, &mut s), MenuEvent::Nothing);
         assert_eq!(m.click(9, 0, &mut s), MenuEvent::Nothing);
         let before = s.mounts[1];
-        assert_eq!(m.click(2, 0, &mut s), MenuEvent::Changed(Change::Layout));
+        assert_eq!(m.click(3, 0, &mut s), MenuEvent::Changed(Change::Layout));
         assert_eq!(m.bay_selected(), Some(1));
         assert_ne!(s.mounts[1], before);
+        // The mount picker still lands on its hardpoint over the craft row.
+        m.select_mount(2);
+        assert_eq!(m.bay_selected(), Some(2));
         assert!(m.header().contains("SHIP BAY"));
         assert_eq!(m.cols(), PANEL_COLS);
         assert_eq!(m.key(KeyCode::Escape, &mut s), MenuEvent::Closed);

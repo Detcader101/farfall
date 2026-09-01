@@ -70,6 +70,12 @@ impl JetUniforms {
         self.glow[1] = 1.0;
         self
     }
+    /// The craft the pilot's own ship wears: 0 the fighter, 1 the
+    /// helicopter (common.wgsl sd_craft_exterior — SPEC §6.5b).
+    pub fn with_craft(mut self, craft: f32) -> Self {
+        self.glow[2] = craft;
+        self
+    }
     /// The attitude demands -1..1 on pitch, yaw and roll: each lights its
     /// RCS puff at the nose or a wingtip.
     pub fn with_rcs(mut self, pitch: f32, yaw: f32, roll: f32) -> Self {

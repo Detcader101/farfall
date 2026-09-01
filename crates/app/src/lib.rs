@@ -110,6 +110,8 @@ const STAR_DENSITY: f64 = 1.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum BayRow {
     Header,
+    /// The airframe row: FIGHTER or HELICOPTER (SPEC §6.5b).
+    Craft,
     Slot(usize),
     Option(usize, bay::Mount),
     Footer,
@@ -479,6 +481,8 @@ struct Readout {
     show: bool,
     /// The wind over the hull: speed (m/s) and its nose-relative arrow.
     wind: Option<(f32, &'static str)>,
+    /// The collective's position 0..1 while a helicopter is flown.
+    collective: Option<f64>,
     /// The LANDING lines (the approach in landing mode; DOWN or LANDED
     /// whenever the ship is on the ground), newline-separated — or the
     /// next system's line when the ground has nothing to say.
@@ -529,6 +533,9 @@ const MACH1_MPS: f64 = 340.0;
 ///                           (else at rest) and FARFALL_BENCH_LOOK=x,y,z
 ///   FARFALL_BENCH_ROLL=rad (benchmark only: rolled about the look axis)
 ///                           for where the nose points (else the planet)
+///   FARFALL_BENCH_CRAFT=heli (benchmark only: the pilot's own craft is the
+///                           FARFALL helicopter, as the SHIP page's CRAFT
+///                           row would choose — SPEC §6.5b)
 ///   FARFALL_BENCH_SHIP=1   (benchmark only: open the SHIP bay for a capture)
 ///   FARFALL_BENCH_FIT=n,l,r,b (benchmark only: the four hardpoints' mounts by
 ///                           key — empty, cannon, rail — in hardpoint order
@@ -1320,6 +1327,7 @@ impl Gpu {
             assist,
             show: show_readout,
             wind,
+            collective,
             landing,
         } = readout;
         let (altitude_m, speed_mps, assist, show_readout) =
@@ -1366,6 +1374,7 @@ impl Gpu {
                     assist,
                     bench: self.cfg.bench,
                     wind: *wind,
+                    collective: collective.map(|c| c as f32),
                     status: landing.clone(),
                 },
             );
@@ -2002,6 +2011,7 @@ impl Game {
             view: self.map_view,
             rings: self.settings.map_rings,
             grid: self.settings.map_grid,
+            craft: self.settings.craft.kind(),
             visibility: if self.map_open() || mini { 1.0 } else { 0.0 },
             aspect,
             time_s,
@@ -2198,7 +2208,7 @@ impl Game {
     /// The card's rows, top to bottom: the header, a row per hardpoint
     /// (its dropdown's options under the open one), the footer.
     fn bay_rows(&self) -> Vec<BayRow> {
-        let mut rows = vec![BayRow::Header];
+        let mut rows = vec![BayRow::Header, BayRow::Craft];
         for i in 0..bay::Hardpoint::ALL.len() {
             rows.push(BayRow::Slot(i));
             if self.bay_dropdown == Some(i) {
@@ -2219,6 +2229,18 @@ impl Game {
         for (row, r) in self.bay_rows().iter().enumerate() {
             let line = match *r {
                 BayRow::Header => "SHIP BAY                    FIT".to_string(),
+                BayRow::Craft => {
+                    let cur = if self.bay_panel.bay_on_craft() {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    format!(
+                        "{cur}{:<9}{:>18} \u{2194}",
+                        "CRAFT",
+                        self.settings.craft.name()
+                    )
+                }
                 BayRow::Slot(i) => {
                     let h = bay::Hardpoint::ALL[i];
                     let open = self.bay_dropdown == Some(i);
@@ -2260,8 +2282,15 @@ impl Game {
         if on_card && at[1] <= anchor[1] {
             let row = ((anchor[1] - at[1]) / (LINE as f32 * px)).floor() as usize;
             match rows.get(row).copied() {
+                Some(BayRow::Craft) => {
+                    self.bay_panel.set_cursor(0);
+                    self.settings.craft = self.settings.craft.next(true);
+                    self.settings.save();
+                    self.bay_dropdown = None;
+                    return true;
+                }
                 Some(BayRow::Slot(i)) => {
-                    self.bay_panel.set_cursor(i);
+                    self.bay_panel.select_mount(i);
                     self.bay_dropdown = if self.bay_dropdown == Some(i) {
                         None
                     } else {
@@ -2297,7 +2326,7 @@ impl Game {
             }
         }
         if let Some((i, _)) = best {
-            self.bay_panel.set_cursor(i);
+            self.bay_panel.select_mount(i);
             self.bay_dropdown = Some(i);
             return true;
         }
@@ -2346,6 +2375,7 @@ impl Game {
             height_px,
             fullscreen: true,
             callouts,
+            craft: self.settings.craft.kind(),
         })
     }
 
@@ -2490,20 +2520,27 @@ impl Game {
         };
         let fit = bay::fit_views(&self.settings.mounts);
         // The console's control column mirrors the live demand (HOTAS
-        // or keys): pitch, roll, yaw, throttle in the pilot's sense.
-        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets, &fit).with_stick(
-            if self.settings.cockpit_stick {
+        // or keys): pitch, roll, yaw, throttle in the pilot's sense — in
+        // a helicopter the lever is the collective, so it rides the
+        // routed demand (0 flat, full forward all the way up).
+        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets, &fit)
+            .with_craft(self.settings.craft.kind())
+            .with_stick(if self.settings.cockpit_stick {
                 let c = self.input.controls(self.assist);
+                let lever = if self.flying_heli() {
+                    heli::route_controls(c).thrust_body.y * 2.0 - 1.0
+                } else {
+                    -c.thrust_body.z
+                };
                 [
                     c.torque_body.x as f32,
                     -c.torque_body.z as f32,
                     -c.torque_body.y as f32,
-                    -c.thrust_body.z as f32,
+                    lever as f32,
                 ]
             } else {
                 [0.0; 4]
-            },
-        );
+            });
         let bu = cu.blit(look).with_time(cam.time_s);
         (cu, bu)
     }
@@ -3012,6 +3049,21 @@ impl Game {
         (rel - up * rel.dot(up)).length()
     }
 
+    /// The pilot's own ship parameters, by the SHIP page's CRAFT row
+    /// (SPEC §6.5b): the fighter's set, or the FARFALL helicopter's.
+    fn own_ship_params(&self) -> sim::ShipParams {
+        match self.settings.craft {
+            bay::Craft::Fighter => self.fighter_ship,
+            bay::Craft::Helicopter => heli::farfall_heli_params(),
+        }
+    }
+
+    /// Is the sim's ship a helicopter right now — a pad's, or the
+    /// pilot's own craft?
+    fn flying_heli(&self) -> bool {
+        self.helis.in_heli || self.settings.craft == bay::Craft::Helicopter
+    }
+
     /// DISEMBARK (I): leave the ship. Today the answer is "not yet" — the
     /// bind, the state and the readout are the hook for the walk-out.
     fn disembark(&mut self) {
@@ -3024,7 +3076,7 @@ impl Game {
                         let heli_state = self.state.ship;
                         if let Some(fighter) = self.helis.disembark(heli_state) {
                             self.state.ship = fighter;
-                            self.params.ship = self.fighter_ship;
+                            self.params.ship = self.own_ship_params();
                             self.input.release_all();
                             self.disembark_notice = Some(("BOARDED SHIP", Instant::now()));
                             log::info!("heli: back in the fighter");
@@ -3939,8 +3991,11 @@ impl Game {
         )
         .with_rcs(thrust[1], thrust[2], thrust[3])
         .with_body_fill(body_dir, body_sin * body_sin)
-        .with_fit(&bay::fit_views(&self.settings.mounts));
-        if pose.eye_ship == DVec3::ZERO {
+        .with_fit(&bay::fit_views(&self.settings.mounts))
+        .with_craft(self.settings.craft.kind());
+        // In the cockpit there is nothing to draw; in a pad's helicopter
+        // the heli pass draws the flown hull, not this one.
+        if pose.eye_ship == DVec3::ZERO || self.helis.in_heli {
             u
         } else {
             u.shown()
@@ -3994,6 +4049,7 @@ impl Game {
             hyper: self.hyper,
             range: self.settings.holo_range,
             marks,
+            craft: self.settings.craft.kind(),
         };
         let tan_half = (pose.cam.fov_y * 0.5).tan();
         let radius = self.settings.holo_size * HOLO_RADIUS_M;
@@ -4199,10 +4255,18 @@ impl Game {
             self.input.controls(self.assist)
         };
         controls.hyper_level = self.hyper_level();
+        // The CRAFT row is live: outside a pad's helicopter the sim flies
+        // whatever airframe the SHIP page chose (SPEC §6.5b).
+        if !self.helis.in_heli {
+            self.params.ship = self.own_ship_params();
+        }
         // In the helicopter the stick is the helicopter's: collective,
-        // cyclic, pedals - and the drives cannot come.
+        // cyclic, pedals - and a pad hull's drives cannot come, while
+        // the pilot's own FARFALL helicopter keeps its hyper field.
         if self.helis.in_heli {
             controls = heli::route_controls(controls);
+        } else if self.settings.craft == bay::Craft::Helicopter {
+            controls = heli::route_controls_farfall(controls);
         }
 
         // Fuelled by entropy: toward the slip the field shakes the ship —
@@ -5535,6 +5599,10 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_DESIGN").is_ok() {
             game.toggle_design();
         }
+        if game.frozen && std::env::var("FARFALL_BENCH_CRAFT").is_ok_and(|v| v.trim() == "heli") {
+            game.settings.craft = bay::Craft::Helicopter;
+            game.params.ship = game.own_ship_params();
+        }
         if game.frozen && std::env::var("FARFALL_BENCH_CHASE").is_ok() {
             game.settings.camera_chase = true;
         }
@@ -6702,6 +6770,11 @@ fn redraw(
                 || game.landing
                 || game.on_ground(),
             wind: game.wind_readout(),
+            collective: game.flying_heli().then(|| {
+                heli::route_controls(game.input.controls(game.assist))
+                    .thrust_body
+                    .y
+            }),
             landing: game
                 .landing_text()
                 .or_else(|| game.hold_text())

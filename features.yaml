@@ -46,7 +46,7 @@ settings_keys:
   hold: [hold.gain, hold.face]
   landing: [landing.assist, landing.pad]
   game: [game.resume]
-  ship: ["ship.hardpoint.<n>", ship.holo-hue, ship.holo-saturation, ship.holo-scanlines, ship.holo-size, ship.holo-spin, ui.panel-bay-card, ui.pointer-size]
+  ship: [ship.craft, "ship.hardpoint.<n>", ship.holo-hue, ship.holo-saturation, ship.holo-scanlines, ship.holo-size, ship.holo-spin, ui.panel-bay-card, ui.pointer-size]
 
 # The bench harness (documented in crates/app/src/main.rs). All FARFALL_BENCH_*
 # are benchmark-only; the capture is the presented frame.
@@ -796,6 +796,13 @@ features:
     settings: [world.helis]
     tests: ["crates/app/src/heli.rs::a_heli_hovers_when_collective_balances_gravity", "crates/app/src/heli.rs::boarding_swaps_params_and_disembark_swaps_back", "crates/app/src/heli.rs::the_drives_are_inert_in_the_helicopter", "crates/app/src/heli.rs::the_pads_are_where_the_hash_says_every_time", "crates/render/src/heli.rs::heli_lanes_hold_their_places", "crates/render/tests/shader_validation.rs"]
     e2e: "farfall-captures/helis/ heli-pad-{glass,head,chase}-1.png (the hull, rotors and painted pad from the glass and the chase rig, I BOARD HELI on the readout) and heli-fly-{chase,glass}-1.png (=fly: hovering at 18 m, the fighter waiting below)"
+
+  - id: heli-craft
+    name: "The pilot's own craft (SPEC §6.5b): the SHIP page's first row is CRAFT — FIGHTER or HELICOPTER (ship.craft, settings-persisted like the fit; the world file is untouched, the golden hash never moves) — and choosing HELICOPTER means your own ship IS a FARFALL-native helicopter from spawn: our own sd_heli_exterior in the shader prelude (main-rotor disc, ring tail, stub wings carrying the same four hardpoints, nose probe), selected by one craft flag in the cabin, the chase/jet view, the SHIP bay hologram, the holo3PP and the map dart (mimics, miners, the ghost and the cold-war pad hulls are untouched); the flight model is the pad helis' collective/cyclic/anti-torque routing but the drives come with your own ship — hyper and warp work, boost does not; W/S and the stick's throttle are the collective (REFORGER HELI profile flies it as-is), the console's lever and a readout line show COLLECTIVE nn%; FARFALL_BENCH_CRAFT=heli stages it for a capture"
+    state: in-progress
+    settings: [ship.craft]
+    tests: ["crates/app/src/bay.rs::the_craft_cycles_and_names_its_keys", "crates/app/src/heli.rs::the_farfall_heli_keeps_its_hyper_drive_but_not_boost", "crates/app/src/heli.rs::the_farfall_heli_hovers_too", "crates/app/src/settings.rs::the_craft_choice_survives_the_file", "crates/render/tests/shader_validation.rs"]
+    e2e: "farfall-captures/heli-ship/ craft-{bay,chase,glass,holo3pp,hover,map}-1.png"
 
   - id: reforger-stick
     name: "The STICK page speaks Reforger: a PROFILE row whose ENTER wears the next shipped map — FARFALL FIGHTER or REFORGER HELI (the hotas-reforger wizard's pilot profile as FARFALL jobs: cyclic/twist/lever axes, absolute bottom-zero collective with no lever gestures, no deadzone and a linear curve, the rocker free, buttons on the pilot jobs FARFALL shares — arrows do nothing so a wizard-built map cannot fall to a stray arrow, a touched map shows CUSTOM) — and EXPORT REFORGER CFG, whose ENTER writes a real Joystick_TFlightHotas4_0.conf (crates/app/src/reforger.rs: Reforger's exact grammar — UTF-8 no BOM, CRLF, one-space indents, 7CB1F0A54D-prefixed ids in emission order, byte-matched against the wizard's accepted output) into ~/.farfall/reforger/; FARFALL_BENCH_PROFILE=reforger wears the profile for a capture"
