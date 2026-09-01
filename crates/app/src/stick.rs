@@ -358,6 +358,62 @@ impl StickMap {
         }
     }
 
+    /// The Reforger helicopter-pilot map, for practising on FARFALL's
+    /// helis with the hands Reforger expects: the same axes as
+    /// [`Self::hotas4`] (cyclic on the stick, anti-torque on the twist,
+    /// collective on the lever) but the lever is absolute — BOTTOM zero,
+    /// no reverse half, no brake or jump gestures — and the shaping is
+    /// Reforger's, which has no deadzone and no curve. The rocker is
+    /// free, as the pilot profile deliberately leaves it. Buttons carry
+    /// the pilot profile's jobs where FARFALL has the same job: trigger
+    /// fires, L3 switches the camera, FACE L holds the hover (assist for
+    /// autohover), FACE D brakes, FACE R freelooks, FACE U is the select
+    /// action (board and disembark), R2 the next weapon, BASE L the map.
+    pub fn reforger_heli() -> Self {
+        let mut buttons = [None; Named::COUNT];
+        for (n, b) in [
+            (Named::Chase, 3),
+            (Named::Assist, 4),
+            (Named::Brake, 5),
+            (Named::LookLock, 6),
+            (Named::Disembark, 7),
+            (Named::NextWeapon, 8),
+            (Named::Map, 10),
+        ] {
+            buttons[n as usize] = Some(b);
+        }
+        Self {
+            enabled: true,
+            axes: [
+                AxisMap::at(1, false),
+                AxisMap::at(5, false),
+                AxisMap::at(0, false),
+                AxisMap::at(2, true),
+                AxisMap::NONE,
+                AxisMap::NONE,
+            ],
+            deadzone: 0.0,
+            curve: 1.0,
+            throttle_zero: ThrottleZero::Bottom,
+            fire: Some(0),
+            buttons,
+            layout: Layout::Hotas4,
+            throttle_brake: false,
+            throttle_jump: false,
+        }
+    }
+
+    /// Which shipped profile this map is, if it is one unchanged.
+    pub fn profile_name(&self) -> Option<&'static str> {
+        if *self == Self::hotas4() {
+            Some("FARFALL FIGHTER")
+        } else if *self == Self::reforger_heli() {
+            Some("REFORGER HELI")
+        } else {
+            None
+        }
+    }
+
     /// The throttle's raw demand after invert, before the deadzone — the
     /// gestures read the lever's true position, not the shaped output.
     /// `None` when no throttle axis is mapped (or the reader is holding
@@ -737,6 +793,10 @@ pub enum StickItem {
     Device,
     Enabled,
     Wizard,
+    /// ENTER wears the next shipped map: the fighter or the Reforger
+    /// helicopter pilot. Arrows do nothing — an arrow across the row
+    /// must not throw a wizard-built map away.
+    Profile,
     Axis(Flight),
     Deadzone,
     Curve,
@@ -746,11 +806,19 @@ pub enum StickItem {
     /// The lever slammed forward fires the chaos drive for two seconds.
     ThrottleJump,
     Fire,
+    /// ENTER writes Reforger's Joystick_TFlightHotas4_0.conf (the app
+    /// owns the disk, like SAVE HUD).
+    Export,
 }
 
 impl StickItem {
     pub fn all() -> Vec<StickItem> {
-        let mut v = vec![StickItem::Device, StickItem::Enabled, StickItem::Wizard];
+        let mut v = vec![
+            StickItem::Device,
+            StickItem::Enabled,
+            StickItem::Wizard,
+            StickItem::Profile,
+        ];
         v.extend(Flight::ALL.iter().map(|&f| StickItem::Axis(f)));
         v.extend([
             StickItem::Deadzone,
@@ -759,6 +827,7 @@ impl StickItem {
             StickItem::ThrottleBrake,
             StickItem::ThrottleJump,
             StickItem::Fire,
+            StickItem::Export,
         ]);
         v
     }
@@ -768,6 +837,7 @@ impl StickItem {
             StickItem::Device => "DEVICE",
             StickItem::Enabled => "STICK",
             StickItem::Wizard => "SETUP WIZARD",
+            StickItem::Profile => "PROFILE",
             StickItem::Axis(f) => f.name(),
             StickItem::Deadzone => "DEADZONE",
             StickItem::Curve => "CURVE",
@@ -775,6 +845,7 @@ impl StickItem {
             StickItem::ThrottleBrake => "LEVER BRAKE",
             StickItem::ThrottleJump => "LEVER JUMP",
             StickItem::Fire => "TRIGGER",
+            StickItem::Export => "EXPORT REFORGER CFG",
         }
     }
 
@@ -793,6 +864,7 @@ impl StickItem {
             },
             StickItem::Enabled => if m.enabled { "ON" } else { "OFF" }.to_string(),
             StickItem::Wizard => "ENTER: RUN".to_string(),
+            StickItem::Profile => m.profile_name().unwrap_or("CUSTOM").to_string(),
             StickItem::Axis(f) => m.axis(f).label(m),
             StickItem::Deadzone => format!("{:.0}%", m.deadzone * 100.0),
             StickItem::Curve => format!("{:.2}", m.curve),
@@ -804,6 +876,7 @@ impl StickItem {
             StickItem::ThrottleBrake => if m.throttle_brake { "ON" } else { "OFF" }.to_string(),
             StickItem::ThrottleJump => if m.throttle_jump { "ON" } else { "OFF" }.to_string(),
             StickItem::Fire => m.button_name(m.fire),
+            StickItem::Export => "ENTER: WRITE".to_string(),
         }
     }
 
@@ -816,6 +889,9 @@ impl StickItem {
             StickItem::Enabled => "THE STICK FLIES THE SHIP, OR IS IGNORED ENTIRELY.",
             StickItem::Wizard => {
                 "WALK THE STICK CONTROL BY CONTROL: MOVE WHAT EACH STEP ASKS FOR AND IT IS LEARNED."
+            }
+            StickItem::Profile => {
+                "ENTER WEARS THE NEXT SHIPPED MAP: THE FARFALL FIGHTER, OR REFORGER'S HELICOPTER PILOT."
             }
             StickItem::Axis(Flight::Pitch) => {
                 "WHICH STICK AXIS PITCHES THE NOSE. ENTER FLIPS ITS DIRECTION."
@@ -849,6 +925,9 @@ impl StickItem {
                 "SLAM THE LEVER FORWARD: THE CHAOS DRIVE FIRES FOR TWO SECONDS. A SMOOTH PUSH NEVER DOES."
             }
             StickItem::Fire => "THE STICK BUTTON THAT FIRES THE GUNS.",
+            StickItem::Export => {
+                "WRITE REFORGER'S HELICOPTER-PILOT JOYSTICK CONF INTO ~/.FARFALL/REFORGER/."
+            }
         }
     }
 
@@ -860,7 +939,7 @@ impl StickItem {
             // DEVICE row is where that state shows.
             StickItem::Device => vec!["stick.layout".to_string()],
             StickItem::Enabled => vec!["stick.enabled".to_string()],
-            StickItem::Wizard => Vec::new(),
+            StickItem::Wizard | StickItem::Profile | StickItem::Export => Vec::new(),
             StickItem::Axis(f) => vec![format!("stick.{}", f.key())],
             StickItem::Deadzone => vec!["stick.deadzone".to_string()],
             StickItem::Curve => vec!["stick.curve".to_string()],
@@ -875,7 +954,19 @@ impl StickItem {
     /// True if anything changed.
     pub fn adjust(self, m: &mut StickMap, forward: bool, enter: bool) -> bool {
         match self {
-            StickItem::Device | StickItem::Wizard => false,
+            StickItem::Device | StickItem::Wizard | StickItem::Export => false,
+            StickItem::Profile => {
+                if !enter {
+                    return false;
+                }
+                *m = match m.profile_name() {
+                    Some("REFORGER HELI") => StickMap::hotas4(),
+                    // A custom map's ENTER goes to the profile the row
+                    // exists for; ENTER again brings the fighter back.
+                    _ => StickMap::reforger_heli(),
+                };
+                true
+            }
             StickItem::Enabled => {
                 m.enabled = !m.enabled;
                 true
@@ -2022,6 +2113,47 @@ mod tests {
         );
         assert_eq!(m2.deadzone, StickMap::hotas4().deadzone);
         assert_eq!(m2.fire, None, "an out-of-range button is no button");
+    }
+
+    #[test]
+    fn the_profile_row_wears_the_shipped_maps_on_enter_alone() {
+        let mut m = StickMap::hotas4();
+        assert_eq!(m.profile_name(), Some("FARFALL FIGHTER"));
+        assert!(
+            !StickItem::Profile.adjust(&mut m, true, false),
+            "an arrow across the row must not throw the map away"
+        );
+        assert!(StickItem::Profile.adjust(&mut m, true, true));
+        assert_eq!(m.profile_name(), Some("REFORGER HELI"));
+        // Reforger's lever is absolute collective with no gestures, its
+        // shaping is linear with no dead band, and the rocker is free.
+        assert_eq!(m.throttle_zero, ThrottleZero::Bottom);
+        assert_eq!((m.deadzone, m.curve), (0.0, 1.0));
+        assert!(!m.throttle_brake && !m.throttle_jump);
+        assert_eq!(m.axis(Flight::Strafe), AxisMap::NONE);
+        assert_eq!(
+            m.buttons[Named::Disembark as usize],
+            Some(7),
+            "FACE U boards"
+        );
+        // ENTER again brings the fighter back; a custom map goes to the
+        // Reforger profile first.
+        assert!(StickItem::Profile.adjust(&mut m, true, true));
+        assert_eq!(m.profile_name(), Some("FARFALL FIGHTER"));
+        m.deadzone = 0.3;
+        assert_eq!(m.profile_name(), None, "a touched map is CUSTOM");
+        assert!(StickItem::Profile.adjust(&mut m, true, true));
+        assert_eq!(m.profile_name(), Some("REFORGER HELI"));
+        // And the worn profile survives the settings file.
+        let mut text = String::new();
+        m.render(&mut text);
+        let mut back = StickMap::hotas4();
+        for line in text.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                back.parse_key(k.trim(), v.trim());
+            }
+        }
+        assert_eq!(back.profile_name(), Some("REFORGER HELI"));
     }
 
     #[test]

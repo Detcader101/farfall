@@ -26,6 +26,7 @@ mod mimic;
 mod miner;
 mod panel;
 mod readout;
+mod reforger;
 mod settings;
 mod shake;
 mod stick;
@@ -179,6 +180,10 @@ fn apply_menu_event(
         }
         // The wizard sits over the open menu: same pause, same panel.
         MenuEvent::StickWizard => game.wizard = Some(stick::Wizard::new()),
+        MenuEvent::ExportReforger => match reforger::save() {
+            Some(path) => log::info!("reforger: wrote {}", path.display()),
+            None => log::warn!("reforger: nowhere to write (no home directory)"),
+        },
         MenuEvent::Closed | MenuEvent::Nothing => {}
     }
 }
@@ -447,6 +452,9 @@ const MACH1_MPS: f64 = 340.0;
 ///                           0..8; 2 is the STICK page)
 ///   FARFALL_BENCH_STICK=n  (benchmark only: the stick wizard open at step n
 ///                           (0-based), with a stand-in detection on it)
+///   FARFALL_BENCH_PROFILE=reforger (benchmark only: the stick wears the
+///                           Reforger helicopter-pilot profile for the run,
+///                           for the PROFILE row's worn value)
 ///   FARFALL_BENCH_DEMAND=p,r,y,t (benchmark only: a parked pitch/roll/yaw/
 ///                           throttle demand, for the console stick's mirror)
 ///   FARFALL_BENCH_CARD=1   (benchmark only: the CONTROLS card up, as on the first run)
@@ -5454,6 +5462,19 @@ impl App {
             game.menu.toggle();
             for _ in 0..pages {
                 game.menu.key(KeyCode::Tab, &mut game.settings);
+            }
+        }
+        // FARFALL_BENCH_PROFILE=reforger: the stick wears the Reforger
+        // helicopter-pilot map, and an open menu walks its cursor to the
+        // PROFILE row so the worn value and its line show.
+        if std::env::var("FARFALL_BENCH_PROFILE").is_ok_and(|v| v.trim() == "reforger")
+            && game.frozen
+        {
+            game.settings.stick = stick::StickMap::reforger_heli();
+            if game.menu.open {
+                for _ in 0..3 {
+                    game.menu.key(KeyCode::ArrowDown, &mut game.settings);
+                }
             }
         }
         if let Some(step) = std::env::var("FARFALL_BENCH_STICK")

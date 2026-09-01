@@ -111,6 +111,9 @@ pub enum MenuEvent {
     LoadHud(usize),
     /// Run the stick wizard (the menu stays up underneath it).
     StickWizard,
+    /// Write Reforger's helicopter-pilot joystick conf (the app owns
+    /// the disk).
+    ExportReforger,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1647,6 +1650,7 @@ impl Menu {
                 }
                 Item::HudSave => MenuEvent::SaveHud,
                 Item::Stick(StickItem::Wizard) => MenuEvent::StickWizard,
+                Item::Stick(StickItem::Export) => MenuEvent::ExportReforger,
                 Item::Stick(i) => {
                     if i.adjust(&mut settings.stick, true, true) {
                         MenuEvent::Changed(Change::Bindings)
@@ -3344,6 +3348,43 @@ mod tests {
             MenuEvent::LoadHud(_)
         ));
         assert_eq!(s, Settings::default(), "the menu itself changes nothing");
+    }
+
+    /// The STICK page wears a shipped profile on Enter (arrows must not
+    /// throw a wizard-built map away) and EXPORT REFORGER CFG asks the
+    /// app to write the conf. The menu touches no disk itself.
+    #[test]
+    fn the_stick_page_wears_profiles_and_exports_the_reforger_conf() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.open_on(Page::Stick);
+        let at = m
+            .items()
+            .iter()
+            .position(|&i| i == Item::Stick(StickItem::Profile))
+            .unwrap();
+        m.set_cursor(at);
+        assert_eq!(
+            m.value_of(Item::Stick(StickItem::Profile), &s),
+            "FARFALL FIGHTER"
+        );
+        assert_eq!(m.key(KeyCode::ArrowRight, &mut s), MenuEvent::Nothing);
+        assert_eq!(
+            m.key(KeyCode::Enter, &mut s),
+            MenuEvent::Changed(Change::Bindings)
+        );
+        assert_eq!(
+            m.value_of(Item::Stick(StickItem::Profile), &s),
+            "REFORGER HELI"
+        );
+        let at = m
+            .items()
+            .iter()
+            .position(|&i| i == Item::Stick(StickItem::Export))
+            .unwrap();
+        m.set_cursor(at);
+        assert_eq!(m.key(KeyCode::ArrowRight, &mut s), MenuEvent::Nothing);
+        assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::ExportReforger);
     }
 
     #[test]
