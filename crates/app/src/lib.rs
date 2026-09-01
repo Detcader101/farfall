@@ -2391,21 +2391,26 @@ impl Game {
             .filter_map(|i| self.settings.layout.anchor(i).map(|a| (i, a)))
             .map(|(i, a)| {
                 let tw = self.dial_tweak(i);
+                let dir = anchor_direction(a, ref_tan, cam.aspect);
                 farfall_render::cabin::Socket {
-                    dir: anchor_direction(a, ref_tan, cam.aspect),
+                    dir,
                     // The gyro's JET and WARTHOG are the ball itself.
-                    style: if i == Instrument::Gyro
-                        && matches!(
-                            tw.style,
-                            settings::GaugeStyle::Jet | settings::GaugeStyle::Warthog
-                        ) {
-                        3
-                    } else if tw.style == settings::GaugeStyle::Warthog {
-                        // The Warthog's face sits on the DIAL's plate.
-                        2
-                    } else {
-                        tw.style.index()
-                    },
+                    style: farfall_render::cabin::seated_style(
+                        if i == Instrument::Gyro
+                            && matches!(
+                                tw.style,
+                                settings::GaugeStyle::Jet | settings::GaugeStyle::Warthog
+                            )
+                        {
+                            3
+                        } else if tw.style == settings::GaugeStyle::Warthog {
+                            // The Warthog's face sits on the DIAL's plate.
+                            2
+                        } else {
+                            tw.style.index()
+                        },
+                        dir,
+                    ),
                     size: tw.size,
                     tilt: tw.tilt,
                     lean: tw.lean,
