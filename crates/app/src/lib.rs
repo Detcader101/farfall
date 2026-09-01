@@ -2209,14 +2209,21 @@ impl Game {
     }
 
     /// Where the text block goes on the SCREEN this frame: the pause
-    /// panels sit on the screen and follow the head; the readout and the
-    /// design card are on the glass, re-projected like a dial.
+    /// panels sit on the screen and follow the head; the design card is
+    /// on the glass, re-projected like a dial, beside the element it
+    /// describes. The readout is the pilot's diagnostics, not glassware:
+    /// it keeps its screen place however the head is turned (glass-fixed
+    /// it drifted mid-sky through a spinning bench capture) — projected
+    /// with a centred head, so its saved anchor still means the same
+    /// spot and it still breathes with the field of view.
     fn text_screen_anchor(&self, cam: &CameraFrame, px: f32) -> [f32; 2] {
         let a = self.text_anchor(cam.aspect, px);
         if self.menu.open || self.pane_open() || self.card_open {
             a
-        } else {
+        } else if self.design {
             on_glass(&self.look, cam, self.ref_tan(), a)
+        } else {
+            on_glass(&Look::new(), cam, self.ref_tan(), a)
         }
     }
 
@@ -6523,6 +6530,23 @@ mod tests {
     use glam::{DQuat, DVec3};
     use input::{Action, InputState};
     use winit::keyboard::KeyCode;
+
+    /// The readout is diagnostics, not glassware: turning the head must
+    /// not move it (it once drifted mid-sky through a spinning bench
+    /// capture). The design card still rides the glass with the look.
+    #[test]
+    fn the_readout_keeps_its_screen_place_through_a_head_turn() {
+        let mut game = Game::new();
+        let cam = game.camera(1.5);
+        game.look.aim(0.0, 0.0);
+        let centred = game.text_screen_anchor(&cam, 0.002);
+        game.look.aim(1.2, -0.4);
+        let turned = game.text_screen_anchor(&game.camera(1.5), 0.002);
+        assert_eq!(centred, turned, "the readout moved with the head");
+        game.design = true;
+        let designing = game.text_screen_anchor(&game.camera(1.5), 0.002);
+        assert_ne!(centred, designing, "the design card is glass, and swings");
+    }
 
     /// The gyro ball is a real sphere cast in the dash: near the rim of
     /// a far-turned view its projection blows out and once filled a
