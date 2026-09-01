@@ -285,6 +285,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         albedo = mix(albedo, vec3<f32>(0.05, 0.05, 0.06), steel * 0.85);
         let on_disc = step(abs(p.y - 1.95), 0.08) * step(1.0, length(p.xz - vec2<f32>(0.0, 0.6)));
         albedo = mix(albedo, vec3<f32>(0.03, 0.03, 0.035), on_disc);
+        // And its nose bubble is glass all the way round (sd_heli_cut).
+        let bubble = sd_ellipsoid_c(p, vec3<f32>(0.0, 0.05, -1.75), vec3<f32>(0.88, 1.25, 1.65));
+        let dome = 1.0 - smoothstep(0.0, 0.25, bubble);
+        albedo = mix(albedo, vec3<f32>(0.04, 0.07, 0.10), dome);
     }
 
     let diff = max(dot(n, sun), 0.0);

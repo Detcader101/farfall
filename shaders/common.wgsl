@@ -461,11 +461,17 @@ fn sd_fighter_hull(q: vec3<f32>) -> f32 {
     return max(sd_fighter_exterior(q), -sd_cabin_cut(q));
 }
 
-// The helicopter with the same cabin carved out of its pod — the cut
-// also opens the spine's front over the pilot's head, which is the
-// point: an overhead pane with the rotor's blur past it.
+// The helicopter's own glass: the shared cut, plus the bubble — the
+// pod's whole nose face down past the pilot's knees, the way a rotorcraft
+// wears its glass. The dash and consoles still hide the floor.
+fn sd_heli_cut(q: vec3<f32>) -> f32 {
+    let bubble = sd_ellipsoid_c(q, vec3<f32>(0.0, 0.05, -1.75), vec3<f32>(0.88, 1.25, 1.65));
+    return min(sd_cabin_cut(q), bubble);
+}
+
+// The helicopter with the cabin and its bubble carved out of the pod.
 fn sd_heli_hull(q: vec3<f32>) -> f32 {
-    return max(sd_heli_exterior(q), -sd_cabin_cut(q));
+    return max(sd_heli_exterior(q), -sd_heli_cut(q));
 }
 
 // The hull round the pilot by the craft flag, for the cockpit's march.
