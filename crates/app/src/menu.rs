@@ -113,6 +113,9 @@ pub enum MenuEvent {
     StickWizard,
     /// Forget the saved world and stand back at the stock spawn.
     NewGame,
+    /// Write Reforger's helicopter-pilot joystick conf (the app owns
+    /// the disk).
+    ExportReforger,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -510,6 +513,7 @@ enum Item {
     HoloRange,
     MapRings,
     MapGrid,
+    HeliPads,
     LookSens,
     Destination,
     SafeDist,
@@ -654,6 +658,7 @@ impl Item {
             Item::HudLoad => "LOAD HUD",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
+            Item::HeliPads => "HELI PADS",
             Item::LookSens => "LOOK SENS",
             Item::Destination => "DESTINATION",
             Item::WarpLength => "WARP LENGTH",
@@ -796,6 +801,7 @@ impl Item {
             }
             Item::MapRings => "RINGS DRAWN ROUND EACH BODY ON THE MAP.",
             Item::MapGrid => "THE MAP'S REFERENCE GRID.",
+            Item::HeliPads => "HELICOPTERS WAIT ON PADS. LAND BY ONE TO BOARD.",
             Item::LookSens => "HOW FAR THE HEAD TURNS PER MOUSE MOVEMENT.",
             Item::Destination => "WHERE THE WORMHOLE DRIVE TAKES YOU.",
             Item::SafeDist => "HOW FAR OUT FROM THE DESTINATION YOU ARRIVE, IN ITS RADII.",
@@ -898,6 +904,7 @@ impl Item {
             Item::HoloRange => one("holo.range"),
             Item::MapRings => one("map.rings"),
             Item::MapGrid => one("map.grid"),
+            Item::HeliPads => one("world.helis"),
             Item::LookSens => one("control.look-sens"),
             Item::Destination => one("warp.destination"),
             Item::SafeDist => one("warp.safe-radii"),
@@ -1086,6 +1093,7 @@ impl Item {
             | Item::HudLoad => String::new(),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
+            Item::HeliPads => if s.helis { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}X", s.look_sensitivity),
             Item::Destination => s.plan.dest.name().to_string(),
             // Uranus is arrived at in its belt whatever the distance says.
@@ -1399,6 +1407,7 @@ impl Menu {
                 Item::Engage,
                 Item::MapRings,
                 Item::MapGrid,
+                Item::HeliPads,
             ],
             // The bay's own card is the fit alone (the hologram is the
             // picture); the menu's SHIP page adds the hologram's look.
@@ -1667,6 +1676,7 @@ impl Menu {
                 }
                 Item::HudSave => MenuEvent::SaveHud,
                 Item::Stick(StickItem::Wizard) => MenuEvent::StickWizard,
+                Item::Stick(StickItem::Export) => MenuEvent::ExportReforger,
                 Item::Stick(i) => {
                     if i.adjust(&mut settings.stick, true, true) {
                         MenuEvent::Changed(Change::Bindings)
@@ -2313,6 +2323,10 @@ impl Menu {
             }
             Item::MapGrid => {
                 s.map_grid = !s.map_grid;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::HeliPads => {
+                s.helis = !s.helis;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::HoopSize => {
@@ -3380,6 +3394,43 @@ mod tests {
             MenuEvent::LoadHud(_)
         ));
         assert_eq!(s, Settings::default(), "the menu itself changes nothing");
+    }
+
+    /// The STICK page wears a shipped profile on Enter (arrows must not
+    /// throw a wizard-built map away) and EXPORT REFORGER CFG asks the
+    /// app to write the conf. The menu touches no disk itself.
+    #[test]
+    fn the_stick_page_wears_profiles_and_exports_the_reforger_conf() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.open_on(Page::Stick);
+        let at = m
+            .items()
+            .iter()
+            .position(|&i| i == Item::Stick(StickItem::Profile))
+            .unwrap();
+        m.set_cursor(at);
+        assert_eq!(
+            m.value_of(Item::Stick(StickItem::Profile), &s),
+            "FARFALL FIGHTER"
+        );
+        assert_eq!(m.key(KeyCode::ArrowRight, &mut s), MenuEvent::Nothing);
+        assert_eq!(
+            m.key(KeyCode::Enter, &mut s),
+            MenuEvent::Changed(Change::Bindings)
+        );
+        assert_eq!(
+            m.value_of(Item::Stick(StickItem::Profile), &s),
+            "REFORGER HELI"
+        );
+        let at = m
+            .items()
+            .iter()
+            .position(|&i| i == Item::Stick(StickItem::Export))
+            .unwrap();
+        m.set_cursor(at);
+        assert_eq!(m.key(KeyCode::ArrowRight, &mut s), MenuEvent::Nothing);
+        assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::ExportReforger);
     }
 
     #[test]

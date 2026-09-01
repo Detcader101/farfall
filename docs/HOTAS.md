@@ -193,6 +193,33 @@ and TRIGGER are rows too. The KEYS page shows each stick bind beside its key
 (`LSHIFT B1`; an axis action shows its flight control, `UP PITCH`), and
 pressing a stick button while a named row says PRESS KEY binds it there.
 
+## The Reforger helicopter profile, and the export
+
+FARFALL doubles as a practice ground for Arma Reforger's helicopters (the
+planet's heli pads — the `heli-pads` entry in features.yaml). Two rows on the
+STICK page serve it:
+
+- **PROFILE** — ENTER wears the next shipped map: FARFALL FIGHTER (the
+  `StickMap::hotas4()` default) or REFORGER HELI (`StickMap::reforger_heli()`),
+  and any hand-built map shows CUSTOM. The Reforger map is the hotas-reforger
+  wizard's `pilot` profile translated to FARFALL's jobs: same axes (cyclic on
+  the stick, anti-torque on the twist, collective on the lever), but the lever
+  is absolute — THROTTLE ZERO at BOTTOM, no brake or jump gestures — the
+  shaping is Reforger's (no deadzone, linear curve), the rocker is free as the
+  pilot profile deliberately leaves it, and the buttons carry the pilot jobs
+  where FARFALL has one (trigger fires; L3 camera; FACE L assist for
+  autohover; FACE D brake; FACE R look; FACE U disembark for the select
+  action; R2 next weapon; BASE L map). Arrows do nothing on the row — a
+  wizard-built map must not fall to a stray arrow. `FARFALL_BENCH_PROFILE=
+  reforger` wears it for a capture.
+- **EXPORT REFORGER CFG** — ENTER writes a real `Joystick_TFlightHotas4_0.conf`
+  (the pilot map, in Reforger's exact grammar: UTF-8 with no BOM, CRLF, one
+  space per indent) into `~/.farfall/reforger/`. Copy it into Reforger's
+  `Documents\My Games\ArmaReforger\profile\.save\settings\customInputConfigs\`
+  and register it in `InputUserSettings.conf` while the game is closed — it
+  rewrites the file on exit. The format lives in `crates/app/src/reforger.rs`,
+  matched byte-for-byte against the hotas-reforger wizard's accepted output.
+
 ## Adding another stick
 
 1. Plug it in and run the wizard — that is all a player needs. The map is per

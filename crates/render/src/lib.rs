@@ -20,6 +20,7 @@ pub mod debris;
 pub mod dust;
 pub mod gauge;
 pub mod ghost;
+pub mod heli;
 pub mod holo;
 pub mod hologram;
 pub mod hud;
