@@ -180,6 +180,18 @@ mod tests {
         assert_eq!(junk.msaa, 8, "a HUD file cannot touch graphics");
     }
 
+    /// The bench's one-line fixture, worn over a fully laid-out cockpit:
+    /// every HUD key the file omits comes back stock — the whole
+    /// settings, not just a spot check — and only the map has moved.
+    #[test]
+    fn a_one_key_file_over_a_worn_cockpit_is_stock_but_for_that_key() {
+        let sparse = apply(&worn(), "ui.map = on at -0.30,0.20\n");
+        let mut want = Settings::default();
+        want.layout.set(Instrument::Map, Slot::On);
+        want.layout.set_free(Instrument::Map, [-0.30, 0.20]);
+        assert_eq!(sparse.render(), want.render());
+    }
+
     #[test]
     fn hud_files_are_numbered_and_sorted_naturally() {
         assert_eq!(slot_of(Path::new("hud-12.fhud")), Some(12));
