@@ -634,3 +634,18 @@ fn the_nebula_colours_the_sky_and_goes_away_when_off() {
     let d = on.diff(&off);
     assert!(d > 0.004, "the knob changes the picture: {d}");
 }
+
+/// FARFALL_FOV=deg (a graphics knob like FARFALL_SCALE, over the settings
+/// file's graphics.fov): 50 degrees zooms into the sight, 100 pulls the
+/// whole cabin into frame — two different pictures, not two perf runs of
+/// the same one.
+#[test]
+fn the_fov_knob_reframes_the_scene() {
+    if !enabled() {
+        return;
+    }
+    let narrow = capture("fov50", &[("FARFALL_FOV", "50")]);
+    let wide = capture("fov100", &[("FARFALL_FOV", "100")]);
+    let d = narrow.diff(&wide);
+    assert!(d > 0.02, "50 and 100 degrees are different pictures: {d}");
+}
