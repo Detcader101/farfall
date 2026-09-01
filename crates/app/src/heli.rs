@@ -118,6 +118,24 @@ pub fn heli_params() -> ShipParams {
     }
 }
 
+/// The pilot's OWN helicopter (SPEC §6.5c, the SHIP page's CRAFT row):
+/// FARFALL-native, not a pad's cold-war hull. The rotor numbers are the
+/// utility set's, a shade lighter and hotter — but this is your ship, so
+/// the drives come with it: the fighter's hyper field and wormhole drive,
+/// no boost (a rotor has no afterburner).
+pub fn farfall_heli_params() -> ShipParams {
+    ShipParams {
+        mass_kg: 3_800.0,
+        max_thrust_mps2: DVec3::new(0.0, 18.0, 0.0),
+        // Your drives, the practice hull's rotor: see route_controls_farfall.
+        hyper_max_mps: 1.2e8,
+        // A composite airframe answers the cyclic a little quicker.
+        max_torque_radps2: DVec3::new(1.4, 1.0, 1.6),
+        inertia_kgm2: DVec3::new(12_000.0, 14_000.0, 8_000.0),
+        ..heli_params()
+    }
+}
+
 /// Helicopter inputs from the ship's controls: the forward-thrust axis
 /// (the throttle lever, W/S on the keys) becomes collective — thrust up
 /// the mast, never down — the vertical axis adds to it, cyclic and pedals
@@ -135,6 +153,18 @@ pub fn route_controls(c: farfall_sim::Controls) -> farfall_sim::Controls {
         despin: c.despin,
         hyper: false,
         hyper_level: 0.0,
+    }
+}
+
+/// The FARFALL helicopter's routing: the same collective fold as the pad
+/// hulls — forward demand up the mast, never down, cyclic and pedals on
+/// the torque — but the hyper field is the pilot's to call: this craft
+/// carries the drives. Boost stays stripped.
+pub fn route_controls_farfall(c: farfall_sim::Controls) -> farfall_sim::Controls {
+    farfall_sim::Controls {
+        hyper: c.hyper,
+        hyper_level: c.hyper_level,
+        ..route_controls(c)
     }
 }
 
@@ -295,6 +325,57 @@ mod tests {
         // The helicopter now rests where it was set down, not on its pad.
         let rest = helis.heli_state(&params, 3).unwrap();
         assert_eq!(rest.pos_m, heli_after.pos_m);
+    }
+
+    #[test]
+    fn the_farfall_heli_keeps_its_hyper_drive_but_not_boost() {
+        // Your own craft (SPEC §6.5c): the collective fold is the pad
+        // hulls', the hyper field is yours, the afterburner nobody's.
+        let c = route_controls_farfall(Controls {
+            thrust_body: DVec3::new(1.0, 0.0, -0.4),
+            boost: true,
+            hyper: true,
+            hyper_level: 0.7,
+            ..Default::default()
+        });
+        assert!(c.hyper, "the hyper field is the pilot's to call");
+        assert_eq!(c.hyper_level, 0.7);
+        assert!(!c.boost, "a rotor has no afterburner");
+        assert_eq!(
+            c.thrust_body,
+            DVec3::new(0.0, 0.4, 0.0),
+            "the forward demand still goes up the mast"
+        );
+        // And the parameters agree with the routing.
+        let p = farfall_heli_params();
+        assert!(p.hyper_max_mps > 0.0, "the drives exist in this hull");
+        assert_eq!(p.max_thrust_mps2.x, 0.0);
+        assert_eq!(p.max_thrust_mps2.z, 0.0, "rotor thrust is the mast's alone");
+    }
+
+    #[test]
+    fn the_farfall_heli_hovers_too() {
+        let mut params = presets::earth_compact();
+        params.ship = farfall_heli_params();
+        let mut state = farfall_sim::WorldState {
+            time_s: 0.0,
+            ship: parked(&params, 0),
+        };
+        state.ship.ground = Ground::Flight;
+        state.ship.pos_m += pad_up(0) * 30.0;
+        let hover = 9.81 / params.ship.max_thrust_mps2.y;
+        let c = route_controls_farfall(Controls {
+            thrust_body: DVec3::new(0.0, 0.0, -hover),
+            assist: false,
+            ..Default::default()
+        });
+        let start = state.ship.pos_m;
+        for _ in 0..240 {
+            state = farfall_sim::step(&params, &state, c);
+        }
+        let risen = (state.ship.pos_m.length() - start.length()).abs();
+        assert!(risen < 0.5, "hover drifted {risen} m in 2 s");
+        assert!(state.ship.vel_mps.length() < 0.5);
     }
 
     #[test]

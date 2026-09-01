@@ -43,6 +43,9 @@ pub struct HoloScene {
     /// Other ships, relative to this one in its frame (m), with their
     /// kind: 0 hailing, 1 hostile, 2 wreck.
     pub marks: [Option<(Vec3, u8)>; MARKS],
+    /// The miniature's craft: 0 the fighter, 1 the helicopter
+    /// (common.wgsl sd_craft_exterior — SPEC §6.5c).
+    pub craft: f32,
 }
 
 /// Where a mark sits in the little scene, as a share of the rim (0 at
@@ -108,9 +111,11 @@ impl HoloUniforms {
                 scene.body_dir.normalize_or_zero(),
                 scene.body_sin.clamp(0.0, 1.0),
             ),
+            // w carries shown and the craft in one: 0 skips, 1 the
+            // fighter, 2 the helicopter.
             sun: v4(
                 scene.sun_dir.normalize_or_zero(),
-                if shown { 1.0 } else { 0.0 },
+                if shown { 1.0 + scene.craft } else { 0.0 },
             ),
             misc: [
                 scene.effort.clamp(0.0, 1.0),
@@ -164,6 +169,7 @@ mod tests {
             hyper: 0.25,
             range: 1.0,
             marks: [None; MARKS],
+            craft: 1.0,
         }
     }
 
@@ -195,7 +201,7 @@ mod tests {
             u.vel[3]
         );
         assert_eq!(u.body[3], 0.8);
-        assert_eq!(u.sun[3], 1.0, "shown");
+        assert_eq!(u.sun[3], 2.0, "shown, and the craft rides with it");
         assert_eq!(u.misc[0], 0.5, "effort");
         assert_eq!(u.misc[1], 0.25, "hyper");
         let off = HoloUniforms::new(&cam, Quat::IDENTITY, Vec3::ZERO, 0.15, &scene(), false);

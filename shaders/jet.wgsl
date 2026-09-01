@@ -32,7 +32,8 @@ struct Jet {
     eye: vec4<f32>,
     // xyz: the Sun's direction in ship frame. w: engine effort 0..1
     sun: vec4<f32>,
-    // x: hyper field 0..1, y: draw at all (0 skips), z,w: unused
+    // x: hyper field 0..1, y: draw at all (0 skips), z: the craft
+    // (0 fighter, 1 helicopter — SPEC §6.5b), w: unused
     glow: vec4<f32>,
     // xyz: pitch / yaw / roll demands -1..1
     rcs: vec4<f32>,
@@ -67,7 +68,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 // only inside its hardpoint's bounding sphere, whose distance is a safe
 // lower bound beyond it.
 fn sd_fitted(p: vec3<f32>) -> f32 {
-    var d = sd_fighter_exterior(p);
+    var d = sd_craft_exterior(p, jet.glow.z);
     for (var i = 0u; i < 4u; i += 1u) {
         let hp = jet.hp[i];
         let b = length(p - hp.xyz - MOUNT_BOUND_C) - MOUNT_BOUND_R;
@@ -208,12 +209,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let now = jet.fwd.w;
     let effort = clamp(jet.sun.w, 0.0, 1.0);
     let hyper = clamp(jet.glow.x, 0.0, 1.0);
+    let craft = jet.glow.z;
 
     // The light in the air about the ship: the plumes and the RCS, with
-    // the depth each sits at.
-    let pl = plume(eye, ray, -0.62, effort, hyper, now);
-    let pr = plume(eye, ray, 0.62, effort, hyper, now);
-    let rc = rcs_light(eye, ray, now);
+    // the depth each sits at. The helicopter's mover is the rotor — no
+    // plumes off nozzles it does not have, no RCS puffs.
+    let jets = 1.0 - step(0.5, craft);
+    let pl = plume(eye, ray, -0.62, effort * jets, hyper * jets, now);
+    let pr = plume(eye, ray, 0.62, effort * jets, hyper * jets, now);
+    let rc = rcs_light(eye, ray, now) * vec4<f32>(jets, jets, jets, 1.0);
     var light = pl.xyz + pr.xyz + rc.xyz;
     var light_t = 1e9;
     if (dot(pl.xyz, pl.xyz) > 1e-8) { light_t = min(light_t, pl.w); }
@@ -269,10 +273,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var albedo = mix(vec3<f32>(0.30, 0.32, 0.36), vec3<f32>(0.52, 0.56, 0.62),
                      clamp(p.y * 0.5 + 0.8, 0.0, 1.0)) * band * (1.0 - seams);
     // The canopy: the same glass cut the hull pass carves — anything close
-    // to it from outside is dark smoked glass, not metal.
+    // to it from outside is dark smoked glass, not metal. Both airframes
+    // share the cut (common.wgsl sd_cabin_cut), so this reads for both.
     let glass = sd_round_box(p - vec3<f32>(0.0, 0.7, -0.45), vec3<f32>(0.80, 0.9, 1.25), 0.15);
     let canopy = 1.0 - smoothstep(0.0, 0.25, glass);
     albedo = mix(albedo, vec3<f32>(0.04, 0.07, 0.10), canopy);
+    if (craft > 0.5) {
+        // The helicopter's rotor group and skids read as near-black
+        // steel, the blur disc darkest of all — never hull metal.
+        let steel = clamp(step(1.5, p.y) + step(p.y, -2.1), 0.0, 1.0);
+        albedo = mix(albedo, vec3<f32>(0.05, 0.05, 0.06), steel * 0.85);
+        let on_disc = step(abs(p.y - 1.95), 0.08) * step(1.0, length(p.xz - vec2<f32>(0.0, 0.6)));
+        albedo = mix(albedo, vec3<f32>(0.03, 0.03, 0.035), on_disc);
+        // And its nose bubble is glass all the way round (sd_heli_cut).
+        let bubble = sd_ellipsoid_c(p, vec3<f32>(0.0, 0.05, -1.75), vec3<f32>(0.88, 1.25, 1.65));
+        let dome = 1.0 - smoothstep(0.0, 0.25, bubble);
+        albedo = mix(albedo, vec3<f32>(0.04, 0.07, 0.10), dome);
+    }
 
     let diff = max(dot(n, sun), 0.0);
     let h = normalize(sun - ray);
@@ -293,8 +310,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The nozzles: the lip of each glows hot amber with the effort, and
     // the plume's own light washes the nacelle's tail blue.
     let eq = vec3<f32>(abs(p.x) - 0.62, p.y + 0.85, p.z);
-    let lip = (1.0 - smoothstep(0.30, 0.75, length(eq.xy))) * smoothstep(7.0, 7.45, p.z);
-    let tail_wash = (1.0 - smoothstep(0.4, 1.6, length(eq.xy))) * smoothstep(5.5, 7.5, p.z);
+    let lip = (1.0 - smoothstep(0.30, 0.75, length(eq.xy))) * smoothstep(7.0, 7.45, p.z) * jets;
+    let tail_wash = (1.0 - smoothstep(0.4, 1.6, length(eq.xy))) * smoothstep(5.5, 7.5, p.z) * jets;
     let drive = max(effort, hyper * 0.55);
     let engine = vec3<f32>(1.0, 0.42, 0.13) * (effort * 2.4 + 0.10)
         + mix(vec3<f32>(0.35, 0.55, 1.0), vec3<f32>(0.25, 0.85, 1.0), hyper) * hyper * 3.0;

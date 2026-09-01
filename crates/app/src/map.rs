@@ -180,6 +180,8 @@ pub struct MapLook {
     pub view: MapView,
     pub rings: u32,
     pub grid: bool,
+    /// The dart's craft: 0 the fighter, 1 the helicopter (SPEC §6.5c).
+    pub craft: f32,
     pub visibility: f32,
     pub aspect: f32,
     pub time_s: f32,
@@ -213,7 +215,9 @@ impl MapUniforms {
             sun: v4(project3(w.sun), 0.22),
             ship: v4(project3(w.ship), 0.16),
             ship_right: v4(q * Vec3::X, 0.0),
-            ship_up: v4(q * Vec3::Y, 0.0),
+            // The dart's craft rides the up axis's spare lane: 0 the
+            // fighter, 1 the helicopter (SPEC §6.5c).
+            ship_up: v4(q * Vec3::Y, l.craft),
             ship_fwd: v4(q * Vec3::NEG_Z, 0.0),
             dest: v4(project3(w.dest_centre), ring),
             misc: [
@@ -328,6 +332,7 @@ mod tests {
             view: MapView::default(),
             rings: 99,
             grid: true,
+            craft: 1.0,
             visibility: 2.0,
             aspect: 1.5,
             time_s: 3.0,
@@ -338,6 +343,7 @@ mod tests {
         let u = MapUniforms::new(&w, &l);
         assert_eq!(u.eye[3], 1.0);
         assert_eq!(u.misc[1], RINGS_MAX as f32);
+        assert_eq!(u.ship_up[3], 1.0, "the dart's craft rides the spare lane");
         assert!(u.sun[1] > 0.0, "the Sun sits above the plane");
         assert!(u.uranus[0] > u.sun[0], "Uranus lies beyond the Sun");
         // Nose (-Z) turned about +Y by 90°: points along -X.

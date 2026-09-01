@@ -324,6 +324,73 @@ fn sd_fighter_exterior(q: vec3<f32>) -> f32 {
     return min(d, fin);
 }
 
+// The pilot's OWN helicopter (SPEC §6.5b) — FARFALL-native, not one of
+// the cold-war practice hulls (shaders/heli.wgsl keeps those): a sleek
+// glass-nosed pod in the fighter's design language, a spine housing
+// carrying the mast and the main rotor's blur disc, a slim boom to a
+// ring tail (a ducted fan seen as a hoop, no naked tail rotor), stub
+// wings and a nose probe carrying the SAME four hardpoints
+// (bay.rs Hardpoint::pos), low skids resting at the fighter's stance
+// (y -2.5). One definition, selected by each lane's craft flag
+// (sd_craft_exterior): the cabin, the chase view, the bay hologram,
+// the holo3PP and the map dart all draw this same craft.
+fn sd_heli_exterior(q: vec3<f32>) -> f32 {
+    // The rotor group first: the disc spans wider than everything else,
+    // so it lives outside the aft bounding box. A thin solid disc — the
+    // blur of blades that never stop.
+    let mast = sd_capsule_ab(q, vec3<f32>(0.0, 0.8, 0.6), vec3<f32>(0.0, 1.78, 0.6), 0.13);
+    let hub = length(q - vec3<f32>(0.0, 1.82, 0.6)) - 0.26;
+    let disc = max(length(q.xz - vec2<f32>(0.0, 0.6)) - 6.2, abs(q.y - 1.95) - 0.03);
+    var d = min(min(mast, hub), disc);
+    // The pod: fattest at the seats, a spine housing on top, a chin
+    // sensor nose below the sill, and the nose probe the NOSE hardpoint
+    // is slung on (its pylon meets the probe, not the air).
+    let pod = sd_ellipsoid_c(q, vec3<f32>(0.0, -0.45, 0.1), vec3<f32>(1.3, 1.45, 3.1));
+    let spine = sd_round_box(q - vec3<f32>(0.0, 0.72, 1.6), vec3<f32>(0.5, 0.32, 1.2), 0.18);
+    d = min(d, min(pod, spine));
+    let chin = sd_ellipsoid_c(q, vec3<f32>(0.0, -1.35, -2.2), vec3<f32>(0.62, 0.5, 1.6));
+    d = min(d, chin);
+    let probe = sd_capsule_ab(q, vec3<f32>(0.0, -0.45, -2.6), vec3<f32>(0.0, -0.45, -4.35), 0.15);
+    d = min(d, probe);
+    // Boom, ring tail, fin, stubs and skids all live aft and outboard of
+    // the pod: one box bounds them, a safe lower bound past it.
+    let aft = sd_round_box(q - vec3<f32>(0.0, -0.2, 2.5), vec3<f32>(3.2, 2.5, 5.4), 0.0);
+    if (aft > 0.3) {
+        return min(d, aft);
+    }
+    // The boom, rising a little into the ring tail's hoop, and the fin
+    // blade above it.
+    let boom = sd_capsule_ab(q, vec3<f32>(0.0, 0.15, 2.9), vec3<f32>(0.0, 0.55, 6.3), 0.3);
+    d = min(d, boom);
+    let rq = q - vec3<f32>(0.0, 0.7, 6.6);
+    let ring = length(vec2<f32>(length(rq.yz) - 0.85, rq.x)) - 0.13;
+    d = min(d, ring);
+    let fin = sd_round_box(q - vec3<f32>(0.0, 1.75, 6.7), vec3<f32>(0.04, 0.35, 0.3), 0.03);
+    d = min(d, fin);
+    // Stub wings: short, swept a touch, drooping to meet the WING
+    // hardpoints' pylons at x 2.6.
+    let wx = abs(q.x);
+    let wq = vec3<f32>(wx - 1.9, q.y + 0.85 + 0.08 * wx, q.z - 0.95 - 0.18 * wx);
+    let stub = sd_round_box(wq, vec3<f32>(1.15, 0.06, 0.55 - 0.06 * wx), 0.04);
+    d = min(d, stub);
+    // Skids on their struts, the rails at the fighter's own stance.
+    let sq = vec3<f32>(wx - 1.15, q.y + 2.4, q.z);
+    d = min(d, sd_capsule_ab(sq, vec3<f32>(0.0, 0.0, -2.0), vec3<f32>(0.0, 0.0, 1.7), 0.1));
+    let aq = vec3<f32>(wx, q.y, q.z);
+    d = min(d, sd_capsule_ab(aq, vec3<f32>(0.7, -1.5, -1.1), vec3<f32>(1.15, -2.32, -1.1), 0.07));
+    d = min(d, sd_capsule_ab(aq, vec3<f32>(0.7, -1.5, 1.0), vec3<f32>(1.15, -2.32, 1.0), 0.07));
+    return d;
+}
+
+// The pilot's own craft by its flag: 0 the fighter, 1 the helicopter.
+// Every lane that draws the pilot's own ship selects here, once.
+fn sd_craft_exterior(q: vec3<f32>, craft: f32) -> f32 {
+    if (craft > 0.5) {
+        return sd_heli_exterior(q);
+    }
+    return sd_fighter_exterior(q);
+}
+
 // ---- The hardpoints' mounts ----
 //
 // What sits on a hardpoint, model frame (ship m), by kind: 0 the bare
@@ -371,21 +438,48 @@ fn sd_mount(q: vec3<f32>, m: vec3<f32>, kind: f32) -> f32 {
     return d;
 }
 
-// The ship with the cockpit carved out: the cavity the pilot sits in, and
-// the glass cut above it. What is left has thickness — the wall between
-// the cavity and space.
-fn sd_fighter_hull(q: vec3<f32>) -> f32 {
-    let outer = sd_fighter_exterior(q);
+// The cabin cut both airframes share: the cavity the pilot sits in and
+// the glass over it. One cut, so the arches, dash, consoles and column
+// (the cockpit pass's own furniture) fit either hull unchanged.
+fn sd_cabin_cut(q: vec3<f32>) -> f32 {
     let cavity = sd_ellipsoid_c(q, vec3<f32>(0.0, -0.25, -0.1), vec3<f32>(0.92, 1.05, 1.75));
     // The glass cut opens the top; it stays clear of the dash below the
     // sill, so nothing of it haunts the march down there.
     let glass = sd_round_box(q - vec3<f32>(0.0, 0.7, -0.45), vec3<f32>(0.80, 0.9, 1.25), 0.15);
+    return min(cavity, glass);
+}
+
+// The ship with the cockpit carved out: the cavity the pilot sits in, and
+// the glass cut above it. What is left has thickness — the wall between
+// the cavity and space.
+fn sd_fighter_hull(q: vec3<f32>) -> f32 {
     // max(a, -b) is the usual carve. It is not a true distance for a point
     // outside the hull but inside the cut (where the pilot sits): it hands
     // back the distance to the cut's wall, which can overshoot whatever
     // stands inside the cut. The cockpit's march bisects on overshoot for
     // exactly that reason.
-    return max(outer, -min(cavity, glass));
+    return max(sd_fighter_exterior(q), -sd_cabin_cut(q));
+}
+
+// The helicopter's own glass: the shared cut, plus the bubble — the
+// pod's whole nose face down past the pilot's knees, the way a rotorcraft
+// wears its glass. The dash and consoles still hide the floor.
+fn sd_heli_cut(q: vec3<f32>) -> f32 {
+    let bubble = sd_ellipsoid_c(q, vec3<f32>(0.0, 0.05, -1.75), vec3<f32>(0.88, 1.25, 1.65));
+    return min(sd_cabin_cut(q), bubble);
+}
+
+// The helicopter with the cabin and its bubble carved out of the pod.
+fn sd_heli_hull(q: vec3<f32>) -> f32 {
+    return max(sd_heli_exterior(q), -sd_heli_cut(q));
+}
+
+// The hull round the pilot by the craft flag, for the cockpit's march.
+fn sd_craft_hull(q: vec3<f32>, craft: f32) -> f32 {
+    if (craft > 0.5) {
+        return sd_heli_hull(q);
+    }
+    return sd_fighter_hull(q);
 }
 
 // --------------------------------------------------------------- dial plane

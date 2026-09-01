@@ -5,6 +5,58 @@
 
 use crate::arms::Weapon;
 
+/// The airframe the pilot's own ship wears (SPEC §6.5c): a parameter and
+/// a silhouette, never sim state — the golden hash does not know it
+/// exists. The pads' cold-war hulls are not this; they stay their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Craft {
+    #[default]
+    Fighter,
+    Helicopter,
+}
+
+impl Craft {
+    pub const ALL: [Craft; 2] = [Craft::Fighter, Craft::Helicopter];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Craft::Fighter => "FIGHTER",
+            Craft::Helicopter => "HELICOPTER",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Craft::Fighter => "fighter",
+            Craft::Helicopter => "helicopter",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Craft> {
+        Craft::ALL.iter().copied().find(|c| c.key() == k)
+    }
+
+    /// The craft flag every drawing lane's uniforms carry: 0 the fighter,
+    /// 1 the helicopter (common.wgsl sd_craft_exterior).
+    pub fn kind(self) -> f32 {
+        match self {
+            Craft::Fighter => 0.0,
+            Craft::Helicopter => 1.0,
+        }
+    }
+
+    /// The next craft round, for the menu.
+    pub fn next(self, forward: bool) -> Craft {
+        let i = Craft::ALL.iter().position(|&c| c == self).unwrap_or(0);
+        let n = Craft::ALL.len();
+        Craft::ALL[if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        }]
+    }
+}
+
 /// Where things can be mounted, ship frame (x right, y up, -z the nose).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hardpoint {
@@ -199,6 +251,20 @@ mod tests {
             [2, 1, 0, 1],
             "kinds ride with their hardpoints"
         );
+    }
+
+    #[test]
+    fn the_craft_cycles_and_names_its_keys() {
+        assert_eq!(Craft::default(), Craft::Fighter, "the fighter is stock");
+        assert_eq!(Craft::Fighter.next(true), Craft::Helicopter);
+        assert_eq!(Craft::Helicopter.next(true), Craft::Fighter);
+        assert_eq!(Craft::Fighter.next(false), Craft::Helicopter);
+        for c in Craft::ALL {
+            assert_eq!(Craft::from_key(c.key()), Some(c));
+        }
+        assert_eq!(Craft::from_key("huey"), None);
+        assert_eq!(Craft::Fighter.kind(), 0.0);
+        assert_eq!(Craft::Helicopter.kind(), 1.0);
     }
 
     #[test]

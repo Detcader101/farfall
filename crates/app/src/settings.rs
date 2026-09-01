@@ -6,7 +6,7 @@
 //! that the defaults can't cover — unknown keys are ignored, bad values
 //! fall back, missing lines mean default.
 
-use crate::bay::{Mount, STOCK};
+use crate::bay::{Craft, Mount, STOCK};
 use crate::cockpit::{Instrument, Layout, Slot};
 use crate::input::{key_from_name, key_name, Action, Bindings, Named};
 use crate::stick::StickMap;
@@ -390,6 +390,9 @@ pub struct Settings {
     /// the way to the slip, 0..2 of the stock. The warning stays; the
     /// violence is the pilot's to choose.
     pub drive_shake: f32,
+    /// The airframe the pilot's own ship wears: the fighter, or the
+    /// FARFALL helicopter (SPEC §6.5c). A parameter, never sim state.
+    pub craft: Craft,
     /// The ship's fit: what each hardpoint carries, by [`Hardpoint`] index.
     pub mounts: [Mount; 4],
     /// The bay's hologram: its hue 0..1 and saturation 0..1, scanlines
@@ -504,6 +507,7 @@ impl Default for Settings {
             // the slip. Turn it up on the CABIN page if you want the
             // violence.
             drive_shake: 0.0,
+            craft: Craft::default(),
             mounts: STOCK,
             bay_hue: BAY_HUE_DEFAULT,
             bay_saturation: 1.0,
@@ -633,6 +637,7 @@ pub const KEYS: &[&str] = &[
     "mimics.hostility",
     "hold.gain",
     "hold.face",
+    "ship.craft",
     "ship.hardpoint.*",
     "ship.holo-hue",
     "ship.holo-saturation",
@@ -1319,6 +1324,11 @@ impl Settings {
                         s.bindings.bind_named(n, key);
                     }
                 }
+                "ship.craft" => {
+                    if let Some(c) = Craft::from_key(v) {
+                        s.craft = c;
+                    }
+                }
                 k if k.starts_with("ship.hardpoint.") => {
                     let n = k["ship.hardpoint.".len()..].parse::<usize>().ok();
                     if let (Some(n), Some(m)) =
@@ -1575,6 +1585,7 @@ impl Settings {
             "ui.panel-holo = {:.3},{:.3}\n",
             self.holo_anchor[0], self.holo_anchor[1]
         ));
+        out.push_str(&format!("ship.craft = {}\n", self.craft.key()));
         for (n, m) in self.mounts.iter().enumerate() {
             out.push_str(&format!("ship.hardpoint.{n} = {}\n", m.key()));
         }
@@ -1678,6 +1689,24 @@ mod tests {
     fn defaults_round_trip() {
         let s = Settings::default();
         assert_eq!(Settings::parse(&s.render()), s);
+    }
+
+    #[test]
+    fn the_craft_choice_survives_the_file() {
+        // The pilot's own airframe rides the settings like the fit does
+        // (SPEC §6.5c): chosen, saved, worn again next run.
+        let mut s = Settings::default();
+        assert_eq!(s.craft, Craft::Fighter, "the fighter is stock");
+        s.craft = Craft::Helicopter;
+        let back = Settings::parse(&s.render());
+        assert_eq!(back.craft, Craft::Helicopter);
+        // A file that never heard of the craft flies the fighter.
+        assert_eq!(Settings::parse("graphics.msaa = 4\n").craft, Craft::Fighter);
+        // A garbled value falls back rather than guessing.
+        assert_eq!(
+            Settings::parse("ship.craft = gyrocopter\n").craft,
+            Craft::Fighter
+        );
     }
 
     /// The incident this answers: since settings persist, every bench run

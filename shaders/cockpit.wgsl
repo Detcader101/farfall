@@ -41,7 +41,8 @@ struct Cockpit {
     pad4: vec4<f32>,
     pad5: vec4<f32>,
     // xyz: the eye's seat, metres from the pilot's head origin (ship
-    // frame) — a headset's two eyes sit either side of it. w: unused.
+    // frame) — a headset's two eyes sit either side of it. w: the craft
+    // the hull belongs to (0 fighter, 1 helicopter — SPEC §6.5b).
     eye: vec4<f32>,
     // xyz: each hardpoint, ship frame (m) — bay.rs Hardpoint::pos via
     // fit_views, the one transform table. w: 0 empty (bare pylon),
@@ -148,8 +149,10 @@ fn sd_mounts(p: vec3<f32>) -> f32 {
 }
 
 fn sd_cabin(p: vec3<f32>) -> Hit {
-    // The ship's hull, with the cabin carved out of it.
-    var h = Hit(sd_fighter_hull(p), 0.0);
+    // The ship's hull, with the cabin carved out of it — whichever
+    // airframe the SHIP page chose (the cut is shared, so the furniture
+    // fits both).
+    var h = Hit(sd_craft_hull(p, ck.eye.w), 0.0);
     // The bay's fit on the airframe: a mount reads as hull metal.
     let mfit = sd_mounts(p);
     if (mfit < h.d) { h = Hit(mfit, 0.0); }

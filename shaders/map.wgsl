@@ -102,11 +102,11 @@ fn sd_torus_y(p: vec3<f32>, c: vec3<f32>, big: f32, small: f32) -> f32 {
     return length(d) - small;
 }
 
-// The ship: the same fighter the pilot sits in (common.wgsl), scaled from
-// metres to the map's unit size — about fourteen metres long, so a unit
-// here is seven metres there.
+// The ship: the same craft the pilot sits in (common.wgsl, the craft
+// flag riding ship_up.w), scaled from metres to the map's unit size —
+// about fourteen metres long, so a unit here is seven metres there.
 fn sd_ship_local(q: vec3<f32>) -> f32 {
-    return sd_fighter_exterior(q * 7.0) / 7.0;
+    return sd_craft_exterior(q * 7.0, map.ship_up.w) / 7.0;
 }
 
 fn to_ship(p: vec3<f32>) -> vec3<f32> {

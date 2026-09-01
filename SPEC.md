@@ -219,6 +219,35 @@ walk around; the cabin, the dash and the glass stay in the cockpit. The
 readout swaps to the suit's lines — the ship's distance, and the DISEMBARK
 key reading as BOARD within boarding range at the hull. The same key that
 walked out walks back in.
+### 6.5c The pilot's own craft: FIGHTER or HELICOPTER
+
+The SHIP page's first row is **CRAFT**: the airframe the pilot's own ship
+wears — FIGHTER (stock) or HELICOPTER — persisted as `ship.craft` in the
+settings file, like the fit. It is a *parameter choice, never sim state*:
+the app hands the sim the chosen `ShipParams` and silhouette exactly the
+way the pad helicopters do (§6.5a's rule — the golden hash belongs to
+`WorldState` and does not know the craft exists), and the world file is
+untouched: the craft rides the settings, the orbit rides the save.
+
+The HELICOPTER is FARFALL-native, not one of the cold-war practice hulls
+on the pads: our own silhouette (`sd_heli_exterior`, in the shader
+prelude beside `sd_fighter_exterior`, defined once) with a main-rotor
+disc, ring tail, stub wings carrying the same four hardpoints, and the
+same carved cabin the fighter has — the dash, dials, consoles and
+column are shared, never forked. Every lane that draws the pilot's own
+ship selects the silhouette by one craft flag in its uniforms: the
+cabin (hull round the pilot), the chase/jet view, the SHIP bay's
+hologram, the holo3PP miniature and the map's dart. Mimics, miners and
+the ghost stay fighters; the pad helicopters stay cold-war hulls.
+
+Flight model: the collective/cyclic/anti-torque routing the pad
+helicopters proved (`heli::route_controls`), with one difference — this
+is *your* ship, so the drives come with it: the hyper field and the
+wormhole drive work, boost does not (a rotor has no afterburner). The
+forward axis (W/S, the stick's throttle) is the collective, up the mast
+only; the REFORGER HELI stick profile flies it as-is. The console's
+throttle lever and the readout both show the collective while a
+helicopter is flown.
 
 ### 6.6 The city, eventually (direction, not commitment)
 

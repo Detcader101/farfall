@@ -166,7 +166,14 @@ impl CabinUniforms {
 
     /// Seat the eye off the head's origin: a headset's left and right.
     pub fn with_eye(mut self, eye: Vec3) -> Self {
-        self.eye = [eye.x, eye.y, eye.z, 0.0];
+        self.eye[..3].copy_from_slice(&[eye.x, eye.y, eye.z]);
+        self
+    }
+
+    /// The craft the hull round the pilot belongs to: 0 the fighter, 1
+    /// the helicopter (common.wgsl sd_craft_hull — SPEC §6.5c).
+    pub fn with_craft(mut self, craft: f32) -> Self {
+        self.eye[3] = craft;
         self
     }
 
