@@ -259,6 +259,20 @@ pub fn on_dash(dir: Vec3) -> bool {
     t > 0.3 && t < 2.2 && p.x.abs() < 1.0
 }
 
+/// The furniture a socket actually gets: an instrument whose direction
+/// misses the dash has no metal to be set into — its face stays a glass
+/// hologram, so only the beam-lit bare dash (TRON, 0) fits under it,
+/// whatever style was asked for. Seating a plate, ball or ring at
+/// socket_centre's off-dash fallback would hang bare metal in mid-air
+/// with no face on it.
+pub fn seated_style(style: u32, dir: Vec3) -> u32 {
+    if on_dash(dir) {
+        style
+    } else {
+        0
+    }
+}
+
 /// A DIAL's placement on the dash, for the instrument shaders: the head's
 /// basis in the ship's frame and the dial's centre — the top of its face
 /// plate, a few millimetres proud of the dash surface.
@@ -942,6 +956,30 @@ mod tests {
         // No floor: stock size, whatever the frame costs.
         g.step(100.0, 0.0);
         assert_eq!(g.scale, MOVING_SCALE);
+    }
+
+    /// An instrument dragged up the glass misses the dash: its face stays
+    /// a hologram, so no plate, ball or ring may be seated in mid-air
+    /// under it — only the beam-lit bare dash (TRON) furniture remains.
+    #[test]
+    fn a_dial_off_the_dash_seats_no_plate() {
+        let down = anchor_direction([0.0, -0.76], 0.7, 1.5);
+        assert!(on_dash(down));
+        // Jay Jay's mid-glass g-vector anchor: well above the dash.
+        let up = anchor_direction([0.285, -0.086], 0.7, 1.5);
+        assert!(!on_dash(up), "a mid-glass anchor must miss the dash");
+        for style in 0..4u32 {
+            assert_eq!(
+                seated_style(style, down),
+                style,
+                "on the dash every style stands"
+            );
+            assert_eq!(
+                seated_style(style, up),
+                0,
+                "off it only the bare dash remains"
+            );
+        }
     }
 
     /// The gyro's ball is a sphere ON the dash: its centre a little under

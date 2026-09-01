@@ -237,7 +237,17 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
         let q = (p - c) / size;
         let along = dot(q, DASH_N);
         let radial = length(q - DASH_N * along);
-        if (style > 1.5) {
+        if (style > 2.5) {
+            // BALL: the gyro's sphere, its centre a little under the dash
+            // so most of it stands proud; the gyro pass paints the world
+            // on the part above the surface. A thin seam ring hides the
+            // join with the metal. Tested before the plate: every ball
+            // is also > 1.5, and the plate branch must not shadow it.
+            let sphere = (length(q + DASH_N * BALL_DEPTH) - BALL_R) * size;
+            ball = min(ball, sphere);
+            let seam = (length(vec2<f32>(radial - BALL_SEAM_R, along)) - DIAL_BEZEL_W) * size;
+            rim = min(rim, seam);
+        } else if (style > 1.5) {
             // DIAL / WARTHOG: the face plate on the dash inside its bezel.
             // Tilted toward the pilot the whole instrument leans on its
             // axis and is lifted so its low edge clears the surface — a
@@ -254,15 +264,6 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
             face = min(face, plate);
             let bezel = (length(vec2<f32>(tr - DIAL_BEZEL_MID, ta - DIAL_PLATE_TOP)) - DIAL_BEZEL_W) * size;
             rim = min(rim, bezel);
-        } else if (style > 2.5) {
-            // BALL: the gyro's sphere, its centre a little under the dash
-            // so most of it stands proud; the gyro pass paints the world
-            // on the part above the surface. A thin seam ring hides the
-            // join with the metal.
-            let sphere = (length(q + DASH_N * BALL_DEPTH) - BALL_R) * size;
-            ball = min(ball, sphere);
-            let seam = (length(vec2<f32>(radial - BALL_SEAM_R, along)) - DIAL_BEZEL_W) * size;
-            rim = min(rim, seam);
         } else if (style > 0.5) {
             // JET: the hologram floats over a thin flush ring — the round
             // instrument's rim without its well.
