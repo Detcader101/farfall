@@ -591,6 +591,8 @@ const MACH1_MPS: f64 = 340.0;
 ///                           post pass, the map and the text, instead of the
 ///                           scene target)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
+///   FARFALL_FOV=50..110    (vertical field of view in degrees for this run,
+///                           over the settings file's graphics.fov)
 ///   FARFALL_HUD=path       (wear a saved HUD layout file (.fhud) for this
 ///                           run — see crates/app/src/hud_file.rs)
 ///   FARFALL_MUTE=1         (no audio stream at all)
@@ -5205,6 +5207,15 @@ impl App {
         let mut game = Game::new();
         let mut settings = settings;
         settings.msaa = msaa_in_use;
+        // FARFALL_FOV=deg: the field of view for this run, over the file's
+        // graphics.fov — a graphics knob like FARFALL_SCALE, not bench-only.
+        if let Some(f) = std::env::var("FARFALL_FOV")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|f| f.is_finite())
+        {
+            settings.fov = f.clamp(settings::FOV_MIN, settings::FOV_MAX);
+        }
         game.apply_settings(settings);
         // RESUME: pick up the last quit's world, unless this is a bench
         // (a scene capture must stay reproducible — it must never see a
