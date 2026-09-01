@@ -27,12 +27,30 @@ enum Cell {
     Blank,
 }
 
+/// The card's key names are key caps: where the font has the symbol,
+/// the key reads as the cap itself — the arrows as chevrons, the comma
+/// and period as themselves. Spelled out they are wider than the key
+/// column (the KEYS page, with room, spells them).
+fn cap(name: &str) -> &str {
+    match name {
+        "LEFT" => "<",
+        "RIGHT" => ">",
+        "COMMA" => ",",
+        "PERIOD" => ".",
+        n => n,
+    }
+}
+
 fn pair(b: &Bindings, a: Action, c: Action) -> String {
-    format!("{} {}", key_name(b.key_for(a)), key_name(b.key_for(c)))
+    format!(
+        "{} {}",
+        cap(key_name(b.key_for(a))),
+        cap(key_name(b.key_for(c)))
+    )
 }
 
 fn one(b: &Bindings, n: Named) -> String {
-    key_name(b.named(n)).to_string()
+    cap(key_name(b.named(n))).to_string()
 }
 
 fn left(b: &Bindings) -> Vec<Cell> {
@@ -88,10 +106,11 @@ fn right(b: &Bindings) -> Vec<Cell> {
     ]
 }
 
-/// A key cut to its column: a pair of long names would run into the
-/// text (the KEYS page always shows the whole name).
+/// A key cut a character short of its column: a pair of long names must
+/// never run into the label — the gap survives the cut (the KEYS page
+/// always shows the whole name).
 fn cut(key: &str, cols: usize) -> String {
-    key.chars().take(cols).collect()
+    key.chars().take(cols.saturating_sub(1)).collect()
 }
 
 fn cell_text(c: &Cell, key_cols: usize) -> String {
@@ -211,5 +230,22 @@ mod tests {
         assert!(text.contains("M      SYSTEM MAP"));
         let [top, bottom] = rules(&Bindings::default());
         assert!(top.unwrap() < bottom.unwrap());
+    }
+
+    /// A key never runs into its label. The stock wide names read as
+    /// their key caps — the arrows as chevrons, the comma and period as
+    /// themselves — and even a key as wide as its column keeps the gap
+    /// (it once printed LEFT RIGHTYAW and COMMA PHOLOGRAM RANGE).
+    #[test]
+    fn a_key_never_runs_into_its_label() {
+        let text = lines(&Bindings::default()).join("\n");
+        assert!(text.contains("< >       YAW"), "{text}");
+        assert!(text.contains(", .    HOLOGRAM RANGE"), "{text}");
+        assert!(!text.contains("RIGHTYAW"), "{text}");
+        assert!(!text.contains("PHOLOGRAM"), "{text}");
+        // The net under every binding: a column-filling key is cut a
+        // character short of the label, never flush against it.
+        let c = cell_text(&Cell::Key("LEFT RIGHT".into(), "YAW"), 10);
+        assert_eq!(c, "LEFT RIGH YAW");
     }
 }

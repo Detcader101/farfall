@@ -62,6 +62,30 @@ pub fn pane_rect_sized(aspect: f32, centre: [f32; 2], half_h: f32) -> [f32; 3] {
     [c(centre[0]), c(centre[1]), half_w]
 }
 
+/// The mini map's centre pulled back on screen. The pane is an
+/// instrument, not scenery: a turned head may swing its glass anchor
+/// past the rim, but the pane itself stays whole on the screen, frame
+/// and all, at every head angle.
+pub fn mini_centre_on_screen(aspect: f32, centre: [f32; 2], half_h: f32) -> [f32; 2] {
+    let aspect = if aspect.is_finite() && aspect > 0.0 {
+        aspect
+    } else {
+        1.0
+    };
+    let half_w = (half_h / aspect).min(0.4);
+    // A hair of margin keeps the frame line off the very edge.
+    let margin = 0.01;
+    let c = |v: f32, half: f32| {
+        let reach = (1.0 - half - margin).max(0.0);
+        if v.is_finite() {
+            v.clamp(-reach, reach)
+        } else {
+            0.0
+        }
+    };
+    [c(centre[0], half_w), c(centre[1], half_w * aspect)]
+}
+
 pub const RINGS_MAX: u32 = 6;
 pub const ZOOM_MIN: f32 = 0.35;
 pub const ZOOM_MAX: f32 = 6.0;
@@ -219,6 +243,29 @@ mod tests {
         assert!((h.y - 1.6).abs() < 1e-5 && (h.x - 1.2).abs() < 1e-5, "{h}");
         // Inside the first ring: at the origin, never negative.
         assert_eq!(project3(DVec3::new(50.0, 0.0, 0.0)), Vec3::ZERO);
+    }
+
+    /// Looking back once clipped the mini map half off the top-left
+    /// corner: wherever the head swings its anchor, the whole pane —
+    /// frame included — must still fit on the screen.
+    #[test]
+    fn the_mini_pane_stays_whole_on_screen_at_every_head_angle() {
+        for aspect in [1.0f32, 4.0 / 3.0, 16.0 / 9.0] {
+            for centre in [[-50.0f32, 3.0], [0.95, 0.94], [1.4, -2.0], [f32::NAN, 0.2]] {
+                for half_h in [MINI_HALF_H * 0.25, MINI_HALF_H, MINI_HALF_H * 4.0] {
+                    let c = mini_centre_on_screen(aspect, centre, half_h);
+                    let [cx, cy, hw] = pane_rect_sized(aspect, c, half_h);
+                    let hh = hw * aspect;
+                    assert!(cx - hw >= -1.0 && cx + hw <= 1.0, "{aspect} {centre:?}");
+                    assert!(cy - hh >= -1.0 && cy + hh <= 1.0, "{aspect} {centre:?}");
+                }
+            }
+        }
+        // A pane already on the screen is left exactly where it is.
+        assert_eq!(
+            mini_centre_on_screen(1.5, [0.5, -0.3], MINI_HALF_H),
+            [0.5, -0.3]
+        );
     }
 
     #[test]

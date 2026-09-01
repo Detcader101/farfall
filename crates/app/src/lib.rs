@@ -2001,7 +2001,10 @@ impl Game {
             centre: if mini {
                 let cam = self.camera(aspect);
                 let a = self.settings.layout.inset(self.mini_map_anchor());
-                on_glass(&self.look, &cam, self.ref_tan(), a)
+                let c = on_glass(&self.look, &cam, self.ref_tan(), a);
+                // An instrument, not scenery: a far-turned head must
+                // not swing the pane off the screen's edge.
+                map::mini_centre_on_screen(aspect, c, self.mini_map_half_h())
             } else {
                 self.settings.map_anchor
             },
@@ -2584,14 +2587,21 @@ impl Game {
     }
 
     /// Where the text block goes on the SCREEN this frame: the pause
-    /// panels sit on the screen and follow the head; the readout and the
-    /// design card are on the glass, re-projected like a dial.
+    /// panels sit on the screen and follow the head; the design card is
+    /// on the glass, re-projected like a dial, beside the element it
+    /// describes. The readout is the pilot's diagnostics, not glassware:
+    /// it keeps its screen place however the head is turned (glass-fixed
+    /// it drifted mid-sky through a spinning bench capture) — projected
+    /// with a centred head, so its saved anchor still means the same
+    /// spot and it still breathes with the field of view.
     fn text_screen_anchor(&self, cam: &CameraFrame, px: f32) -> [f32; 2] {
         let a = self.text_anchor(cam.aspect, px);
         if self.menu.open || self.pane_open() || self.card_open {
             a
-        } else {
+        } else if self.design {
             on_glass(&self.look, cam, self.ref_tan(), a)
+        } else {
+            on_glass(&Look::new(), cam, self.ref_tan(), a)
         }
     }
 
@@ -2655,6 +2665,15 @@ impl Game {
             return None;
         }
         let a = self.settings.layout.anchor(Instrument::Gyro)?;
+        // The ball is a real sphere cast in the dash, and near the rim of
+        // a far-turned view its projection blows out: a corner scissor
+        // patch fills with magnified globe (a beige plate poking into
+        // frame). Once its glass anchor has left the screen there is no
+        // honest picture of it left to draw — cull it.
+        let live = on_glass(&self.look, cam, self.ref_tan(), a);
+        if live[0].abs() > 1.2 || live[1].abs() > 1.2 {
+            return None;
+        }
         let dir = anchor_direction(a, self.ref_tan(), cam.aspect);
         let t = (cam.fov_y * 0.5).tan();
         let place = farfall_render::cabin::Placement::ball(self.head(), t, dir, tw.size)?;
@@ -7216,6 +7235,46 @@ mod tests {
     use glam::{DQuat, DVec3};
     use input::{Action, InputState};
     use winit::keyboard::KeyCode;
+
+    /// The readout is diagnostics, not glassware: turning the head must
+    /// not move it (it once drifted mid-sky through a spinning bench
+    /// capture). The design card still rides the glass with the look.
+    #[test]
+    fn the_readout_keeps_its_screen_place_through_a_head_turn() {
+        let mut game = Game::new();
+        let cam = game.camera(1.5);
+        game.look.aim(0.0, 0.0);
+        let centred = game.text_screen_anchor(&cam, 0.002);
+        game.look.aim(1.2, -0.4);
+        let turned = game.text_screen_anchor(&game.camera(1.5), 0.002);
+        assert_eq!(centred, turned, "the readout moved with the head");
+        game.design = true;
+        let designing = game.text_screen_anchor(&game.camera(1.5), 0.002);
+        assert_ne!(centred, designing, "the design card is glass, and swings");
+    }
+
+    /// The gyro ball is a real sphere cast in the dash: near the rim of
+    /// a far-turned view its projection blows out and once filled a
+    /// corner scissor patch with magnified globe. With its anchor off
+    /// the screen the ball is culled; head centred, it is back.
+    #[test]
+    fn the_gyro_ball_is_culled_once_its_anchor_leaves_the_screen() {
+        let mut game = Game::new();
+        game.settings.gauge_style = settings::GaugeStyle::Warthog;
+        game.look.aim(0.0, 0.0);
+        let cam = game.camera(1.5);
+        let tw = game.dial_tweak(Instrument::Gyro);
+        assert!(
+            game.gyro_ball(&cam, tw).is_some(),
+            "centred: the ball shows"
+        );
+        game.look.aim(1.2, 0.0);
+        let cam = game.camera(1.5);
+        assert!(
+            game.gyro_ball(&cam, tw).is_none(),
+            "turned 69\u{b0} right: the ball's anchor is off screen"
+        );
+    }
 
     /// The camera basis must agree with the ship's own axes exactly. If these
     /// ever diverge, the world is mirrored or rolled relative to the hull.

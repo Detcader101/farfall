@@ -49,7 +49,9 @@ struct Map {
 @group(0) @binding(0) var<uniform> map: Map;
 
 const DIM_ALPHA: f32 = 0.74;
-const PANE_ALPHA: f32 = 0.93;
+// The pane is the top layer: fully opaque, so a bright rock or boom
+// behind it never ghosts through the chart.
+const PANE_ALPHA: f32 = 1.0;
 const POLE_R: f32 = 0.012;
 const MARCH_STEPS: u32 = 72u;
 
