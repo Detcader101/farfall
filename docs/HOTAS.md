@@ -96,14 +96,66 @@ Measured on Jay Jay's unit (`hotas-reforger/device-audit.json`) and asserted by
 | Throttle face ▲ | B7 | FLIGHT ASSIST |
 | Throttle R2 | B8 | CHAOS DRIVE (hold) |
 | Throttle L2 | B9 | WARP STOP |
-| Base left | B10 | CHASE CAM |
-| Base right | B11 | HOLO3PP |
+| Base left | B10 | **SHIFT** (`stick.shift`, hold: the shift layer) |
+| Base right | B11 | **BACK** (`stick.back`, ESC everywhere) |
 | Hat up | HAT-U | LOOK LOCK |
 | Hat right | HAT-R | RAIL |
 | Hat down | HAT-D | HOLD |
 | Hat left | HAT-L | CANNON |
 
+And the shifted layer (`stick.shift-button.*`) — SHIFT held + the control,
+in flight:
+
+| SHIFT + | Named control |
+|---|---|
+| Trigger | CAPTURE |
+| L1 | CHASE CAM |
+| R3 | TRAJECTORY |
+| L3 | ENGAGE DRIVE |
+| Throttle face ◀ | SHIP BAY |
+| Throttle face ▼ | DISEMBARK |
+| Throttle face ▶ | DESIGN MODE |
+| Throttle face ▲ | ATMOSPHERE |
+| Throttle R2 | HOLO3PP |
+| Hat up / down | HOLO WIDER / CLOSER |
+| Hat right / left | RENDER SCALE + / − |
+
+Every one of the 26 named controls has a stick home, plain or shifted;
+`the_stock_map_reaches_every_named_control` asserts it.
+
 Deadzone 8 %, curve 1.5 (a power curve: finer about centre, full at the stop).
+
+## The stick pilots the menus
+
+The keyboard and mouse stay reserved for the future on-foot controller; the
+stick is a complete parallel path — pad → belt → back without touching a key.
+One convention (`StickMap::pilot` in `crates/app/src/stick.rs` is the table,
+the CONTROLS card carries the summary):
+
+- **BACK (base right) is ESC everywhere**: the settings menu in flight, back
+  out of any panel, card or wizard, cancel a waiting bind.
+- **In any panel** (the nine settings tabs, MAP, SHIP bay, the CONTROLS
+  card): the hat is the arrow keys, the trigger is ENTER. SHIFT+hat
+  left/right walk the tabs both ways (`[`/`]` from a keyboard land the same
+  place), SHIFT+hat up/down zoom the pane. Any other plain button keeps its
+  flight meaning, so the MAP button closes the map it opened.
+- **In DESIGN mode**: hat up/down sizes the element under the sight,
+  left/right tilts it, the trigger cycles its style; SHIFT+hat is rotate
+  (left/right) and lean (up/down).
+- **In the wizard**: SHIFT+trigger keeps, SHIFT+hat is back / skip / invert
+  / clear — on every step, so the button steps can be walked while plain
+  presses stay data. On the axis, knob and summary steps the plain trigger
+  and hat work too. SHIFT and BACK are reserved: the wizard never detects
+  them as bindings.
+- **On a KEYS row waiting for a bind**: a plain button lands on the row as
+  before; with SHIFT held it lands on the shifted layer and shows as
+  `SH+NAME`.
+- SHIFT+trigger is CAPTURE on every surface — a screenshot of the menu is a
+  screenshot.
+
+A press records the key it sent and its release releases that same key, so
+a mode flip mid-hold cannot wedge anything; the trigger never fires while
+SHIFT is held or a panel is up.
 
 ## The throttle's gestures, and the cabin's own stick
 
@@ -146,13 +198,17 @@ stick.throttle-brake = on  # the lever hard back holds the air brake
 stick.throttle-jump = on   # a slam forward = two seconds of chaos drive
 stick.layout = hotas4      # how raw indices are named (hotas4 | generic); the reader sets it from the USB id
 stick.fire = 0             # button number, hat-up/right/down/left, or none
+stick.shift = 10           # the modifier: held, the shifted layer is live
+stick.back = 11            # ESC on the stick
 stick.button.boost = 1
 stick.button.<named> = ...  # one line per named control
+stick.shift-button.<named> = ...  # the shifted layer, same names
 ```
 
 One button, one job; one axis, one flight control: binding a button or an axis
 that another control holds takes it away from that control (the keyboard's
-swap rule, minus the swap — a stick has controls to spare).
+swap rule, minus the swap — a stick has controls to spare). The rule spans
+fire, SHIFT and BACK; the shifted layer is its own one-job space.
 
 ## The wizard
 
@@ -167,9 +223,12 @@ a visible hole rather than an omission:
    the right way, and **I** flips it by hand. A live bar shows the axis.
 2. THROTTLE ZERO (centre / bottom), DEADZONE (let go; if the bar still moves,
    raise it), CURVE.
-3. TRIGGER, then one step per named control, most useful first (BOOST, AIR
-   BRAKE, DESPIN, CHAOS DRIVE, WARP STOP, FLIGHT ASSIST, LANDING MODE, MAP, …).
-   A button already held when the step opened is not a press.
+3. TRIGGER, then BACK and SHIFT (the navigation buttons are learned before
+   the named binds), then one step per named control, most useful first
+   (BOOST, AIR BRAKE, DESPIN, CHAOS DRIVE, WARP STOP, FLIGHT ASSIST,
+   LANDING MODE, MAP, …). A button already held when the step opened is not
+   a press, and the current SHIFT and BACK are never detected — to move
+   one, press a different button on its step.
 4. A summary: the axis map, the trigger, and a **coverage line that walks the
    hardware** — `COMPLETE: 21 OF 21 HAVE A JOB`, or `18 OF 21 HAVE A JOB. FREE:
    BASE L BASE R HAT-D` — so a control with no job is a visible hole, not an
@@ -186,12 +245,16 @@ Keys: **ENTER** keeps what was detected and moves on · **S** skips (keeps the
 current value) · **X** clears this control · **B**/Backspace goes back ·
 **I** inverts an axis · **< >** adjust the knobs · **ESC** finishes with what
 has been done. Every accepted step is saved at once; there is no "apply".
+From the stick: SHIFT+trigger / SHIFT+hat are ENTER / B S I X (see "The
+stick pilots the menus" above).
 
 The STICK page also edits the map by hand: **< >** step an axis row through
-NONE, 0, 1, … and **ENTER** flips its direction; DEADZONE, CURVE, THROTTLE ZERO
-and TRIGGER are rows too. The KEYS page shows each stick bind beside its key
-(`LSHIFT B1`; an axis action shows its flight control, `UP PITCH`), and
-pressing a stick button while a named row says PRESS KEY binds it there.
+NONE, 0, 1, … and **ENTER** flips its direction; DEADZONE, CURVE, THROTTLE ZERO,
+TRIGGER, SHIFT and BACK are rows too. The KEYS page shows each stick bind
+beside its key (`LSHIFT B1`, or `LSHIFT SH+L1` for a shifted-only home; an
+axis action shows its flight control, `UP PITCH`), and pressing a stick
+button while a named row says PRESS KEY binds it there — with SHIFT held,
+onto the shifted layer.
 
 ## The Reforger helicopter profile, and the export
 

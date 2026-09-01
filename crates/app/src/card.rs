@@ -19,12 +19,10 @@ const LEFT_COLS: usize = 24;
 const LEFT_KEY_COLS: usize = 10;
 const RIGHT_KEY_COLS: usize = 7;
 
-/// A line's left or right half: a heading, a key and what it does, or
-/// nothing.
+/// A line's left or right half: a heading, or a key and what it does.
 enum Cell {
     Head(&'static str),
     Key(String, &'static str),
-    Blank,
 }
 
 /// The card's key names are key caps: where the font has the symbol,
@@ -77,18 +75,24 @@ fn left(b: &Bindings) -> Vec<Cell> {
 fn right(b: &Bindings) -> Vec<Cell> {
     vec![
         Cell::Head("VIEW"),
-        Cell::Key("RMB".to_string(), "LOOK ROUND (HOLD)"),
-        Cell::Key(one(b, Named::LookLock), "LOCK THE LOOK"),
-        Cell::Key(one(b, Named::Chase), "CHASE CAMERA"),
-        Cell::Key(one(b, Named::Holo), "SHIP HOLOGRAM"),
+        Cell::Key(
+            format!("RMB {}", one(b, Named::LookLock)),
+            "LOOK HOLD / LOCK",
+        ),
+        Cell::Key(
+            format!("{} {}", one(b, Named::Chase), one(b, Named::Holo)),
+            "CHASE / HOLO3PP",
+        ),
         Cell::Key(
             format!("{} {}", one(b, Named::HoloOut), one(b, Named::HoloIn)),
             "HOLOGRAM RANGE",
         ),
         Cell::Key(one(b, Named::Design), "DESIGN THE DASH"),
         Cell::Head("PANELS"),
-        Cell::Key(one(b, Named::Map), "SYSTEM MAP"),
-        Cell::Key(one(b, Named::Bay), "SHIP BAY"),
+        Cell::Key(
+            format!("{} {}", one(b, Named::Map), one(b, Named::Bay)),
+            "MAP / SHIP BAY",
+        ),
         Cell::Key(one(b, Named::Landing), "LANDING MODE"),
         Cell::Key("ESC".to_string(), "SETTINGS MENU"),
         Cell::Head("ARMS"),
@@ -102,7 +106,13 @@ fn right(b: &Bindings) -> Vec<Cell> {
             ),
             "CANNON RAIL NEXT",
         ),
-        Cell::Blank,
+        // The stick pilots the menus (crates/app/src/stick.rs has the
+        // whole convention): the hat is the arrows, BASE L held is the
+        // shift layer for combos, BASE R is ESC.
+        Cell::Head("STICK"),
+        Cell::Key("HAT".to_string(), "MENU ARROWS"),
+        Cell::Key("TRIG".to_string(), "ENTER. BASE R ESC"),
+        Cell::Key("BASE L".to_string(), "HOLD FOR COMBOS"),
     ]
 }
 
@@ -117,7 +127,6 @@ fn cell_text(c: &Cell, key_cols: usize) -> String {
     match c {
         Cell::Head(h) => h.to_string(),
         Cell::Key(k, what) => format!("{:<w$}{what}", cut(k, key_cols), w = key_cols),
-        Cell::Blank => String::new(),
     }
 }
 
@@ -213,13 +222,17 @@ mod tests {
             "PITCH",
             "ROLL",
             "BOOST",
-            "LOOK ROUND",
-            "SYSTEM MAP",
+            "LOOK HOLD",
+            "MAP / SHIP BAY",
             "SETTINGS MENU",
             "FIRE",
             "CHAOS DRIVE",
             "PRESS ANY KEY",
             "F1",
+            // The stick's menu convention, on the card in the glovebox.
+            "STICK",
+            "MENU ARROWS",
+            "HOLD FOR COMBOS",
         ] {
             assert!(text.contains(word), "no {word} on the card");
         }
@@ -227,7 +240,7 @@ mod tests {
         let mut b = Bindings::default();
         b.bind(Action::ThrustForward, KeyCode::KeyI);
         assert!(lines(&b).join("\n").contains("I S       THRUST"));
-        assert!(text.contains("M      SYSTEM MAP"));
+        assert!(text.contains("M B    MAP / SHIP BAY"));
         let [top, bottom] = rules(&Bindings::default());
         assert!(top.unwrap() < bottom.unwrap());
     }

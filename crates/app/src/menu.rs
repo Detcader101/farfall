@@ -843,10 +843,12 @@ impl Item {
             Item::AutoScale => one("graphics.auto-scale"),
             Item::Vsync => one("graphics.vsync"),
             Item::Bind(a) => vec![format!("control.{}", a.key())],
-            // A named control's row carries its key and its stick button.
+            // A named control's row carries its key and its stick button
+            // — plain, and the shifted layer (SHIFT held while binding).
             Item::BindNamed(n) => vec![
                 format!("control.{}", n.key()),
                 format!("stick.button.{}", n.key()),
+                format!("stick.shift-button.{}", n.key()),
             ],
             Item::Stick(i) => i.keys(),
             Item::Slot(i) => vec![format!("ui.{}", i.key())],
@@ -963,13 +965,19 @@ impl Item {
                     None => key_name(s.bindings.key_for(a)).to_string(),
                 }
             }
-            Item::BindNamed(n) => match s.stick.button_for(n) {
-                Some(b) => format!(
+            Item::BindNamed(n) => match (s.stick.button_for(n), s.stick.shifted[n as usize]) {
+                (Some(b), _) => format!(
                     "{} {}",
                     key_name(s.bindings.named(n)),
                     s.stick.button_name(Some(b))
                 ),
-                None => key_name(s.bindings.named(n)).to_string(),
+                // Only a shifted home: shown as the combo it is.
+                (None, Some(b)) => format!(
+                    "{} SH+{}",
+                    key_name(s.bindings.named(n)),
+                    s.stick.button_name(Some(b))
+                ),
+                (None, None) => key_name(s.bindings.named(n)).to_string(),
             },
             Item::Stick(i) => i.value(&s.stick, None),
             Item::Slot(i) => match s.layout.free(i) {
@@ -1451,14 +1459,20 @@ impl Menu {
     }
 
     /// A stick button pressed while a named control's row waits for a
-    /// bind: the button takes the control, beside its key.
-    pub fn stick_button(&mut self, button: u8, settings: &mut Settings) -> MenuEvent {
+    /// bind: the button takes the control, beside its key. With SHIFT
+    /// held the button lands on the control's *shifted* layer instead —
+    /// the same combo it will be pressed with.
+    pub fn stick_button(&mut self, button: u8, shift: bool, settings: &mut Settings) -> MenuEvent {
         if !self.rebinding {
             return MenuEvent::Nothing;
         }
         let items = self.items();
         if let Some(Item::BindNamed(n)) = items.get(self.cursor) {
-            settings.stick.bind_button(*n, Some(button));
+            if shift {
+                settings.stick.bind_shifted(*n, Some(button));
+            } else {
+                settings.stick.bind_button(*n, Some(button));
+            }
             self.rebinding = false;
             return MenuEvent::Changed(Change::Bindings);
         }
@@ -1639,9 +1653,16 @@ impl Menu {
                 self.open = false;
                 MenuEvent::Closed
             }
-            KeyCode::Tab if !self.standalone => {
+            // Brackets walk the tabs both ways (the stick's SHIFT+hat
+            // lands here); Tab keeps going forward.
+            KeyCode::Tab | KeyCode::BracketRight if !self.standalone => {
                 let i = Page::ALL.iter().position(|&p| p == self.page).unwrap_or(0);
                 self.set_page(Page::ALL[(i + 1) % Page::ALL.len()]);
+                MenuEvent::Nothing
+            }
+            KeyCode::BracketLeft if !self.standalone => {
+                let i = Page::ALL.iter().position(|&p| p == self.page).unwrap_or(0);
+                self.set_page(Page::ALL[(i + Page::ALL.len() - 1) % Page::ALL.len()]);
                 MenuEvent::Nothing
             }
             KeyCode::ArrowUp => {
@@ -2624,7 +2645,7 @@ mod tests {
         assert_eq!(m.value_of(boost, &s), "LSHIFT L1");
         assert_eq!(m.value_of(Item::Bind(Action::PitchUp), &s), "UP PITCH");
         assert_eq!(
-            m.stick_button(5, &mut s),
+            m.stick_button(5, false, &mut s),
             MenuEvent::Nothing,
             "not rebinding: ignored"
         );
@@ -2632,13 +2653,25 @@ mod tests {
         m.key(KeyCode::Enter, &mut s);
         assert!(m.rebinding());
         assert_eq!(
-            m.stick_button(5, &mut s),
+            m.stick_button(5, false, &mut s),
             MenuEvent::Changed(Change::Bindings)
         );
         assert_eq!(s.stick.button_for(Named::Boost), Some(5));
         assert_eq!(s.stick.button_for(Named::Landing), None, "B5 left LANDING");
         assert!(!m.rebinding());
         assert_eq!(m.value_of(boost, &s), "LSHIFT FACE D");
+        // SHIFT held while a row waits: the button lands on the shifted
+        // layer, and a shifted-only home shows as the combo it is.
+        m.key(KeyCode::Enter, &mut s);
+        assert!(m.rebinding());
+        assert_eq!(
+            m.stick_button(9, true, &mut s),
+            MenuEvent::Changed(Change::Bindings)
+        );
+        assert_eq!(s.stick.shifted[Named::Boost as usize], Some(9));
+        assert_eq!(s.stick.button_for(Named::Boost), Some(5), "plain kept");
+        s.stick.bind_button(Named::Boost, None);
+        assert_eq!(m.value_of(boost, &s), "LSHIFT SH+L2");
         for it in m.items() {
             assert!(
                 m.line(it, false, &s).len() <= COLS,
@@ -2655,6 +2688,14 @@ mod tests {
         assert!(m.open);
         m.key(KeyCode::Tab, &mut s);
         assert_eq!(m.page, Page::Controls);
+        // The brackets page both ways (the stick's SHIFT+hat): back to
+        // where Tab started, forward to where Tab went.
+        m.key(KeyCode::BracketLeft, &mut s);
+        assert_eq!(m.page, Page::ALL[0]);
+        m.key(KeyCode::BracketLeft, &mut s);
+        assert_eq!(m.page, *Page::ALL.last().unwrap(), "and wraps");
+        m.key(KeyCode::BracketRight, &mut s);
+        assert_eq!(m.page, Page::ALL[0]);
         assert_eq!(m.key(KeyCode::Escape, &mut s), MenuEvent::Closed);
         assert!(!m.open);
     }
