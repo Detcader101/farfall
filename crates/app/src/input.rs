@@ -142,8 +142,9 @@ pub enum Named {
     /// The hologram shows more of the space round the ship, or less.
     HoloOut,
     HoloIn,
-    /// Leave the ship, once it is landed. Today it answers "not yet": the
-    /// bind and the state machine are the hook the walk-out hangs on.
+    /// Leave the ship, once it is landed: the walk-out onto the surface
+    /// (SPEC §6.5b). On foot the same key boards the ship at the hull;
+    /// landed beside a pad it boards the helicopter first.
     Disembark,
 }
 

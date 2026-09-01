@@ -66,6 +66,7 @@ bench:
     FARFALL_BENCH_STICK=n: the stick wizard open at step n (0-based) with a stand-in detection on it
     FARFALL_BENCH_DEMAND=p,r,y,t: a parked pitch/roll/yaw/throttle demand, for the console stick mirror
     FARFALL_BENCH_LANDED / _DISEMBARK: parked on the ground, LANDED, on its gear; DISEMBARK pressed at once for its answer on the readout
+    FARFALL_BENCH_EVA: parked LANDED and already on foot — walked out a dozen metres, looking back at the ship, the suit's readout up
     FARFALL_BENCH_CHASE / _HOLO: the chase camera, the holo3PP
     FARFALL_BENCH_NEBULA=1|off: a full sky of nebula at twice the stock glow, or off for a baseline
     FARFALL_BENCH_HYPER / _WARP=s / _GHOST=age: the chaos drive's field up; the wormhole drive engaged at s; a WARP STOP after-image this old
@@ -231,11 +232,35 @@ features:
     e2e: "farfall-captures/landing/landed-1.png (FARFALL_BENCH_LANDED=1)"
 
   - id: disembark
-    name: "DISEMBARK (I, control.disembark): the hook for leaving the ship. Today it answers on the readout — DISEMBARK NOT YET when LANDED, NOT LANDED when down, LAND FIRST in flight — for four seconds; the LANDED readout names the key. The walk-out itself is SPEC §9 M5+"
+    name: "DISEMBARK (I, control.disembark): leave the ship. LANDED it walks out — the EVA walker, see eva-walk — unless a pad's helicopter is in boarding range, which the key boards first; NOT LANDED when down, LAND FIRST in flight, on the readout for four seconds; the LANDED readout names the key"
     state: tests-pass
-    tests: ["crates/app/src/input.rs::no_two_default_binds_share_a_key", "crates/app/src/landing.rs::every_readout_line_fits_the_panel_in_every_state", crates/app/src/menu.rs]
+    tests: ["crates/app/src/input.rs::no_two_default_binds_share_a_key", "crates/app/src/landing.rs::every_readout_line_fits_the_panel_in_every_state", "crates/app/src/lib.rs::disembark_walks_out_and_the_same_key_boards_back", crates/app/src/menu.rs]
     settings: [control.disembark]
     e2e: "farfall-captures/landing/disembark-1.png (FARFALL_BENCH_LANDED=1 FARFALL_BENCH_DISEMBARK=1)"
+
+  - id: eva-walk
+    name: "EVA on foot (SPEC 6.5b): DISEMBARK while LANDED leaves the seat — a first-person
+      walker beside the ship, app-side like the mimics, never in the sim, the golden hash
+      unmoved. The translation binds walk the body's analytic sphere (the ground the gear
+      stands on), BOOST's key runs, BRAKE's key jumps, gravity the body's own mu/r^2 in the
+      body's frame, the mouse look always engaged, ESC still menus. The ship stays LANDED
+      with its controls zeroed so it cannot leave without you; the jet pass shows the hull
+      from outside; the readout swaps to the suit's lines — the ship's distance, the key
+      reading BOARD in range at the hull — and the same key walks back in.
+      FARFALL_BENCH_EVA=1 stages it a dozen metres out, looking back at the ship"
+    state: tests-pass
+    tests: ["crates/app/src/eva.rs::a_standing_walker_stays_on_the_ground_through_a_thousand_steps",
+            "crates/app/src/eva.rs::walking_forward_carries_along_the_ground_not_off_it",
+            "crates/app/src/eva.rs::running_outpaces_walking",
+            "crates/app/src/eva.rs::a_jump_leaves_the_ground_and_gravity_brings_it_back",
+            "crates/app/src/eva.rs::mouse_right_turns_the_walker_right_and_up_looks_up",
+            "crates/app/src/eva.rs::the_gaze_stays_short_of_the_poles",
+            "crates/app/src/eva.rs::the_walk_out_stands_beside_the_ship_facing_the_hull",
+            "crates/app/src/eva.rs::the_camera_leans_with_the_planet",
+            "crates/app/src/eva.rs::the_suit_lines_name_the_ship_and_offer_the_key_in_range",
+            "crates/app/src/lib.rs::disembark_walks_out_and_the_same_key_boards_back"]
+    settings: [control.disembark]
+    e2e: "farfall-captures/eva/eva-1.png (FARFALL_BENCH_EVA=1)"
 
   - id: ladder-on-nose
     name: "Pitch ladder stays on the boresight under freelook"
