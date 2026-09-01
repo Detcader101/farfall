@@ -10,6 +10,33 @@
 //! points at through the same [`Named`] table the keyboard uses. A stick
 //! button bound to BOOST is BOOST: it presses the key BOOST is bound to.
 //!
+//! # The stick pilots the menus (the whole game, keyboard untouched)
+//!
+//! The keyboard and mouse stay reserved for the future on-foot controller;
+//! the stick is a complete parallel path. One convention, everywhere:
+//!
+//! - **BACK** (`stick.back`, BASE R on a HOTAS 4) is ESC: it opens the
+//!   menu in flight and backs out of any panel, card or wizard.
+//! - In any panel the **hat is the arrow keys** and the **trigger is
+//!   ENTER**. In DESIGN mode the hat is the element's size (up/down) and
+//!   tilt (left/right) and the trigger cycles its style.
+//! - **SHIFT** (`stick.shift`, BASE L) held is the one modifier layer —
+//!   Reforger-style combos, no other special cases:
+//!   - in flight, SHIFT+button/hat fires that control's *shifted* bind
+//!     (`stick.shift-button.*`) — the overflow layer that gives every
+//!     named control a stick home;
+//!   - in a panel, SHIFT+hat left/right walk the tabs and SHIFT+hat
+//!     up/down zoom the pane; SHIFT+trigger is always CAPTURE;
+//!   - in DESIGN mode, SHIFT+hat is rotate (left/right) and lean
+//!     (up/down);
+//!   - in the wizard, SHIFT+trigger is KEEP and SHIFT+hat is
+//!     back/skip/invert/clear — so the button steps can be walked while
+//!     plain presses stay data.
+//!
+//! The translation is [`StickMap::pilot`]; SHIFT and BACK are reserved —
+//! the wizard never learns them as bindings and a plain bind steals them
+//! away (one button, one job, across every role).
+//!
 //! Everything here is pure and windowless except the two readers at the
 //! bottom, so the mapping, the shaping and the wizard are all under test.
 
@@ -248,6 +275,30 @@ impl AxisMap {
     }
 }
 
+/// What is up on screen, for [`StickMap::pilot`]: the translation from a
+/// button press to a key differs by surface, the convention does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// Nothing over the world: buttons are their named binds.
+    Flight,
+    /// The settings menu, the CONTROLS card, the MAP or the SHIP bay.
+    Panel,
+    /// DESIGN mode: the hat works the element under the sight.
+    Design,
+    /// The stick wizard; `listening` is true on the steps that read
+    /// button presses as data (fire, back, shift, the named binds).
+    Wizard { listening: bool },
+}
+
+/// What a button press means: nothing, a key, or a named control (which
+/// presses the key that control is bound to).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pilot {
+    None,
+    Key(KeyCode),
+    Named(Named),
+}
+
 /// Which stick the raw indices are read as, for naming them: the wizard
 /// and the pages say TRIGGER and ROCKER rather than B0 and AXIS 4 once
 /// the stick has been identified. Set by the reader from the USB id.
@@ -295,6 +346,12 @@ pub struct StickMap {
     pub fire: Option<u8>,
     /// A button per named control, by [`Named`] index.
     pub buttons: [Option<u8>; Named::COUNT],
+    /// The modifier: held, every other control reads its shifted meaning.
+    pub shift: Option<u8>,
+    /// ESC on the stick: the menu in flight, back out of any panel.
+    pub back: Option<u8>,
+    /// The shifted layer: a button per named control while SHIFT is held.
+    pub shifted: [Option<u8>; Named::COUNT],
     /// How to name the raw indices (stick.layout; the reader sets it).
     pub layout: Layout,
     /// The lever hard back (the bottom ~5% of travel) holds the air brake.
@@ -328,14 +385,34 @@ impl StickMap {
             (Named::Assist, 7),
             (Named::Hyper, 8),
             (Named::WarpStop, 9),
-            (Named::Chase, 10),
-            (Named::Holo, 11),
             (Named::LookLock, HAT_BIT),
             (Named::Hold, HAT_BIT + 2),
             (Named::Weapon1, HAT_BIT + 3),
             (Named::Weapon2, HAT_BIT + 1),
         ] {
             buttons[n as usize] = Some(b);
+        }
+        // The shifted layer: mnemonic where it can be — the shifted
+        // trigger is the camera, shifted LANDING walks out, the shifted
+        // hat zooms the holo (up/down) and steps the render scale
+        // (left/right). Every named control has a stick home.
+        let mut shifted = [None; Named::COUNT];
+        for (n, b) in [
+            (Named::Capture, 0),
+            (Named::Chase, 1),
+            (Named::Trajectory, 2),
+            (Named::Engage, 3),
+            (Named::Bay, 4),
+            (Named::Disembark, 5),
+            (Named::Design, 6),
+            (Named::Appearance, 7),
+            (Named::Holo, 8),
+            (Named::HoloOut, HAT_BIT),
+            (Named::HoloIn, HAT_BIT + 2),
+            (Named::ScaleUp, HAT_BIT + 1),
+            (Named::ScaleDown, HAT_BIT + 3),
+        ] {
+            shifted[n as usize] = Some(b);
         }
         Self {
             enabled: true,
@@ -352,6 +429,9 @@ impl StickMap {
             throttle_zero: ThrottleZero::Centre,
             fire: Some(0),
             buttons,
+            shift: Some(10),
+            back: Some(11),
+            shifted,
             layout: Layout::Hotas4,
             throttle_brake: true,
             throttle_jump: true,
@@ -426,7 +506,11 @@ impl StickMap {
             }
         }
         for b in &buttons {
-            if self.fire == Some(*b) || self.buttons.contains(&Some(*b)) {
+            if self.fire == Some(*b)
+                || self.shift == Some(*b)
+                || self.back == Some(*b)
+                || self.buttons.contains(&Some(*b))
+            {
                 jobs += 1;
             } else {
                 free.push(self.button_name(Some(*b)));
@@ -448,6 +532,9 @@ impl StickMap {
             throttle_zero: ThrottleZero::Centre,
             fire: None,
             buttons: [None; Named::COUNT],
+            shift: None,
+            back: None,
+            shifted: [None; Named::COUNT],
             layout: Layout::Generic,
             throttle_brake: true,
             throttle_jump: true,
@@ -479,6 +566,37 @@ impl StickMap {
         self.fire = b;
     }
 
+    /// SHIFT itself, with the one-job rule: whoever had the button in a
+    /// plain role loses it.
+    pub fn bind_shift(&mut self, b: Option<u8>) {
+        if let Some(b) = b {
+            self.unbind_button(b);
+        }
+        self.shift = b;
+    }
+
+    /// BACK, likewise.
+    pub fn bind_back(&mut self, b: Option<u8>) {
+        if let Some(b) = b {
+            self.unbind_button(b);
+        }
+        self.back = b;
+    }
+
+    /// Give button `b` to named control `n` on the shifted layer. The
+    /// shifted layer is its own one-job space: SHIFT+B1 means one thing,
+    /// whatever plain B1 means.
+    pub fn bind_shifted(&mut self, n: Named, b: Option<u8>) {
+        if let Some(b) = b {
+            for slot in self.shifted.iter_mut() {
+                if *slot == Some(b) {
+                    *slot = None;
+                }
+            }
+        }
+        self.shifted[n as usize] = b;
+    }
+
     fn unbind_button(&mut self, b: u8) {
         for slot in self.buttons.iter_mut() {
             if *slot == Some(b) {
@@ -487,6 +605,12 @@ impl StickMap {
         }
         if self.fire == Some(b) {
             self.fire = None;
+        }
+        if self.shift == Some(b) {
+            self.shift = None;
+        }
+        if self.back == Some(b) {
+            self.back = None;
         }
     }
 
@@ -509,6 +633,106 @@ impl StickMap {
             .iter()
             .copied()
             .find(|n| self.buttons[*n as usize] == Some(b))
+    }
+
+    /// What the button means while SHIFT is held.
+    pub fn shifted_for_button(&self, b: u8) -> Option<Named> {
+        Named::ALL
+            .iter()
+            .copied()
+            .find(|n| self.shifted[*n as usize] == Some(b))
+    }
+
+    /// The whole stick-pilots-the-menus convention in one table: what a
+    /// button press means on this surface, with SHIFT held or not. The
+    /// module doc has the convention in prose; this is it in law.
+    pub fn pilot(&self, b: u8, shift: bool, surface: Surface) -> Pilot {
+        // BACK is ESC everywhere — before anything else can claim it.
+        if self.back == Some(b) {
+            return Pilot::Key(KeyCode::Escape);
+        }
+        // The modifier itself does nothing of its own.
+        if self.shift == Some(b) {
+            return Pilot::None;
+        }
+        let hat = (b >= HAT_BIT).then(|| b - HAT_BIT);
+        let fire = self.fire == Some(b);
+        match surface {
+            Surface::Flight => {
+                if shift {
+                    match self.shifted_for_button(b) {
+                        Some(n) => Pilot::Named(n),
+                        None => Pilot::None,
+                    }
+                } else if fire {
+                    // The trigger is the trigger: read as `stick_fire`
+                    // every frame, not as a key.
+                    Pilot::None
+                } else {
+                    match self.named_for_button(b) {
+                        Some(n) => Pilot::Named(n),
+                        None => Pilot::None,
+                    }
+                }
+            }
+            Surface::Panel => match (shift, hat) {
+                // The hat is the arrows; the trigger is ENTER.
+                (false, Some(0)) => Pilot::Key(KeyCode::ArrowUp),
+                (false, Some(1)) => Pilot::Key(KeyCode::ArrowRight),
+                (false, Some(2)) => Pilot::Key(KeyCode::ArrowDown),
+                (false, Some(3)) => Pilot::Key(KeyCode::ArrowLeft),
+                (false, None) if fire => Pilot::Key(KeyCode::Enter),
+                // SHIFT+hat: the tabs left/right, the pane's zoom up/down.
+                (true, Some(0)) => Pilot::Key(KeyCode::Equal),
+                (true, Some(1)) => Pilot::Key(KeyCode::BracketRight),
+                (true, Some(2)) => Pilot::Key(KeyCode::Minus),
+                (true, Some(3)) => Pilot::Key(KeyCode::BracketLeft),
+                (true, None) if fire => Pilot::Named(Named::Capture),
+                (true, _) => Pilot::None,
+                // Any other plain button keeps its flight meaning, so
+                // the MAP button closes the map it opened.
+                (false, _) => match self.named_for_button(b) {
+                    Some(n) => Pilot::Named(n),
+                    None => Pilot::None,
+                },
+            },
+            Surface::Design => match (shift, hat) {
+                // The element under the sight: size on the hat's
+                // vertical, tilt on its horizontal, style on the trigger —
+                (false, Some(0)) => Pilot::Key(KeyCode::Equal),
+                (false, Some(2)) => Pilot::Key(KeyCode::Minus),
+                (false, Some(3)) => Pilot::Key(KeyCode::Comma),
+                (false, Some(1)) => Pilot::Key(KeyCode::Period),
+                (false, None) if fire => Pilot::Key(KeyCode::Tab),
+                // — and shifted, rotate on the horizontal, lean on the
+                // vertical, the camera on the trigger.
+                (true, Some(3)) => Pilot::Key(KeyCode::Digit9),
+                (true, Some(1)) => Pilot::Key(KeyCode::Digit0),
+                (true, Some(0)) => Pilot::Key(KeyCode::Quote),
+                (true, Some(2)) => Pilot::Key(KeyCode::Semicolon),
+                (true, None) if fire => Pilot::Named(Named::Capture),
+                _ => Pilot::None,
+            },
+            Surface::Wizard { listening } => match (shift, hat) {
+                // SHIFT+trigger keeps, SHIFT+hat is back/skip/invert/
+                // clear — always, so the button steps can be walked
+                // while plain presses stay data for the detector.
+                (true, None) if fire => Pilot::Key(KeyCode::Enter),
+                (true, Some(3)) => Pilot::Key(KeyCode::KeyB),
+                (true, Some(1)) => Pilot::Key(KeyCode::KeyS),
+                (true, Some(0)) => Pilot::Key(KeyCode::KeyI),
+                (true, Some(2)) => Pilot::Key(KeyCode::KeyX),
+                // Where a plain press cannot be mistaken for a binding
+                // (the axis and knob steps, the summary), the plain
+                // trigger keeps and the plain hat adjusts.
+                (false, None) if fire && !listening => Pilot::Key(KeyCode::Enter),
+                (false, Some(3)) if !listening => Pilot::Key(KeyCode::ArrowLeft),
+                (false, Some(1)) if !listening => Pilot::Key(KeyCode::ArrowRight),
+                (false, Some(0)) if !listening => Pilot::Key(KeyCode::KeyI),
+                (false, Some(2)) if !listening => Pilot::Key(KeyCode::KeyX),
+                _ => Pilot::None,
+            },
+        }
     }
 
     /// Each flight control's shaped value in [-1, 1].
@@ -582,6 +806,8 @@ impl StickMap {
                 }
             }
             "fire" => self.fire = button_from_name(v),
+            "shift" => self.shift = button_from_name(v),
+            "back" => self.back = button_from_name(v),
             "throttle-brake" => self.throttle_brake = matches!(v, "on" | "true" | "1"),
             "throttle-jump" => self.throttle_jump = matches!(v, "on" | "true" | "1"),
             "layout" => {
@@ -592,7 +818,11 @@ impl StickMap {
                 }
             }
             other => {
-                if let Some(name) = other.strip_prefix("button.") {
+                if let Some(name) = other.strip_prefix("shift-button.") {
+                    if let Some(n) = Named::ALL.iter().copied().find(|n| n.key() == name) {
+                        self.shifted[n as usize] = button_from_name(v);
+                    }
+                } else if let Some(name) = other.strip_prefix("button.") {
                     if let Some(n) = Named::ALL.iter().copied().find(|n| n.key() == name) {
                         self.buttons[n as usize] = button_from_name(v);
                     }
@@ -632,6 +862,8 @@ impl StickMap {
             }
         ));
         out.push_str(&format!("stick.fire = {}\n", button_key(self.fire)));
+        out.push_str(&format!("stick.shift = {}\n", button_key(self.shift)));
+        out.push_str(&format!("stick.back = {}\n", button_key(self.back)));
         out.push_str(&format!(
             "stick.throttle-brake = {}\n",
             if self.throttle_brake { "on" } else { "off" }
@@ -645,6 +877,13 @@ impl StickMap {
                 "stick.button.{} = {}\n",
                 n.key(),
                 button_key(self.buttons[n as usize])
+            ));
+        }
+        for n in Named::ALL {
+            out.push_str(&format!(
+                "stick.shift-button.{} = {}\n",
+                n.key(),
+                button_key(self.shifted[n as usize])
             ));
         }
     }
@@ -746,6 +985,10 @@ pub enum StickItem {
     /// The lever slammed forward fires the chaos drive for two seconds.
     ThrottleJump,
     Fire,
+    /// The modifier button: held, the shifted layer is live.
+    Shift,
+    /// ESC on the stick.
+    Back,
 }
 
 impl StickItem {
@@ -759,6 +1002,8 @@ impl StickItem {
             StickItem::ThrottleBrake,
             StickItem::ThrottleJump,
             StickItem::Fire,
+            StickItem::Shift,
+            StickItem::Back,
         ]);
         v
     }
@@ -775,6 +1020,8 @@ impl StickItem {
             StickItem::ThrottleBrake => "LEVER BRAKE",
             StickItem::ThrottleJump => "LEVER JUMP",
             StickItem::Fire => "TRIGGER",
+            StickItem::Shift => "SHIFT",
+            StickItem::Back => "BACK",
         }
     }
 
@@ -804,6 +1051,8 @@ impl StickItem {
             StickItem::ThrottleBrake => if m.throttle_brake { "ON" } else { "OFF" }.to_string(),
             StickItem::ThrottleJump => if m.throttle_jump { "ON" } else { "OFF" }.to_string(),
             StickItem::Fire => m.button_name(m.fire),
+            StickItem::Shift => m.button_name(m.shift),
+            StickItem::Back => m.button_name(m.back),
         }
     }
 
@@ -849,6 +1098,12 @@ impl StickItem {
                 "SLAM THE LEVER FORWARD: THE CHAOS DRIVE FIRES FOR TWO SECONDS. A SMOOTH PUSH NEVER DOES."
             }
             StickItem::Fire => "THE STICK BUTTON THAT FIRES THE GUNS.",
+            StickItem::Shift => {
+                "HELD, EVERY CONTROL SHIFTS: ITS SHIFT BIND IN FLIGHT, TABS AND ZOOM IN A PANEL."
+            }
+            StickItem::Back => {
+                "ESC ON THE STICK: THE MENU IN FLIGHT, BACK OUT OF ANY PANEL, CARD OR WIZARD."
+            }
         }
     }
 
@@ -868,6 +1123,8 @@ impl StickItem {
             StickItem::ThrottleBrake => vec!["stick.throttle-brake".to_string()],
             StickItem::ThrottleJump => vec!["stick.throttle-jump".to_string()],
             StickItem::Fire => vec!["stick.fire".to_string()],
+            StickItem::Shift => vec!["stick.shift".to_string()],
+            StickItem::Back => vec!["stick.back".to_string()],
         }
     }
 
@@ -920,11 +1177,21 @@ impl StickItem {
                 m.throttle_jump = !m.throttle_jump;
                 true
             }
-            StickItem::Fire => {
+            StickItem::Fire | StickItem::Shift | StickItem::Back => {
+                let cur = match self {
+                    StickItem::Shift => m.shift,
+                    StickItem::Back => m.back,
+                    _ => m.fire,
+                };
                 let n = i32::from(MAX_BUTTONS) + 1;
-                let i = m.fire.map_or(0, |b| i32::from(b) + 1);
+                let i = cur.map_or(0, |b| i32::from(b) + 1);
                 let next = (i + if forward { 1 } else { n - 1 }) % n;
-                m.bind_fire((next > 0).then_some((next - 1) as u8));
+                let b = (next > 0).then_some((next - 1) as u8);
+                match self {
+                    StickItem::Shift => m.bind_shift(b),
+                    StickItem::Back => m.bind_back(b),
+                    _ => m.bind_fire(b),
+                }
                 true
             }
         }
@@ -1024,6 +1291,10 @@ pub enum Step {
     Deadzone,
     Curve,
     Fire,
+    /// The BACK button: ESC on the stick.
+    Back,
+    /// The SHIFT button: the modifier the combos hold.
+    Shift,
     Button(Named),
     Summary,
 }
@@ -1060,7 +1331,14 @@ const BUTTON_ORDER: [Named; Named::COUNT] = [
 
 fn steps() -> Vec<Step> {
     let mut v: Vec<Step> = Flight::ALL.iter().map(|&f| Step::Axis(f)).collect();
-    v.extend([Step::ThrottleZero, Step::Deadzone, Step::Curve, Step::Fire]);
+    v.extend([
+        Step::ThrottleZero,
+        Step::Deadzone,
+        Step::Curve,
+        Step::Fire,
+        Step::Back,
+        Step::Shift,
+    ]);
     v.extend(BUTTON_ORDER.iter().map(|&n| Step::Button(n)));
     v.push(Step::Summary);
     v
@@ -1137,11 +1415,25 @@ impl Wizard {
         self.detected
     }
 
+    /// True on the steps that read button presses as data — where a
+    /// plain press must not be spent on navigation.
+    pub fn listening(&self) -> bool {
+        matches!(
+            self.step(),
+            Step::Fire | Step::Back | Step::Shift | Step::Button(_)
+        )
+    }
+
     /// A reading from the stick: the first one on a step is where things
     /// rest; after that, the axis (or button) that has moved furthest
     /// from rest is what the pilot means. Re-evaluated every frame until
-    /// ENTER, so a wrong twitch is corrected by a right push.
-    pub fn feed(&mut self, s: Sample) {
+    /// ENTER, so a wrong twitch is corrected by a right push. The map's
+    /// SHIFT and BACK buttons are reserved for navigation and never
+    /// detected — to move one, bind another button over it first.
+    pub fn feed(&mut self, mut s: Sample, m: &StickMap) {
+        for b in [m.shift, m.back].into_iter().flatten() {
+            s.buttons &= !(1u32 << b);
+        }
         self.now = s;
         let Some(base) = self.baseline else {
             self.baseline = Some(s);
@@ -1166,7 +1458,7 @@ impl Wizard {
                     });
                 }
             }
-            Step::Fire | Step::Button(_) => {
+            Step::Fire | Step::Back | Step::Shift | Step::Button(_) => {
                 let fresh = s.buttons & !base.buttons;
                 if fresh != 0 {
                     self.detected = Some(Detected::Button(fresh.trailing_zeros() as u8));
@@ -1185,6 +1477,8 @@ impl Wizard {
                 positive: !StickMap::hotas4().axis(f).invert,
             }),
             Step::Fire => Some(Detected::Button(0)),
+            Step::Back => Some(Detected::Button(11)),
+            Step::Shift => Some(Detected::Button(10)),
             Step::Button(n) => Some(Detected::Button(
                 StickMap::hotas4().button_for(n).unwrap_or(4),
             )),
@@ -1224,6 +1518,14 @@ impl Wizard {
             }
             (Step::Fire, Some(Detected::Button(b))) => {
                 m.bind_fire(Some(b));
+                true
+            }
+            (Step::Back, Some(Detected::Button(b))) => {
+                m.bind_back(Some(b));
+                true
+            }
+            (Step::Shift, Some(Detected::Button(b))) => {
+                m.bind_shift(Some(b));
                 true
             }
             (Step::Button(n), Some(Detected::Button(b))) => {
@@ -1271,6 +1573,14 @@ impl Wizard {
                     }
                     Step::Fire => {
                         m.bind_fire(None);
+                        true
+                    }
+                    Step::Back => {
+                        m.bind_back(None);
+                        true
+                    }
+                    Step::Shift => {
+                        m.bind_shift(None);
                         true
                     }
                     Step::Button(n) => {
@@ -1392,6 +1702,26 @@ impl Wizard {
                 lines.push(format!("TRIGGER  (NOW {})", m.button_name(m.fire)));
                 lines.push("SQUEEZE THE TRIGGER".to_string());
                 lines.push("(FIRES THE GUNS)".to_string());
+                lines.push(String::new());
+                lines.push(match self.detected {
+                    Some(Detected::Button(b)) => format!("DETECTED {}", m.button_name(Some(b))),
+                    _ => "WAITING...".to_string(),
+                });
+            }
+            Step::Back => {
+                lines.push(format!("BACK  (NOW {})", m.button_name(m.back)));
+                lines.push("PRESS THE BUTTON FOR ESC".to_string());
+                lines.push("(THE MENU, AND OUT OF IT)".to_string());
+                lines.push(String::new());
+                lines.push(match self.detected {
+                    Some(Detected::Button(b)) => format!("DETECTED {}", m.button_name(Some(b))),
+                    _ => "WAITING...".to_string(),
+                });
+            }
+            Step::Shift => {
+                lines.push(format!("SHIFT  (NOW {})", m.button_name(m.shift)));
+                lines.push("PRESS THE BUTTON TO HOLD".to_string());
+                lines.push("FOR COMBOS (THE SHIFT LAYER)".to_string());
                 lines.push(String::new());
                 lines.push(match self.detected {
                     Some(Detected::Button(b)) => format!("DETECTED {}", m.button_name(Some(b))),
@@ -1954,12 +2284,12 @@ mod tests {
             hat: true,
         };
         let mut m2 = m;
-        m2.bind_button(Named::Chase, None);
+        m2.bind_button(Named::Boost, None);
         m2.bind_axis(Flight::Strafe, AxisMap::NONE);
         let (jobs, total, free) = m2.coverage(Some(&dev));
         assert_eq!(total, 21, "the driver's U axis is not a control");
         assert_eq!(jobs, 19);
-        assert!(free.contains(&"BASE L".to_string()) && free.contains(&"ROCKER".to_string()));
+        assert!(free.contains(&"L1".to_string()) && free.contains(&"ROCKER".to_string()));
         assert!(!free.contains(&"AXIS U".to_string()));
         // A stick nobody knows: coverage needs the device.
         let mut g = StickMap::empty();
@@ -1996,6 +2326,9 @@ mod tests {
         let mut m = StickMap::hotas4();
         m.bind_axis(Flight::Lift, AxisMap::at(3, true));
         m.bind_button(Named::Capture, Some(HAT_BIT + 2));
+        m.bind_shift(Some(9));
+        m.bind_back(Some(6));
+        m.bind_shifted(Named::Chase, Some(7));
         m.throttle_zero = ThrottleZero::Bottom;
         m.deadzone = 0.12;
         m.curve = 2.0;
@@ -2030,13 +2363,13 @@ mod tests {
         let mut m = StickMap::empty();
         assert_eq!(w.step(), Step::Axis(Flight::Pitch));
         // The first reading is where things rest — even off centre.
-        w.feed(sample(&[(3, 0.4)], &[]));
+        w.feed(sample(&[(3, 0.4)], &[]), &m);
         assert_eq!(w.detected(), None);
         // A small twitch on another axis does not count.
-        w.feed(sample(&[(3, 0.4), (0, 0.3)], &[]));
+        w.feed(sample(&[(3, 0.4), (0, 0.3)], &[]), &m);
         assert_eq!(w.detected(), None);
         // A push the other way on Y (nose-down first) is seen as inverted...
-        w.feed(sample(&[(3, 0.4), (1, -0.9)], &[]));
+        w.feed(sample(&[(3, 0.4), (1, -0.9)], &[]), &m);
         assert_eq!(
             w.detected(),
             Some(Detected::Axis {
@@ -2045,7 +2378,7 @@ mod tests {
             })
         );
         // ...and corrected by the pull back the prompt asked for.
-        w.feed(sample(&[(3, 0.4), (1, 0.9)], &[]));
+        w.feed(sample(&[(3, 0.4), (1, 0.9)], &[]), &m);
         assert_eq!(
             w.detected(),
             Some(Detected::Axis {
@@ -2058,8 +2391,8 @@ mod tests {
         assert_eq!(w.step(), Step::Axis(Flight::Yaw));
         assert_eq!(w.detected(), None, "a new step starts clean");
         // Twist left when asked for right: inverted, and I flips it back.
-        w.feed(Sample::default());
-        w.feed(sample(&[(5, -1.0)], &[]));
+        w.feed(Sample::default(), &m);
+        w.feed(sample(&[(5, -1.0)], &[]), &m);
         w.key(KeyCode::KeyI, &mut m);
         w.key(KeyCode::Enter, &mut m);
         assert_eq!(m.axis(Flight::Yaw), AxisMap::at(5, false));
@@ -2070,17 +2403,29 @@ mod tests {
         let mut w = Wizard::at_step(9);
         let mut m = StickMap::empty();
         assert_eq!(w.step(), Step::Fire);
-        w.feed(Sample::default());
-        w.feed(sample(&[], &[0]));
+        w.feed(Sample::default(), &m);
+        w.feed(sample(&[], &[0]), &m);
         assert_eq!(w.detected(), Some(Detected::Button(0)));
         assert_eq!(w.key(KeyCode::Enter, &mut m), WizardEvent::Changed);
         assert_eq!(m.fire, Some(0));
+        // The trigger is followed by BACK and SHIFT: the navigation
+        // buttons are learned before the named binds.
+        assert_eq!(w.step(), Step::Back);
+        w.feed(Sample::default(), &m);
+        w.feed(sample(&[], &[11]), &m);
+        assert_eq!(w.key(KeyCode::Enter, &mut m), WizardEvent::Changed);
+        assert_eq!(m.back, Some(11));
+        assert_eq!(w.step(), Step::Shift);
+        w.feed(Sample::default(), &m);
+        w.feed(sample(&[], &[10]), &m);
+        assert_eq!(w.key(KeyCode::Enter, &mut m), WizardEvent::Changed);
+        assert_eq!(m.shift, Some(10));
         assert_eq!(w.step(), Step::Button(Named::Boost));
         // A button already held when the step opened is not a press.
-        w.feed(sample(&[], &[0]));
-        w.feed(sample(&[], &[0]));
+        w.feed(sample(&[], &[0]), &m);
+        w.feed(sample(&[], &[0]), &m);
         assert_eq!(w.detected(), None);
-        w.feed(sample(&[], &[0, 1]));
+        w.feed(sample(&[], &[0, 1]), &m);
         assert_eq!(w.detected(), Some(Detected::Button(1)));
         // Skip leaves it be; back returns; X clears.
         assert_eq!(w.key(KeyCode::KeyS, &mut m), WizardEvent::Nothing);
@@ -2088,12 +2433,214 @@ mod tests {
         assert_eq!(w.step(), Step::Button(Named::Brake));
         w.key(KeyCode::KeyB, &mut m);
         assert_eq!(w.step(), Step::Button(Named::Boost));
-        w.key(KeyCode::KeyB, &mut m);
+        for _ in 0..3 {
+            w.key(KeyCode::KeyB, &mut m);
+        }
         assert_eq!(w.step(), Step::Fire);
         assert_eq!(w.key(KeyCode::KeyX, &mut m), WizardEvent::Changed);
         assert_eq!(m.fire, None);
         // Esc leaves at any point.
         assert_eq!(w.key(KeyCode::Escape, &mut m), WizardEvent::Done);
+    }
+
+    /// The wizard never learns the reserved buttons: SHIFT and BACK are
+    /// the navigation, so a press of either is not a detection.
+    #[test]
+    fn the_wizard_never_learns_the_shift_or_back_button() {
+        let mut w = Wizard::at_step(12);
+        let m = StickMap::hotas4();
+        assert_eq!(w.step(), Step::Button(Named::Boost));
+        w.feed(Sample::default(), &m);
+        w.feed(sample(&[], &[10]), &m);
+        assert_eq!(w.detected(), None, "SHIFT is reserved");
+        w.feed(sample(&[], &[11]), &m);
+        assert_eq!(w.detected(), None, "BACK is reserved");
+        w.feed(sample(&[], &[4]), &m);
+        assert_eq!(w.detected(), Some(Detected::Button(4)));
+    }
+
+    /// Every named control is reachable from the stock HOTAS 4 map — on
+    /// its plain layer or its shifted one. The point of the shift
+    /// convention: the whole game without the keyboard.
+    #[test]
+    fn the_stock_map_reaches_every_named_control() {
+        let m = StickMap::hotas4();
+        for n in Named::ALL {
+            assert!(
+                m.button_for(n).is_some() || m.shifted[n as usize].is_some(),
+                "{n:?} has no stick home"
+            );
+        }
+        assert!(m.shift.is_some() && m.back.is_some());
+        // And the shifted layer keeps the one-job rule to itself.
+        for n in Named::ALL {
+            let Some(b) = m.shifted[n as usize] else {
+                continue;
+            };
+            assert_eq!(m.shifted_for_button(b), Some(n), "SH+{b} means two things");
+        }
+    }
+
+    #[test]
+    fn a_button_has_one_job_across_the_shift_and_back_roles() {
+        let mut m = StickMap::hotas4();
+        m.bind_button(Named::Boost, Some(11));
+        assert_eq!(m.back, None, "BACK lost B11 to BOOST");
+        m.bind_back(Some(11));
+        assert_eq!(m.button_for(Named::Boost), None, "and BOOST lost it back");
+        m.bind_shift(Some(11));
+        assert_eq!(m.back, None, "SHIFT stole B11 from BACK");
+        // The shifted layer is its own space: SH+B4 moving to CHASE
+        // takes it from BAY without touching plain B4 (the MAP).
+        m.bind_shifted(Named::Chase, Some(4));
+        assert_eq!(m.shifted_for_button(4), Some(Named::Chase));
+        assert_eq!(m.shifted[Named::Bay as usize], None);
+        assert_eq!(m.button_for(Named::Map), Some(4));
+    }
+
+    /// BACK is ESC on every surface — the menu in flight, out of any
+    /// panel — and SHIFT itself never does anything of its own.
+    #[test]
+    fn back_is_esc_everywhere_and_shift_is_silent() {
+        let m = StickMap::hotas4();
+        for surface in [
+            Surface::Flight,
+            Surface::Panel,
+            Surface::Design,
+            Surface::Wizard { listening: true },
+            Surface::Wizard { listening: false },
+        ] {
+            for shift in [false, true] {
+                assert_eq!(
+                    m.pilot(11, shift, surface),
+                    Pilot::Key(KeyCode::Escape),
+                    "{surface:?}"
+                );
+                assert_eq!(m.pilot(10, shift, surface), Pilot::None, "{surface:?}");
+            }
+        }
+    }
+
+    /// In any panel the hat is the arrow keys and the trigger is ENTER;
+    /// a plain button keeps its flight meaning so the MAP button closes
+    /// the map it opened.
+    #[test]
+    fn the_hat_is_the_arrows_and_the_trigger_enter_in_a_panel() {
+        let m = StickMap::hotas4();
+        let p = |b, s| m.pilot(b, s, Surface::Panel);
+        assert_eq!(p(HAT_BIT, false), Pilot::Key(KeyCode::ArrowUp));
+        assert_eq!(p(HAT_BIT + 1, false), Pilot::Key(KeyCode::ArrowRight));
+        assert_eq!(p(HAT_BIT + 2, false), Pilot::Key(KeyCode::ArrowDown));
+        assert_eq!(p(HAT_BIT + 3, false), Pilot::Key(KeyCode::ArrowLeft));
+        assert_eq!(p(0, false), Pilot::Key(KeyCode::Enter));
+        assert_eq!(p(4, false), Pilot::Named(Named::Map));
+        // SHIFT+hat walks the tabs and zooms the pane; the shifted
+        // trigger is the camera, here as everywhere.
+        assert_eq!(p(HAT_BIT + 1, true), Pilot::Key(KeyCode::BracketRight));
+        assert_eq!(p(HAT_BIT + 3, true), Pilot::Key(KeyCode::BracketLeft));
+        assert_eq!(p(HAT_BIT, true), Pilot::Key(KeyCode::Equal));
+        assert_eq!(p(HAT_BIT + 2, true), Pilot::Key(KeyCode::Minus));
+        assert_eq!(p(0, true), Pilot::Named(Named::Capture));
+        assert_eq!(p(4, true), Pilot::None, "no shifted meaning in a panel");
+    }
+
+    /// DESIGN mode from the hat: size up/down, tilt left/right, style on
+    /// the trigger; shifted, rotate left/right and lean up/down.
+    #[test]
+    fn design_mode_pilots_the_element_from_the_hat() {
+        let m = StickMap::hotas4();
+        let p = |b, s| m.pilot(b, s, Surface::Design);
+        assert_eq!(p(HAT_BIT, false), Pilot::Key(KeyCode::Equal));
+        assert_eq!(p(HAT_BIT + 2, false), Pilot::Key(KeyCode::Minus));
+        assert_eq!(p(HAT_BIT + 3, false), Pilot::Key(KeyCode::Comma));
+        assert_eq!(p(HAT_BIT + 1, false), Pilot::Key(KeyCode::Period));
+        assert_eq!(p(0, false), Pilot::Key(KeyCode::Tab));
+        assert_eq!(p(HAT_BIT + 3, true), Pilot::Key(KeyCode::Digit9));
+        assert_eq!(p(HAT_BIT + 1, true), Pilot::Key(KeyCode::Digit0));
+        assert_eq!(p(HAT_BIT, true), Pilot::Key(KeyCode::Quote));
+        assert_eq!(p(HAT_BIT + 2, true), Pilot::Key(KeyCode::Semicolon));
+        assert_eq!(p(0, true), Pilot::Named(Named::Capture));
+        assert_eq!(p(4, false), Pilot::None, "no flight toggles in DESIGN");
+    }
+
+    /// The wizard from the stick alone: SHIFT+trigger keeps and SHIFT+hat
+    /// is back/skip/invert/clear on every step; where a plain press can't
+    /// be a binding the plain trigger and hat work too.
+    #[test]
+    fn the_wizard_is_pilotable_from_the_stick_alone() {
+        let m = StickMap::hotas4();
+        let listening = Surface::Wizard { listening: true };
+        let free = Surface::Wizard { listening: false };
+        for surface in [listening, free] {
+            assert_eq!(m.pilot(0, true, surface), Pilot::Key(KeyCode::Enter));
+            assert_eq!(
+                m.pilot(HAT_BIT + 3, true, surface),
+                Pilot::Key(KeyCode::KeyB)
+            );
+            assert_eq!(
+                m.pilot(HAT_BIT + 1, true, surface),
+                Pilot::Key(KeyCode::KeyS)
+            );
+            assert_eq!(m.pilot(HAT_BIT, true, surface), Pilot::Key(KeyCode::KeyI));
+            assert_eq!(
+                m.pilot(HAT_BIT + 2, true, surface),
+                Pilot::Key(KeyCode::KeyX)
+            );
+        }
+        // A button step: every plain press is data, never navigation.
+        for b in [0, 1, 4, HAT_BIT, HAT_BIT + 2] {
+            assert_eq!(m.pilot(b, false, listening), Pilot::None, "B{b}");
+        }
+        // An axis or knob step: the plain trigger keeps, the plain hat
+        // adjusts the knobs left/right.
+        assert_eq!(m.pilot(0, false, free), Pilot::Key(KeyCode::Enter));
+        assert_eq!(
+            m.pilot(HAT_BIT + 3, false, free),
+            Pilot::Key(KeyCode::ArrowLeft)
+        );
+        assert_eq!(
+            m.pilot(HAT_BIT + 1, false, free),
+            Pilot::Key(KeyCode::ArrowRight)
+        );
+        // And the wizard says which steps listen.
+        let mut w = Wizard::new();
+        assert!(!w.listening(), "an axis step reads axes, not buttons");
+        w = Wizard::at_step(9);
+        assert!(w.listening(), "the trigger step reads buttons");
+        w = Wizard::at_step(10);
+        assert!(w.listening(), "the BACK step reads buttons");
+    }
+
+    /// In flight, SHIFT+button is the shifted bind — the overflow layer —
+    /// and the plain button stays what it was.
+    #[test]
+    fn flight_buttons_shift_to_their_second_binds() {
+        let m = StickMap::hotas4();
+        assert_eq!(m.pilot(4, false, Surface::Flight), Pilot::Named(Named::Map));
+        assert_eq!(m.pilot(4, true, Surface::Flight), Pilot::Named(Named::Bay));
+        assert_eq!(
+            m.pilot(5, true, Surface::Flight),
+            Pilot::Named(Named::Disembark),
+            "shifted LANDING walks out"
+        );
+        assert_eq!(
+            m.pilot(0, true, Surface::Flight),
+            Pilot::Named(Named::Capture),
+            "the shifted trigger is the camera"
+        );
+        assert_eq!(
+            m.pilot(0, false, Surface::Flight),
+            Pilot::None,
+            "the plain trigger is stick_fire, not a key"
+        );
+        assert_eq!(
+            m.pilot(HAT_BIT, true, Surface::Flight),
+            Pilot::Named(Named::HoloOut)
+        );
+        assert_eq!(
+            m.pilot(HAT_BIT, false, Surface::Flight),
+            Pilot::Named(Named::LookLock)
+        );
     }
 
     #[test]
@@ -2107,6 +2654,7 @@ mod tests {
             assert!(steps.contains(&Step::Button(n)), "{n:?} has no step");
         }
         assert!(steps.contains(&Step::Fire));
+        assert!(steps.contains(&Step::Back) && steps.contains(&Step::Shift));
         assert_eq!(*steps.last().unwrap(), Step::Summary);
         assert_eq!(w.step_count(), steps.len());
         // Enter through everything with nothing detected ends on the summary.

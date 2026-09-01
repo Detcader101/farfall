@@ -1359,6 +1359,9 @@ struct Game {
     fire_held: bool,
     /// The trigger on the stick.
     stick_fire: bool,
+    /// What key each stick button pressed, so its release releases the
+    /// same key even if SHIFT or the surface changed in between.
+    stick_sent: [Option<KeyCode>; stick::MAX_BUTTONS as usize],
     /// The stick (a HOTAS through winmm / the Gamepad API), the wizard
     /// that maps it while it is up, and a frame count between the
     /// flight-log lines it writes.
@@ -1524,6 +1527,7 @@ impl Game {
             arms: arms::Arms::default(),
             fire_held: false,
             stick_fire: false,
+            stick_sent: [None; stick::MAX_BUTTONS as usize],
             stick: stick::Reader::default(),
             wizard: None,
             stick_log: 0,
@@ -6001,10 +6005,12 @@ fn redraw(
 }
 
 impl App {
-    /// The stick, once a frame: its axes into the input, its buttons as
-    /// the keys their controls are bound to, its trigger as the trigger
-    /// — or, while the wizard is up, everything into the wizard; or,
-    /// while a KEYS row waits for a bind, the button onto that row.
+    /// The stick, once a frame: its axes into the input, its buttons
+    /// through [`stick::StickMap::pilot`] — their named binds in flight
+    /// (shifted while SHIFT is held), the arrows/ENTER/ESC of whatever
+    /// panel is up, the wizard's navigation while plain presses stay its
+    /// data, or a KEYS row's waiting bind. The stick is a complete
+    /// parallel path to the keyboard; stick.rs's module doc is the map.
     fn poll_stick(&mut self, event_loop: &ActiveEventLoop) {
         let Some(game) = self.game.as_mut() else {
             return;
@@ -6038,44 +6044,66 @@ impl App {
             }
         }
         let (pressed, released) = game.stick.edges(sample);
-        if let Some(w) = game.wizard.as_mut() {
-            w.feed(sample);
-            game.input.set_stick([0.0; 6]);
-            game.input.set_stick_held(false, false);
-            game.stick_gestures.reset();
-            game.stick_fire = false;
-            return;
-        }
         let map = game.settings.stick;
-        if !map.enabled {
+        let shift_held = map.shift.is_some_and(|b| sample.button(b));
+        // What is up decides what a button means. The order is
+        // key_input's: the card over everything, then the wizard.
+        let surface = if game.card_open {
+            stick::Surface::Panel
+        } else if let Some(w) = game.wizard.as_mut() {
+            // The wizard reads the stick as data — except while SHIFT
+            // is held, which reserves everything for navigation.
+            if !shift_held {
+                w.feed(sample, &map);
+            }
+            stick::Surface::Wizard {
+                listening: w.listening(),
+            }
+        } else if game.design {
+            stick::Surface::Design
+        } else if game.menu.open || game.map_panel.open || game.bay_panel.open {
+            stick::Surface::Panel
+        } else {
+            stick::Surface::Flight
+        };
+        let wizard_up = matches!(surface, stick::Surface::Wizard { .. });
+        if wizard_up || !map.enabled {
             game.input.set_stick([0.0; 6]);
             game.input.set_stick_held(false, false);
             game.stick_gestures.reset();
             game.stick_fire = false;
-            return;
+            // Disabled means ignored entirely; the wizard still reads
+            // and pilots below, so it can be set up with the map off.
+            if !wizard_up {
+                return;
+            }
+        } else {
+            let axes = map.body_axes(&sample);
+            game.input.set_stick(axes);
+            game.stick_fire = surface == stick::Surface::Flight
+                && !shift_held
+                && map.fire.is_some_and(|b| sample.button(b));
+            // The throttle's gestures: the lever hard back holds the air
+            // brake; a slam forward is two seconds of chaos drive.
+            let t = game.started.elapsed().as_secs_f64();
+            let (gesture_brake, gesture_hyper) = game.stick_gestures.step(&map, &sample, t);
+            game.input.set_stick_held(gesture_brake, gesture_hyper);
+            // A flight-log line while the stick is doing something, a
+            // second apart: the evidence that the map is the right way up.
+            if game.stick_log > 0 {
+                game.stick_log -= 1;
+            } else if axes.iter().any(|v| v.abs() > 0.3) || sample.buttons != 0 {
+                let f = map.flight(&sample);
+                log::info!(
+                    "stick: pitch {:+.2} yaw {:+.2} roll {:+.2} throttle {:+.2} strafe {:+.2} lift {:+.2} buttons {:#x} -> thrust [{:+.2} {:+.2} {:+.2}] torque [{:+.2} {:+.2} {:+.2}]",
+                    f[0], f[1], f[2], f[3], f[4], f[5], sample.buttons,
+                    axes[0], axes[1], axes[2], axes[3], axes[4], axes[5]
+                );
+                game.stick_log = 60;
+            }
         }
-        let axes = map.body_axes(&sample);
-        game.input.set_stick(axes);
-        game.stick_fire = map.fire.is_some_and(|b| sample.button(b));
-        // The throttle's gestures: the lever hard back holds the air
-        // brake; a slam forward is two seconds of chaos drive.
-        let t = game.started.elapsed().as_secs_f64();
-        let (gesture_brake, gesture_hyper) = game.stick_gestures.step(&map, &sample, t);
-        game.input.set_stick_held(gesture_brake, gesture_hyper);
-        // A flight-log line while the stick is doing something, a
-        // second apart: the evidence that the map is the right way up.
-        if game.stick_log > 0 {
-            game.stick_log -= 1;
-        } else if axes.iter().any(|v| v.abs() > 0.3) || sample.buttons != 0 {
-            let f = map.flight(&sample);
-            log::info!(
-                "stick: pitch {:+.2} yaw {:+.2} roll {:+.2} throttle {:+.2} strafe {:+.2} lift {:+.2} buttons {:#x} -> thrust [{:+.2} {:+.2} {:+.2}] torque [{:+.2} {:+.2} {:+.2}]",
-                f[0], f[1], f[2], f[3], f[4], f[5], sample.buttons,
-                axes[0], axes[1], axes[2], axes[3], axes[4], axes[5]
-            );
-            game.stick_log = 60;
-        }
-        // Button edges, outside the borrow: each one is its key.
+        // Button edges, outside the borrow: each press through the pilot
+        // table, each release as whatever key its press sent.
         let mut edges: Vec<(u8, bool)> = Vec::new();
         for b in 0..stick::MAX_BUTTONS {
             let bit = 1u32 << b;
@@ -6095,12 +6123,29 @@ impl App {
                 if down { "down" } else { "up" }
             );
             if down && game.menu.open && game.menu.rebinding() {
-                let ev = game.menu.stick_button(b, &mut game.settings);
-                apply_menu_event(game, gpu, event_loop, ev);
+                let map = game.settings.stick;
+                if map.back == Some(b) {
+                    // BACK is ESC here too: the wait is cancelled.
+                    let ev = game.menu.key(KeyCode::Escape, &mut game.settings);
+                    apply_menu_event(game, gpu, event_loop, ev);
+                } else if map.shift != Some(b) {
+                    let ev = game.menu.stick_button(b, shift_held, &mut game.settings);
+                    apply_menu_event(game, gpu, event_loop, ev);
+                }
                 continue;
             }
-            if let Some(n) = game.settings.stick.named_for_button(b) {
-                let code = game.settings.bindings.named(n);
+            let code = if down {
+                let code = match game.settings.stick.pilot(b, shift_held, surface) {
+                    stick::Pilot::None => None,
+                    stick::Pilot::Key(c) => Some(c),
+                    stick::Pilot::Named(n) => Some(game.settings.bindings.named(n)),
+                };
+                game.stick_sent[b as usize] = code;
+                code
+            } else {
+                game.stick_sent[b as usize].take()
+            };
+            if let Some(code) = code {
                 self.key_input(event_loop, code, down, false);
             }
         }
