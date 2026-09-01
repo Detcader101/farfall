@@ -98,6 +98,12 @@ impl Instrument {
                 | Instrument::GVector
         )
     }
+
+    /// What a free anchor may be set on: the dials, and the mini map —
+    /// an overlay that nonetheless has a place of its own on the glass.
+    pub fn placeable(self) -> bool {
+        self.slotted() || self == Instrument::Map
+    }
 }
 
 /// A place on the glass.
@@ -244,7 +250,7 @@ impl Layout {
     /// safe edge), clamped to the glass. Only a shown dial can be placed;
     /// its slot is kept underneath for the menu to cycle from.
     pub fn set_free(&mut self, i: Instrument, anchor: [f32; 2]) {
-        if !i.slotted() || !self.shown(i) || !anchor[0].is_finite() || !anchor[1].is_finite() {
+        if !i.placeable() || !self.shown(i) || !anchor[0].is_finite() || !anchor[1].is_finite() {
             return;
         }
         self.free[i as usize] = Some([
@@ -338,6 +344,13 @@ mod tests {
         assert_eq!(l.free(Instrument::Speed), Some([FREE_LIMIT, -FREE_LIMIT]));
         l.set_free(Instrument::Horizon, [0.1, 0.1]);
         assert_eq!(l.free(Instrument::Horizon), None);
+        // The mini map is an overlay with a place of its own: a free
+        // anchor sticks, and cycling it off-and-on lets go.
+        l.set_free(Instrument::Map, [0.5, 0.5]);
+        assert_eq!(l.free(Instrument::Map), Some([0.5, 0.5]));
+        assert_eq!(l.anchor(Instrument::Map), Some([0.45, 0.45]));
+        l.set(Instrument::Map, Slot::On);
+        assert_eq!(l.free(Instrument::Map), None);
         l.set(Instrument::Gyro, Slot::Off);
         l.set_free(Instrument::Gyro, [0.1, 0.1]);
         assert_eq!(l.free(Instrument::Gyro), None);

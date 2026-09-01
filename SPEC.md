@@ -370,6 +370,11 @@ Each milestone ends with a demonstrable artifact and its acceptance tests green.
    scale as a debug slider; it's one parameter. (free)
 6. **WebXR/WebGPU binding timeline** — revisit the spec's Editor's-Draft status at
    M4; if Quest Browser ships it stable, `WebXrView` may skip the WebGL2 lane.
+7. **Multiplayer, by artefacts first** — the shareable HUD file (`.fhud`,
+   `crates/app/src/hud_file.rs`) is the first player-to-player artefact: layouts
+   travel between players today, by hand. The direction is more artefacts
+   (ship fits, flight recordings) before live netcode; question 4 picks the
+   transport when the spike comes.
 
 ## 12. Deltas from the 2026-08-19 research doc (docs/RESEARCH-2026-08.md)
 

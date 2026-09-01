@@ -28,6 +28,8 @@ struct Gauge {
     p1: vec4<f32>,
     p2: vec4<f32>,
     p3: vec4<f32>,
+    // x: sideways lean, y: in-plane rotation (radians); zw unused.
+    e: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> gauge: Gauge;
@@ -85,16 +87,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let in_dash = gauge.p3.w > 0.0;
     var p = (canopy(in.ndc, aspect) - canopy(anchor, aspect)) / max(gauge.p0.w, 0.25);
     if (in_dash) {
-        let duv = dial_plane_uv(in.ndc, aspect, gauge.p0, gauge.p1, gauge.p2, gauge.p3, DIAL_DASH_N);
+        let duv = dial_plane_uv(in.ndc, aspect, gauge.p0, gauge.p1, gauge.p2, gauge.p3,
+                                DIAL_DASH_N, gauge.e.x, gauge.e.y);
         if (duv.z < 0.5) {
             discard;
         }
         p = duv.xy / DASH_FIT;
     } else {
-        let tilt = gauge.p1.w;
-        let lean = max(cos(tilt), 0.35);
-        let persp = 1.0 - 0.35 * sin(tilt) * p.y / 0.2;
-        p = vec2<f32>(p.x * persp, p.y / lean * persp);
+        p = dial_glass_uv(p, gauge.p1.w, gauge.e.x, gauge.e.y);
     }
     let radius = RADIUS;
     if (length(p) > radius * 1.5 + 0.06) {

@@ -16,6 +16,7 @@ mod card;
 mod cockpit;
 mod heli;
 mod hold;
+mod hud_file;
 mod input;
 mod landing;
 mod look;
@@ -27,6 +28,7 @@ mod panel;
 mod readout;
 mod settings;
 mod shake;
+mod stick;
 mod warp;
 
 use cockpit::Instrument;
@@ -148,6 +150,25 @@ fn apply_menu_event(
             gpu.nebula
                 .bake(&gpu.device, &gpu.queue, nebula_params(&game.settings));
         }
+        MenuEvent::SaveHud => match hud_file::save(&game.settings, game.hud_loaded) {
+            Some((n, path)) => {
+                game.hud_loaded = Some(n);
+                log::info!("hud: saved {}", path.display());
+            }
+            None => log::warn!("hud: nowhere to save (no home directory)"),
+        },
+        MenuEvent::LoadHud(pick) => {
+            if pick == 0 {
+                game.settings = hud_file::apply(&game.settings, "");
+                game.hud_loaded = None;
+                log::info!("hud: the stock cockpit");
+            } else if let Some((n, s)) = hud_file::load(&game.settings, pick) {
+                game.settings = s;
+                game.hud_loaded = Some(n);
+                log::info!("hud: wearing hud-{n}");
+            }
+            game.settings.save();
+        }
         MenuEvent::Quit => {
             game.log_exit("menu quit");
             event_loop.exit();
@@ -156,6 +177,8 @@ fn apply_menu_event(
             game.settings.save();
             game.engage_warp();
         }
+        // The wizard sits over the open menu: same pause, same panel.
+        MenuEvent::StickWizard => game.wizard = Some(stick::Wizard::new()),
         MenuEvent::Closed | MenuEvent::Nothing => {}
     }
 }
@@ -289,6 +312,10 @@ struct DialEffective {
     stay: bool,
     /// Leaned toward the pilot, radians.
     tilt: f32,
+    /// Leaned sideways about its own upright, radians.
+    lean: f32,
+    /// The face turned in its own plane, radians.
+    rotate: f32,
 }
 
 /// The ship as it was at a WARP STOP: where the after-image comes from.
@@ -309,6 +336,8 @@ enum Dragged {
     Readout,
     /// The map pane with its DRIVE panel.
     MapPanel,
+    /// The mini map, a gauge on the glass.
+    MiniMap,
     /// The holo3PP panel.
     HoloPanel,
     /// The SHIP bay's hologram pane with its card.
@@ -322,10 +351,24 @@ impl Dragged {
             Dragged::MenuPanel => "SETTINGS PANEL",
             Dragged::Readout => "READOUT",
             Dragged::MapPanel => "MAP",
+            Dragged::MiniMap => "MINI MAP",
             Dragged::HoloPanel => "HOLO3PP",
             Dragged::BayPanel => "SHIP BAY",
         }
     }
+}
+
+/// Something DESIGN mode can select: a dial, or one of the other glass
+/// elements — each with its own card and keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesignEl {
+    Dial(Instrument),
+    /// The holo3PP: the ship's hologram over the dash.
+    Holo,
+    /// The mini map pane.
+    MiniMap,
+    /// The text readout's block.
+    Readout,
 }
 
 /// What the text readout shows this frame.
@@ -400,11 +443,18 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_DISEMBARK=1 (benchmark only: DISEMBARK pressed at once,
 ///                           for its answer on the readout)
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
-///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times)
+///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times,
+///                           0..8; 2 is the STICK page)
+///   FARFALL_BENCH_STICK=n  (benchmark only: the stick wizard open at step n
+///                           (0-based), with a stand-in detection on it)
+///   FARFALL_BENCH_DEMAND=p,r,y,t (benchmark only: a parked pitch/roll/yaw/
+///                           throttle demand, for the console stick's mirror)
 ///   FARFALL_BENCH_CARD=1   (benchmark only: the CONTROLS card up, as on the first run)
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_NEBULA=1|off (benchmark only: a full sky of nebula at
 ///                           twice the stock glow, or off for a baseline)
+///   FARFALL_BENCH_DUST=k   (benchmark only: the DUST setting for this run,
+///                           0..2 — the motes and space dust on their own)
 ///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
 ///                           many seconds old AT THE CAPTURE — halfway
 ///                           through the bench — ahead and a little banked;
@@ -448,6 +498,8 @@ const MACH1_MPS: f64 = 340.0;
 ///                           post pass, the map and the text, instead of the
 ///                           scene target)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
+///   FARFALL_HUD=path       (wear a saved HUD layout file (.fhud) for this
+///                           run — see crates/app/src/hud_file.rs)
 ///   FARFALL_MUTE=1         (no audio stream at all)
 ///   FARFALL_BENCH_WARP=s   (benchmark only: engage the wormhole drive s
 ///                           seconds in, so the sequence can be captured)
@@ -798,9 +850,9 @@ impl Gpu {
             ) {
                 let a = layout.anchor(i)?;
                 let dir = farfall_render::cabin::anchor_direction(a, ref_tan, cam.aspect);
-                if let Some(p) =
-                    farfall_render::cabin::Placement::in_dash(head, t, dir, tw.size, tw.tilt)
-                {
+                if let Some(p) = farfall_render::cabin::Placement::in_dash(
+                    head, t, dir, tw.size, tw.tilt, tw.lean,
+                ) {
                     return Some(p);
                 }
             }
@@ -822,7 +874,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::Speed))
             .warthog(warthog(Instrument::Speed))
-            .placed(placed(Instrument::Speed)),
+            .placed(placed(Instrument::Speed))
+            .oriented(
+                tweak(Instrument::Speed).lean,
+                tweak(Instrument::Speed).rotate,
+            ),
         );
         let (alt_anchor, alt_on) = slot_of(layout, look, cam, ref_tan, Instrument::Altitude);
         self.passes.alt_gauge.update(
@@ -838,7 +894,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::Altitude))
             .warthog(warthog(Instrument::Altitude))
-            .placed(placed(Instrument::Altitude)),
+            .placed(placed(Instrument::Altitude))
+            .oriented(
+                tweak(Instrument::Altitude).lean,
+                tweak(Instrument::Altitude).rotate,
+            ),
         );
         let (g_anchor, g_on) = slot_of(layout, look, cam, ref_tan, Instrument::GForce);
         self.passes.g_gauge.update(
@@ -854,7 +914,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::GForce))
             .warthog(warthog(Instrument::GForce))
-            .placed(placed(Instrument::GForce)),
+            .placed(placed(Instrument::GForce))
+            .oriented(
+                tweak(Instrument::GForce).lean,
+                tweak(Instrument::GForce).rotate,
+            ),
         );
         let (gv_anchor, gv_on) = slot_of(layout, look, cam, ref_tan, Instrument::GVector);
         self.passes.gvec.update(
@@ -870,7 +934,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::GVector))
             .warthog(warthog(Instrument::GVector))
-            .placed(placed(Instrument::GVector)),
+            .placed(placed(Instrument::GVector))
+            .oriented(
+                tweak(Instrument::GVector).lean,
+                tweak(Instrument::GVector).rotate,
+            ),
         );
         let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, ref_tan, Instrument::Gyro);
         // Each dial's patch of the target: a full-screen pass that discards
@@ -900,6 +968,7 @@ impl Gpu {
             .jet(jet(Instrument::Gyro))
             .warthog(warthog(Instrument::Gyro))
             .placed(placed(Instrument::Gyro))
+            .oriented(tweak(Instrument::Gyro).lean, tweak(Instrument::Gyro).rotate)
             .ball_if(game.gyro_ball(cam, tweak(Instrument::Gyro))),
         );
         // The design guide: the glass ruled, every shown dial's anchor and
@@ -911,13 +980,27 @@ impl Gpu {
             } else {
                 look.gaze(ref_tan, cam.aspect)
             };
-            let anchors: Vec<[f32; 2]> = Instrument::ALL
+            let mut anchors: Vec<[f32; 2]> = Instrument::ALL
                 .iter()
                 .copied()
                 .filter(|i| i.slotted())
                 .filter_map(|i| layout.anchor(i))
+                .collect();
+            // The other glass elements DESIGN mode can take are marked
+            // on the guide too: holo3PP, mini map, readout.
+            if game.holo_active() {
+                anchors.push(game.settings.holo_anchor);
+            }
+            if game.mini_map_shown() {
+                anchors.push(layout.inset(game.mini_map_anchor()));
+            }
+            if layout.shown(Instrument::Readout) {
+                anchors.push(game.settings.readout_anchor);
+            }
+            let anchors: Vec<[f32; 2]> = anchors
+                .into_iter()
                 .map(|a| on_glass(look, cam, ref_tan, a))
-                .take(6)
+                .take(8)
                 .collect();
             self.passes.guide.update(
                 &self.queue,
@@ -1253,6 +1336,9 @@ struct Game {
     /// locked, the dial under the gaze selected and its own settings on a
     /// card beside it.
     design: bool,
+    /// The HUD file worn or saved last (its hud-<n> number), so SAVE HUD
+    /// overwrites it rather than piling up copies.
+    hud_loaded: Option<u32>,
     /// The CONTROLS card is up: any key puts it away.
     card_open: bool,
     /// LANDING mode (G): the hoops close up and judge the touchdown.
@@ -1279,6 +1365,18 @@ struct Game {
     /// The arms, and the trigger.
     arms: arms::Arms,
     fire_held: bool,
+    /// The trigger on the stick.
+    stick_fire: bool,
+    /// The stick (a HOTAS through winmm / the Gamepad API), the wizard
+    /// that maps it while it is up, and a frame count between the
+    /// flight-log lines it writes.
+    stick: stick::Reader,
+    wizard: Option<stick::Wizard>,
+    stick_log: u32,
+    /// The throttle gestures: lever hard back brakes, a slam bursts.
+    stick_gestures: stick::Gestures,
+    /// FARFALL_BENCH_DEMAND: a parked demand the poll must not stomp.
+    bench_demand: bool,
     /// The mimics — ships in the rocks — and what the guns bring in.
     mimics: mimic::Mimics,
     haul: mimic::Haul,
@@ -1453,6 +1551,7 @@ impl Game {
                 (xs.len() == 4).then(|| [xs[0], xs[1], xs[2], xs[3]])
             }),
             design: false,
+            hud_loaded: None,
             card_open: false,
             landing: false,
             touchdown: None,
@@ -1467,6 +1566,12 @@ impl Game {
             belt: belt::Belt::default(),
             arms: arms::Arms::default(),
             fire_held: false,
+            stick_fire: false,
+            stick: stick::Reader::default(),
+            wizard: None,
+            stick_log: 0,
+            stick_gestures: stick::Gestures::default(),
+            bench_demand: false,
             mimics: mimic::Mimics::default(),
             haul: mimic::Haul::default(),
             helis,
@@ -1489,6 +1594,14 @@ impl Game {
             strike_rng: 0x9E37_79B9,
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
+        }
+    }
+
+    /// The settings panel's text: the wizard while it is up, else the menu.
+    fn render_menu(&self, text: &mut TextBitmap) {
+        match &self.wizard {
+            Some(w) => w.render(text, &self.settings.stick, self.stick.device.as_ref()),
+            None => self.menu.render(text, &self.settings),
         }
     }
 
@@ -1549,7 +1662,7 @@ impl Game {
         };
         // The full map on M; else the mini map, a gauge on the glass at
         // its anchor, re-projected like a dial, with no dim round it.
-        let mini = !self.map_open() && self.mini_map_on();
+        let mini = !self.map_open() && self.mini_map_shown();
         let look = map::MapLook {
             view: self.map_view,
             rings: self.settings.map_rings,
@@ -1559,13 +1672,13 @@ impl Game {
             time_s,
             centre: if mini {
                 let cam = self.camera(aspect);
-                let a = self.settings.layout.inset(map::MINI_ANCHOR);
+                let a = self.settings.layout.inset(self.mini_map_anchor());
                 on_glass(&self.look, &cam, self.ref_tan(), a)
             } else {
                 self.settings.map_anchor
             },
             half_h: if mini {
-                map::MINI_HALF_H
+                self.mini_map_half_h()
             } else {
                 map::PANE_HALF_H
             },
@@ -1621,10 +1734,31 @@ impl Game {
         self.map_panel.open
     }
 
-    /// The mini map is a stock gauge: shown on the glass while no panel
-    /// covers it and the view is the cockpit's.
-    fn mini_map_on(&self) -> bool {
-        self.settings.layout.shown(Instrument::Map) && !self.panel_open() && !self.chase_active()
+    /// The mini map is a stock gauge: shown on the glass while no pane or
+    /// card covers it and the view is the cockpit's. DESIGN mode keeps it
+    /// up — it is one of the things being laid out.
+    fn mini_map_shown(&self) -> bool {
+        let covered =
+            self.menu.open || self.map_panel.open || self.bay_panel.open || self.card_open;
+        self.settings.layout.shown(Instrument::Map) && !covered && !self.chase_active()
+    }
+
+    /// Where the mini map's centre sits before the safe-edge inset: the
+    /// stock corner, or wherever the pilot dragged it (kept on ui.map).
+    fn mini_map_anchor(&self) -> [f32; 2] {
+        self.settings
+            .layout
+            .free(Instrument::Map)
+            .unwrap_or(map::MINI_ANCHOR)
+    }
+
+    /// The mini map's half height: the stock pane times its own SIZE
+    /// (ui.map.size) — a gauge, sized like any dial.
+    fn mini_map_half_h(&self) -> f32 {
+        map::MINI_HALF_H
+            * self.settings.dials[Instrument::Map as usize]
+                .size
+                .clamp(settings::DIAL_SIZE_MIN, settings::DIAL_SIZE_MAX)
     }
 
     /// The SHIP bay (and its card) is up.
@@ -1939,11 +2073,14 @@ impl Game {
             return Self::centred_card([0.0, 0.05], card::extent(), px, aspect);
         }
         if self.design {
-            // Beside the selected dial, or where the readout lives.
-            return match self
-                .design_target(aspect)
-                .and_then(|i| self.settings.layout.anchor(i))
-            {
+            // Beside the selected element, or where the readout lives.
+            let anchor = self.design_target(aspect).and_then(|el| match el {
+                DesignEl::Dial(i) => self.settings.layout.anchor(i),
+                DesignEl::Holo => Some(self.settings.holo_anchor),
+                DesignEl::MiniMap => Some(self.settings.layout.inset(self.mini_map_anchor())),
+                DesignEl::Readout => Some(self.settings.readout_anchor),
+            });
+            return match anchor {
                 Some(a) => [a[0] + 0.2, a[1] + 0.12],
                 None => self.settings.readout_anchor,
             };
@@ -1996,6 +2133,7 @@ impl Game {
                     },
                     size: tw.size,
                     tilt: tw.tilt,
+                    lean: tw.lean,
                 }
             })
             .take(6)
@@ -2008,7 +2146,21 @@ impl Game {
             thrust: self.thrust_look(),
         };
         let fit = bay::fit_views(&self.settings.mounts);
-        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets, &fit);
+        // The console's control column mirrors the live demand (HOTAS
+        // or keys): pitch, roll, yaw, throttle in the pilot's sense.
+        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets, &fit).with_stick(
+            if self.settings.cockpit_stick {
+                let c = self.input.controls(self.assist);
+                [
+                    c.torque_body.x as f32,
+                    -c.torque_body.z as f32,
+                    -c.torque_body.y as f32,
+                    -c.thrust_body.z as f32,
+                ]
+            } else {
+                [0.0; 4]
+            },
+        );
         let bu = cu.blit(look).with_time(cam.time_s);
         (cu, bu)
     }
@@ -2140,7 +2292,9 @@ impl Game {
     /// The pause panel's chosen row, for the card's band: (top, height)
     /// in font pixels.
     fn highlight_row(&self) -> Option<(f32, f32)> {
-        if self.menu.open {
+        if self.wizard.is_some() {
+            None
+        } else if self.menu.open {
             Some(self.menu.cursor_row_px())
         } else if self.map_panel.open {
             Some(self.map_panel.cursor_row_px())
@@ -2193,7 +2347,16 @@ impl Game {
             return 1.0;
         }
         let t = (cam.fov_y * 0.5).tan().max(1e-4);
-        (self.ref_tan() / t).clamp(0.4, 1.25)
+        let base = (self.ref_tan() / t).clamp(0.4, 1.25);
+        // In flight the block is the readout — a glass element with its
+        // own SIZE (ui.readout.size), scaled like any dial.
+        if self.panel_open() {
+            base
+        } else {
+            base * self.settings.dials[Instrument::Readout as usize]
+                .size
+                .clamp(settings::DIAL_SIZE_MIN, settings::DIAL_SIZE_MAX)
+        }
     }
 
     /// How fast it looks, 0..1, for the picture's streaks and cool rim:
@@ -2225,6 +2388,8 @@ impl Game {
             style: settings::style_for(tw.style.unwrap_or(self.settings.gauge_style), i),
             stay: tw.stay.unwrap_or(self.settings.gauges_stay),
             tilt: tw.tilt_deg.to_radians(),
+            lean: tw.lean_deg.to_radians(),
+            rotate: tw.rotate_deg.to_radians(),
         }
     }
 
@@ -2243,18 +2408,53 @@ impl Game {
         log::info!("design mode {}", if self.design { "on" } else { "off" });
     }
 
-    /// The dial under the pointer (within reach), in design mode.
-    fn design_target(&self, aspect: f32) -> Option<Instrument> {
+    /// The element under the pointer (within reach), in design mode: the
+    /// nearest of the dials, the holo3PP, the mini map and the readout.
+    fn design_target(&self, aspect: f32) -> Option<DesignEl> {
         let gaze = self.design_pointer(aspect)?;
-        let mut best: Option<(Instrument, f32)> = None;
+        let dist = |a: [f32; 2]| {
+            let dx = (a[0] - gaze[0]) * aspect;
+            let dy = a[1] - gaze[1];
+            (dx * dx + dy * dy).sqrt()
+        };
+        let mut best: Option<(DesignEl, f32)> = None;
+        let mut offer = |el: DesignEl, d: f32| {
+            if best.is_none_or(|b| d < b.1) {
+                best = Some((el, d));
+            }
+        };
         for i in Instrument::ALL.iter().copied().filter(|i| i.slotted()) {
             if let Some(a) = self.settings.layout.anchor(i) {
-                let dx = (a[0] - gaze[0]) * aspect;
-                let dy = a[1] - gaze[1];
-                let d = (dx * dx + dy * dy).sqrt();
-                if d < DRAG_REACH && best.is_none_or(|b| d < b.1) {
-                    best = Some((i, d));
+                let d = dist(a);
+                if d < DRAG_REACH {
+                    offer(DesignEl::Dial(i), d);
                 }
+            }
+        }
+        if self.holo_active() {
+            let a = self.settings.holo_anchor;
+            let r = self.settings.holo_size * 0.9;
+            if (gaze[0] - a[0]).abs() <= r + 0.02 && (gaze[1] - a[1]).abs() <= r + 0.02 {
+                offer(DesignEl::Holo, dist(a));
+            }
+        }
+        if self.mini_map_shown() {
+            let a = self.settings.layout.inset(self.mini_map_anchor());
+            let [cx, cy, hw] = map::pane_rect_sized(aspect, a, self.mini_map_half_h());
+            let hh = hw * aspect;
+            if (gaze[0] - cx).abs() <= hw + 0.02 && (gaze[1] - cy).abs() <= hh + 0.02 {
+                offer(DesignEl::MiniMap, dist([cx, cy]));
+            }
+        }
+        if self.settings.layout.shown(Instrument::Readout) {
+            // The block hangs down-right of its top-left anchor.
+            let a = self.settings.readout_anchor;
+            if gaze[0] >= a[0] - 0.02
+                && gaze[0] <= a[0] + 0.6
+                && gaze[1] <= a[1] + 0.02
+                && gaze[1] >= a[1] - 0.45
+            {
+                offer(DesignEl::Readout, dist([a[0] + 0.25, a[1] - 0.2]));
             }
         }
         best.map(|b| b.0)
@@ -2267,43 +2467,134 @@ impl Game {
         self.cursor_on_glass(&cam)
     }
 
-    /// A key in design mode: the selected dial's own settings.
+    /// A key in design mode: the selected element's own settings.
     fn design_key(&mut self, code: KeyCode, aspect: f32) {
-        let Some(i) = self.design_target(aspect) else {
+        let Some(el) = self.design_target(aspect) else {
             return;
         };
-        let d = &mut self.settings.dials[i as usize];
-        match code {
-            KeyCode::Equal | KeyCode::NumpadAdd => {
-                d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+        match el {
+            DesignEl::Dial(i) => {
+                let d = &mut self.settings.dials[i as usize];
+                match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => {
+                        d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+                    }
+                    KeyCode::Minus | KeyCode::NumpadSubtract => {
+                        d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+                    }
+                    KeyCode::Tab => d.style = settings::next_dial_style(d.style, i, true),
+                    KeyCode::Comma => {
+                        d.tilt_deg = (d.tilt_deg - 5.0).max(settings::TILT_MIN);
+                    }
+                    KeyCode::Period => {
+                        d.tilt_deg = (d.tilt_deg + 5.0).min(settings::TILT_MAX);
+                    }
+                    KeyCode::Semicolon => {
+                        d.lean_deg = (d.lean_deg - 5.0).max(settings::TILT_MIN);
+                    }
+                    KeyCode::Quote => {
+                        d.lean_deg = (d.lean_deg + 5.0).min(settings::TILT_MAX);
+                    }
+                    KeyCode::Digit9 => {
+                        d.rotate_deg = (d.rotate_deg - 15.0).max(settings::ROTATE_MIN);
+                    }
+                    KeyCode::Digit0 => {
+                        d.rotate_deg = (d.rotate_deg + 15.0).min(settings::ROTATE_MAX);
+                    }
+                    KeyCode::KeyF => {
+                        d.stay = match d.stay {
+                            None => Some(true),
+                            Some(true) => Some(false),
+                            Some(false) => None,
+                        };
+                    }
+                    KeyCode::Backspace => *d = settings::DialTweak::DEFAULT,
+                    _ => {}
+                }
             }
-            KeyCode::Minus | KeyCode::NumpadSubtract => {
-                d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+            DesignEl::Holo => match code {
+                KeyCode::Equal | KeyCode::NumpadAdd => {
+                    self.settings.holo_size =
+                        (self.settings.holo_size + 0.04).min(settings::HOLO_SIZE_MAX);
+                }
+                KeyCode::Minus | KeyCode::NumpadSubtract => {
+                    self.settings.holo_size =
+                        (self.settings.holo_size - 0.04).max(settings::HOLO_SIZE_MIN);
+                }
+                KeyCode::Backspace => {
+                    self.settings.holo_size = Settings::default().holo_size;
+                    self.settings.holo_anchor = settings::HOLO_ANCHOR_DEFAULT;
+                }
+                _ => {}
+            },
+            DesignEl::MiniMap => {
+                let d = &mut self.settings.dials[Instrument::Map as usize];
+                match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => {
+                        d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+                    }
+                    KeyCode::Minus | KeyCode::NumpadSubtract => {
+                        d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+                    }
+                    KeyCode::Backspace => {
+                        *d = settings::DialTweak::DEFAULT;
+                        // On, at the stock corner: the slot lets go of
+                        // any dragged anchor.
+                        self.settings.layout.set(Instrument::Map, cockpit::Slot::On);
+                    }
+                    _ => {}
+                }
             }
-            KeyCode::Tab => d.style = settings::next_dial_style(d.style, i, true),
-            KeyCode::Comma => {
-                d.tilt_deg = (d.tilt_deg - 5.0).max(settings::TILT_MIN);
+            DesignEl::Readout => {
+                let d = &mut self.settings.dials[Instrument::Readout as usize];
+                match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => {
+                        d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+                    }
+                    KeyCode::Minus | KeyCode::NumpadSubtract => {
+                        d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+                    }
+                    KeyCode::Backspace => {
+                        *d = settings::DialTweak::DEFAULT;
+                        self.settings.readout_anchor = settings::READOUT_ANCHOR_DEFAULT;
+                    }
+                    _ => {}
+                }
             }
-            KeyCode::Period => {
-                d.tilt_deg = (d.tilt_deg + 5.0).min(settings::TILT_MAX);
-            }
-            KeyCode::KeyF => {
-                d.stay = match d.stay {
-                    None => Some(true),
-                    Some(true) => Some(false),
-                    Some(false) => None,
-                };
-            }
-            KeyCode::Backspace => *d = settings::DialTweak::DEFAULT,
-            _ => {}
         }
     }
 
     /// The design card: the selected dial's settings, a few short lines,
     /// and the keys.
     fn design_text(&self, aspect: f32) -> Vec<String> {
+        let sized_card = |name: &str, size: String| {
+            vec![
+                format!("[{name}]"),
+                size,
+                "- = SIZE  DRAG MOVE".to_string(),
+                "BKSP RESET  K DONE".to_string(),
+            ]
+        };
         match self.design_target(aspect) {
-            Some(i) => {
+            Some(DesignEl::Holo) => sized_card(
+                "HOLO3PP",
+                format!("SIZE {:.0}%", self.settings.holo_size * 100.0),
+            ),
+            Some(DesignEl::MiniMap) => sized_card(
+                "MINI MAP",
+                format!(
+                    "SIZE {:.2}X",
+                    self.settings.dials[Instrument::Map as usize].size
+                ),
+            ),
+            Some(DesignEl::Readout) => sized_card(
+                "READOUT",
+                format!(
+                    "SIZE {:.2}X",
+                    self.settings.dials[Instrument::Readout as usize].size
+                ),
+            ),
+            Some(DesignEl::Dial(i)) => {
                 let d = self.settings.dials[i as usize];
                 let eff = self.dial_tweak(i);
                 vec![
@@ -2320,15 +2611,17 @@ impl Game {
                         if d.stay.is_none() { " (AUTO)" } else { "" },
                         d.tilt_deg
                     ),
+                    format!("LEAN {:+.0}  ROT {:+.0}", d.lean_deg, d.rotate_deg),
                     "- = SIZE  TAB STYLE  F FADE".to_string(),
-                    ", . TILT  BKSP RESET  K DONE".to_string(),
+                    ", . TILT  ; ' LEAN  9 0 ROT".to_string(),
+                    "BKSP RESET  K DONE".to_string(),
                 ]
             }
             None => vec![
                 "[DESIGN]".to_string(),
-                "LOOK AT A DIAL".to_string(),
-                "CLICK DRAG TO MOVE".to_string(),
-                "K DONE".to_string(),
+                "POINT AT ANY GLASS PIECE:".to_string(),
+                "DIALS  MAP  HOLO  READOUT".to_string(),
+                "CLICK DRAG TO MOVE  K DONE".to_string(),
             ],
         }
     }
@@ -3441,6 +3734,9 @@ impl Game {
         // The camera on the head: pushed by the load, trembling under
         // thrust, settling — or parked, for a bench.
         self.shake.strength = self.settings.cam_shake;
+        // The chaos drive jostles the SHIP; the helmet camera is held
+        // while the field is up so the dash reads to the slip.
+        self.shake.hyper_damp(self.hyper);
         self.shake
             .step(self.frame_dt, self.felt_g_body, self.effort);
         if let Some([y, p, r]) = self.bench_shake {
@@ -3599,7 +3895,10 @@ impl Game {
             self.haul.yield_ = self.settings.arms_ore;
             self.miners.count = self.settings.miners_count;
             self.miners.growth = self.settings.miners_growth;
-            let trigger = self.fire_held && !self.menu.open && !self.map_open() && !self.design;
+            let trigger = (self.fire_held || self.stick_fire)
+                && !self.menu.open
+                && !self.map_open()
+                && !self.design;
             let kick = self.arms.step(
                 self.state.time_s,
                 sim::DT,
@@ -4002,6 +4301,19 @@ impl Game {
                 return true;
             }
         }
+        // The mini map is glassware too: taken by its pane, dropped
+        // anywhere on the glass, its anchor kept on ui.map.
+        if self.mini_map_shown() {
+            let a = self.settings.layout.inset(self.mini_map_anchor());
+            let [cx, cy, hw] = map::pane_rect_sized(cam.aspect, a, self.mini_map_half_h());
+            let hh = hw * cam.aspect;
+            let inside = (gaze[0] - cx).abs() <= hw + 0.02 && (gaze[1] - cy).abs() <= hh + 0.02;
+            if inside {
+                self.drag = Some((Dragged::MiniMap, [a[0] - gaze[0], a[1] - gaze[1]]));
+                log::info!("drag: picked up the mini map");
+                return true;
+            }
+        }
         // The readout's block is a glass element like a dial: the gaze
         // while looking, or the cursor in design mode, takes it too.
         {
@@ -4069,6 +4381,10 @@ impl Game {
             Dragged::MenuPanel => self.settings.menu_anchor = clamp(at),
             Dragged::Readout => self.settings.readout_anchor = glass(at),
             Dragged::MapPanel => self.settings.map_anchor = clamp(at),
+            Dragged::MiniMap => {
+                let at = self.settings.layout.uninset(clamp(at));
+                self.settings.layout.set_free(Instrument::Map, at);
+            }
             Dragged::HoloPanel => self.settings.holo_anchor = clamp(at),
             Dragged::BayPanel => self.settings.bay_anchor = clamp(at),
         }
@@ -4735,6 +5051,16 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_HOLO").is_ok() {
             game.settings.holo_view = true;
         }
+        // The dust on its own: a bench row for the motes.
+        if let Ok(v) = std::env::var("FARFALL_BENCH_DUST") {
+            if game.frozen {
+                if let Ok(f) = v.trim().parse::<f32>() {
+                    if f.is_finite() {
+                        game.settings.dust = f.clamp(0.0, 2.0);
+                    }
+                }
+            }
+        }
         // The nebula: "off" for a baseline, anything else a full sky of it —
         // the stock glow doubled, every cloud, spread wide — so a capture
         // sees it whichever way it looks (hues and seed from the settings).
@@ -5130,6 +5456,33 @@ impl App {
                 game.menu.key(KeyCode::Tab, &mut game.settings);
             }
         }
+        if let Some(step) = std::env::var("FARFALL_BENCH_STICK")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            if !game.menu.open {
+                game.menu.toggle();
+            }
+            let mut w = stick::Wizard::at_step(step);
+            w.bench_detect();
+            game.wizard = Some(w);
+        }
+        // FARFALL_BENCH_DEMAND=p,r,y,t: a parked control demand, for a
+        // capture of the console's stick and lever answering it.
+        if let Some([p, r, y, t]) = std::env::var("FARFALL_BENCH_DEMAND")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| {
+                let n: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                <[f64; 4]>::try_from(n).ok()
+            })
+        {
+            // The mirror's senses: +p pitch up (+x torque), +r roll right
+            // (-z), +y yaw right (-y), +t thrust ahead (-z).
+            game.input.set_stick([0.0, 0.0, -t, p, -y, -r]);
+            game.bench_demand = true;
+        }
         if game.frozen && std::env::var("FARFALL_BENCH_LAND").is_ok() {
             game.toggle_landing();
             game.touchdown = landing::predict(&game.params, &game.state.ship, game.state.time_s);
@@ -5258,7 +5611,7 @@ fn redraw(
                     // single-sample (it draws in the present
                     // pass), so it can only join a 1x scene.
                     let capture_text = gpu.cfg.msaa == 1;
-                    if capture_text && (game.map_open() || game.mini_map_on()) {
+                    if capture_text && (game.map_open() || game.mini_map_shown()) {
                         gpu.map
                             .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
                     }
@@ -5283,7 +5636,7 @@ fn redraw(
                     } else if capture_text && game.card_open {
                         card::render(&mut gpu.text, &game.settings.bindings);
                     } else if capture_text && game.menu.open {
-                        game.menu.render(&mut gpu.text, &game.settings);
+                        game.render_menu(&mut gpu.text);
                     } else if capture_text {
                         gpu.text.clear();
                         gpu.text.draw(0, 0, "HEADLESS CAPTURE");
@@ -5419,7 +5772,7 @@ fn redraw(
                             gpu.passes.sight.draw(&mut pass);
                         }
                         gpu.passes.holo.draw(&mut pass);
-                        if capture_text && (game.map_open() || game.mini_map_on()) {
+                        if capture_text && (game.map_open() || game.mini_map_shown()) {
                             gpu.map.draw(&mut pass);
                         }
                         if capture_text && game.bay_open() {
@@ -5732,7 +6085,7 @@ fn redraw(
             if gpu.cfg.draws("blit") {
                 gpu.blit.draw(&mut pass);
             }
-            if game.map_open() || game.mini_map_on() {
+            if game.map_open() || game.mini_map_shown() {
                 gpu.map.draw(&mut pass);
             }
             if game.bay_open() {
@@ -5849,9 +6202,304 @@ fn redraw(
         card::render(&mut gpu.text, &game.settings.bindings);
     } else if game.menu.open {
         gpu.text.clear();
-        game.menu.render(&mut gpu.text, &game.settings);
+        game.render_menu(&mut gpu.text);
     }
     gpu.window.request_redraw();
+}
+
+impl App {
+    /// The stick, once a frame: its axes into the input, its buttons as
+    /// the keys their controls are bound to, its trigger as the trigger
+    /// — or, while the wizard is up, everything into the wizard; or,
+    /// while a KEYS row waits for a bind, the button onto that row.
+    fn poll_stick(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(game) = self.game.as_mut() else {
+            return;
+        };
+        // A parked bench demand stands; the real stick must not stomp it.
+        if game.bench_demand {
+            return;
+        }
+        let Some(sample) = game.stick.poll() else {
+            game.menu.set_stick(None);
+            game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
+            game.stick_fire = false;
+            return;
+        };
+        game.menu
+            .set_stick(game.stick.device.as_ref().map(|d| (d.vid, d.pid)));
+        // The device names the raw indices: a HOTAS 4 says TRIGGER and
+        // ROCKER, anything else says B0 and AXIS 4.
+        if let Some(d) = game.stick.device.as_ref() {
+            let layout =
+                if stick::Device::known_name(d.vid, d.pid).is_some_and(|n| n.contains("HOTAS 4")) {
+                    stick::Layout::Hotas4
+                } else {
+                    stick::Layout::Generic
+                };
+            if game.settings.stick.layout != layout {
+                game.settings.stick.layout = layout;
+                game.settings.save();
+            }
+        }
+        let (pressed, released) = game.stick.edges(sample);
+        if let Some(w) = game.wizard.as_mut() {
+            w.feed(sample);
+            game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
+            game.stick_fire = false;
+            return;
+        }
+        let map = game.settings.stick;
+        if !map.enabled {
+            game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
+            game.stick_fire = false;
+            return;
+        }
+        let axes = map.body_axes(&sample);
+        game.input.set_stick(axes);
+        game.stick_fire = map.fire.is_some_and(|b| sample.button(b));
+        // The throttle's gestures: the lever hard back holds the air
+        // brake; a slam forward is two seconds of chaos drive.
+        let t = game.started.elapsed().as_secs_f64();
+        let (gesture_brake, gesture_hyper) = game.stick_gestures.step(&map, &sample, t);
+        game.input.set_stick_held(gesture_brake, gesture_hyper);
+        // A flight-log line while the stick is doing something, a
+        // second apart: the evidence that the map is the right way up.
+        if game.stick_log > 0 {
+            game.stick_log -= 1;
+        } else if axes.iter().any(|v| v.abs() > 0.3) || sample.buttons != 0 {
+            let f = map.flight(&sample);
+            log::info!(
+                "stick: pitch {:+.2} yaw {:+.2} roll {:+.2} throttle {:+.2} strafe {:+.2} lift {:+.2} buttons {:#x} -> thrust [{:+.2} {:+.2} {:+.2}] torque [{:+.2} {:+.2} {:+.2}]",
+                f[0], f[1], f[2], f[3], f[4], f[5], sample.buttons,
+                axes[0], axes[1], axes[2], axes[3], axes[4], axes[5]
+            );
+            game.stick_log = 60;
+        }
+        // Button edges, outside the borrow: each one is its key.
+        let mut edges: Vec<(u8, bool)> = Vec::new();
+        for b in 0..stick::MAX_BUTTONS {
+            let bit = 1u32 << b;
+            if pressed & bit != 0 {
+                edges.push((b, true));
+            } else if released & bit != 0 {
+                edges.push((b, false));
+            }
+        }
+        for (b, down) in edges {
+            let (Some(gpu), Some(game)) = (self.gpu.as_mut(), self.game.as_mut()) else {
+                return;
+            };
+            log::info!(
+                "stick: {} {}",
+                game.settings.stick.button_name(Some(b)),
+                if down { "down" } else { "up" }
+            );
+            if down && game.menu.open && game.menu.rebinding() {
+                let ev = game.menu.stick_button(b, &mut game.settings);
+                apply_menu_event(game, gpu, event_loop, ev);
+                continue;
+            }
+            if let Some(n) = game.settings.stick.named_for_button(b) {
+                let code = game.settings.bindings.named(n);
+                self.key_input(event_loop, code, down, false);
+            }
+        }
+    }
+
+    /// A key, pressed or released — from the keyboard, or from a stick
+    /// button standing in for the key its control is bound to (so a
+    /// button bound to BOOST is exactly the BOOST key). The wizard, when
+    /// it is up, takes every key first.
+    fn key_input(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        code: KeyCode,
+        pressed: bool,
+        repeat: bool,
+    ) {
+        let (Some(gpu), Some(game)) = (self.gpu.as_mut(), self.game.as_mut()) else {
+            return;
+        };
+        // The CONTROLS card: any key puts it away; F1 brings it back.
+        if game.card_open {
+            if pressed && !repeat {
+                game.close_card();
+            }
+            return;
+        }
+        if pressed && !repeat && code == KeyCode::F1 && !game.design {
+            game.open_card();
+            return;
+        }
+        // The stick wizard, over the open menu: every key is its.
+        if let Some(w) = game.wizard.as_mut() {
+            if pressed && !repeat {
+                match w.key(code, &mut game.settings.stick) {
+                    stick::WizardEvent::Done => {
+                        game.wizard = None;
+                        game.settings.save();
+                    }
+                    stick::WizardEvent::Changed => game.settings.save(),
+                    stick::WizardEvent::Nothing => {}
+                }
+            }
+            return;
+        }
+        if game.design {
+            if pressed && !repeat {
+                let aspect = gpu.config.width as f32 / gpu.config.height as f32;
+                match code {
+                    KeyCode::KeyK | KeyCode::Escape => {
+                        game.toggle_design();
+                        gpu.set_look_cursor(game.look.engaged());
+                    }
+                    other => game.design_key(other, aspect),
+                }
+            }
+            return;
+        }
+        if game.panel_open() {
+            // M closes the map from anywhere in it; B the bay.
+            if pressed && !repeat && code == game.bind(Named::Map) {
+                game.toggle_map();
+                return;
+            }
+            if pressed && !repeat && code == game.bind(Named::Bay) {
+                game.toggle_bay();
+                return;
+            }
+            // Pane zoom from the keyboard, for a mouse with no wheel.
+            if pressed && game.pane_open() {
+                let notches = match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => 1.0,
+                    KeyCode::Minus | KeyCode::NumpadSubtract => -1.0,
+                    _ => 0.0,
+                };
+                if game.map_open() {
+                    game.map_view.zoom_by(notches);
+                } else {
+                    game.bay_view.zoom_by(notches);
+                }
+            }
+            if pressed && !repeat {
+                let panel = if game.map_open() {
+                    &mut game.map_panel
+                } else if game.bay_open() {
+                    &mut game.bay_panel
+                } else {
+                    &mut game.menu
+                };
+                let ev = panel.key(code, &mut game.settings);
+                apply_menu_event(game, gpu, event_loop, ev);
+            }
+            return;
+        }
+        match code {
+            // Whatever was held is released when a panel opens: the
+            // world pauses, the keys must not carry a thrust demand
+            // across.
+            KeyCode::Escape if pressed && !repeat => game.toggle_menu(),
+            // Every named control below reads its binding — the
+            // KEYS page lists all of them, so what the menu shows
+            // is what the keyboard does. Edge-triggered, and
+            // `repeat` is filtered: holding a key must not strobe
+            // a toggle.
+            c if pressed && !repeat && c == game.bind(Named::Bay) => game.toggle_bay(),
+            c if pressed && !repeat && c == game.bind(Named::Hold) => game.toggle_hold(),
+            c if pressed && !repeat && c == game.bind(Named::Map) => game.toggle_map(),
+            c if pressed && !repeat && c == game.bind(Named::Appearance) => game.cycle_appearance(),
+            c if pressed && !repeat && (c == game.bind(Named::Capture) || c == KeyCode::F12) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    gpu.capture_requested = true;
+                }
+            }
+            c if pressed
+                && !repeat
+                && (c == game.bind(Named::ScaleDown) || c == game.bind(Named::ScaleUp)) =>
+            {
+                let step = if c == game.bind(Named::ScaleUp) {
+                    0.1
+                } else {
+                    -0.1
+                };
+                let next = gpu.scene.scale() + step;
+                gpu.scene.set_scale(next);
+                log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
+            }
+            c if pressed && !repeat && c == game.bind(Named::Engage) => game.engage_warp(),
+            c if pressed && !repeat && c == game.bind(Named::WarpStop) => game.warp_stop(),
+            c if pressed && !repeat && c == game.bind(Named::Landing) => game.toggle_landing(),
+            c if pressed && !repeat && c == game.bind(Named::Disembark) => game.disembark(),
+            c if pressed && !repeat && c == game.bind(Named::Design) => {
+                game.toggle_design();
+                gpu.set_look_cursor(game.look.engaged() && !game.design);
+            }
+            c if pressed && !repeat && c == game.bind(Named::LookLock) => {
+                game.look.toggle_lock();
+                gpu.set_look_cursor(game.look.engaged());
+            }
+            c if pressed && !repeat && c == game.bind(Named::Trajectory) => {
+                game.settings.layout.cycle(Instrument::Trajectory, true);
+                game.settings.save();
+                log::info!(
+                    "trajectory {}",
+                    game.settings.layout.get(Instrument::Trajectory).name()
+                );
+            }
+            c if pressed && !repeat && c == game.bind(Named::Chase) => {
+                game.settings.camera_chase = !game.settings.camera_chase;
+                game.settings.save();
+                log::info!(
+                    "camera {}",
+                    if game.settings.camera_chase {
+                        "CHASE"
+                    } else {
+                        "FIRST PERSON"
+                    }
+                );
+            }
+            c if pressed && !repeat && c == game.bind(Named::Holo) => {
+                game.settings.holo_view = !game.settings.holo_view;
+                game.settings.save();
+                log::info!(
+                    "holo3PP {}",
+                    if game.settings.holo_view { "ON" } else { "OFF" }
+                );
+            }
+            c if pressed && !repeat && c == game.bind(Named::Weapon1) => {
+                game.arms.select(arms::Weapon::Cannon);
+                log::info!("arms: {}", game.arms.selected.name());
+            }
+            c if pressed && !repeat && c == game.bind(Named::Weapon2) => {
+                game.arms.select(arms::Weapon::Rail);
+                log::info!("arms: {}", game.arms.selected.name());
+            }
+            c if pressed && !repeat && c == game.bind(Named::NextWeapon) => {
+                game.arms.next_weapon();
+                log::info!("arms: {}", game.arms.selected.name());
+            }
+            c if pressed && !repeat && c == game.bind(Named::Assist) => {
+                game.assist = !game.assist;
+                log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
+            }
+            c if pressed && (c == game.bind(Named::HoloOut) || c == game.bind(Named::HoloIn)) => {
+                game.zoom_holo(if c == game.bind(Named::HoloOut) {
+                    1.0
+                } else {
+                    -1.0
+                });
+            }
+            _ => game.input.set(code, pressed),
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -5904,185 +6552,7 @@ impl ApplicationHandler for App {
                     return;
                 };
                 let pressed = event.state == ElementState::Pressed;
-                // The CONTROLS card: any key puts it away; F1 brings it back.
-                if game.card_open {
-                    if pressed && !event.repeat {
-                        game.close_card();
-                    }
-                    return;
-                }
-                if pressed && !event.repeat && code == KeyCode::F1 && !game.design {
-                    game.open_card();
-                    return;
-                }
-                if game.design {
-                    if pressed && !event.repeat {
-                        let aspect = gpu.config.width as f32 / gpu.config.height as f32;
-                        match code {
-                            KeyCode::KeyK | KeyCode::Escape => {
-                                game.toggle_design();
-                                gpu.set_look_cursor(game.look.engaged());
-                            }
-                            other => game.design_key(other, aspect),
-                        }
-                    }
-                    return;
-                }
-                if game.panel_open() {
-                    // M closes the map from anywhere in it; B the bay.
-                    if pressed && !event.repeat && code == game.bind(Named::Map) {
-                        game.toggle_map();
-                        return;
-                    }
-                    if pressed && !event.repeat && code == game.bind(Named::Bay) {
-                        game.toggle_bay();
-                        return;
-                    }
-                    // Pane zoom from the keyboard, for a mouse with no wheel.
-                    if pressed && game.pane_open() {
-                        let notches = match code {
-                            KeyCode::Equal | KeyCode::NumpadAdd => 1.0,
-                            KeyCode::Minus | KeyCode::NumpadSubtract => -1.0,
-                            _ => 0.0,
-                        };
-                        if game.map_open() {
-                            game.map_view.zoom_by(notches);
-                        } else {
-                            game.bay_view.zoom_by(notches);
-                        }
-                    }
-                    if pressed && !event.repeat {
-                        let panel = if game.map_open() {
-                            &mut game.map_panel
-                        } else if game.bay_open() {
-                            &mut game.bay_panel
-                        } else {
-                            &mut game.menu
-                        };
-                        let ev = panel.key(code, &mut game.settings);
-                        apply_menu_event(game, gpu, event_loop, ev);
-                    }
-                    return;
-                }
-                match code {
-                    // Whatever was held is released when a panel opens: the
-                    // world pauses, the keys must not carry a thrust demand
-                    // across.
-                    KeyCode::Escape if pressed && !event.repeat => game.toggle_menu(),
-                    // Every named control below reads its binding — the
-                    // KEYS page lists all of them, so what the menu shows
-                    // is what the keyboard does. Edge-triggered, and
-                    // `repeat` is filtered: holding a key must not strobe
-                    // a toggle.
-                    c if pressed && !event.repeat && c == game.bind(Named::Bay) => {
-                        game.toggle_bay()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Hold) => {
-                        game.toggle_hold()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Map) => {
-                        game.toggle_map()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Appearance) => {
-                        game.cycle_appearance()
-                    }
-                    c if pressed
-                        && !event.repeat
-                        && (c == game.bind(Named::Capture) || c == KeyCode::F12) =>
-                    {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            gpu.capture_requested = true;
-                        }
-                    }
-                    c if pressed
-                        && !event.repeat
-                        && (c == game.bind(Named::ScaleDown) || c == game.bind(Named::ScaleUp)) =>
-                    {
-                        let step = if c == game.bind(Named::ScaleUp) {
-                            0.1
-                        } else {
-                            -0.1
-                        };
-                        let next = gpu.scene.scale() + step;
-                        gpu.scene.set_scale(next);
-                        log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Engage) => {
-                        game.engage_warp()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::WarpStop) => {
-                        game.warp_stop()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Landing) => {
-                        game.toggle_landing()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Disembark) => {
-                        game.disembark()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Design) => {
-                        game.toggle_design();
-                        gpu.set_look_cursor(game.look.engaged() && !game.design);
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::LookLock) => {
-                        game.look.toggle_lock();
-                        gpu.set_look_cursor(game.look.engaged());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Trajectory) => {
-                        game.settings.layout.cycle(Instrument::Trajectory, true);
-                        game.settings.save();
-                        log::info!(
-                            "trajectory {}",
-                            game.settings.layout.get(Instrument::Trajectory).name()
-                        );
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Chase) => {
-                        game.settings.camera_chase = !game.settings.camera_chase;
-                        game.settings.save();
-                        log::info!(
-                            "camera {}",
-                            if game.settings.camera_chase {
-                                "CHASE"
-                            } else {
-                                "FIRST PERSON"
-                            }
-                        );
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Holo) => {
-                        game.settings.holo_view = !game.settings.holo_view;
-                        game.settings.save();
-                        log::info!(
-                            "holo3PP {}",
-                            if game.settings.holo_view { "ON" } else { "OFF" }
-                        );
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Weapon1) => {
-                        game.arms.select(arms::Weapon::Cannon);
-                        log::info!("arms: {}", game.arms.selected.name());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Weapon2) => {
-                        game.arms.select(arms::Weapon::Rail);
-                        log::info!("arms: {}", game.arms.selected.name());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::NextWeapon) => {
-                        game.arms.next_weapon();
-                        log::info!("arms: {}", game.arms.selected.name());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Assist) => {
-                        game.assist = !game.assist;
-                        log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
-                    }
-                    c if pressed
-                        && (c == game.bind(Named::HoloOut) || c == game.bind(Named::HoloIn)) =>
-                    {
-                        game.zoom_holo(if c == game.bind(Named::HoloOut) {
-                            1.0
-                        } else {
-                            -1.0
-                        });
-                    }
-                    _ => game.input.set(code, pressed),
-                }
+                self.key_input(event_loop, code, pressed, event.repeat);
             }
             WindowEvent::MouseInput {
                 state,
@@ -6203,6 +6673,7 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => {
                 game.input.release_all();
                 game.fire_held = false;
+                game.stick_fire = false;
                 game.look.set_held(false);
                 gpu.set_look_cursor(game.look.engaged());
                 game.end_drag();
@@ -6217,6 +6688,12 @@ impl ApplicationHandler for App {
                 gpu.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                // The stick is polled once a frame, here, before the frame
+                // samples the controls.
+                self.poll_stick(event_loop);
+                let (Some(gpu), Some(game)) = (self.gpu.as_mut(), self.game.as_mut()) else {
+                    return;
+                };
                 redraw(gpu, game, self.audio.as_ref(), Some(event_loop));
             }
             _ => {}
@@ -6390,6 +6867,97 @@ mod tests {
             game.drag,
             Some((Dragged::Dial(Instrument::Speed), _))
         ));
+    }
+
+    /// The DESIGN keys turn a dial all three ways — tilt (,/.), sideways
+    /// lean (;/'), in-plane rotation (9/0) — each held to its reach, and
+    /// Backspace puts the whole tweak back to stock.
+    #[test]
+    fn design_keys_lean_and_rotate_a_dial_and_backspace_resets() {
+        let mut game = Game::new();
+        game.design = true;
+        game.look.aim(0.0, 0.0);
+        game.window_size = (1500.0, 1000.0);
+        game.settings.readout_anchor = [-0.9, 0.9];
+        let cam = game.camera(1.5);
+        let a = game.settings.layout.anchor(Instrument::Speed).unwrap();
+        let t = game.ref_tan();
+        let k = t / (cam.fov_y * 0.5).tan();
+        game.cursor = Some(((a[0] * k + 1.0) * 750.0, (1.0 - a[1] * k) * 500.0));
+        assert_eq!(
+            game.design_target(1.5),
+            Some(DesignEl::Dial(Instrument::Speed))
+        );
+        game.design_key(KeyCode::Quote, 1.5);
+        game.design_key(KeyCode::Quote, 1.5);
+        game.design_key(KeyCode::Digit9, 1.5);
+        game.design_key(KeyCode::Comma, 1.5);
+        let d = game.settings.dials[Instrument::Speed as usize];
+        assert_eq!(d.lean_deg, 10.0);
+        assert_eq!(d.rotate_deg, -15.0);
+        assert_eq!(d.tilt_deg, -5.0);
+        for _ in 0..40 {
+            game.design_key(KeyCode::Quote, 1.5);
+            game.design_key(KeyCode::Digit0, 1.5);
+        }
+        let d = game.settings.dials[Instrument::Speed as usize];
+        assert_eq!(d.lean_deg, settings::TILT_MAX);
+        assert_eq!(d.rotate_deg, settings::ROTATE_MAX);
+        game.design_key(KeyCode::Backspace, 1.5);
+        assert_eq!(
+            game.settings.dials[Instrument::Speed as usize],
+            settings::DialTweak::DEFAULT
+        );
+    }
+
+    /// The holo3PP, the mini map and the readout are design elements
+    /// like the dials: DESIGN mode's pointer finds them, -/= sizes them,
+    /// and the mini map can be dragged anywhere and keeps its place.
+    #[test]
+    fn design_mode_takes_the_holo_the_mini_map_and_the_readout() {
+        let mut game = Game::new();
+        game.design = true;
+        game.look.aim(0.0, 0.0);
+        game.window_size = (1500.0, 1000.0);
+        let cam = game.camera(1.5);
+        let t = game.ref_tan();
+        let k = t / (cam.fov_y * 0.5).tan();
+        let at = |a: [f32; 2]| ((a[0] * k + 1.0) * 750.0, (1.0 - a[1] * k) * 500.0);
+        // The hologram: found by its anchor, sized with =.
+        game.cursor = Some(at(game.settings.holo_anchor));
+        assert_eq!(game.design_target(1.5), Some(DesignEl::Holo));
+        let size = game.settings.holo_size;
+        game.design_key(KeyCode::Equal, 1.5);
+        assert!(game.settings.holo_size > size);
+        // The mini map: found by its pane, shrunk with -, dragged and
+        // its anchor kept on the layout.
+        assert!(game.mini_map_shown(), "the mini map shows in DESIGN mode");
+        let mini = game.settings.layout.inset(game.mini_map_anchor());
+        game.cursor = Some(at(mini));
+        assert_eq!(game.design_target(1.5), Some(DesignEl::MiniMap));
+        game.design_key(KeyCode::Minus, 1.5);
+        assert!(game.settings.dials[Instrument::Map as usize].size < 1.0);
+        assert!(game.mini_map_half_h() < map::MINI_HALF_H);
+        assert!(game.begin_drag(&cam, 0.4), "the mini map is picked up");
+        assert!(matches!(game.drag, Some((Dragged::MiniMap, _))));
+        game.cursor = Some(at([mini[0] - 0.3, mini[1] - 0.4]));
+        game.update_drag(&cam);
+        let moved = game.mini_map_anchor();
+        assert!(
+            (moved[0] - map::MINI_ANCHOR[0]).abs() > 0.1
+                || (moved[1] - map::MINI_ANCHOR[1]).abs() > 0.1,
+            "{moved:?}"
+        );
+        game.design_key(KeyCode::Backspace, 1.5);
+        // The readout: found by its block; its SIZE scales the text.
+        game.cursor = Some(at([
+            game.settings.readout_anchor[0] + 0.06,
+            game.settings.readout_anchor[1] - 0.14,
+        ]));
+        assert_eq!(game.design_target(1.5), Some(DesignEl::Readout));
+        game.design_key(KeyCode::Equal, 1.5);
+        game.design = false;
+        assert!(game.text_fov_scale(&cam) > 1.0 * 0.99 * 1.1);
     }
 
     #[test]
