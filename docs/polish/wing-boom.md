@@ -50,6 +50,23 @@ lug — they move back onto the wing, carried on a proper boom under it.
 | wb-mimic | a mimic wearing the same silhouette (exterior booms for free) |
 | wb-arms | tracers and muzzle flash from the new muzzles, pips right |
 
+## Post-merge verification (2026-09-01, `ae573ff` = this work + fable/polish 8765bbb)
+
+The merge with polish (HOTAS: cabin uniforms grew the stick beside the
+hardpoints) was clean — no conflicts, full workspace test suite green,
+sim golden hash untouched (the hardpoint tables live in the app crate;
+`sim::state_hash` covers `WorldState` only). Re-captured on the merged
+build (wbm-*, 1600x1200 except the first four at 800x600):
+
+| capture | shows |
+|---|---|
+| wbm-bay | SHIP bay hologram: cannon slung on the boom under WING L/R, FIT panel matching |
+| wbm-holo / wbm-holo-big | holo3PP miniature over the dash wearing the mounts at the wing stations |
+| wbm-mimic / wbm-mimic-big | a hailing mimic 40 m out with the same under-wing carry |
+| wbm-chase | dead astern: the fit under the wings |
+| wbm-chase-quarter | high quarter (head -25,-18): both wing mounts riding the booms |
+| wbm-glass-boom | over the shoulder (head -130,-30): the breech carried on the boom into the wing |
+
 ## Decisions
 
 - Boom in the exterior rather than per-mount geometry: the boom is airframe
