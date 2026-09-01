@@ -6049,7 +6049,11 @@ fn redraw(
                         );
                         match capture.save(&gpu.device, bgra) {
                             Ok(path) => {
-                                log::info!("screenshot: {}", path.display())
+                                log::info!(
+                                    "screenshot: {} ({:.1} fps at capture)",
+                                    path.display(),
+                                    gpu.perf.stats.smoothed_fps()
+                                )
                             }
                             Err(e) => log::warn!("headless capture failed: {e}"),
                         }
@@ -6389,8 +6393,14 @@ fn redraw(
             gpu.scene.format(),
             wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
         );
+        // The rate at this moment (smoothed over the recent frames), not the
+        // run's average: a spin's eight captures each get their own number.
         match capture.save(&gpu.device, bgra) {
-            Ok(path) => log::info!("screenshot: {}", path.display()),
+            Ok(path) => log::info!(
+                "screenshot: {} ({:.1} fps at capture)",
+                path.display(),
+                gpu.perf.stats.smoothed_fps()
+            ),
             Err(e) => log::warn!("screenshot failed: {e}"),
         }
         // The readback blocks on the GPU; that frame's timing says
