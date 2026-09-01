@@ -1,7 +1,9 @@
 // cockpit.wgsl — the cabin the pilot sits in (pass: cockpit)
 //
 // Lane: A. Cost class: moderate — a short SDF march per pixel over the
-// cabin and the ship's own nose and wings, bounded to a few metres.
+// cabin and the ship's own nose and wings, bounded to a few metres. The
+// bay's fit joins the march only inside each hardpoint's bounding sphere
+// (sd_mounts), so an empty sky ray still pays what it always did.
 //
 // This is a physical cockpit: a fighter's fuselage with the cabin carved
 // out of it (common.wgsl, sd_fighter_hull), so the hull has a wall, the
@@ -41,6 +43,13 @@ struct Cockpit {
     // xyz: the eye's seat, metres from the pilot's head origin (ship
     // frame) — a headset's two eyes sit either side of it. w: unused.
     eye: vec4<f32>,
+    // xyz: each hardpoint, ship frame (m) — bay.rs Hardpoint::pos via
+    // fit_views, the one transform table. w: 0 empty (bare pylon),
+    // 1 cannon, 2 rail.
+    hp: array<vec4<f32>, 4>,
+    // The pilot's demand, mirrored by the control column: x pitch,
+    // y roll, z yaw, w throttle, each in [-1, 1].
+    stick: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> ck: Cockpit;
@@ -119,9 +128,31 @@ fn socket_centre(dir: vec3<f32>) -> vec3<f32> {
     return dir * HOLO_M - vec3<f32>(0.0, 0.16, 0.0);
 }
 
+// The mounts the SHIP bay fitted, hanging off the airframe outside the
+// glass (common.wgsl sd_mount — the bay hologram's own geometry): joined
+// to the march only within each hardpoint's bounding sphere; beyond it
+// the sphere's distance is a safe lower bound and the cabin costs what
+// it did.
+fn sd_mounts(p: vec3<f32>) -> f32 {
+    var d = 1e9;
+    for (var i = 0; i < 4; i += 1) {
+        let hp = ck.hp[i];
+        let b = length(p - hp.xyz - MOUNT_BOUND_C) - MOUNT_BOUND_R;
+        if (b > 0.25) {
+            d = min(d, b);
+        } else {
+            d = min(d, sd_mount(p, hp.xyz, hp.w));
+        }
+    }
+    return d;
+}
+
 fn sd_cabin(p: vec3<f32>) -> Hit {
     // The ship's hull, with the cabin carved out of it.
     var h = Hit(sd_fighter_hull(p), 0.0);
+    // The bay's fit on the airframe: a mount reads as hull metal.
+    let mfit = sd_mounts(p);
+    if (mfit < h.d) { h = Hit(mfit, 0.0); }
     // Everything inside the cabin sits in one box: outside it, its
     // distance is bound enough.
     let inside = sd_round_box(p - vec3<f32>(0.0, -0.2, -0.3), vec3<f32>(1.1, 1.0, 1.7), 0.0);
@@ -152,10 +183,25 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
     let switch_ = mix(1e9, min(toggle, bead), in_bank);
     furniture = min(furniture, switch_);
     // The stick between the knees and the throttle on the left console:
-    // the pilot's own hands' furniture.
-    let stick = sd_capsule_ab(p, vec3<f32>(0.0, -1.0, -0.45), vec3<f32>(0.0, -0.62, -0.5), 0.022);
-    let grip = sd_ellipsoid_c(p, vec3<f32>(0.0, -0.58, -0.5), vec3<f32>(0.035, 0.07, 0.04));
-    let throttle = sd_round_box(p - vec3<f32>(-0.74, -0.53, -0.3), vec3<f32>(0.045, 0.06, 0.03), 0.012);
+    // the pilot's own hands' furniture, riding the live demand — the
+    // column leans with pitch and roll, the grip twists with yaw, the
+    // lever slides with the throttle (ck.stick; springs back at centre).
+    let base = vec3<f32>(0.0, -1.0, -0.45);
+    // Pull back (+pitch) tips the top toward the pilot (+z); roll right
+    // tips it right (+x). Small angles: a straight lean of the top.
+    let lean = vec3<f32>(ck.stick.y, 0.0, ck.stick.x) * 0.14;
+    let top = vec3<f32>(0.0, -0.62, -0.5) + lean;
+    let stick = sd_capsule_ab(p, base, top, 0.022);
+    // The grip: an ellipsoid on the leaned top, its wide face twisted
+    // about the column by the yaw demand.
+    let ya = ck.stick.z * 0.6;
+    var gq = p - (top + vec3<f32>(0.0, 0.04, 0.0));
+    let gc = cos(ya); let gs = sin(ya);
+    gq = vec3<f32>(gc * gq.x - gs * gq.z, gq.y, gs * gq.x + gc * gq.z);
+    let grip = sd_ellipsoid_c(gq, vec3<f32>(0.0, 0.0, 0.0), vec3<f32>(0.035, 0.07, 0.04));
+    // The throttle lever rides its axis: forward demand slides it ahead.
+    let tz = -0.3 - ck.stick.w * 0.09;
+    let throttle = sd_round_box(p - vec3<f32>(-0.74, -0.53, tz), vec3<f32>(0.045, 0.06, 0.03), 0.012);
     furniture = min(furniture, min(min(stick, grip), throttle));
     // Instruments ON the dash, never in it: nothing is hollowed out of the
     // furniture for a dial — no well, no bowl, no recess. A DIAL's black
@@ -174,13 +220,16 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
         if (i >= n || !near_dash) { break; }
         let pd = pad_dir(i);
         if (pd.w < 0.5) { continue; }
-        // w = (style + 1) + 10 × round(size × 100) + 10000 × (tilt° + 60):
-        // exact integers.
+        // w = (style + 1) + 10 × round(size × 100) + 10000 × tilt5 +
+        // 250000 × lean5 (5° steps from −60°): exact integers.
         let style = pd.w - 10.0 * floor(pd.w / 10.0) - 1.0;
-        let hundredths = floor(pd.w / 10.0);
-        let tilt_code = floor(hundredths / 1000.0);
-        let size = max((hundredths - 1000.0 * tilt_code) / 100.0, 0.25);
-        let tilt = radians(tilt_code - 60.0);
+        let rest = floor(pd.w / 10.0);
+        let lean5 = floor(rest / 25000.0);
+        let t_rest = rest - 25000.0 * lean5;
+        let tilt5 = floor(t_rest / 1000.0);
+        let size = max((t_rest - 1000.0 * tilt5) / 100.0, 0.25);
+        let tilt = radians(tilt5 * 5.0 - 60.0);
+        let lean = radians(lean5 * 5.0 - 60.0);
         // Seated on the metal's surface, under the hologram's direction.
         let c = socket_centre(pd.xyz) + DASH_N * DASH_SURFACE;
         // The instrument's geometry in its own scaled space: distances
@@ -195,8 +244,8 @@ fn sd_cabin(p: vec3<f32>) -> Hit {
             // short housing rises out of the dash to carry it. Nothing
             // is cut; the gauge pass draws the markings on the plate's
             // top, in the same plane (cabin.rs mirrors these numbers).
-            let tn = dial_tilted_normal(DASH_N, tilt);
-            let qt = q - DASH_N * (DIAL_PLATE_R * abs(sin(tilt)));
+            let tn = dial_oriented_normal(DASH_N, tilt, lean);
+            let qt = q - DASH_N * (DIAL_PLATE_R * min(abs(sin(tilt)) + abs(sin(lean)), 1.0));
             let ta = dot(qt, tn);
             let tr = length(qt - tn * ta);
             let housing = max(tr - DIAL_BEZEL_R, abs(ta + 0.25) - 0.25) * size;
@@ -360,9 +409,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 near = min(near, sd_frame(exit * (0.5 + 0.25 * f32(i))));
             }
             if (near > 0.12) {
-                // Open sky: written transparent, not discarded, so a
-                // redraw in place leaves no stale pixel behind.
-                return vec4<f32>(0.0);
+                // A mount can stand past the brow (a wing gun, the nose
+                // rail): a ray passing near a hardpoint's bounding
+                // sphere must march after all.
+                var clear = true;
+                for (var i = 0; i < 4; i += 1) {
+                    let c = ck.hp[i].xyz + MOUNT_BOUND_C - ck.eye.xyz;
+                    let along = max(dot(c, ray), 0.0);
+                    if (length(c - ray * along) < MOUNT_BOUND_R) {
+                        clear = false;
+                    }
+                }
+                if (clear) {
+                    // Open sky: written transparent, not discarded, so a
+                    // redraw in place leaves no stale pixel behind.
+                    return vec4<f32>(0.0);
+                }
             }
         }
     }

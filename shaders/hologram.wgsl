@@ -70,33 +70,6 @@ fn hue_rgb(h: f32, s: f32) -> vec3<f32> {
     return mix(vec3<f32>(1.0), rgb, s);
 }
 
-// A ring about the z axis: the rail's coils.
-fn sd_ring_z(p: vec3<f32>, r: f32, t: f32) -> f32 {
-    let q = vec2<f32>(length(p.xy) - r, p.z);
-    return length(q) - t;
-}
-
-// What sits on a hardpoint, model frame (ship m), by kind.
-fn sd_mount(q: vec3<f32>, m: vec3<f32>, kind: f32) -> f32 {
-    let p = q - m;
-    if (kind > 1.5) {
-        // The rail: one long barrel, three coils along it, a breech.
-        var d = sd_capsule_ab(p, vec3<f32>(0.0, 0.0, 0.9), vec3<f32>(0.0, 0.0, -2.6), 0.13);
-        d = min(d, sd_ring_z(p - vec3<f32>(0.0, 0.0, -0.4), 0.28, 0.05));
-        d = min(d, sd_ring_z(p - vec3<f32>(0.0, 0.0, -1.1), 0.28, 0.05));
-        d = min(d, sd_ring_z(p - vec3<f32>(0.0, 0.0, -1.8), 0.28, 0.05));
-        d = min(d, sd_round_box(p - vec3<f32>(0.0, 0.0, 0.7), vec3<f32>(0.24, 0.22, 0.4), 0.05));
-        return d;
-    }
-    if (kind > 0.5) {
-        // The cannon: twin barrels off a breech block.
-        let b = vec3<f32>(abs(p.x) - 0.17, p.y, p.z);
-        var d = sd_capsule_ab(b, vec3<f32>(0.0, 0.0, 0.3), vec3<f32>(0.0, 0.0, -1.5), 0.08);
-        d = min(d, sd_round_box(p - vec3<f32>(0.0, 0.0, 0.45), vec3<f32>(0.4, 0.22, 0.45), 0.05));
-        return d;
-    }
-    return 1e9;
-}
 
 // The hull and its mounts, model frame. The mounts hang within a few
 // metres of the hull, so a point further out than that needs only the
@@ -104,7 +77,7 @@ fn sd_mount(q: vec3<f32>, m: vec3<f32>, kind: f32) -> f32 {
 // the screen, most of the march.
 fn sd_holo(q: vec3<f32>) -> f32 {
     var d = sd_fighter_exterior(q);
-    if (d > 3.5) {
+    if (d > 4.5) {
         return d;
     }
     for (var i = 0u; i < 4u; i += 1u) {

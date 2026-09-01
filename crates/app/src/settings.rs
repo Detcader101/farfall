@@ -9,7 +9,8 @@
 use crate::bay::{Mount, STOCK};
 use crate::cockpit::{Instrument, Layout, Slot};
 use crate::input::{key_from_name, key_name, Action, Bindings, Named};
-use crate::warp::{Destination, Plan};
+use crate::stick::StickMap;
+use crate::warp::{Destination, Plan, LENGTH_MAX, LENGTH_MIN};
 pub use farfall_render::post::Tonemap;
 use std::path::PathBuf;
 
@@ -55,10 +56,18 @@ pub struct DialTweak {
     /// Leaned toward the pilot about its own horizontal axis, degrees
     /// (−60..60): angles the face to read from where the pilot sits.
     pub tilt_deg: f32,
+    /// Leaned sideways about its own upright, degrees (−60..60): the
+    /// face turned toward a seat off to one side.
+    pub lean_deg: f32,
+    /// The face turned in its own plane, degrees (−180..180). The plate
+    /// and its markings turn together, so the needle still reads true.
+    pub rotate_deg: f32,
 }
 
 pub const TILT_MIN: f32 = -60.0;
 pub const TILT_MAX: f32 = 60.0;
+pub const ROTATE_MIN: f32 = -180.0;
+pub const ROTATE_MAX: f32 = 180.0;
 
 impl DialTweak {
     pub const DEFAULT: DialTweak = DialTweak {
@@ -66,6 +75,8 @@ impl DialTweak {
         style: None,
         stay: None,
         tilt_deg: 0.0,
+        lean_deg: 0.0,
+        rotate_deg: 0.0,
     };
 }
 
@@ -206,6 +217,8 @@ pub const ARMS_SHARDS_MAX: u32 = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
+    /// The file format's version (see [`SETTINGS_VERSION`]).
+    pub version: u32,
     pub msaa: u32,
     pub scale: f32,
     /// The world's scale governs itself to hold the FPS floor: RENDER
@@ -232,6 +245,8 @@ pub struct Settings {
     pub cockpit_hull: f32,
     /// The cabin is drawn at this fraction of the scene's size.
     pub cockpit_res: f32,
+    /// The control column on the console mirrors the live stick demand.
+    pub cockpit_stick: bool,
     /// The least frame rate the pilot will have, or 0 for no floor.
     pub fps_floor: f32,
     /// The daytime sky's strength low down, 1 = stock.
@@ -324,6 +339,9 @@ pub struct Settings {
     pub holo_anchor: [f32; 2],
     /// The wormhole drive's destination and safe distance.
     pub plan: Plan,
+    /// The jump sequence's length: a scale on the stock eight seconds,
+    /// 0.5 (four seconds) .. 2 (sixteen); 1 = stock.
+    pub warp_length: f32,
     /// The reactor's share for the arms, 0..1, and their light's strength
     /// (tracers, flashes, bursts), 0 (off) .. 2.
     pub arms_power: f32,
@@ -376,6 +394,8 @@ pub struct Settings {
     pub pointer_size: f32,
     /// Where the SHIP bay's panel sits (top-left, canopy NDC).
     pub bay_anchor: [f32; 2],
+    /// The stick: which raw axis and button is which control (stick.*).
+    pub stick: StickMap,
 }
 
 impl Settings {
@@ -394,6 +414,7 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            version: SETTINGS_VERSION,
             msaa: 4,
             scale: 1.0,
             auto_scale: false,
@@ -409,6 +430,7 @@ impl Default for Settings {
             cockpit_glow: 1.0,
             cockpit_hull: 0.92,
             cockpit_res: 0.5,
+            cockpit_stick: true,
             fps_floor: 60.0,
             sky: 1.0,
             terrain_detail: 1.0,
@@ -448,6 +470,7 @@ impl Default for Settings {
             controls_card: false,
             holo_anchor: HOLO_ANCHOR_DEFAULT,
             plan: Plan::default(),
+            warp_length: 1.0,
             arms_power: 0.5,
             arms_glow: 1.0,
             arms_shards: 24,
@@ -467,7 +490,7 @@ impl Default for Settings {
             // A warning, not a beating: the gauges must stay readable to
             // the slip. Turn it up on the CABIN page if you want the
             // violence.
-            drive_shake: 0.12,
+            drive_shake: 0.0,
             mounts: STOCK,
             bay_hue: BAY_HUE_DEFAULT,
             bay_saturation: 1.0,
@@ -476,6 +499,7 @@ impl Default for Settings {
             bay_spin: true,
             pointer_size: POINTER_SIZE_DEFAULT,
             bay_anchor: BAY_ANCHOR_DEFAULT,
+            stick: StickMap::default(),
         }
     }
 }
@@ -524,6 +548,7 @@ pub const KEYS: &[&str] = &[
     "cockpit.glow",
     "cockpit.hull",
     "cockpit.res",
+    "cockpit.stick",
     "ui.gauges",
     "ui.gauge-style",
     "ui.guide",
@@ -538,13 +563,31 @@ pub const KEYS: &[&str] = &[
     "ui.*.style",
     "ui.*.fade",
     "ui.*.tilt",
+    "ui.*.lean",
+    "ui.*.rotate",
     "map.rings",
     "map.grid",
     "warp.destination",
     "warp.safe-radii",
+    "warp.length",
     "sound.hull",
     "control.*",
     "control.look-sens",
+    "stick.enabled",
+    "stick.pitch",
+    "stick.yaw",
+    "stick.roll",
+    "stick.throttle",
+    "stick.strafe",
+    "stick.lift",
+    "stick.deadzone",
+    "stick.curve",
+    "stick.throttle-zero",
+    "stick.throttle-brake",
+    "stick.throttle-jump",
+    "stick.layout",
+    "stick.fire",
+    "stick.button.*",
     "arms.power",
     "arms.glow",
     "arms.sight",
@@ -570,6 +613,10 @@ pub const KEYS: &[&str] = &[
     "landing.pad",
 ];
 
+/// Keys the file carries for itself, with no menu row to reach them.
+#[cfg(test)]
+pub const FILE_ONLY_KEYS: &[&str] = &["settings.version"];
+
 /// The anchors: set by dragging a panel, never by a row.
 #[cfg(test)]
 pub const DRAGGED_KEYS: &[&str] = &[
@@ -593,9 +640,27 @@ pub fn key_matches(pattern: &str, key: &str) -> bool {
     }
 }
 
+/// The settings file's format version, written as `settings.version`.
+/// A file without the line predates the DRIVE SHAKE stock change (40% →
+/// 12%): parse adopts the new stock for exactly the old stock value, and
+/// keeps anything else — an explicit choice survives, an old default
+/// does not.
+pub const SETTINGS_VERSION: u32 = 2;
+/// What `cam.drive-shake` used to default to, before the polish pass.
+const OLD_DRIVE_SHAKE_STOCK: f32 = 0.40;
+
+/// The pilot's home: `HOME` where a shell sets it, else Windows'
+/// `USERPROFILE`. A plain Windows launch (Explorer, a shortcut) has no
+/// HOME at all — without the fallback nothing was ever saved there.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
 impl Settings {
     pub fn path() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".farfall").join("settings.cfg"))
+        home_dir().map(|h| h.join(".farfall").join("settings.cfg"))
     }
 
     /// Is there a settings file (or saved web settings) at all? Its
@@ -620,15 +685,35 @@ impl Settings {
         }
         #[allow(unreachable_code)]
         let Some(path) = Self::path() else {
-            return Self::default();
+            return Self::with_env_hud(Self::default());
         };
-        match std::fs::read_to_string(&path) {
+        let s = match std::fs::read_to_string(&path) {
             Ok(text) => {
                 let s = Self::parse(&text);
                 log::info!("settings: loaded {}", path.display());
                 s
             }
             Err(_) => Self::default(),
+        };
+        Self::with_env_hud(s)
+    }
+
+    /// FARFALL_HUD=path: wear a HUD layout file (.fhud) for this run —
+    /// the bench's way to stage a cockpit, and a way to try a shared one.
+    /// (On the web there is no environment: var() errs, this is a no-op.)
+    fn with_env_hud(s: Self) -> Self {
+        let Ok(p) = std::env::var("FARFALL_HUD") else {
+            return s;
+        };
+        match std::fs::read_to_string(&p) {
+            Ok(text) => {
+                log::info!("hud: wearing {p}");
+                crate::hud_file::apply(&s, &text)
+            }
+            Err(e) => {
+                log::warn!("hud: could not read {p}: {e}");
+                s
+            }
         }
     }
 
@@ -654,6 +739,7 @@ impl Settings {
 
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
+        let mut saw_version = false;
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -664,6 +750,12 @@ impl Settings {
             };
             let (k, v) = (k.trim(), v.trim());
             match k {
+                "settings.version" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        s.version = n.max(1);
+                        saw_version = true;
+                    }
+                }
                 "graphics.msaa" => {
                     if let Ok(n) = v.parse::<u32>() {
                         if MSAA_CHOICES.contains(&n) {
@@ -695,12 +787,22 @@ impl Settings {
                         s.plan.set_safe(f);
                     }
                 }
+                "warp.length" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.warp_length = f.clamp(LENGTH_MIN, LENGTH_MAX);
+                        }
+                    }
+                }
                 "control.look-sens" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.look_sensitivity = f.clamp(0.1, 5.0);
                         }
                     }
+                }
+                k if k.starts_with("stick.") => {
+                    s.stick.parse_key(k, v);
                 }
                 "ui.panel-menu" => {
                     if let Some(a) = parse_pair(v) {
@@ -1086,6 +1188,7 @@ impl Settings {
                         }
                     }
                 }
+                "cockpit.stick" => s.cockpit_stick = matches!(v, "on" | "true" | "1"),
                 "cockpit.res" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if COCKPIT_RES_CHOICES.contains(&f) {
@@ -1186,6 +1289,20 @@ impl Settings {
                                         }
                                     }
                                 }
+                                "lean" => {
+                                    if let Ok(f) = v.parse::<f32>() {
+                                        if f.is_finite() {
+                                            d.lean_deg = f.clamp(TILT_MIN, TILT_MAX);
+                                        }
+                                    }
+                                }
+                                "rotate" => {
+                                    if let Ok(f) = v.parse::<f32>() {
+                                        if f.is_finite() {
+                                            d.rotate_deg = f.clamp(ROTATE_MIN, ROTATE_MAX);
+                                        }
+                                    }
+                                }
                                 "fade" => {
                                     d.stay = match v {
                                         "auto" => None,
@@ -1223,11 +1340,21 @@ impl Settings {
                 }
             }
         }
+        // A file from before `settings.version` carrying exactly the old
+        // DRIVE SHAKE stock is an old default, not a choice: it adopts
+        // the new stock. Any other value in an old file is kept.
+        if !saw_version {
+            if (s.drive_shake - OLD_DRIVE_SHAKE_STOCK).abs() < 1e-3 {
+                s.drive_shake = Self::default().drive_shake;
+            }
+            s.version = SETTINGS_VERSION;
+        }
         s
     }
 
     pub fn render(&self) -> String {
         let mut out = String::from("# FARFALL settings — edited by the in-game menu (Esc)\n");
+        out.push_str(&format!("settings.version = {}\n", self.version));
         out.push_str(&format!("graphics.msaa = {}\n", self.msaa));
         out.push_str(&format!("graphics.scale = {:.2}\n", self.scale));
         out.push_str(&format!(
@@ -1256,6 +1383,7 @@ impl Settings {
             "control.look-sens = {:.2}\n",
             self.look_sensitivity
         ));
+        self.stick.render(&mut out);
         out.push_str(&format!("ui.hoop-size = {:.2}\n", self.hoop_size));
         out.push_str(&format!(
             "ui.panel-menu = {:.3},{:.3}\n",
@@ -1276,6 +1404,10 @@ impl Settings {
         out.push_str(&format!("cockpit.glow = {:.2}\n", self.cockpit_glow));
         out.push_str(&format!("cockpit.hull = {:.2}\n", self.cockpit_hull));
         out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
+        out.push_str(&format!(
+            "cockpit.stick = {}\n",
+            if self.cockpit_stick { "on" } else { "off" }
+        ));
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
         out.push_str(&format!(
@@ -1408,6 +1540,7 @@ impl Settings {
         ));
         out.push_str(&format!("warp.destination = {}\n", self.plan.dest.key()));
         out.push_str(&format!("warp.safe-radii = {:.3}\n", self.plan.safe_radii));
+        out.push_str(&format!("warp.length = {:.2}\n", self.warp_length));
         for i in Instrument::ALL {
             match self.layout.free(i) {
                 Some([x, y]) => out.push_str(&format!(
@@ -1439,6 +1572,8 @@ impl Settings {
                     }
                 ));
                 out.push_str(&format!("ui.{}.tilt = {:.0}\n", i.key(), d.tilt_deg));
+                out.push_str(&format!("ui.{}.lean = {:.0}\n", i.key(), d.lean_deg));
+                out.push_str(&format!("ui.{}.rotate = {:.0}\n", i.key(), d.rotate_deg));
             }
         }
         out.push_str(&format!(
@@ -1526,6 +1661,15 @@ mod tests {
         s.miners_growth = 2.5;
         s.hold_gain = 1.75;
         s.hold_face = false;
+        s.stick.enabled = false;
+        s.stick.deadzone = 0.14;
+        s.stick.curve = 2.25;
+        s.stick.throttle_zero = crate::stick::ThrottleZero::Bottom;
+        s.stick.bind_axis(
+            crate::stick::Flight::Lift,
+            crate::stick::AxisMap::parse("3-").unwrap(),
+        );
+        s.stick.bind_fire(Some(2));
         s.arms_sight = 0.5;
         s.cam_shake = 1.75;
         s.drive_shake = 0.8;
@@ -1538,6 +1682,7 @@ mod tests {
         s.cockpit_glow = 1.5;
         s.cockpit_hull = 0.25;
         s.cockpit_res = 1.0;
+        s.cockpit_stick = false;
         s.fps_floor = 90.0;
         s.sky = 1.5;
         s.flare = 0.5;
@@ -1564,6 +1709,8 @@ mod tests {
             style: Some(GaugeStyle::Dial),
             stay: Some(true),
             tilt_deg: 45.0,
+            lean_deg: -20.0,
+            rotate_deg: 90.0,
         };
         s.dials[Instrument::Gyro as usize].stay = Some(false);
         s.menu_anchor = [-0.25, 0.5];
@@ -1586,6 +1733,7 @@ mod tests {
         s.holo_anchor = [-0.375, 0.25];
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);
+        s.warp_length = 1.5;
         assert_eq!(Settings::parse(&s.render()), s);
     }
 
@@ -1628,7 +1776,10 @@ mod tests {
             .collect();
         for k in &written {
             assert!(
-                KEYS.iter().chain(DRAGGED_KEYS).any(|p| key_matches(p, k)),
+                KEYS.iter()
+                    .chain(DRAGGED_KEYS)
+                    .chain(FILE_ONLY_KEYS)
+                    .any(|p| key_matches(p, k)),
                 "{k} is written but not listed"
             );
         }
@@ -1696,6 +1847,41 @@ mod tests {
         assert_eq!(s.dials[Instrument::Gyro as usize].tilt_deg, -12.0);
         assert_eq!(s.dials[Instrument::GForce as usize].tilt_deg, 0.0);
         assert!(s.render().contains("ui.gyro.tilt = -12\n"));
+    }
+
+    /// The other two orientation axes: a sideways lean held to the tilt's
+    /// reach, a rotation to the half turn either way, garbage refused.
+    #[test]
+    fn a_lean_and_a_rotation_are_held_within_reach() {
+        let s = Settings::parse(
+            "ui.speed.lean = 95\nui.gyro.lean = -25\nui.speed.rotate = 260\n\
+             ui.gyro.rotate = -45\nui.g-meter.rotate = nan\n",
+        );
+        assert_eq!(s.dials[Instrument::Speed as usize].lean_deg, TILT_MAX);
+        assert_eq!(s.dials[Instrument::Gyro as usize].lean_deg, -25.0);
+        assert_eq!(s.dials[Instrument::Speed as usize].rotate_deg, ROTATE_MAX);
+        assert_eq!(s.dials[Instrument::Gyro as usize].rotate_deg, -45.0);
+        assert_eq!(s.dials[Instrument::GForce as usize].rotate_deg, 0.0);
+        assert!(s.render().contains("ui.gyro.lean = -25\n"));
+        assert!(s.render().contains("ui.gyro.rotate = -45\n"));
+    }
+
+    /// A settings file from before `settings.version` that still carries
+    /// the old DRIVE SHAKE stock (40%) adopts the new stock; an explicit
+    /// choice — any other value — is kept, and a versioned file is
+    /// believed as written. Saving stamps the current version.
+    #[test]
+    fn an_old_files_stock_drive_shake_adopts_the_new_stock() {
+        let old_stock = Settings::parse("cam.drive-shake = 0.40\n");
+        assert_eq!(old_stock.drive_shake, Settings::default().drive_shake);
+        assert_eq!(old_stock.version, SETTINGS_VERSION);
+        let old_choice = Settings::parse("cam.drive-shake = 0.80\n");
+        assert_eq!(old_choice.drive_shake, 0.80);
+        let versioned = Settings::parse("settings.version = 2\ncam.drive-shake = 0.40\n");
+        assert_eq!(versioned.drive_shake, 0.40, "a versioned file is a choice");
+        assert!(Settings::default()
+            .render()
+            .contains(&format!("settings.version = {SETTINGS_VERSION}\n")));
     }
 
     #[test]

@@ -26,6 +26,7 @@ use crate::settings::{
     HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
 };
 use crate::settings::{BAY_SCANLINES_MAX, BAY_SIZE_MAX, BAY_SIZE_MIN, EXPOSURE_MAX, EXPOSURE_MIN};
+use crate::stick::{Device, Flight, StickItem};
 use farfall_render::hud::Scrollbar;
 use farfall_render::text::{
     block_height, block_width, wrap, TextBitmap, LINE, MENU_COLS, PANEL_COLS,
@@ -39,6 +40,8 @@ pub enum Page {
     Cockpit,
     Gauges,
     Arms,
+    /// The STICK page: the HOTAS map and its wizard (crate::stick).
+    Stick,
     /// The wormhole drive's plan and the map's look. Also the DRIVE
     /// panel beside the map (M), standalone.
     Map,
@@ -51,9 +54,10 @@ pub enum Page {
 
 impl Page {
     /// The settings menu's pages, in tab order.
-    pub const ALL: [Page; 8] = [
+    pub const ALL: [Page; 9] = [
         Page::Graphics,
         Page::Controls,
+        Page::Stick,
         Page::Cockpit,
         Page::Gauges,
         Page::Arms,
@@ -69,6 +73,7 @@ impl Page {
             Page::Cockpit => "CABIN",
             Page::Gauges => "DIALS",
             Page::Arms => "ARMS",
+            Page::Stick => "STICK",
             Page::Map => "MAP",
             Page::Ship => "SHIP",
             Page::Help => "HELP",
@@ -82,6 +87,7 @@ impl Page {
             Page::Cockpit => "COCKPIT",
             Page::Gauges => "DIALS",
             Page::Arms => "ARMS",
+            Page::Stick => "STICK",
             Page::Map => "MAP",
             Page::Ship => "SHIP",
             Page::Help => "HELP",
@@ -99,6 +105,12 @@ pub enum MenuEvent {
     Quit,
     /// Close the menu and fire the wormhole drive at the plan.
     Engage,
+    /// Write the cockpit to a HUD file (the app owns the disk).
+    SaveHud,
+    /// Wear the pick'th saved HUD file (0: the stock cockpit).
+    LoadHud(usize),
+    /// Run the stick wizard (the menu stays up underneath it).
+    StickWizard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,6 +267,18 @@ pub const HELP: &[HelpGroup] = &[
                 Named::WarpStop,
                 "DROP OUT OF WARP",
                 "CUT THE DRIVE AT ONCE, LEAVING AN AFTER-IMAGE OF THE SHIP BEHIND.",
+            ),
+            fixed(
+                "LEVER BACK",
+                "AIR BRAKE",
+                "HOTAS: HOLD BRAKE",
+                "THE THROTTLE LEVER HARD BACK HOLDS THE AIR BRAKE, LIKE HOLDING SPACE (STICK PAGE).",
+            ),
+            fixed(
+                "LEVER SLAM",
+                "CHAOS BURST",
+                "HOTAS: 2S OF DRIVE",
+                "SLAM THE LEVER FORWARD AND THE CHAOS DRIVE FIRES FOR TWO SECONDS. A SMOOTH PUSH NEVER DOES.",
             ),
             named(
                 Named::Engage,
@@ -423,6 +447,8 @@ enum Item {
     Quit,
     Bind(Action),
     BindNamed(Named),
+    /// A row of the STICK page; its label, value and steps live in stick.rs.
+    Stick(StickItem),
     Slot(Instrument),
     HoopSize,
     LandingHoops,
@@ -432,6 +458,8 @@ enum Item {
     CockpitGlow,
     CockpitHull,
     CockpitRes,
+    /// The console's control column mirrors the live stick demand.
+    CockpitStick,
     FpsFloor,
     Sky,
     /// The ground's live relief, the cloud deck, the night side's cities.
@@ -467,6 +495,11 @@ enum Item {
     DialStyle,
     DialFade,
     DialTilt,
+    DialLean,
+    DialRotate,
+    /// The HUD as a file: write it, or wear a saved/shared one.
+    HudSave,
+    HudLoad,
     Camera,
     HoloView,
     HoloSize,
@@ -476,6 +509,8 @@ enum Item {
     LookSens,
     Destination,
     SafeDist,
+    /// How long the jump's liquid sequence runs.
+    WarpLength,
     Engage,
     /// The ARMS page: the reactor's share, and the light.
     ArmsPower,
@@ -515,6 +550,7 @@ impl Item {
     fn label(self) -> String {
         match self {
             Item::Bind(a) => a.name().to_string(),
+            Item::Stick(i) => i.label().to_string(),
             Item::BindNamed(n) => n.name().to_string(),
             Item::Slot(i) => i.name().to_string(),
             Item::Mount(h) => h.name().to_string(),
@@ -546,6 +582,7 @@ impl Item {
             Item::CockpitGlow => "CABIN GLOW",
             Item::CockpitHull => "CABIN METAL",
             Item::CockpitRes => "CABIN DETAIL",
+            Item::CockpitStick => "CABIN STICK",
             Item::FpsFloor => "FPS FLOOR",
             Item::Sky => "SKY",
             Item::TerrainDetail => "TERRAIN DETAIL",
@@ -605,10 +642,15 @@ impl Item {
             Item::DialStyle => "  STYLE",
             Item::DialFade => "  FADE",
             Item::DialTilt => "  TILT",
+            Item::DialLean => "  LEAN",
+            Item::DialRotate => "  ROTATE",
+            Item::HudSave => "SAVE HUD",
+            Item::HudLoad => "LOAD HUD",
             Item::MapRings => "BODY RINGS",
             Item::MapGrid => "GRID",
             Item::LookSens => "LOOK SENS",
             Item::Destination => "DESTINATION",
+            Item::WarpLength => "WARP LENGTH",
             Item::SafeDist => "SAFE DISTANCE",
             Item::Engage => "ENGAGE DRIVE",
             Item::ControlsCard => "CARD AT START",
@@ -617,7 +659,8 @@ impl Item {
             | Item::Slot(_)
             | Item::Mount(_)
             | Item::Heading(_)
-            | Item::Help(_) => "",
+            | Item::Help(_)
+            | Item::Stick(_) => "",
         }
     }
 
@@ -625,6 +668,7 @@ impl Item {
     /// a stranger reads the menu, not the source.
     fn describe(self) -> String {
         match self {
+            Item::Stick(i) => i.describe().to_string(),
             Item::Bind(a) => help_entries()
                 .into_iter()
                 .find(|e| e.control == Control::Axis(a))
@@ -675,6 +719,9 @@ impl Item {
             Item::Scale => "THE WORLD IS DRAWN AT THIS SHARE OF THE SCREEN'S SIZE; THE GLASS STAYS SHARP.",
             Item::AutoScale => "LET THE RENDER SCALE GOVERN ITSELF DOWN TO HOLD THE FPS FLOOR.",
             Item::Vsync => "WAIT FOR THE DISPLAY EACH FRAME: NO TEARING, A LITTLE LAG.",
+            Item::CockpitStick => {
+                "THE STICK AND LEVER ON THE CONSOLE MOVE WITH YOUR OWN DEMAND - HOTAS OR KEYS."
+            }
             Item::Quit => "LEAVE THE GAME. EVERYTHING IS ALREADY SAVED.",
             Item::HoopSize => "HOW BIG THE PATH'S HOOPS ARE.",
             Item::LandingHoops => "HOW FAR APART THE HOOPS SIT IN LANDING MODE.",
@@ -729,11 +776,22 @@ impl Item {
             Item::DialStyle => "THIS DIAL'S OWN STYLE, OR THE COCKPIT'S (AUTO).",
             Item::DialFade => "THIS DIAL STAYS LIT, FADES, OR DOES AS THE COCKPIT DOES (AUTO).",
             Item::DialTilt => "THIS DIAL LEANED TOWARD YOU ABOUT ITS OWN AXIS, DEGREES.",
+            Item::DialLean => "THIS DIAL LEANED SIDEWAYS ABOUT ITS OWN UPRIGHT, DEGREES.",
+            Item::DialRotate => {
+                "THIS DIAL'S FACE TURNED IN ITS OWN PLANE, DEGREES. THE NEEDLE STILL READS TRUE."
+            }
+            Item::HudSave => {
+                "WRITE THIS COCKPIT TO A SMALL FILE IN ~/.FARFALL/HUDS. SEND THE FILE TO SHARE IT."
+            }
+            Item::HudLoad => {
+                "WEAR A SAVED OR SHARED HUD FILE, OR DEFAULT. DROP A FRIEND'S .FHUD IN THAT FOLDER."
+            }
             Item::MapRings => "RINGS DRAWN ROUND EACH BODY ON THE MAP.",
             Item::MapGrid => "THE MAP'S REFERENCE GRID.",
             Item::LookSens => "HOW FAR THE HEAD TURNS PER MOUSE MOVEMENT.",
             Item::Destination => "WHERE THE WORMHOLE DRIVE TAKES YOU.",
             Item::SafeDist => "HOW FAR OUT FROM THE DESTINATION YOU ARRIVE, IN ITS RADII.",
+            Item::WarpLength => "HOW LONG THE JUMP RUNS: 100% IS EIGHT SECONDS.",
             Item::Engage => "CLOSE THE MENU AND FIRE THE WORMHOLE DRIVE AT THIS PLAN.",
             Item::ControlsCard => "SHOW THE CONTROLS CARD AT EVERY START. F1 SHOWS IT ANY TIME.",
             Item::Bind(_)
@@ -741,7 +799,8 @@ impl Item {
             | Item::Slot(_)
             | Item::Mount(_)
             | Item::Heading(_)
-            | Item::Help(_) => "",
+            | Item::Help(_)
+            | Item::Stick(_) => "",
         }
     }
 
@@ -770,7 +829,12 @@ impl Item {
             Item::AutoScale => one("graphics.auto-scale"),
             Item::Vsync => one("graphics.vsync"),
             Item::Bind(a) => vec![format!("control.{}", a.key())],
-            Item::BindNamed(n) => vec![format!("control.{}", n.key())],
+            // A named control's row carries its key and its stick button.
+            Item::BindNamed(n) => vec![
+                format!("control.{}", n.key()),
+                format!("stick.button.{}", n.key()),
+            ],
+            Item::Stick(i) => i.keys(),
             Item::Slot(i) => vec![format!("ui.{}", i.key())],
             Item::HoopSize => one("ui.hoop-size"),
             Item::LandingHoops => one("ui.landing-hoops"),
@@ -778,6 +842,7 @@ impl Item {
             Item::CockpitGlow => one("cockpit.glow"),
             Item::CockpitHull => one("cockpit.hull"),
             Item::CockpitRes => one("cockpit.res"),
+            Item::CockpitStick => one("cockpit.stick"),
             Item::FpsFloor => one("graphics.fps-floor"),
             Item::Sky => one("graphics.sky"),
             Item::Flare => one("graphics.flare"),
@@ -811,6 +876,14 @@ impl Item {
                 .iter()
                 .map(|i| format!("ui.{}.tilt", i.key()))
                 .collect(),
+            Item::DialLean => Instrument::ALL
+                .iter()
+                .map(|i| format!("ui.{}.lean", i.key()))
+                .collect(),
+            Item::DialRotate => Instrument::ALL
+                .iter()
+                .map(|i| format!("ui.{}.rotate", i.key()))
+                .collect(),
             Item::Camera => one("camera.chase"),
             Item::HoloView => one("holo.view"),
             Item::HoloSize => one("holo.size"),
@@ -820,6 +893,7 @@ impl Item {
             Item::LookSens => one("control.look-sens"),
             Item::Destination => one("warp.destination"),
             Item::SafeDist => one("warp.safe-radii"),
+            Item::WarpLength => one("warp.length"),
             Item::ArmsPower => one("arms.power"),
             Item::ArmsGlow => one("arms.glow"),
             Item::ArmsShards => one("arms.shards"),
@@ -843,7 +917,13 @@ impl Item {
             Item::PointerSize => one("ui.pointer-size"),
             Item::SafeEdge => one("ui.safe-edge"),
             Item::ControlsCard => one("ui.controls-card"),
-            Item::Quit | Item::DialSelect | Item::Engage | Item::Heading(_) | Item::Help(_) => {
+            Item::Quit
+            | Item::DialSelect
+            | Item::Engage
+            | Item::HudSave
+            | Item::HudLoad
+            | Item::Heading(_)
+            | Item::Help(_) => {
                 vec![]
             }
         }
@@ -856,8 +936,23 @@ impl Item {
             Item::AutoScale => (if s.auto_scale { "ON" } else { "OFF" }).to_string(),
             Item::Vsync => (if s.vsync { "ON" } else { "OFF" }).to_string(),
             Item::Quit => String::new(),
-            Item::Bind(a) => key_name(s.bindings.key_for(a)).to_string(),
-            Item::BindNamed(n) => key_name(s.bindings.named(n)).to_string(),
+            // The stick's bind beside the key's: `LSHIFT B1`; an axis
+            // action shows the flight axis that drives it.
+            Item::Bind(a) => {
+                match Flight::for_action(a).filter(|f| s.stick.axis(*f).axis.is_some()) {
+                    Some(f) => format!("{} {}", key_name(s.bindings.key_for(a)), f.name()),
+                    None => key_name(s.bindings.key_for(a)).to_string(),
+                }
+            }
+            Item::BindNamed(n) => match s.stick.button_for(n) {
+                Some(b) => format!(
+                    "{} {}",
+                    key_name(s.bindings.named(n)),
+                    s.stick.button_name(Some(b))
+                ),
+                None => key_name(s.bindings.named(n)).to_string(),
+            },
+            Item::Stick(i) => i.value(&s.stick, None),
             Item::Slot(i) => match s.layout.free(i) {
                 Some(_) => "DRAGGED".to_string(),
                 None => s.layout.get(i).name().to_string(),
@@ -867,6 +962,7 @@ impl Item {
             Item::LandingAssist => if s.landing_assist { "ON" } else { "OFF" }.to_string(),
             Item::LandingPad => if s.landing_pad { "ON" } else { "OFF" }.to_string(),
             Item::CockpitFrame => if s.cockpit_frame { "ON" } else { "OFF" }.to_string(),
+            Item::CockpitStick => if s.cockpit_stick { "ON" } else { "OFF" }.to_string(),
             Item::CockpitGlow => format!("{:.2}X", s.cockpit_glow),
             Item::CockpitHull => format!("{:.0}%", s.cockpit_hull * 100.0),
             Item::CockpitRes => format!("{:.0}%", s.cockpit_res * 100.0),
@@ -971,7 +1067,11 @@ impl Item {
             | Item::DialSize
             | Item::DialStyle
             | Item::DialFade
-            | Item::DialTilt => String::new(),
+            | Item::DialTilt
+            | Item::DialLean
+            | Item::DialRotate
+            | Item::HudSave
+            | Item::HudLoad => String::new(),
             Item::MapRings => s.map_rings.to_string(),
             Item::MapGrid => if s.map_grid { "ON" } else { "OFF" }.to_string(),
             Item::LookSens => format!("{:.2}X", s.look_sensitivity),
@@ -984,6 +1084,11 @@ impl Item {
                     format!("{:.2} R", s.plan.safe_radii)
                 }
             }
+            Item::WarpLength => format!(
+                "{:.0}% ({:.0}S)",
+                s.warp_length * 100.0,
+                crate::warp::SEQUENCE_S * s.warp_length
+            ),
             Item::Engage => String::new(),
             Item::ArmsPower => format!("{:.0}%", s.arms_power * 100.0),
             Item::ArmsGlow => {
@@ -1121,6 +1226,10 @@ pub struct Menu {
     msaa_ok: [bool; 4],
     /// The dial the DIALS page's per-dial block edits.
     dial: Instrument,
+    /// LOAD HUD's place in its cycle: 0 DEFAULT, n the nth saved file.
+    hud_pick: usize,
+    /// The stick the app found, by USB id, for the STICK page's DEVICE row.
+    stick_id: Option<(u16, u16)>,
 }
 
 impl Default for Menu {
@@ -1134,6 +1243,8 @@ impl Default for Menu {
             rebinding: false,
             msaa_ok: [true; 4],
             dial: Instrument::Speed,
+            hud_pick: 0,
+            stick_id: None,
         }
     }
 }
@@ -1163,9 +1274,6 @@ impl Menu {
                 Item::FpsFloor,
                 Item::Fov,
                 Item::Camera,
-                Item::HoloView,
-                Item::HoloSize,
-                Item::HoloRange,
                 Item::CockpitRes,
                 Item::Sky,
                 Item::TerrainDetail,
@@ -1204,6 +1312,7 @@ impl Menu {
                 Item::CockpitFrame,
                 Item::CockpitGlow,
                 Item::CockpitHull,
+                Item::CockpitStick,
                 Item::Shield,
                 Item::HullSound,
                 Item::Slot(Instrument::Trajectory),
@@ -1231,7 +1340,18 @@ impl Menu {
                     Item::DialStyle,
                     Item::DialFade,
                     Item::DialTilt,
+                    Item::DialLean,
+                    Item::DialRotate,
                 ];
+                // The HUD as a shareable file, then the holo3PP's rows —
+                // it is a gauge and lives with the dials.
+                v.extend([
+                    Item::HudSave,
+                    Item::HudLoad,
+                    Item::HoloView,
+                    Item::HoloSize,
+                    Item::HoloRange,
+                ]);
                 v.extend(
                     Instrument::ALL
                         .iter()
@@ -1257,9 +1377,11 @@ impl Menu {
                 Item::HoldGain,
                 Item::HoldFace,
             ],
+            Page::Stick => StickItem::all().into_iter().map(Item::Stick).collect(),
             Page::Map => vec![
                 Item::Destination,
                 Item::SafeDist,
+                Item::WarpLength,
                 Item::Engage,
                 Item::MapRings,
                 Item::MapGrid,
@@ -1293,6 +1415,31 @@ impl Menu {
                 v
             }
         }
+    }
+
+    /// The stick the app has (its USB ids), or none: the DEVICE row.
+    pub fn set_stick(&mut self, id: Option<(u16, u16)>) {
+        self.stick_id = id;
+    }
+
+    /// Waiting for a key (or a stick button) to bind.
+    pub fn rebinding(&self) -> bool {
+        self.rebinding
+    }
+
+    /// A stick button pressed while a named control's row waits for a
+    /// bind: the button takes the control, beside its key.
+    pub fn stick_button(&mut self, button: u8, settings: &mut Settings) -> MenuEvent {
+        if !self.rebinding {
+            return MenuEvent::Nothing;
+        }
+        let items = self.items();
+        if let Some(Item::BindNamed(n)) = items.get(self.cursor) {
+            settings.stick.bind_button(*n, Some(button));
+            self.rebinding = false;
+            return MenuEvent::Changed(Change::Bindings);
+        }
+        MenuEvent::Nothing
     }
 
     /// Restrict the MSAA choices to what the GPU supports.
@@ -1504,6 +1651,15 @@ impl Menu {
                     self.open = false;
                     MenuEvent::Engage
                 }
+                Item::HudSave => MenuEvent::SaveHud,
+                Item::Stick(StickItem::Wizard) => MenuEvent::StickWizard,
+                Item::Stick(i) => {
+                    if i.adjust(&mut settings.stick, true, true) {
+                        MenuEvent::Changed(Change::Bindings)
+                    } else {
+                        MenuEvent::Nothing
+                    }
+                }
                 i if i.rebindable() => {
                     self.rebinding = true;
                     MenuEvent::Nothing
@@ -1554,6 +1710,13 @@ impl Menu {
                 s.layout.cycle(i, forward);
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::Stick(i) => {
+                if i.adjust(&mut s.stick, forward, false) {
+                    MenuEvent::Changed(Change::Bindings)
+                } else {
+                    MenuEvent::Nothing
+                }
+            }
             Item::LookSens => {
                 let step = if forward { 0.25 } else { -0.25 };
                 let next = (s.look_sensitivity + step).clamp(0.25, 5.0);
@@ -1573,6 +1736,16 @@ impl Menu {
                 if (s.plan.safe_radii - before).abs() < 1e-9 {
                     return MenuEvent::Nothing;
                 }
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::WarpLength => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next =
+                    (s.warp_length + step).clamp(crate::warp::LENGTH_MIN, crate::warp::LENGTH_MAX);
+                if (next - s.warp_length).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.warp_length = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Engage => MenuEvent::Nothing,
@@ -1600,6 +1773,10 @@ impl Menu {
             }
             Item::CockpitFrame => {
                 s.cockpit_frame = !s.cockpit_frame;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::CockpitStick => {
+                s.cockpit_stick = !s.cockpit_stick;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::CockpitGlow => {
@@ -1904,6 +2081,38 @@ impl Menu {
                 d.tilt_deg = next;
                 MenuEvent::Changed(Change::Layout)
             }
+            Item::DialLean => {
+                let d = &mut s.dials[self.dial as usize];
+                let next = (d.lean_deg + if forward { 5.0 } else { -5.0 })
+                    .clamp(crate::settings::TILT_MIN, crate::settings::TILT_MAX);
+                if (next - d.lean_deg).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                d.lean_deg = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::DialRotate => {
+                let d = &mut s.dials[self.dial as usize];
+                let next = (d.rotate_deg + if forward { 15.0 } else { -15.0 })
+                    .clamp(crate::settings::ROTATE_MIN, crate::settings::ROTATE_MAX);
+                if (next - d.rotate_deg).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                d.rotate_deg = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            // SAVE HUD acts on Enter alone: an arrow across the row must
+            // not scatter files.
+            Item::HudSave => MenuEvent::Nothing,
+            Item::HudLoad => {
+                let total = crate::hud_file::list().len() + 1;
+                self.hud_pick = if forward {
+                    (self.hud_pick + 1) % total
+                } else {
+                    (self.hud_pick + total - 1) % total
+                };
+                MenuEvent::LoadHud(self.hud_pick)
+            }
             Item::DialFade => {
                 let d = &mut s.dials[self.dial as usize];
                 d.stay = match (d.stay, forward) {
@@ -2133,6 +2342,14 @@ impl Menu {
     fn value_of(&self, item: Item, s: &Settings) -> String {
         let d = s.dials[self.dial as usize];
         match item {
+            Item::Stick(StickItem::Device) => {
+                let dev = self.stick_id.map(|(vid, pid)| Device {
+                    vid,
+                    pid,
+                    ..Device::default()
+                });
+                StickItem::Device.value(&s.stick, dev.as_ref())
+            }
             Item::DialSelect => self.dial.name().to_string(),
             Item::DialSize => format!("{:.2}X", d.size),
             Item::DialStyle => d
@@ -2145,6 +2362,15 @@ impl Menu {
             }
             .to_string(),
             Item::DialTilt => format!("{:+.0} DEG", d.tilt_deg),
+            Item::DialLean => format!("{:+.0} DEG", d.lean_deg),
+            Item::DialRotate => format!("{:+.0} DEG", d.rotate_deg),
+            Item::HudLoad => {
+                if self.hud_pick == 0 {
+                    "DEFAULT".to_string()
+                } else {
+                    format!("HUD {}", self.hud_pick)
+                }
+            }
             other => other.value(s),
         }
     }
@@ -2221,6 +2447,7 @@ impl Menu {
             _ if self.standalone && self.page == Page::Map => "< > SET  ENTER ENGAGE  M CLOSE",
             _ if self.standalone => "CLICK A SLOT  DRAG TURN  B CLOSE",
             Page::Controls => "TAB PAGE  ENTER BIND  ESC BACK",
+            Page::Stick => "< > SET  ENTER FLIP OR RUN  ESC BACK",
             Page::Help => "TAB PAGE  UP DOWN READ  ESC BACK",
             _ => "TAB PAGE  < > ADJUST  ESC BACK",
         };
@@ -2300,6 +2527,87 @@ mod tests {
     use crate::settings::{key_matches, DRAGGED_KEYS, KEYS};
     use farfall_render::text::{has_glyph, COLS, ROWS};
 
+    /// The STICK page is reachable, its rows edit the map and save, ENTER
+    /// on the wizard row asks for the wizard, a stick button on a KEYS
+    /// row waiting for a bind binds itself, and the KEYS page shows the
+    /// stick's bind beside the key.
+    #[test]
+    fn the_stick_page_and_its_wizard_are_in_the_menu() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.toggle();
+        m.key(KeyCode::Tab, &mut s);
+        m.key(KeyCode::Tab, &mut s);
+        assert_eq!(m.page, Page::Stick);
+        assert!(m.header().contains("[STICK]"));
+        assert!(
+            m.header().len() <= COLS,
+            "six pages fit the row: {:?}",
+            m.header()
+        );
+        let items = m.items();
+        let at = |it: Item| items.iter().position(|&x| x == it).unwrap();
+        m.set_cursor(at(Item::Stick(StickItem::Wizard)));
+        assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::StickWizard);
+        m.set_cursor(at(Item::Stick(StickItem::Enabled)));
+        assert_eq!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::Changed(Change::Bindings)
+        );
+        assert!(!s.stick.enabled);
+        m.set_cursor(at(Item::Stick(StickItem::Axis(Flight::Pitch))));
+        assert_eq!(
+            m.key(KeyCode::Enter, &mut s),
+            MenuEvent::Changed(Change::Bindings)
+        );
+        assert!(s.stick.axis(Flight::Pitch).invert, "ENTER flips the axis");
+        assert_eq!(
+            m.value_of(Item::Stick(StickItem::Axis(Flight::Pitch)), &s),
+            s.stick.axis(Flight::Pitch).label(&s.stick)
+        );
+        // The DEVICE row reads the stick the app found.
+        assert_eq!(m.value_of(Item::Stick(StickItem::Device), &s), "NONE FOUND");
+        m.set_stick(Some((0x044F, 0xB67C)));
+        assert!(m
+            .value_of(Item::Stick(StickItem::Device), &s)
+            .contains("HOTAS 4"));
+        // Every STICK row fits the panel.
+        for it in &items {
+            assert!(
+                m.line(*it, true, &s).len() <= COLS,
+                "{it:?} is wider than the panel"
+            );
+        }
+        // KEYS: the stick bind beside the key, and a button binds itself
+        // to a row waiting for a key.
+        m.set_page(Page::Controls);
+        let boost = Item::BindNamed(Named::Boost);
+        assert_eq!(m.value_of(boost, &s), "LSHIFT L1");
+        assert_eq!(m.value_of(Item::Bind(Action::PitchUp), &s), "UP PITCH");
+        assert_eq!(
+            m.stick_button(5, &mut s),
+            MenuEvent::Nothing,
+            "not rebinding: ignored"
+        );
+        m.set_cursor(m.items().iter().position(|&x| x == boost).unwrap());
+        m.key(KeyCode::Enter, &mut s);
+        assert!(m.rebinding());
+        assert_eq!(
+            m.stick_button(5, &mut s),
+            MenuEvent::Changed(Change::Bindings)
+        );
+        assert_eq!(s.stick.button_for(Named::Boost), Some(5));
+        assert_eq!(s.stick.button_for(Named::Landing), None, "B5 left LANDING");
+        assert!(!m.rebinding());
+        assert_eq!(m.value_of(boost, &s), "LSHIFT FACE D");
+        for it in m.items() {
+            assert!(
+                m.line(it, false, &s).len() <= COLS,
+                "{it:?} is wider than the panel"
+            );
+        }
+    }
+
     #[test]
     fn escape_closes_and_tab_pages() {
         let mut m = Menu::new();
@@ -2374,6 +2682,7 @@ mod tests {
         let mut s = Settings::default();
         m.toggle();
         m.key(KeyCode::Tab, &mut s);
+        m.key(KeyCode::Tab, &mut s); // stick
         m.key(KeyCode::Tab, &mut s);
         m.key(KeyCode::Tab, &mut s); // dials: style, stay, guide, the dial block, the slots
         assert_eq!(m.page, Page::Gauges);
@@ -2416,7 +2725,8 @@ mod tests {
             MenuEvent::Changed(Change::Layout)
         );
         assert_ne!(s.layout.get(Instrument::Speed), Slot::BottomRight);
-        for _ in 0..(Page::ALL.len() - 3) {
+        // DIALS is the fifth of nine tabs (STICK sits third).
+        for _ in 0..(Page::ALL.len() - 4) {
             m.key(KeyCode::Tab, &mut s); // round through ARMS, MAP, SHIP, HELP
         }
         assert_eq!(m.page, Page::Graphics);
@@ -2443,6 +2753,8 @@ mod tests {
         for d in s.dials.iter_mut() {
             d.size = crate::settings::DIAL_SIZE_MAX;
             d.tilt_deg = crate::settings::TILT_MIN;
+            d.lean_deg = crate::settings::TILT_MIN;
+            d.rotate_deg = crate::settings::ROTATE_MIN;
             d.style = Some(crate::settings::GaugeStyle::Dial);
             d.stay = Some(false);
         }
@@ -2626,7 +2938,7 @@ mod tests {
             match page {
                 Page::Graphics => {
                     assert!(on(Item::Msaa) && on(Item::Fov) && on(Item::CockpitRes));
-                    assert!(on(Item::FpsFloor) && on(Item::HoloRange));
+                    assert!(on(Item::FpsFloor));
                     // The nebula block sits together, after the sky knobs.
                     let at = |it: Item| items.iter().position(|i| *i == it).unwrap();
                     assert!(at(Item::Nebula) > at(Item::Flare));
@@ -2640,6 +2952,26 @@ mod tests {
                     assert_eq!(at(Item::NebulaSeed), at(Item::Nebula) + 1);
                     assert_eq!(at(Item::NebulaSpread), at(Item::Nebula) + 7);
                     assert_eq!(*items.last().unwrap(), Item::Quit, "QUIT is the last thing");
+                }
+                Page::Stick => {
+                    // The stick's own page: the device line, the switch,
+                    // the wizard, every flight axis, the knobs, the trigger.
+                    assert!(on(Item::Stick(StickItem::Device)));
+                    assert!(on(Item::Stick(StickItem::Enabled)));
+                    assert!(on(Item::Stick(StickItem::Wizard)));
+                    for f in Flight::ALL {
+                        assert!(
+                            on(Item::Stick(StickItem::Axis(f))),
+                            "missing axis row {f:?}"
+                        );
+                    }
+                    assert!(
+                        on(Item::Stick(StickItem::Deadzone)) && on(Item::Stick(StickItem::Curve))
+                    );
+                    assert!(
+                        on(Item::Stick(StickItem::ThrottleZero))
+                            && on(Item::Stick(StickItem::Fire))
+                    );
                 }
                 Page::Controls => {
                     assert!(items.iter().all(|i| i.rebindable() || *i == Item::LookSens));
@@ -2674,7 +3006,12 @@ mod tests {
                 Page::Gauges => {
                     assert!(on(Item::GaugeStyle) && on(Item::GaugesStay) && on(Item::Guide));
                     assert!(on(Item::DialTilt) && on(Item::Slot(Instrument::Gyro)));
+                    assert!(on(Item::DialLean) && on(Item::DialRotate));
                     assert!(on(Item::Slot(Instrument::Map)), "the mini map is a gauge");
+                    assert!(
+                        on(Item::HoloView) && on(Item::HoloSize) && on(Item::HoloRange),
+                        "the holo3PP is a gauge"
+                    );
                     assert!(
                         !on(Item::Slot(Instrument::Hoops)),
                         "hoops live with the cabin"
@@ -2695,6 +3032,7 @@ mod tests {
                 }
                 Page::Map => {
                     assert!(on(Item::Destination) && on(Item::SafeDist) && on(Item::Engage));
+                    assert!(on(Item::WarpLength), "the jump's length is set here");
                     assert!(on(Item::MapRings) && on(Item::MapGrid));
                 }
                 Page::Ship => {
@@ -2794,7 +3132,7 @@ mod tests {
                 continue;
             };
             let k = k.trim();
-            if DRAGGED_KEYS.contains(&k) {
+            if DRAGGED_KEYS.contains(&k) || crate::settings::FILE_ONLY_KEYS.contains(&k) {
                 continue;
             }
             assert!(claimed.iter().any(|c| c == k), "no menu row edits {k}");
@@ -2966,6 +3304,10 @@ mod tests {
         m.key(KeyCode::ArrowRight, &mut s);
         assert!(s.plan.safe_radii > r0);
         m.key(KeyCode::ArrowDown, &mut s);
+        let l0 = s.warp_length;
+        m.key(KeyCode::ArrowRight, &mut s);
+        assert!(s.warp_length > l0, "the jump's length is set on the panel");
+        m.key(KeyCode::ArrowDown, &mut s);
         assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::Engage);
         assert!(!m.open);
     }
@@ -2993,11 +3335,33 @@ mod tests {
         assert_eq!(side.page, Page::Map, "a side panel has no tabs");
     }
 
+    /// SAVE HUD writes on Enter alone (an arrow across the row must not
+    /// scatter files); LOAD HUD cycles DEFAULT and the saved files and
+    /// asks the app to wear the pick. The menu touches no disk itself.
+    #[test]
+    fn the_dials_page_saves_and_loads_hud_files() {
+        let mut m = Menu::new();
+        let mut s = Settings::default();
+        m.open_on(Page::Gauges);
+        let at = m.items().iter().position(|&i| i == Item::HudSave).unwrap();
+        m.set_cursor(at);
+        assert_eq!(m.key(KeyCode::ArrowRight, &mut s), MenuEvent::Nothing);
+        assert_eq!(m.key(KeyCode::Enter, &mut s), MenuEvent::SaveHud);
+        m.key(KeyCode::ArrowDown, &mut s);
+        assert_eq!(m.items()[m.cursor], Item::HudLoad);
+        assert_eq!(m.value_of(Item::HudLoad, &s), "DEFAULT");
+        assert!(matches!(
+            m.key(KeyCode::ArrowRight, &mut s),
+            MenuEvent::LoadHud(_)
+        ));
+        assert_eq!(s, Settings::default(), "the menu itself changes nothing");
+    }
+
     #[test]
     fn the_hologram_range_and_the_card_have_rows() {
         let mut m = Menu::new();
         let mut s = Settings::default();
-        m.open_on(Page::Graphics);
+        m.open_on(Page::Gauges);
         let at = m
             .items()
             .iter()

@@ -4,6 +4,7 @@
 
 use glam::{Quat, Vec3};
 
+use crate::hologram::MountView;
 use crate::instrument::InstrumentPass;
 use crate::CameraFrame;
 
@@ -21,6 +22,10 @@ pub struct JetUniforms {
     /// xyz: the nearest body's direction in ship frame (its light on the
     /// belly); w: how bright that fill is, 0..1.
     fill: [f32; 4],
+    /// xyz: each hardpoint, ship frame (m) — the one transform table
+    /// (bay.rs Hardpoint::pos via fit_views); w: its mount's kind
+    /// (0 empty, 1 cannon, 2 rail). The chase view shows the bay's fit.
+    hp: [[f32; 4]; 4],
 }
 
 impl JetUniforms {
@@ -49,7 +54,16 @@ impl JetUniforms {
             glow: [hyper.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
             rcs: [0.0; 4],
             fill: [0.0; 4],
+            hp: [[0.0; 4]; 4],
         }
+    }
+    /// The SHIP bay's fit: each hardpoint's place with its mount's kind,
+    /// for the mounts on the marched hull.
+    pub fn with_fit(mut self, fit: &[MountView; 4]) -> Self {
+        for (slot, m) in self.hp.iter_mut().zip(fit.iter()) {
+            *slot = [m.at.x, m.at.y, m.at.z, m.kind as f32];
+        }
+        self
     }
     /// The pass draws only when shown.
     pub fn shown(mut self) -> Self {
@@ -123,8 +137,26 @@ mod tests {
         )
         .shown()
         .with_rcs(0.5, -2.0, f32::NAN)
-        .with_body_fill(Vec3::new(0.0, -2.0, 0.0), 0.7);
-        assert_eq!(std::mem::size_of::<JetUniforms>(), 8 * 16);
+        .with_body_fill(Vec3::new(0.0, -2.0, 0.0), 0.7)
+        .with_fit(&[
+            MountView {
+                at: Vec3::new(0.0, -0.45, -4.2),
+                kind: 2,
+            },
+            MountView {
+                at: Vec3::new(-2.6, -0.35, -0.6),
+                kind: 1,
+            },
+            MountView {
+                at: Vec3::new(2.6, -0.35, -0.6),
+                kind: 0,
+            },
+            MountView {
+                at: Vec3::new(0.0, -1.95, 1.4),
+                kind: 0,
+            },
+        ]);
+        assert_eq!(std::mem::size_of::<JetUniforms>(), 12 * 16);
         assert_eq!(u.right[3], 2.0, "aspect rides right.w");
         assert_eq!(u.eye, [0.0, 3.0, 22.0, 1.5], "eye + exposure");
         assert_eq!(u.sun[3], 0.5, "effort rides sun.w");
@@ -133,5 +165,11 @@ mod tests {
         assert_eq!(u.fwd[2], -1.0, "forward is -Z");
         assert_eq!(u.rcs, [0.5, -1.0, 0.0, 0.0], "demands clamped, NaN is none");
         assert_eq!(u.fill, [0.0, -1.0, 0.0, 0.7], "the body below, its fill");
+        assert_eq!(
+            u.hp[0],
+            [0.0, -0.45, -4.2, 2.0],
+            "the nose rail rides its lane"
+        );
+        assert_eq!(u.hp[2][3], 0.0, "an empty hardpoint is a bare pylon");
     }
 }
