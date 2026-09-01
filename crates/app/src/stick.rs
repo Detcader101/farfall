@@ -12,8 +12,9 @@
 //!
 //! # The stick pilots the menus (the whole game, keyboard untouched)
 //!
-//! The keyboard and mouse stay reserved for the future on-foot controller;
-//! the stick is a complete parallel path. One convention, everywhere:
+//! The keyboard and mouse belong to the on-foot controller (the EVA
+//! walker, SPEC §6.5b — the reservation paid off); the stick is a
+//! complete parallel path for the ship. One convention, everywhere:
 //!
 //! - **BACK** (`stick.back`, BASE R on a HOTAS 4) is ESC: it opens the
 //!   menu in flight and backs out of any panel, card or wizard.

@@ -187,6 +187,39 @@ size. They shove and shoot the ship through impulses after `sim::step`, like a
 strike; the golden hash does not know they exist. A miner is the same ship
 class as ours that grows through tiers as it mines the ring.
 
+### 6.5b The walker (EVA, app-side, never sim-side)
+
+DISEMBARK, landed, leaves the seat: a first-person walker standing beside the
+ship, and the keyboard and mouse — reserved for the on-foot controller since
+the stick took the whole cockpit — are its controls. The rocks' rule holds
+here too: the walker is the app's, not the sim's. Its feet, velocity and gaze
+live in `crates/app` as state hung off the game, stepped after `sim::step`
+each fixed step, and the golden hash does not know anyone stepped out. The
+sim keeps flying the ship, which is LANDED and stays put; while someone is on
+foot the ship's controls are zeroed, so nothing can lift it off from under
+them.
+
+The ground is the ground the gear stands on: the body's analytic sphere at
+`radius_m` (§6.7 — the planet is computed, not stored; there is no terrain
+mesh to query, and the shader's visual relief has no CPU twin yet). The
+walker works in the body's own frame — feet measured from the body's centre,
+velocity over its ground — so a moving body carries its walker exactly as it
+carries its landed ship. The translation binds walk the tangent, BOOST's key
+runs, BRAKE's key jumps, gravity is the body's own μ/r², and the sphere-exact
+ground resolution puts the feet back on the surface and takes the inward
+velocity. The mouse look is always engaged on foot — no held button — yawing
+about local up and pitching short of the poles. ESC still menus.
+
+The camera is a view pose like the cockpit's and the chase rig's: the eye at
+the feet plus eye height, expressed in the ship's frame — exact while the
+ship is LANDED and still, which on foot it always is; the assumption is
+revisited the day the ship can move with nobody aboard. An eye off the ship
+already shows the hull (the jet pass), so the parked fighter stands there to
+walk around; the cabin, the dash and the glass stay in the cockpit. The
+readout swaps to the suit's lines — the ship's distance, and the DISEMBARK
+key reading as BOARD within boarding range at the hull. The same key that
+walked out walks back in.
+
 ### 6.6 The city, eventually (direction, not commitment)
 
 The end-state city (M5+) is the ultimate test of P1+P2: dense, alive, and readable.
@@ -363,9 +396,10 @@ Each milestone ends with a demonstrable artifact and its acceptance tests green.
   Quest browser) against the frozen `ViewProvider` seam; go/no-go per target with
   measured frame times. Accept: written verdict + at minimum the native path
   rendering the M2 scene in stereo at 90 Hz on Index-class hardware.
-- **M5+ — Vision lane**: landing + touchdown (the sim's LANDED state and the
-  DISEMBARK bind exist now — the ship settles on its gear and stays; the walk-out
-  itself, leaving the seat for a surface on foot, is this milestone's); the shader city; background simulation
+- **M5+ — Vision lane**: landing + touchdown (the sim's LANDED state, the
+  DISEMBARK bind and the walk-out itself exist now — the ship settles on its gear
+  and stays, and DISEMBARK leaves the seat for the surface on foot, §6.5b; what
+  remains here is somewhere worth walking to); the shader city; background simulation
   (Elite-style faction states) + narrative layer (Yarn Spinner rust port, verified
   MIT OR Apache-2.0) — the "choices matter" layer from the original research, which
   remains the destination.

@@ -14,6 +14,7 @@ mod belt;
 mod capture;
 mod card;
 mod cockpit;
+mod eva;
 mod heli;
 mod hold;
 mod hud_file;
@@ -545,6 +546,9 @@ const MACH1_MPS: f64 = 340.0;
 ///                           =fly: boarded instead, hovering over the pad)
 ///   FARFALL_BENCH_DISEMBARK=1 (benchmark only: DISEMBARK pressed at once,
 ///                           for its answer on the readout)
+///   FARFALL_BENCH_EVA=1    (benchmark only: parked LANDED and already on
+///                           foot — walked out a dozen metres, looking back
+///                           at the ship, the suit's readout up)
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
 ///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times,
 ///                           0..8; 2 is the STICK page)
@@ -1489,6 +1493,11 @@ struct Game {
     touchdown_record: Option<landing::Record>,
     /// DISEMBARK's answer, and when it was given (it shows for a moment).
     disembark_notice: Option<(&'static str, Instant)>,
+    /// On foot (SPEC §6.5b): the EVA walker, when someone has stepped out.
+    /// App state, like the mimics — never the sim's, never in the hash.
+    eva: Option<eva::Walker>,
+    /// The movement keys as held, for the walker's step.
+    eva_keys: eva::Keys,
     /// Mouse: last cursor position and whether the left button is down,
     /// for dragging the map round; the window's size, to read it.
     cursor: Option<(f32, f32)>,
@@ -1621,9 +1630,11 @@ impl Game {
         }
         // FARFALL_BENCH_LANDED=1: parked on the ground, LANDED, for the
         // capture of the settled state and its readout.
+        // FARFALL_BENCH_EVA=1 parks the same way — the walk-out itself is
+        // staged once the game exists, beside the other bench triggers.
         let mut helis = heli::Helis::default();
         let bench_landed = std::env::var("FARFALL_BENCH_LANDED").is_ok();
-        if bench_landed {
+        if bench_landed || std::env::var("FARFALL_BENCH_EVA").is_ok() {
             state.ship = landing::parked(&params, 0);
         }
         // FARFALL_BENCH_HELI=1: parked beside the coast pad's helicopter,
@@ -1709,6 +1720,8 @@ impl Game {
             touchdown: None,
             touchdown_record: bench_landed.then(landing::Record::sample),
             disembark_notice: None,
+            eva: None,
+            eva_keys: eva::Keys::default(),
             cursor: None,
             window_size: (1.0, 1.0),
             left_down: false,
@@ -2078,7 +2091,7 @@ impl Game {
     fn mini_map_shown(&self) -> bool {
         let covered =
             self.menu.open || self.map_panel.open || self.bay_panel.open || self.card_open;
-        self.settings.layout.shown(Instrument::Map) && !covered && !self.chase_active()
+        self.settings.layout.shown(Instrument::Map) && !covered && !self.exterior_view()
     }
 
     /// Where the mini map's centre sits before the safe-edge inset: the
@@ -2174,6 +2187,7 @@ impl Game {
             self.bay_panel.open = false;
         }
         self.input.release_all();
+        self.eva_keys = eva::Keys::default();
     }
 
     /// The bay takes the whole screen: the hologram's centre sits left of
@@ -3012,8 +3026,9 @@ impl Game {
         (rel - up * rel.dot(up)).length()
     }
 
-    /// DISEMBARK (I): leave the ship. Today the answer is "not yet" — the
-    /// bind, the state and the readout are the hook for the walk-out.
+    /// DISEMBARK (I): leave the ship. LANDED, it walks out — the EVA
+    /// walker (SPEC §6.5b) — unless a pad's helicopter is closer business;
+    /// anywhere else the readout says why not.
     fn disembark(&mut self) {
         let landed = matches!(self.state.ship.ground, sim::Ground::Landed { .. });
         if self.helis.in_heli {
@@ -3052,9 +3067,118 @@ impl Game {
                 return;
             }
         }
+        if landed {
+            self.enter_eva();
+            return;
+        }
         let notice = landing::disembark_notice(self.state.ship.ground);
         self.disembark_notice = Some((notice, Instant::now()));
         log::info!("disembark: {notice}");
+    }
+
+    fn eva_active(&self) -> bool {
+        self.eva.is_some()
+    }
+
+    /// The walk-out: boots on the ground beside the ship, facing the
+    /// hull. The ship stays LANDED exactly where it is.
+    fn enter_eva(&mut self) {
+        let sim::Ground::Landed { body, .. } = self.state.ship.ground else {
+            return;
+        };
+        let b = self.params.bodies(self.state.time_s)[body];
+        self.eva = Some(eva::Walker::disembarked(
+            body,
+            self.state.ship.pos_m - b.centre,
+            self.state.ship.orient,
+            b.radius_m,
+            eva::EXIT_M,
+        ));
+        self.eva_keys = eva::Keys::default();
+        self.input.release_all();
+        log::info!("eva: on foot beside the ship");
+    }
+
+    /// How far the boots stand from the ship, metres.
+    fn eva_ship_m(&self) -> Option<f64> {
+        let w = self.eva.as_ref()?;
+        let b = self.params.bodies(self.state.time_s)[w.body];
+        Some((b.centre + w.feet_m - self.state.ship.pos_m).length())
+    }
+
+    /// The DISEMBARK key on foot: board the ship, if it is in reach.
+    fn try_board(&mut self) {
+        let Some(dist) = self.eva_ship_m() else {
+            return;
+        };
+        if dist <= eva::BOARD_RANGE_M {
+            self.eva = None;
+            self.eva_keys = eva::Keys::default();
+            self.input.release_all();
+            self.disembark_notice = Some(("BOARDED SHIP", Instant::now()));
+            log::info!("eva: back in the seat");
+        } else {
+            log::info!("eva: the ship is {dist:.0} m away — walk back to board");
+        }
+    }
+
+    /// A movement key on foot. The translation binds walk, BOOST's key
+    /// runs, BRAKE's key jumps — all through the pilot's own bindings.
+    fn eva_key(&mut self, code: KeyCode, pressed: bool) {
+        let b = &self.settings.bindings;
+        let k = &mut self.eva_keys;
+        match code {
+            c if c == b.key_for(input::Action::ThrustForward) => k.fwd = pressed,
+            c if c == b.key_for(input::Action::ThrustBack) => k.back = pressed,
+            c if c == b.key_for(input::Action::StrafeLeft) => k.left = pressed,
+            c if c == b.key_for(input::Action::StrafeRight) => k.right = pressed,
+            c if c == b.named(Named::Boost) => k.run = pressed,
+            c if c == b.named(Named::Brake) => k.jump = pressed,
+            _ => {}
+        }
+    }
+
+    /// One fixed step of the walker, after the sim's own. A panel up
+    /// means the keys are nobody's: the boots stand still.
+    fn step_eva(&mut self) {
+        let Some(body) = self.eva.as_ref().map(|w| w.body) else {
+            return;
+        };
+        let keys = if self.panel_open() {
+            eva::Keys::default()
+        } else {
+            self.eva_keys
+        };
+        let b = self.params.bodies(self.state.time_s)[body];
+        if let Some(w) = self.eva.as_mut() {
+            w.step(&keys, b.mu, b.radius_m, sim::DT);
+        }
+    }
+
+    /// The bench's walker: out at the bench's distance, looking back at
+    /// the hull with a little pitch up to take it in.
+    fn stage_eva_bench(&mut self) {
+        let Some(body) = self.eva.as_ref().map(|w| w.body) else {
+            return;
+        };
+        let b = self.params.bodies(self.state.time_s)[body];
+        let ship_local = self.state.ship.pos_m - b.centre;
+        let mut w = eva::Walker::disembarked(
+            body,
+            ship_local,
+            self.state.ship.orient,
+            b.radius_m,
+            eva::BENCH_OUT_M,
+        );
+        w.tilt(0.10);
+        self.eva = Some(w);
+    }
+
+    /// The suit's readout lines, on foot.
+    fn eva_text(&self) -> Option<String> {
+        let dist = self.eva_ship_m()?;
+        let key = input::key_name(self.bind(Named::Disembark));
+        Some(eva::lines(dist, key).join("\n"))
     }
 
     /// The boarding offer for the readout: landed beside a helicopter (or
@@ -4189,8 +4313,10 @@ impl Game {
         // send upstream (SPEC §5.2).
         // Advance the input ramp on wall time, before sampling it.
         self.input.update(frame_dt);
-        // Through a jump the stick is dead: the drive has the ship.
-        let mut controls = if self.warp.active() {
+        // Through a jump the stick is dead: the drive has the ship. On
+        // foot every control is dead: the ship stays LANDED where its
+        // pilot left it, and nothing can lift it off from under them.
+        let mut controls = if self.warp.active() || self.eva.is_some() {
             sim::Controls {
                 assist: self.assist,
                 ..Default::default()
@@ -4351,6 +4477,7 @@ impl Game {
                 self.state.ship.vel_mps += kick;
             }
             self.step_mimics();
+            self.step_eva();
             let hits: Vec<belt::Hit> = self.belt.hits.clone();
             for h in hits {
                 let ship_inv = self.state.ship.orient.inverse();
@@ -4847,9 +4974,13 @@ impl Game {
         self.pose(aspect).cam
     }
 
-    /// This frame's eye on the world: the cockpit's, or the chase rig's
-    /// when the CAMERA setting says so.
+    /// This frame's eye on the world: the walker's when someone is on
+    /// foot, else the cockpit's, or the chase rig's when the CAMERA
+    /// setting says so.
     fn pose(&self, aspect: f32) -> ViewPose {
+        if let Some(w) = &self.eva {
+            return self.eva_pose(aspect, w);
+        }
         if self.chase_active() {
             self.chase_pose(aspect)
         } else {
@@ -4881,6 +5012,21 @@ impl Game {
         }
     }
 
+    /// The walker's eye (SPEC §6.5b): feet plus eye height, gaze leaning
+    /// with the planet. Expressed in the ship's frame like every pose —
+    /// exact while the ship is LANDED and still, which on foot it always
+    /// is.
+    fn eva_pose(&self, aspect: f32, w: &eva::Walker) -> ViewPose {
+        let b = self.params.bodies(self.state.time_s)[w.body];
+        let inv = self.state.ship.orient.inverse();
+        let head = (inv * w.orientation()).as_quat();
+        ViewPose {
+            cam: self.cam_for(aspect, head),
+            head,
+            eye_ship: inv * (b.centre + w.eye_m() - self.state.ship.pos_m),
+        }
+    }
+
     /// The camera frame for a view turned `head` from the ship's own axes.
     /// The camera is the ship's orientation — both use the same
     /// right-handed frame with the nose at -Z, so no fix-up rotation is
@@ -4903,6 +5049,19 @@ impl Game {
         self.settings.camera_chase
     }
 
+    /// The eye is outside the ship — the chase rig's, or the walker's —
+    /// so the hull shows and the cabin, dash and glass stay home.
+    fn exterior_view(&self) -> bool {
+        self.chase_active() || self.eva.is_some()
+    }
+
+    /// The cursor is grabbed while a look is driving it: the cockpit's
+    /// freelook, or the walker's always-on gaze (freed while a panel is
+    /// up, so the menu can be clicked).
+    fn grabs_cursor(&self) -> bool {
+        (self.eva.is_some() && !self.panel_open()) || self.look.engaged()
+    }
+
     /// The key a named control answers to right now.
     fn bind(&self, n: Named) -> KeyCode {
         self.settings.bindings.named(n)
@@ -4911,7 +5070,7 @@ impl Game {
     /// The holo3PP renders only when its panel is up and the main view is
     /// still the cockpit — in chase the whole screen already is the rig.
     fn holo_active(&self) -> bool {
-        self.settings.holo_view && !self.chase_active()
+        self.settings.holo_view && !self.exterior_view()
     }
 
     /// Where a pose's eye sits in the world, metres.
@@ -5993,6 +6152,12 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_DISEMBARK").is_ok() {
             game.disembark();
         }
+        if game.frozen && std::env::var("FARFALL_BENCH_EVA").is_ok() {
+            // On foot for the capture: walked out a dozen metres, turned
+            // to look back at the parked ship.
+            game.disembark();
+            game.stage_eva_bench();
+        }
         if let Some(head) = std::env::var("FARFALL_BENCH_HEAD")
             .ok()
             .filter(|_| game.frozen)
@@ -6232,7 +6397,7 @@ fn redraw(
                         gpu.passes.dust.draw_space(&mut pass, &du);
                         gpu.passes.wind.draw(&mut pass, &wu);
                         gpu.passes.jet.draw(&mut pass);
-                        if !game.chase_active() {
+                        if !game.exterior_view() {
                             gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                         }
                         gpu.passes.trajectory.draw(&mut pass);
@@ -6242,7 +6407,7 @@ fn redraw(
                     {
                         // The picture, then the ship over it.
                         let mut pass = gpu.post.begin_ship_pass(&mut encoder, &gpu.scene, true);
-                        if !game.chase_active() {
+                        if !game.exterior_view() {
                             // The horizon and its ladder are at infinity:
                             // the dash hides what falls below its sill.
                             gpu.passes.horizon.draw(&mut pass);
@@ -6514,7 +6679,7 @@ fn redraw(
             if gpu.cfg.draws("jet") {
                 gpu.passes.jet.draw(&mut pass);
             }
-            if gpu.cfg.draws("plasma") && !game.chase_active() {
+            if gpu.cfg.draws("plasma") && !game.exterior_view() {
                 gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
             }
             if gpu.cfg.draws("trajectory") {
@@ -6534,18 +6699,18 @@ fn redraw(
             let mut pass =
                 gpu.post
                     .begin_ship_pass(&mut encoder, &gpu.scene, gpu.cfg.draws("bloom"));
-            if gpu.cfg.draws("gauge") && !game.chase_active() {
+            if gpu.cfg.draws("gauge") && !game.exterior_view() {
                 // At infinity, so under the dash: the cabin covers what
                 // falls below its sill. On the ship side, so it never blooms.
                 gpu.passes.horizon.draw(&mut pass);
             }
-            if gpu.cfg.draws("cockpit") && !game.chase_active() {
+            if gpu.cfg.draws("cockpit") && !game.exterior_view() {
                 gpu.passes.cabin.draw(&mut pass);
                 if gpu.cfg.draws("dust") {
                     gpu.passes.dust.draw_cabin(&mut pass, &du);
                 }
             }
-            if gpu.cfg.draws("gauge") && !game.chase_active() {
+            if gpu.cfg.draws("gauge") && !game.exterior_view() {
                 gpu.passes
                     .gauge
                     .draw_within(&mut pass, gpu.dial_rects.get()[0], gpu.scene.size());
@@ -6703,7 +6868,8 @@ fn redraw(
                 || game.on_ground(),
             wind: game.wind_readout(),
             landing: game
-                .landing_text()
+                .eva_text()
+                .or_else(|| game.landing_text())
                 .or_else(|| game.hold_text())
                 .or_else(|| game.mimic_text())
                 .or_else(|| game.strain_text())
@@ -6967,6 +7133,36 @@ impl App {
                 };
                 let ev = panel.key(code, &mut game.settings);
                 apply_menu_event(game, gpu, event_loop, ev);
+                // Leaving the panel on foot, the walker's gaze takes the
+                // cursor back.
+                gpu.set_look_cursor(game.grabs_cursor());
+            }
+            return;
+        }
+        // On foot the keyboard is the walker's (SPEC §6.5b): the
+        // translation binds walk, BOOST runs, BRAKE jumps, DISEMBARK
+        // boards at the hull; ESC still menus, the capture key still
+        // captures. Everything of the ship's is out of reach.
+        if game.eva_active() {
+            match code {
+                KeyCode::Escape if pressed && !repeat => {
+                    game.toggle_menu();
+                    gpu.set_look_cursor(game.grabs_cursor());
+                }
+                c if pressed && !repeat && c == game.bind(Named::Disembark) => {
+                    game.try_board();
+                    gpu.set_look_cursor(game.grabs_cursor());
+                }
+                c if pressed
+                    && !repeat
+                    && (c == game.bind(Named::Capture) || c == KeyCode::F12) =>
+                {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        gpu.capture_requested = true;
+                    }
+                }
+                _ => game.eva_key(code, pressed),
             }
             return;
         }
@@ -7006,7 +7202,11 @@ impl App {
             c if pressed && !repeat && c == game.bind(Named::Engage) => game.engage_warp(),
             c if pressed && !repeat && c == game.bind(Named::WarpStop) => game.warp_stop(),
             c if pressed && !repeat && c == game.bind(Named::Landing) => game.toggle_landing(),
-            c if pressed && !repeat && c == game.bind(Named::Disembark) => game.disembark(),
+            c if pressed && !repeat && c == game.bind(Named::Disembark) => {
+                game.disembark();
+                // Walked out: the gaze takes the cursor at once.
+                gpu.set_look_cursor(game.grabs_cursor());
+            }
             c if pressed && !repeat && c == game.bind(Named::Design) => {
                 game.toggle_design();
                 gpu.set_look_cursor(game.look.engaged() && !game.design);
@@ -7086,7 +7286,18 @@ impl ApplicationHandler for App {
         // looking, and raw counts keep coming at the screen edge.
         if let DeviceEvent::MouseMotion { delta } = event {
             if let Some(game) = self.game.as_mut() {
-                game.look.motion(delta.0 as f32, delta.1 as f32);
+                // On foot the mouse is the walker's gaze, always engaged —
+                // except under a panel, where it is the menu's again.
+                if game.eva_active() {
+                    if !game.panel_open() {
+                        let sens = f64::from(game.settings.look_sensitivity);
+                        if let Some(w) = game.eva.as_mut() {
+                            w.look(delta.0, delta.1, sens);
+                        }
+                    }
+                } else {
+                    game.look.motion(delta.0 as f32, delta.1 as f32);
+                }
             }
         }
     }
@@ -7129,7 +7340,7 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 game.look.set_held(state == ElementState::Pressed);
-                gpu.set_look_cursor(game.look.engaged());
+                gpu.set_look_cursor(game.grabs_cursor());
                 if !game.look.engaged() {
                     game.end_drag();
                 }
@@ -7241,10 +7452,11 @@ impl ApplicationHandler for App {
             // event; without this the ship keeps thrusting unattended.
             WindowEvent::Focused(false) => {
                 game.input.release_all();
+                game.eva_keys = eva::Keys::default();
                 game.fire_held = false;
                 game.stick_fire = false;
                 game.look.set_held(false);
-                gpu.set_look_cursor(game.look.engaged());
+                gpu.set_look_cursor(game.grabs_cursor());
                 game.end_drag();
             }
             WindowEvent::Resized(size) => {
@@ -7287,6 +7499,47 @@ mod tests {
     use glam::{DQuat, DVec3};
     use input::{Action, InputState};
     use winit::keyboard::KeyCode;
+
+    /// The whole EVA loop (SPEC §6.5b): DISEMBARK while LANDED walks out,
+    /// the sim's ship never moves (the golden hash's state is untouched),
+    /// the readout swaps to the suit's lines, boarding needs the hull in
+    /// reach, and the same key walks back in.
+    #[test]
+    fn disembark_walks_out_and_the_same_key_boards_back() {
+        let mut game = Game::new();
+        game.state.ship = landing::parked(&game.params, 0);
+        let before = game.state;
+        let hash = sim::state_hash(&game.state);
+        game.disembark();
+        assert!(game.eva_active(), "on foot");
+        assert_eq!(sim::state_hash(&game.state), hash, "the sim never felt it");
+        assert_eq!(game.state.ship.pos_m, before.ship.pos_m, "the ship stays");
+        // The suit's readout, with the boarding offer: the walk-out
+        // stands within reach of the hull.
+        let text = game.eva_text().expect("the suit's lines");
+        assert!(text.contains("EVA"), "{text}");
+        assert!(text.contains("BOARD"), "{text}");
+        // The eye is outside the ship: the hull shows, the cabin stays home.
+        assert!(game.exterior_view());
+        let pose = game.pose(1.5);
+        assert!(pose.eye_ship != DVec3::ZERO, "the eye left the ship");
+        let d = game.eva_ship_m().unwrap();
+        assert!((d - eva::EXIT_M).abs() < 3.0, "beside the ship: {d}");
+        // Too far from the hull, the key does not board.
+        let b = game.params.bodies(game.state.time_s)[0];
+        if let Some(w) = game.eva.as_mut() {
+            let t = w.up().any_orthonormal_vector();
+            w.feet_m = (w.feet_m + t * 300.0).normalize() * b.radius_m;
+        }
+        game.try_board();
+        assert!(game.eva_active(), "still walking back");
+        // Beside it again, the same key boards.
+        game.stage_eva_bench();
+        game.try_board();
+        assert!(!game.eva_active(), "back in the seat");
+        assert_eq!(sim::state_hash(&game.state), hash, "and the sim never knew");
+        assert_eq!(game.disembark_notice.map(|(n, _)| n), Some("BOARDED SHIP"));
+    }
 
     /// The readout is diagnostics, not glassware: turning the head must
     /// not move it (it once drifted mid-sky through a spinning bench
@@ -7419,7 +7672,7 @@ mod tests {
         // The jet draws in chase and never in the cockpit.
         assert!(game.chase_active());
         game.settings.camera_chase = false;
-        assert!(!game.chase_active());
+        assert!(!game.exterior_view());
     }
 
     fn fly(keys: &[KeyCode], secs: u64) -> sim::ShipState {
