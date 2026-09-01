@@ -506,7 +506,13 @@ const MACH1_MPS: f64 = 340.0;
 ///                           two perf runs are not comparable. Forces a window
 ///                           rather than fullscreen and exits by itself, so a
 ///                           benchmark can never be left sitting on screen
-///                           being mistaken for a game with broken controls.)
+///                           being mistaken for a game with broken controls.
+///                           HERMETIC: starts from stock settings — the pilot's
+///                           settings.cfg is neither read nor ever written —
+///                           and never polls a real stick, so a plugged HOTAS
+///                           or a lived-in cockpit cannot colour a capture;
+///                           FARFALL_HUD and the knobs below stage looks and
+///                           demands deliberately.)
 ///   FARFALL_BENCH_SECONDS  (how long a benchmark runs before quitting; 20)
 ///   FARFALL_BENCH_ALT      (frozen altitude in metres; low values are the
 ///                           worst case, a screen filled edge to edge with
@@ -1512,8 +1518,6 @@ struct Game {
     stick_log: u32,
     /// The throttle gestures: lever hard back brakes, a slam bursts.
     stick_gestures: stick::Gestures,
-    /// FARFALL_BENCH_DEMAND: a parked demand the poll must not stomp.
-    bench_demand: bool,
     /// The mimics — ships in the rocks — and what the guns bring in.
     mimics: mimic::Mimics,
     haul: mimic::Haul,
@@ -1720,7 +1724,6 @@ impl Game {
             wizard: None,
             stick_log: 0,
             stick_gestures: stick::Gestures::default(),
-            bench_demand: false,
             mimics: mimic::Mimics::default(),
             haul: mimic::Haul::default(),
             helis,
@@ -5979,9 +5982,9 @@ impl App {
             })
         {
             // The mirror's senses: +p pitch up (+x torque), +r roll right
-            // (-z), +y yaw right (-y), +t thrust ahead (-z).
+            // (-z), +y yaw right (-y), +t thrust ahead (-z). It stands for
+            // the whole run: the bench never polls a real stick.
             game.input.set_stick([0.0, 0.0, -t, p, -y, -r]);
-            game.bench_demand = true;
         }
         if game.frozen && std::env::var("FARFALL_BENCH_LAND").is_ok() {
             game.toggle_landing();
@@ -6736,13 +6739,17 @@ impl App {
     /// data, or a KEYS row's waiting bind. The stick is a complete
     /// parallel path to the keyboard; stick.rs's module doc is the map.
     fn poll_stick(&mut self, event_loop: &ActiveEventLoop) {
+        // The bench is hermetic: the pilot's plugged-in stick is not part
+        // of the scene — a full-rail throttle once slam-fired the chaos
+        // drive mid-bench and warp-streaked a whole sweep's captures. A
+        // parked FARFALL_BENCH_DEMAND (set once at staging) is the only
+        // stick a bench flies with, and this return leaves it standing.
+        if self.gpu.as_ref().is_some_and(|g| g.cfg.bench) {
+            return;
+        }
         let Some(game) = self.game.as_mut() else {
             return;
         };
-        // A parked bench demand stands; the real stick must not stomp it.
-        if game.bench_demand {
-            return;
-        }
         let Some(sample) = game.stick.poll() else {
             game.menu.set_stick(None);
             game.input.set_stick([0.0; 6]);
