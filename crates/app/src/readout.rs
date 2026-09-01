@@ -20,8 +20,20 @@ pub struct Readout {
     pub speed_mps: f64,
     pub assist: bool,
     pub bench: bool,
+    /// The wind over the hull: speed (m/s) and the arrow it blows along,
+    /// relative to the nose. None in vacuum or a calm.
+    pub wind: Option<(f32, &'static str)>,
     /// The status line, if there is one.
     pub status: Option<String>,
+}
+
+/// The 8-way arrow for a wind blowing toward `angle_rad` off the nose
+/// (positive to the pilot's right): the way the air goes, as the pilot
+/// sits — `^` up the screen is downwind dead ahead.
+pub fn arrow(angle_rad: f32) -> &'static str {
+    const ARROWS: [&str; 8] = ["^", "^>", ">", "V>", "V", "<V", "<", "<^"];
+    let turn = angle_rad.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
+    ARROWS[((turn * 8.0).round() as usize) % 8]
 }
 
 /// The readout's width in characters.
@@ -46,11 +58,14 @@ pub fn lines(r: &Readout) -> Vec<String> {
             "VEL {}",
             farfall_render::gauge::speed_text(r.speed_mps as f32)
         ),
-        // The flight computer's state lives on the HUD because the log is
-        // invisible in fullscreen — X seemed broken when it was merely
-        // silent.
-        (if r.assist { "FC ON" } else { "FC OFF" }).to_string(),
     ];
+    if let Some((mps, arrow)) = r.wind {
+        out.push(format!("WIND {mps:.0} M/S {arrow}"));
+    }
+    // The flight computer's state lives on the HUD because the log is
+    // invisible in fullscreen — X seemed broken when it was merely
+    // silent.
+    out.push((if r.assist { "FC ON" } else { "FC OFF" }).to_string());
     if r.bench {
         out.push("BENCH SIM FROZEN".to_string());
     }
@@ -87,8 +102,25 @@ mod tests {
             speed_mps: 725.0,
             assist: true,
             bench: true,
+            wind: None,
             status: status.map(str::to_string),
         }
+    }
+
+    /// The wind line sits between VEL and FC, reads whole metres a
+    /// second, and points the way the air goes relative to the nose.
+    #[test]
+    fn the_wind_line_reads_speed_and_the_way_the_air_goes() {
+        let mut r = readout(None);
+        r.wind = Some((12.4, arrow(std::f32::consts::FRAC_PI_2)));
+        let lines = lines(&r);
+        assert_eq!(lines[5], "WIND 12 M/S >");
+        assert_eq!(lines[6], "FC ON");
+        assert!(lines.iter().all(|l| l.chars().count() <= COLS));
+        assert_eq!(arrow(0.0), "^", "downwind dead ahead");
+        assert_eq!(arrow(std::f32::consts::PI), "V");
+        assert_eq!(arrow(-std::f32::consts::FRAC_PI_2), "<");
+        assert_eq!(arrow(std::f32::consts::FRAC_PI_4), "^>");
     }
 
     /// The landing line and a hail are long: they wrap inside the block
