@@ -33,12 +33,13 @@ settings_keys:
   graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.dust, graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread, graphics.terrain-detail, graphics.clouds, graphics.city-lights]
   camera: [camera.chase, holo.view, holo.size, cam.shake, cam.drive-shake, holo.range]
   cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
-  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
+  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt / .lean / .rotate", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
   rule: every key above has a menu row (crates/app/src/menu.rs::every_settings_key_has_a_menu_row walks settings.rs::KEYS), save the panel anchors, which are set by dragging
   map: [map.rings, map.grid]
   warp: [warp.destination, warp.safe-radii, warp.length]
   sound: [sound.hull]
   controls: ["control.<axis>", "control.<named>", control.look-sens]
+  stick: [stick.enabled, stick.pitch, stick.yaw, stick.roll, stick.throttle, stick.strafe, stick.lift, stick.deadzone, stick.curve, stick.throttle-zero, stick.layout, stick.fire, "stick.button.<named>"]
   arms: [arms.power, arms.glow, arms.sight, arms.shards, arms.shard-life, arms.scar-size, arms.scar-cool, arms.ore]
   mimics: [mimics.chance, mimics.hostility, mimics.size]
   miners: [miners.count, miners.growth]
@@ -60,8 +61,9 @@ bench:
     FARFALL_BENCH_ALT: frozen altitude in metres over the planet
     FARFALL_BENCH_HEAD: head yaw,pitch in degrees
     FARFALL_BENCH_SPIN: the head turns a full circle over the run, n times
-    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND / _CARD: the map, the settings menu (paged n times, 0..7), DESIGN mode, LANDING mode, the CONTROLS card up
-    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND: the map, the settings menu (paged n times), DESIGN mode, LANDING mode up
+    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND / _CARD: the map, the settings menu (paged n times, 0..8; 2 is the STICK page), DESIGN mode, LANDING mode, the CONTROLS card up
+    FARFALL_BENCH_STICK=n: the stick wizard open at step n (0-based) with a stand-in detection on it
+    FARFALL_BENCH_DEMAND=p,r,y,t: a parked pitch/roll/yaw/throttle demand, for the console stick mirror
     FARFALL_BENCH_LANDED / _DISEMBARK: parked on the ground, LANDED, on its gear; DISEMBARK pressed at once for its answer on the readout
     FARFALL_BENCH_CHASE / _HOLO: the chase camera, the holo3PP
     FARFALL_BENCH_NEBULA=1|off: a full sky of nebula at twice the stock glow, or off for a baseline
@@ -394,6 +396,22 @@ features:
     settings: [control.map, control.atmosphere, control.engage, control.landing, control.design, control.look-lock, control.trajectory, control.assist, control.chase, control.holo, control.capture]
     tests: ["crates/app/src/input.rs::no_two_default_binds_share_a_key", "crates/app/src/input.rs::rebinding_swaps_uniformly_across_actions_and_named_controls", crates/app/src/menu.rs, crates/app/src/settings.rs]
     e2e: "menu capture — the KEYS page walks every bind"
+
+  - id: hotas-stick
+    name: "A HOTAS / joystick flies the ship (crates/app/src/stick.rs): on Windows through winmm (windows-sys, already in the tree — no new dependency), in the browser through the Gamepad API; the Thrustmaster T.Flight HOTAS 4 is recognised by its USB id and works out of the box with a measured default map (X roll, Y pitch, Z throttle inverted, V rocker strafe, R twist yaw; trigger fires, L1 boost, R3 brake, L3 despin, the throttle's face buttons map/landing/next weapon/assist, R2 chaos drive, L2 warp stop, base buttons chase/holo, the hat look-lock/rail/hold/cannon). Axes are shaped (symmetric deadzone, power curve, invert, throttle zero at centre or bottom) into the same body axes the keys drive and summed with them, clamped; a stick button IS the key its named control is bound to (one key path, App::key_input), so every action is bindable to a button. A STICK page (device line, on/off, the wizard, each flight axis, deadzone, curve, throttle zero, trigger) and the KEYS page showing stick binds beside keys (a stick button pressed on a PRESS KEY row binds itself). The SETUP WIZARD walks the stick control by control — move the axis / press the button, the wizard detects which and which way, ENTER keeps, I inverts, X clears, S skips, B back, ESC finishes — to a summary; re-runnable any time; saved as stick.* keys as it goes"
+    state: tests-pass
+    settings: [stick.enabled, stick.pitch, stick.yaw, stick.roll, stick.throttle, stick.strafe, stick.lift, stick.deadzone, stick.curve, stick.throttle-zero, stick.throttle-brake, stick.throttle-jump, stick.layout, stick.fire, "stick.button.<named>", cockpit.stick]
+    tests: ["crates/app/src/stick.rs::hotas4_defaults_fly_the_ship_the_right_way", "crates/app/src/stick.rs::every_shaped_value_stays_finite_and_in_range", "crates/app/src/stick.rs::deadzone_is_symmetric_and_full_travel_still_reaches_one", "crates/app/src/stick.rs::the_wizard_learns_an_axis_from_the_move_it_sees", "crates/app/src/stick.rs::the_wizard_binds_buttons_skips_and_goes_back", "crates/app/src/stick.rs::every_wizard_page_fits_the_panel", "crates/app/src/stick.rs::the_map_round_trips_through_the_settings_file", "crates/app/src/stick.rs::an_unidentified_axis_resting_at_full_deflection_moves_nothing", "crates/app/src/input.rs::the_stick_sums_with_the_keys_within_range", "crates/app/src/menu.rs::the_stick_page_and_its_wizard_are_in_the_menu"]
+    e2e: "farfall-captures/hotas/: the STICK page, KEYS with stick binds, wizard steps (axis, deadzone, trigger, button, summary), each run finding the real HOTAS 4 by winmm; AND a live flight by Jay Jay (farfall-captures/live/hotas-live.log): pitch/roll/yaw/throttle full-range and the right way up — which caught winmm reporting the untouched rocker at full rail (strafe +1.00 at rest), fixed by the reader's calibration gate — see docs/polish/hotas.md"
+    notes: "docs/HOTAS.md: the design (device map vs actions, lifted from hotas-reforger), the default map as a table, the settings keys, adding another stick. Linux/macOS have no reader yet (gilrs is the road, behind the same platform::{find, read} pair)"
+
+  - id: hotas-gestures
+    name: "The throttle's gestures and the cabin's answering stick: the lever hard back (bottom ~5% of true travel, centre-zero maps only) holds the air brake exactly as Space does (stick.throttle-brake); the lever slammed forward (70% of travel inside a quarter second, ending past halfway) holds the chaos drive for two seconds and lets go, the drive's own charge/entropy rules untouched, and a smooth push can never trigger it (stick.throttle-jump); both on the HELP page under DRIVES and as STICK rows with descriptions. The control column on the console mirrors the live demand (cockpit.stick, CABIN page): the stick leans with pitch/roll, the grip twists with yaw, the left lever slides with the throttle — HOTAS or keys, through one render lane (CabinUniforms::with_stick, quantised 0.05)"
+    state: tests-pass
+    settings: [stick.throttle-brake, stick.throttle-jump, cockpit.stick]
+    tests: ["crates/app/src/stick.rs::a_smooth_throttle_push_never_jumps", "crates/app/src/stick.rs::a_slam_jumps_for_two_seconds_and_releases", "crates/app/src/stick.rs::the_lever_hard_back_holds_the_air_brake", "crates/app/src/input.rs::the_stick_sums_with_the_keys_within_range", crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/hotas/cabin-stick-neutral-1.png vs cabin-stick-demand-1.png (FARFALL_BENCH_DEMAND=1,0.7,0.5,0.8, HEAD=0,-35): the console column leaned back-and-right, grip twisted, lever slid - looked at; the gestures themselves await Jay Jay's next flight"
+    notes: "the gestures read the lever's true position (post-invert, pre-deadzone) from the admitted sample, so the calibration gate keeps an untouched railed lever out of both zones"
 
   - id: holo3pp
     name: "The holo3PP (N, holo.view — clear of H, which is the chaos drive), and the chase camera it is measured against (Y, camera.chase): third person without ever leaving first person, and not a screen. holo.wgsl marches a real 3D hologram over an emitter in the dash — the fighter itself (the same SDF as cabin/map/ghost/jet) in miniature at its true attitude, translucent cyan with rim light, a Sun-lit side so its shape reads, scanlines drifting up through the volume, an interference shimmer of fine fringes beating over the volume (the bay hologram has the same), plumes trailing out of the nozzles with effort/hyper; around it the things the canopy cannot show: the velocity vector (relative to the nearest body; a rod as long as the log of the speed), the nearest body as an amber wire globe at its true bearing and TRUE angular size (the ground swells up under the little ship as it descends), the Sun's bearing as a bead. It is a real object in the ship's frame: turn the head and it has parallax, look down on it. Light, not glass — it adds over the cabin. Its emitter is a glass anchor whose direction meets the dash at the socket (the same placement as the dials), draggable along the dash or anywhere in the glass, sized by HOLO SIZE; stock at the upper right of the glass under the mini map (clear of the dials — over the dash it sat on the speed dial and the G meter), out of the forward view. Every world pass draws from a ViewPose (camera + a head rotation + an eye seat in the ship's frame), so the chase view is only a camera — the ship-attached shaders (shield shell, after-image, belt) fold the eye offset through with_eye lanes and stay glued to the hull; jet.wgsl draws the ship itself from outside. Chase (Y) swings the whole screen behind the ship; cockpit passes skip. GFX menu: CAMERA, HOLO VIEW, HOLO SIZE"
@@ -755,3 +773,38 @@ features:
     state: tests-pass
     tests: ["crates/app/src/bay.rs::every_pass_reads_the_same_fit_table", "crates/render/src/cabin.rs::the_bay_fit_reaches_the_glass_and_redraws_in_place", "crates/render/src/jet.rs::jet_lanes_hold_their_places", "crates/render/tests/shader_validation.rs"]
     e2e: "farfall-captures/cockpit-arms/ ca-glass-{nose,wl-cannon,wl-rail,wr-cannon,wr-empty}-1.png (the fit on the airframe through the glass, both wings, a bare pylon), ca-bay-fit-1.png (the bay panel and hologram agreeing), ca-chase-fit-1.png (the chase view astern); perf held at ~325-360 fps"
+
+  - id: settings-persist-and-hyper-camera
+    name: "Polish pass, design (fable/design): settings persist on a plain Windows launch — Settings::path falls back to USERPROFILE when HOME is unset (Explorer/shortcut launches set no HOME, so nothing was ever saved or loaded there); the file gains settings.version, and a versionless file still carrying the old 40% DRIVE SHAKE stock adopts the new 12% while any other value is kept as the pilot's choice; and while the hyper field is up the helmet camera's deflection is scaled down and capped at a quarter of its free limit so the dash reads all the way to the slip — the chaos drive still bucks the ship, which is the warning"
+    state: complete
+    settings: [cam.drive-shake]
+    tests: ["crates/app/src/settings.rs::an_old_files_stock_drive_shake_adopts_the_new_stock", "crates/app/src/shake.rs::the_hyper_field_reins_the_camera_in"]
+    e2e: "farfall-captures/design: mode-shake vs mode-hyper-shake (same parked 3,2,1-degree helmet camera; under the field the dash sits near level and reads through the streaks) and hyper-shake-spin-1..4"
+
+  - id: dial-lean-rotate
+    name: "A dial can face any way: sideways LEAN (;/' in DESIGN, ui.<dial>.lean, ±60°) and in-plane ROTATE (9/0, ui.<dial>.rotate, ±180°) beside the tilt — on the dash the face plane itself turns (dial_plane_uv takes the oriented normal, the DIAL/WARTHOG housing follows via the repacked socket code), on the glass the hologram foreshortens both ways and its face turns (dial_glass_uv, shared by gauge/gvec/gyro); the plate and its markings turn together so the needle reads true; LEAN and ROTATE rows on the DIALS page"
+    state: complete
+    settings: ["ui.<dial>.lean", "ui.<dial>.rotate"]
+    tests: ["crates/app/src/settings.rs::a_lean_and_a_rotation_are_held_within_reach", "crates/render/src/gauge.rs::a_dial_carries_its_lean_and_rotation", "crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin", "crates/app/src/lib.rs::design_keys_lean_and_rotate_a_dial_and_backspace_resets", crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/design: design-lean and hud-fhud — the speed dial leaned 30 and rotated 45 on the dash, plate and markings turned together, the G meter tilted 20; hud-map-drag shows the same dial upright for contrast"
+
+  - id: design-elements-holo-map-readout
+    name: "The holo3PP, the mini map and the readout are design elements like the dials: DESIGN mode's pointer finds each (own card), -/= sizes them (holo.size; ui.map.size scales the mini map pane; ui.readout.size scales the readout text), Backspace resets each, the guide marks all eight anchors, the mini map stays up in DESIGN and drags anywhere with its anchor kept as 'ui.map = on at x,y'; HOLO VIEW/SIZE/RANGE rows live on the DIALS page now"
+    state: complete
+    settings: ["ui.map (slot + dragged anchor)", ui.map.size, ui.readout.size, holo.size, ui.panel-holo, ui.panel-readout]
+    tests: ["crates/app/src/lib.rs::design_mode_takes_the_holo_the_mini_map_and_the_readout", "crates/app/src/cockpit.rs::a_dragged_dial_keeps_its_own_anchor_until_the_slot_is_cycled"]
+    e2e: "farfall-captures/design: design-guide (the guide ringing the dials, the mini map, the holo and the readout; the card says POINT AT ANY GLASS PIECE), hud-map-drag (the mini map dragged to -0.30,0.20), design-lean (the mini map grown 1.5x at 0.10,0.55)"
+
+  - id: hud-file
+    name: "The cockpit as a shareable file: SAVE HUD / LOAD HUD on the DIALS page write and wear ~/.farfall/huds/hud-N.fhud — a small self-describing key=value file (header + hud.version 1) carrying every ui.* key, holo.* and the mini map's look, nothing of graphics/controls/world; an omitted key means stock, DEFAULT is the stock cockpit, SAVE overwrites the file worn last; sharing = sending the file; FARFALL_HUD=path wears one for a run. The first player-to-player artefact (SPEC §11)"
+    state: complete
+    settings: []
+    tests: ["crates/app/src/hud_file.rs::a_hud_file_round_trips_the_whole_cockpit_and_nothing_else", "crates/app/src/hud_file.rs::hud_files_are_numbered_and_sorted_naturally", "crates/app/src/menu.rs::the_dials_page_saves_and_loads_hud_files"]
+    e2e: "farfall-captures/design: hud-fhud — a generated .fhud worn via FARFALL_HUD in flight, the whole staged cockpit on the glass"
+
+  - id: bench-matrix-coverage
+    name: "bench-matrix.sh covers every feature with a frame: rows mode-hyper-shake (hyper field + the helmet camera parked non-zero), mode-disembark (LANDED + DISEMBARK's readout answer), gfx-dust / gfx-dust-belt (FARFALL_BENCH_DUST=k, a new frozen-only knob), design-lean (DESIGN mode wearing a staged .fhud with a leaned+rotated dial and a moved, grown mini map), hud-fhud (the same file worn in flight) and hud-map-drag (the mini map dragged off its corner via a one-line .fhud); the fixtures are generated by the script itself"
+    state: complete
+    settings: []
+    tests: []
+    e2e: "farfall-captures/design: mode-hyper-shake, mode-disembark (LANDED ... DISEMBARK NOT YET on the readout), gfx-dust, design-lean, hud-fhud, hud-map-drag — each row exercised once and looked at"

@@ -386,6 +386,9 @@ pub struct GaugeUniforms {
     d: [f32; 4],
     /// A DIAL's placement in the dash; [`Placement::GLASS`] on the glass.
     place: crate::cabin::Placement,
+    /// x: sideways lean, y: in-plane rotation (radians) — the dial's
+    /// other two orientation axes, in either seat; zw unused.
+    e: [f32; 4],
 }
 
 impl GaugeUniforms {
@@ -427,6 +430,7 @@ impl GaugeUniforms {
             c: [digits as f32, dot as f32, 0.0, range.packed()],
             d: [sway[0], sway[1], alert.clamp(0.0, 1.0), mach],
             place: crate::cabin::Placement::GLASS,
+            e: [0.0; 4],
         }
     }
 
@@ -462,6 +466,7 @@ impl GaugeUniforms {
             ],
             d: [sway[0], sway[1], 0.0, -1.0],
             place: crate::cabin::Placement::GLASS,
+            e: [0.0; 4],
         }
     }
 
@@ -495,6 +500,7 @@ impl GaugeUniforms {
             c: [gy, gz, 0.0, range.packed()],
             d: [sway[0], sway[1], (digits + 1000 * exp) as f32, dot as f32],
             place: crate::cabin::Placement::GLASS,
+            e: [0.0; 4],
         }
     }
 
@@ -535,6 +541,7 @@ impl GaugeUniforms {
             ],
             d: [sway[0], sway[1], 0.0, -1.0],
             place: crate::cabin::Placement::GLASS,
+            e: [0.0; 4],
         }
     }
 }
@@ -558,6 +565,15 @@ impl GaugeUniforms {
     pub fn warthog(mut self, on: bool) -> Self {
         let low = self.c[2] % 4.0;
         self.c[2] = low + if on { 4.0 } else { 0.0 };
+        self
+    }
+
+    /// The dial's other two orientation axes, radians: a sideways lean
+    /// about its own upright and an in-plane rotation. The shader turns
+    /// the plate and its markings together, so the needle reads true.
+    pub fn oriented(mut self, lean_rad: f32, rotate_rad: f32) -> Self {
+        let clean = |v: f32| if v.is_finite() { v } else { 0.0 };
+        self.e = [clean(lean_rad), clean(rotate_rad), 0.0, 0.0];
         self
     }
 }
@@ -800,6 +816,19 @@ mod tests {
         assert!(f.level() > 0.95);
         f.update(0.1, 0.0);
         assert!(f.level() > 0.8, "dropped too fast: {}", f.level());
+    }
+
+    /// Lean and rotation ride their own uniform row, in radians, and
+    /// garbage never reaches the glass.
+    #[test]
+    fn a_dial_carries_its_lean_and_rotation() {
+        let u = GaugeUniforms::speed(1.0, 1.0, 0.0, 1.6, 900.0, [0.0; 2], [0.0; 2], -1.0, 0.0);
+        assert_eq!(u.e, [0.0; 4], "stock faces straight on");
+        let turned = u.oriented(0.5, -1.2);
+        assert_eq!(turned.e[0], 0.5);
+        assert_eq!(turned.e[1], -1.2);
+        let bad = turned.oriented(f32::NAN, f32::INFINITY);
+        assert_eq!(bad.e, [0.0; 4]);
     }
 
     #[test]
