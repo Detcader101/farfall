@@ -51,6 +51,7 @@ use farfall_render::sight::{sight_pass, SightPass, SightScene, SightUniforms};
 use farfall_render::tracer::{
     tracer_pass, BurstView, Occluder, SlugView, TracerPass, TracerScene, TracerUniforms,
 };
+use farfall_render::wind::{WindPass, WindScene, WindUniforms};
 use farfall_render::{
     attitude::{
         guide_pass, gyro_pass, horizon_pass, Attitude, GuideUniforms, GyroUniforms, HorizonFade,
@@ -338,6 +339,8 @@ struct Readout {
     speed_mps: f64,
     assist: bool,
     show: bool,
+    /// The wind over the hull: speed (m/s) and its nose-relative arrow.
+    wind: Option<(f32, &'static str)>,
     /// The LANDING lines (the approach in landing mode; DOWN or LANDED
     /// whenever the ship is on the ground), newline-separated — or the
     /// next system's line when the ground has nothing to say.
@@ -416,6 +419,12 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_CLOUDS=k (benchmark only: the CLOUDS setting for this run,
 ///                           0 clears the deck — to see the air and the
 ///                           ground on their own)
+///   FARFALL_BENCH_WIND=mps[,deg] (benchmark only: force the wind the
+///                           ribbons and the WIND readout show to this
+///                           speed, blowing FROM deg degrees off the nose
+///                           — 0 a headwind, 90 from the right; 90 if
+///                           omitted. Visuals only: a bench's sim is
+///                           frozen and never feels it)
 ///   FARFALL_BENCH_MIMIC=reveal|hail|attack|wreck (benchmark only: a ship
 ///                           out of a rock ahead-left in that state)
 ///   FARFALL_BENCH_MINERS=tier[,mine|fight] (benchmark only: a miner of
@@ -446,7 +455,7 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_SKIP=a,b       (profiling only: leave out passes by name —
 ///                           starfield, bodies, planet, plasma, trajectory, cockpit, gauge,
 ///                           post (the picture: one plain fetch instead), bloom (the chain),
-///                           hud, blit, dust —
+///                           hud, blit, dust, wind —
 ///                           so each one's cost can be measured by its absence)
 struct Config {
     msaa: u32,
@@ -621,6 +630,8 @@ struct Passes {
     debris: DebrisPass,
     /// Space dust and the cabin's motes.
     dust: DustPass,
+    /// The planet's wind made visible: ribbons of moving air.
+    wind: WindPass,
     /// The arms' scars: craters glowing on the rocks.
     scar: ScarPass,
     /// The gun sight on the glass.
@@ -667,6 +678,7 @@ impl Passes {
             tracer: tracer_pass(device, world, msaa),
             debris: debris_pass(device, world, msaa),
             dust: DustPass::new(device, world, format, msaa),
+            wind: WindPass::new(device, world, msaa),
             scar: scar_pass(device, world, msaa),
             sight: sight_pass(device, format, msaa),
             mimic: mimic_pass(device, world, msaa),
@@ -1090,6 +1102,7 @@ impl Gpu {
             speed_mps,
             assist,
             show: show_readout,
+            wind,
             landing,
         } = readout;
         let (altitude_m, speed_mps, assist, show_readout) =
@@ -1135,6 +1148,7 @@ impl Gpu {
                     speed_mps,
                     assist,
                     bench: self.cfg.bench,
+                    wind: *wind,
                     status: landing.clone(),
                 },
             );
@@ -1205,6 +1219,10 @@ struct Game {
     /// The camera on the pilot's head, and the bench's parked pose.
     shake: shake::Shake,
     bench_shake: Option<[f32; 3]>,
+    /// FARFALL_BENCH_WIND: a forced wind (m/s, degrees off the nose it
+    /// blows FROM) for the ribbons and the readout in captures. Visuals
+    /// only — a bench's sim is frozen and never feels it.
+    bench_wind: Option<(f64, f64)>,
     /// The sound-barrier flash, fired by the same edge as the sonic boom.
     mach_alert: MachAlert,
     /// Last wall-clock frame time, clamped, for presentation-side integrators.
@@ -1386,6 +1404,14 @@ impl Game {
             holo_sway: HoloSway::new(),
             shake: shake::Shake::new(1.0),
             bench_shake: None,
+            bench_wind: std::env::var("FARFALL_BENCH_WIND").ok().and_then(|v| {
+                let xs: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                match xs.as_slice() {
+                    [mps] => Some((*mps, 90.0)),
+                    [mps, deg] => Some((*mps, *deg)),
+                    _ => None,
+                }
+            }),
             mach_alert: MachAlert::new(),
             frame_dt: 0.0,
             trajectory_vis: 1.0,
@@ -3002,6 +3028,82 @@ impl Game {
                 target_height_px,
             },
         )
+    }
+
+    /// The wind about the ship this frame: the sim's own field sampled at
+    /// the ship and a gap above it (one source of truth — the shader only
+    /// interpolates between the two samples), how visible the air is here,
+    /// and the WIND setting.
+    fn wind_uniforms(&self, pose: &ViewPose, target_height_px: f32) -> WindUniforms {
+        let ship = &self.state.ship;
+        let t = self.state.time_s;
+        let r = ship.pos_m.length();
+        let up = if r > 0.0 { ship.pos_m / r } else { DVec3::Y };
+        let low = self.wind_now();
+        let high = if self.bench_wind.is_some() {
+            low
+        } else {
+            sim::wind_mps(
+                &self.params,
+                ship.pos_m + up * farfall_render::wind::SAMPLE_GAP_M,
+                t,
+            )
+        };
+        // Visibility follows the air on a gentle curve, (rho/rho0)^0.22,
+        // so the ribbons still read in the thin fast air of the jet band
+        // and are exactly nothing above the atmosphere (rho = 0 there).
+        let rho = sim::atmo_density(&self.params.planet, r) / self.params.planet.atmo_rho0;
+        let air = (rho.max(0.0) as f32).powf(0.22);
+        WindUniforms::new(
+            &pose.cam,
+            &WindScene {
+                eye_m: self.eye_m(pose),
+                wind_low: low.as_vec3(),
+                wind_high: high.as_vec3(),
+                up: up.as_vec3(),
+                air,
+                setting: self.settings.wind,
+                target_height_px,
+            },
+        )
+    }
+
+    /// The wind at the ship: the sim's field, or the bench's forced one.
+    fn wind_now(&self) -> DVec3 {
+        if let Some((mps, from_deg)) = self.bench_wind {
+            let (nose_h, right_h, _) = self.horizontal_frame();
+            let a = from_deg.to_radians();
+            return -(nose_h * a.cos() + right_h * a.sin()) * mps;
+        }
+        sim::wind_mps(&self.params, self.state.ship.pos_m, self.state.time_s)
+    }
+
+    /// The pilot's compass on the ground plane: the nose and the right
+    /// hand projected into the local horizontal, and the up they share.
+    /// Nose-down, the ship's own up stands in so the frame never folds.
+    fn horizontal_frame(&self) -> (DVec3, DVec3, DVec3) {
+        let ship = &self.state.ship;
+        let up = ship.pos_m.normalize_or_zero();
+        let flat = |v: DVec3| v - up * v.dot(up);
+        let mut nose_h = flat(ship.orient * DVec3::NEG_Z);
+        if nose_h.length_squared() < 1e-12 {
+            nose_h = flat(ship.orient * DVec3::Y);
+        }
+        let nose_h = nose_h.normalize_or_zero();
+        (nose_h, nose_h.cross(up), up)
+    }
+
+    /// The WIND line: speed and the way the air goes, relative to the
+    /// nose. None in vacuum (the field is exactly zero there) or a calm.
+    fn wind_readout(&self) -> Option<(f32, &'static str)> {
+        let w = self.wind_now();
+        let speed = w.length();
+        if speed < 0.5 {
+            return None;
+        }
+        let (nose_h, right_h, _) = self.horizontal_frame();
+        let ang = w.dot(right_h).atan2(w.dot(nose_h));
+        Some((speed as f32, readout::arrow(ang as f32)))
     }
 
     fn debris_uniforms(&self, pose: &ViewPose) -> DebrisUniforms {
@@ -5142,6 +5244,8 @@ fn redraw(
                     gpu.update_post(game, aspect, cam.time_s);
                     let du = game.dust_uniforms(&pose, gpu.scene.size().1 as f32);
                     gpu.passes.dust.update(&gpu.queue, &du);
+                    let wu = game.wind_uniforms(&pose, gpu.scene.size().1 as f32);
+                    gpu.passes.wind.update(&gpu.queue, &wu);
                     {
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("scene headless"),
@@ -5160,6 +5264,7 @@ fn redraw(
                         gpu.passes.debris.draw(&mut pass);
                         gpu.passes.tracer.draw(&mut pass);
                         gpu.passes.dust.draw_space(&mut pass, &du);
+                        gpu.passes.wind.draw(&mut pass, &wu);
                         gpu.passes.jet.draw(&mut pass);
                         if !game.chase_active() {
                             gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
@@ -5338,6 +5443,8 @@ fn redraw(
         gpu.passes.jet.update(&gpu.queue, &game.jet_uniforms(&pose));
         let du = game.dust_uniforms(&pose, gpu.scene.size().1 as f32);
         gpu.passes.dust.update(&gpu.queue, &du);
+        let wu = game.wind_uniforms(&pose, gpu.scene.size().1 as f32);
+        gpu.passes.wind.update(&gpu.queue, &wu);
         let (altitude_m, _) = game.altitude_vspeed();
         gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
 
@@ -5423,6 +5530,9 @@ fn redraw(
             }
             if gpu.cfg.draws("dust") {
                 gpu.passes.dust.draw_space(&mut pass, &du);
+            }
+            if gpu.cfg.draws("wind") {
+                gpu.passes.wind.draw(&mut pass, &wu);
             }
             if gpu.cfg.draws("jet") {
                 gpu.passes.jet.draw(&mut pass);
@@ -5607,6 +5717,7 @@ fn redraw(
             show: game.settings.layout.shown(Instrument::Readout)
                 || game.landing
                 || game.on_ground(),
+            wind: game.wind_readout(),
             landing: game
                 .landing_text()
                 .or_else(|| game.hold_text())

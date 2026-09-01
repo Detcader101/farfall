@@ -30,7 +30,7 @@ controls:
 
 # Every key ~/.farfall/settings.cfg may hold, by group (crates/app/src/settings.rs).
 settings_keys:
-  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.dust, graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread, graphics.terrain-detail, graphics.clouds, graphics.city-lights]
+  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.dust, graphics.wind, graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread, graphics.terrain-detail, graphics.clouds, graphics.city-lights]
   camera: [camera.chase, holo.view, holo.size, cam.shake, cam.drive-shake, holo.range]
   cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
   ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
@@ -67,6 +67,7 @@ bench:
     FARFALL_BENCH_NEBULA=1|off: a full sky of nebula at twice the stock glow, or off for a baseline
     FARFALL_BENCH_HYPER / _WARP=s / _GHOST=age: the chaos drive's field up; the wormhole drive engaged at s; a WARP STOP after-image this old
     FARFALL_BENCH_STRIKES=n / _G=x,y,z / _THRUST=m,p,y,r: n shield strikes; a felt load in g; forced thrust demands
+    FARFALL_BENCH_WIND=mps[,deg]: force the wind the ribbons and the WIND readout show — deg is where it blows FROM, off the nose (0 headwind, 90 from the right; 90 if omitted); visuals only, a bench's frozen sim never feels it
     FARFALL_SKIP=dust: leave the space dust out, to measure it by its absence (staged moments — GHOST, STRIKES — are aged against the capture, which lands halfway through FARFALL_BENCH_SECONDS)
     FARFALL_BENCH_MIMIC=reveal|hail|attack|wreck: a ship out of a rock ahead-left, mid-reveal, hailing, attacking (fire in the air, a hit on the shell) or a wreck
     FARFALL_BENCH_MINERS=tier[,mine|fight]: a miner of tier 0..3 ahead-left mining a planted rock with its beam, or come about with its fire in the air; a second one far off as a speck
@@ -449,6 +450,13 @@ features:
     tests: ["crates/render/src/dust.rs::motes_stay_put_on_the_lattice_as_the_eye_moves", "crates/render/src/dust.rs::dust_rests_in_the_local_orbit", "crates/render/src/dust.rs::dust_is_sparse_in_deep_space_thick_in_the_belt_and_gone_under_the_drive", "crates/app/src/belt.rs::the_dust_thickens_into_the_ring_and_is_nothing_at_earth", crates/render/tests/shader_validation.rs]
     settings: [graphics.dust]
     e2e: "farfall-captures/particles/dustonly-{1,belt,fast}-1.png (FARFALL_SKIP=starfield,nebula,bodies): sparse glints at rest in orbit, a field of them in the ring, streaks at 3 km/s; cost ~0.02 ms at 10% and ~0.15 ms in the belt at 1080p"
+
+  - id: wind
+    name: "Wind (sim + wind.wgsl): the planet's atmosphere blows, and the wind is physics — a deterministic layered field (zonal bands, an eastward jet stream up to ~60 m/s at altitude, three travelling cells, slow two-sine gusts; libm-only, scale-free on sqrt(g*H), exactly zero above the air and at the poles) that every aero term takes against v - wind, so a headwind costs delta-v, a tailwind gives it back, a crosswind weathervanes the nose and shoves a slow ship, and a landed one stays parked on its gear; WorldParams.wind_strength 0..2 (default 1; 0 reproduces the pre-wind golden hash bit for bit). Made visible by one instanced draw of ~1250 ribbons on a 50 m world lattice about the eye, each stretched along the LOCAL wind (the sim's own two samples interpolated on the GPU — never a second weather), a bright packet running downwind, longer and brighter the harder it blows, denser in a gust, fading with the air; and a WIND line on the readout — whole m/s and an 8-way arrow relative to the nose. WIND setting (graphics.wind, 0..200% visual density) on GRAPHICS; FARFALL_BENCH_WIND=mps[,deg]; FARFALL_SKIP=wind"
+    status: tests-pass
+    tests: ["crates/sim/tests/wind.rs (identical across runs, dies above the atmosphere, a landed ship stays put, still air matches the old drag exactly, the field is smooth, it keeps to its lanes)", "crates/sim/tests/invariants.rs::golden_hash (regenerated: the 20 km scenario is inside the air)", "crates/render/src/wind.rs::ribbons_thicken_with_air_and_wind_and_vanish_when_off", "crates/app/src/readout.rs::the_wind_line_reads_speed_and_the_way_the_air_goes", crates/render/tests/shader_validation.rs]
+    settings: [graphics.wind]
+    e2e: "pending: wind captures at 500 m, 3 km, the jet band, above the air, and landed"
 
   - id: engine-plumes-outside
     name: "The ship from outside is lit and its engines read: jet.wgsl draws a white-hot plume core with shock diamonds down its first half inside a translucent blue-violet skin that widens aft and ripples as it streams (closest-approach light, no march, hidden behind the hull), longer and brighter with the effort and pulled to cyan by the hyper field, the nozzle lips hot amber, the nacelle tails washed blue; RCS puffs as flickering balls of gas at the nose and wingtips by the demands; the hull with panel seams, Fresnel, the nearest body's light on the belly; the chase view takes FARFALL_BENCH_THRUST like the cabin does (thrust_look). The cabin's own plumes (cabin_blit.wgsl) get the same core, diamonds and rippling skin, and the hull catches a blue cast aft under thrust; the holo3PP's miniature trails plumes out of its nozzles"

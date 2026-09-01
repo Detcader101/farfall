@@ -39,6 +39,7 @@ pub mod text;
 pub mod thermal;
 pub mod tracer;
 pub mod trajectory;
+pub mod wind;
 
 /// Everything a pass needs to know about "where we're looking" this frame.
 /// No translation: the camera is the origin by construction (SPEC P3).

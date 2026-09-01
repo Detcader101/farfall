@@ -445,6 +445,7 @@ enum Item {
     TonemapCurve,
     Fringe,
     Dust,
+    Wind,
     /// The nebula block: glow, then which one and its shape and colours.
     Nebula,
     NebulaSeed,
@@ -556,6 +557,7 @@ impl Item {
             Item::TonemapCurve => "TONEMAP",
             Item::Fringe => "FRINGE",
             Item::Dust => "DUST",
+            Item::Wind => "WIND",
             Item::Nebula => "NEBULA",
             Item::NebulaSeed => "NEBULA SEED",
             Item::NebulaScale => "NEBULA SCALE",
@@ -666,6 +668,7 @@ impl Item {
             Item::TonemapCurve => "HOW RADIANCE BECOMES THE SCREEN: AGX ROLLS HIGHLIGHTS TO WHITE, OFF CLIPS.",
             Item::Fringe => "A HAIR OF COLOUR SPLIT AT THE GLASS RIM.",
             Item::Dust => "SPACE DUST AND CABIN MOTES: MORE OF THEM, OR NONE.",
+            Item::Wind => "RIBBONS OF MOVING AIR IN A PLANET'S WIND. THE WIND ITSELF STILL BLOWS.",
             Item::MimicsSize => "HOW BIG A MIMIC SHIP IS NEXT TO YOURS; 100% IS YOUR OWN SIZE.",
             Item::MinersCount => "HOW MANY MINER SHIPS WORK THE BELT.",
             Item::MinersGrowth => "HOW FAST A MINER GROWS THROUGH ITS TIERS AS IT HAULS.",
@@ -759,6 +762,7 @@ impl Item {
             Item::TonemapCurve => one("graphics.tonemap"),
             Item::Fringe => one("graphics.fringe"),
             Item::Dust => one("graphics.dust"),
+            Item::Wind => one("graphics.wind"),
             Item::MimicsSize => one("mimics.size"),
             Item::MinersCount => one("miners.count"),
             Item::MinersGrowth => one("miners.growth"),
@@ -929,6 +933,13 @@ impl Item {
             Item::Dust => {
                 if s.dust > 0.0 {
                     format!("{:.0}%", s.dust * 100.0)
+                } else {
+                    "OFF".to_string()
+                }
+            }
+            Item::Wind => {
+                if s.wind > 0.0 {
+                    format!("{:.0}%", s.wind * 100.0)
                 } else {
                     "OFF".to_string()
                 }
@@ -1166,6 +1177,7 @@ impl Menu {
                 Item::TonemapCurve,
                 Item::Fringe,
                 Item::Dust,
+                Item::Wind,
                 Item::Nebula,
                 Item::NebulaSeed,
                 Item::NebulaScale,
@@ -1967,6 +1979,15 @@ impl Menu {
                     return MenuEvent::Nothing;
                 }
                 s.dust = next;
+                MenuEvent::Changed(Change::Layout)
+            }
+            Item::Wind => {
+                let step = if forward { 0.25 } else { -0.25 };
+                let next = (s.wind + step).clamp(0.0, 2.0);
+                if (next - s.wind).abs() < 1e-6 {
+                    return MenuEvent::Nothing;
+                }
+                s.wind = next;
                 MenuEvent::Changed(Change::Layout)
             }
             Item::Camera => {

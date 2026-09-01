@@ -257,6 +257,9 @@ pub struct Settings {
     pub fringe: f32,
     /// Space dust and cabin motes: 0 none, 1 stock, up to 2.
     pub dust: f32,
+    /// Wind ribbons in a planet's air: 0 none, 1 stock, up to 2. Visual
+    /// density only — the wind itself is the sim's and keeps blowing.
+    pub wind: f32,
     /// The nebula's glow, 0 (off) .. 3; 1 = stock.
     pub nebula: f32,
     /// Which nebula: the seed picks where the clouds sit and their shapes.
@@ -425,6 +428,7 @@ impl Default for Settings {
             tonemap: Tonemap::Agx,
             fringe: 1.0,
             dust: 1.0,
+            wind: 1.0,
             fov: 70.0,
             gauge_style: GaugeStyle::Warthog,
             gauges_stay: true,
@@ -498,6 +502,7 @@ pub const KEYS: &[&str] = &[
     "graphics.tonemap",
     "graphics.fringe",
     "graphics.dust",
+    "graphics.wind",
     "graphics.terrain-detail",
     "graphics.clouds",
     "graphics.city-lights",
@@ -987,6 +992,13 @@ impl Settings {
                         }
                     }
                 }
+                "graphics.wind" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.wind = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
                 "graphics.sky" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -1278,6 +1290,7 @@ impl Settings {
         out.push_str(&format!("graphics.tonemap = {}\n", self.tonemap.key()));
         out.push_str(&format!("graphics.fringe = {:.2}\n", self.fringe));
         out.push_str(&format!("graphics.dust = {:.2}\n", self.dust));
+        out.push_str(&format!("graphics.wind = {:.2}\n", self.wind));
         out.push_str(&format!("graphics.nebula = {:.2}\n", self.nebula));
         out.push_str(&format!("graphics.nebula-seed = {}\n", self.nebula_seed));
         out.push_str(&format!(
@@ -1533,6 +1546,7 @@ mod tests {
         s.tonemap = Tonemap::Soft;
         s.fringe = 0.0;
         s.dust = 1.75;
+        s.wind = 0.25;
         s.nebula = 2.0;
         s.nebula_seed = 42;
         s.nebula_scale = 5.0;

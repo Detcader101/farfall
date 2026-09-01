@@ -20,11 +20,7 @@ fn run(params: &WorldParams, mut state: WorldState, steps: u64, controls: Contro
 
 /// A point `h` metres over the surface at latitude/longitude (radians).
 fn at(params: &WorldParams, lat: f64, lon: f64, h: f64) -> DVec3 {
-    let up = DVec3::new(
-        lat.cos() * lon.cos(),
-        lat.sin(),
-        lat.cos() * lon.sin(),
-    );
+    let up = DVec3::new(lat.cos() * lon.cos(), lat.sin(), lat.cos() * lon.sin());
     up * (params.planet.radius_m + h)
 }
 
@@ -82,12 +78,7 @@ fn wind_dies_above_the_atmosphere() {
         assert!(whisper.length() < 2.0, "{whisper} under the top");
     }
     let s = presets::circular_orbit(&p, top + 100.0);
-    let aero = aero_forces_wind(
-        &p.ship,
-        0.0,
-        &s.ship,
-        wind_mps(&p, s.ship.pos_m, s.time_s),
-    );
+    let aero = aero_forces_wind(&p.ship, 0.0, &s.ship, wind_mps(&p, s.ship.pos_m, s.time_s));
     assert_eq!(aero.accel_world, DVec3::ZERO);
     assert_eq!(aero.ang_accel_body, DVec3::ZERO);
 }
@@ -220,7 +211,10 @@ fn a_landed_ship_feels_the_ground_not_the_wind() {
     let blowing = wind_mps(&p, down.ship.pos_m, down.time_s).length();
     assert!(blowing > 1.0, "no wind at the pad: {blowing:.2} m/s");
     let later = run(&p, down, 1_000, Controls::default());
-    assert_eq!(later.ship.pos_m, down.ship.pos_m, "the wind moved a parked ship");
+    assert_eq!(
+        later.ship.pos_m, down.ship.pos_m,
+        "the wind moved a parked ship"
+    );
     assert_eq!(later.ship.vel_mps, DVec3::ZERO);
     assert_eq!(later.ship.orient, down.ship.orient);
 }
