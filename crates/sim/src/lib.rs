@@ -523,7 +523,8 @@ pub fn wind_mps(params: &WorldParams, pos_m: DVec3, t_s: f64) -> DVec3 {
     let strength = params.wind_strength.clamp(0.0, 2.0);
     let r = pos_m.length();
     let h = r - planet.radius_m;
-    if strength <= 0.0 || h >= planet.atmo_top_m || !(r > 0.0) {
+    // r <= 0 or NaN: no compass to hang a wind on.
+    if strength <= 0.0 || h >= planet.atmo_top_m || r <= 0.0 || r.is_nan() {
         return DVec3::ZERO;
     }
     // The local compass: up out of the ground, east round the spin axis

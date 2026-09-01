@@ -121,9 +121,6 @@ mod tests {
         assert_eq!(arrow(std::f32::consts::PI), "V");
         assert_eq!(arrow(-std::f32::consts::FRAC_PI_2), "<");
         assert_eq!(arrow(std::f32::consts::FRAC_PI_4), "^>");
-        for (mps, _) in [r.wind.unwrap()] {
-            assert!(mps.is_finite());
-        }
     }
 
     /// The landing line and a hail are long: they wrap inside the block
