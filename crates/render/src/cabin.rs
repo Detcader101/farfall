@@ -290,6 +290,16 @@ pub struct Placement {
     up: [f32; 4],
     fwd: [f32; 4],
     centre: [f32; 4],
+    /// xyz: the live eye's seat in the ship's frame (`pose.eye_ship`),
+    /// metres — zero at the cockpit's own origin. w unused. A DIAL face
+    /// is a real plane under glass, so each eye must ray-cast it from
+    /// its own seat: rendering it from the ship's origin for both eyes
+    /// gives the plane zero disparity while the ray-marched bezel around
+    /// it sits at its true ~0.7 m — a vergence conflict in the pilot's
+    /// primary fixation area (SPEC §5.3). Zero here reproduces the old
+    /// origin-at-zero maths exactly, so the flat/mouse-look path (which
+    /// always passes zero) is a byte-for-byte no-op.
+    eye: [f32; 4],
 }
 
 impl Placement {
@@ -299,6 +309,7 @@ impl Placement {
         up: [0.0; 4],
         fwd: [0.0; 4],
         centre: [0.0; 4],
+        eye: [0.0; 4],
     };
 
     /// On the glass at this size (1 = stock).
@@ -323,7 +334,13 @@ impl Placement {
     /// The gyro's ball: a sphere of this radius (metres, centre.w) set a
     /// little under the dash beneath the hologram's direction, standing
     /// proud of it, or None off the dash.
-    pub fn ball(head: Quat, tan_half_fov: f32, dir: Vec3, size: f32) -> Option<Placement> {
+    pub fn ball(
+        head: Quat,
+        tan_half_fov: f32,
+        dir: Vec3,
+        size: f32,
+        eye: Vec3,
+    ) -> Option<Placement> {
         if !on_dash(dir) {
             return None;
         }
@@ -335,6 +352,7 @@ impl Placement {
             up: v4(head * Vec3::Y, 0.0),
             fwd: v4(head * Vec3::NEG_Z, tan_half_fov),
             centre: v4(centre, BALL_RADIUS_M * size),
+            eye: v4(eye, 0.0),
         })
     }
 
@@ -359,6 +377,11 @@ impl Placement {
     /// of the face plate. A tilted dial is lifted along the dash normal so
     /// its low edge clears the surface — the cabin's housing rises to
     /// carry it — the same lift the marcher applies (cockpit.wgsl).
+    /// `eye`: the live eye's own seat in the ship's frame (`pose.eye_ship`)
+    /// — zero at the cockpit's origin, always zero on the flat/mouse-look
+    /// path — so each eye in VR ray-casts the face plane from its own
+    /// seat instead of a shared, disparity-free origin (SPEC §5.3).
+    #[allow(clippy::too_many_arguments)]
     pub fn in_dash(
         head: Quat,
         tan_half_fov: f32,
@@ -366,6 +389,7 @@ impl Placement {
         size: f32,
         tilt: f32,
         lean: f32,
+        eye: Vec3,
     ) -> Option<Placement> {
         if !on_dash(dir) {
             return None;
@@ -394,6 +418,7 @@ impl Placement {
             up: v4(head * Vec3::Y, tilt),
             fwd: v4(head * Vec3::NEG_Z, tan_half_fov),
             centre: v4(centre, DIAL_SCALE_M * size),
+            eye: v4(eye, 0.0),
         })
     }
 }
@@ -997,7 +1022,7 @@ mod tests {
     fn the_ball_stands_proud_of_the_dash_with_no_bowl() {
         let down = anchor_direction([0.0, -0.76], 0.7, 1.5);
         for size in [0.5, 1.0, 2.0] {
-            let ball = Placement::ball(Quat::IDENTITY, 0.7, down, size).unwrap();
+            let ball = Placement::ball(Quat::IDENTITY, 0.7, down, size, Vec3::ZERO).unwrap();
             let centre = Vec3::new(ball.centre[0], ball.centre[1], ball.centre[2]);
             let radius = ball.centre[3];
             let depth = DASH_SURFACE_M - (centre - DASH_C).dot(DASH_N);
@@ -1084,7 +1109,8 @@ mod tests {
         // A dial straight down-ahead sits in the dash; one up and away does not.
         let down = anchor_direction([0.0, -0.6], 0.55, 1.5);
         assert!(on_dash(down));
-        let place = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.0).unwrap();
+        let place =
+            Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.0, Vec3::ZERO).unwrap();
         assert!(
             place.centre[1] < -0.3 && place.centre[2] < -0.6,
             "{:?}",
@@ -1092,7 +1118,7 @@ mod tests {
         );
         assert_eq!(place.centre[3], DIAL_SCALE_M);
         assert_eq!(
-            Placement::in_dash(Quat::IDENTITY, 0.55, down, 2.0, 0.0, 0.0)
+            Placement::in_dash(Quat::IDENTITY, 0.55, down, 2.0, 0.0, 0.0, Vec3::ZERO)
                 .unwrap()
                 .centre[3],
             DIAL_SCALE_M * 2.0
@@ -1103,16 +1129,19 @@ mod tests {
             Vec3::new(0.0, 0.8, -0.6),
             1.0,
             0.0,
-            0.0
+            0.0,
+            Vec3::ZERO
         )
         .is_none());
         // Tilted toward the pilot: the face normal leans aft (+Z) and the
         // placement carries the angle for the shader.
-        let leaned = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.5, 0.0).unwrap();
+        let leaned =
+            Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.5, 0.0, Vec3::ZERO).unwrap();
         assert_eq!(leaned.up[3], 0.5);
         // Leaned sideways: the face normal gains an x component the way
         // of the lean, stays unit, and the lift clears the low corner.
-        let side = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.4).unwrap();
+        let side =
+            Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.4, Vec3::ZERO).unwrap();
         let n = Placement::oriented_normal(0.0, 0.4);
         assert!(n.x > 0.3, "{n:?}");
         assert!((n.length() - 1.0).abs() < 1e-5);
@@ -1172,5 +1201,71 @@ mod tests {
             &fit,
         );
         assert_eq!(still, sun_drift);
+    }
+
+    /// The exact ray-plane intersection `dial_plane_uv` runs on the GPU
+    /// (common.wgsl), mirrored here so the eye-offset fix (SPEC §5.3) has
+    /// a CPU-testable proof: a DIAL rendered with `Placement::eye` at
+    /// zero must ray-cast from the ship's origin exactly as it always
+    /// did, and two different eyes must not land on the same point.
+    fn dial_hit(place: &Placement, ndc: [f32; 2], aspect: f32) -> Vec3 {
+        let right = Vec3::new(place.right[0], place.right[1], place.right[2]);
+        let up = Vec3::new(place.up[0], place.up[1], place.up[2]);
+        let fwd = Vec3::new(place.fwd[0], place.fwd[1], place.fwd[2]);
+        let tan_half = place.fwd[3];
+        let centre = Vec3::new(place.centre[0], place.centre[1], place.centre[2]);
+        let eye = Vec3::new(place.eye[0], place.eye[1], place.eye[2]);
+        let normal = Placement::oriented_normal(place.up[3], 0.0);
+        let ray =
+            (fwd + right * (ndc[0] * tan_half * aspect) + up * (ndc[1] * tan_half)).normalize();
+        let t = (centre - eye).dot(normal) / ray.dot(normal);
+        eye + ray * t - centre
+    }
+
+    /// This is severity-one (SPEC §5.3): a DIAL face rendered from the
+    /// ship's origin for both eyes gives it zero disparity while the
+    /// ray-marched bezel around it sits at its true ~0.7 m — a vergence
+    /// conflict in the pilot's primary fixation area, by itself capable
+    /// of reading as "the eyes are the wrong way round".
+    #[test]
+    fn two_eyes_at_different_seats_hit_the_dial_plane_at_different_points() {
+        let down = anchor_direction([0.0, -0.6], 0.55, 1.5);
+        let stock_ipd = 0.064; // a real headset's, split about the origin
+        let left_eye = Vec3::new(-stock_ipd / 2.0, 0.0, 0.0);
+        let right_eye = Vec3::new(stock_ipd / 2.0, 0.0, 0.0);
+        let left = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.0, left_eye).unwrap();
+        let right =
+            Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.0, right_eye).unwrap();
+        let ndc = [0.0, 0.0];
+        let hit_left = dial_hit(&left, ndc, 1.5);
+        let hit_right = dial_hit(&right, ndc, 1.5);
+        assert!(
+            (hit_left - hit_right).length() > 1e-4,
+            "two eyes must not land on the same point on the dial's face — \
+             that shared point is the zero-disparity bug: left {hit_left:?} right {hit_right:?}"
+        );
+
+        // The flat / mouse-look path always passes eye = ZERO, and it must
+        // reproduce the pre-fix maths exactly: a ray from the ship's own
+        // origin, byte-for-byte the same result as before this field
+        // existed.
+        let flat =
+            Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.0, Vec3::ZERO).unwrap();
+        let hit_flat = dial_hit(&flat, ndc, 1.5);
+        let right_axis = Vec3::new(flat.right[0], flat.right[1], flat.right[2]);
+        let up_axis = Vec3::new(flat.up[0], flat.up[1], flat.up[2]);
+        let fwd_axis = Vec3::new(flat.fwd[0], flat.fwd[1], flat.fwd[2]);
+        let tan_half = flat.fwd[3];
+        let centre = Vec3::new(flat.centre[0], flat.centre[1], flat.centre[2]);
+        let normal = Placement::oriented_normal(flat.up[3], 0.0);
+        let ray =
+            (fwd_axis + right_axis * (ndc[0] * tan_half * 1.5) + up_axis * (ndc[1] * tan_half))
+                .normalize();
+        let old_hit = ray * (centre.dot(normal) / ray.dot(normal)) - centre;
+        assert!(
+            (hit_flat - old_hit).length() < 1e-6,
+            "eye = ZERO must reproduce the old origin-at-zero maths exactly: \
+             {hit_flat:?} vs {old_hit:?}"
+        );
     }
 }

@@ -28,6 +28,10 @@ struct Gauge {
     p1: vec4<f32>,
     p2: vec4<f32>,
     p3: vec4<f32>,
+    // xyz: the live eye's own seat in the ship's frame (Placement::eye,
+    // SPEC §5.3) — zero on the glass and on the flat/mouse-look path.
+    // w unused.
+    p4: vec4<f32>,
     // x: sideways lean, y: in-plane rotation (radians); zw unused.
     e: vec4<f32>,
 }
@@ -88,7 +92,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var p = (canopy(in.ndc, aspect) - canopy(anchor, aspect)) / max(gauge.p0.w, 0.25);
     if (in_dash) {
         let duv = dial_plane_uv(in.ndc, aspect, gauge.p0, gauge.p1, gauge.p2, gauge.p3,
-                                DIAL_DASH_N, gauge.e.x, gauge.e.y);
+                                DIAL_DASH_N, gauge.e.x, gauge.e.y, gauge.p4.xyz);
         if (duv.z < 0.5) {
             discard;
         }

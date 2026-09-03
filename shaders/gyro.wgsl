@@ -37,6 +37,12 @@ struct Gyro {
     p1: vec4<f32>,
     p2: vec4<f32>,
     p3: vec4<f32>,
+    // xyz: the live eye's own seat in the ship's frame (Placement::eye,
+    // SPEC §5.3) — zero on the glass and on the flat/mouse-look path.
+    // Used by both the DIAL face plane and the geometric ball's own
+    // ray-sphere cast, so neither renders with zero disparity while the
+    // ray-marched dash around it sits at its true depth. w unused.
+    p4: vec4<f32>,
     // x: sideways lean, y: in-plane rotation (radians); zw unused. The
     // geometric ball ignores both — a sphere has no face to turn.
     e: vec4<f32>,
@@ -92,15 +98,23 @@ fn line(d: f32, half_w: f32, aa: f32) -> f32 {
 fn ball_3d(ndc: vec2<f32>, aspect: f32, vis: f32) -> vec4<f32> {
     let tan_half = gyro.p2.w;
     let ray = normalize(gyro.p2.xyz + gyro.p0.xyz * (ndc.x * tan_half * aspect) + gyro.p1.xyz * (ndc.y * tan_half));
+    // Cast from the live eye's own seat (gyro.p4.xyz), not the ship's
+    // origin: the WARTHOG/JET geometric ball is a real sphere standing
+    // proud of the dash, so a shared origin gives it zero disparity
+    // while the dash around it has its true depth (SPEC §5.3, same fix
+    // as dial_plane_uv). Zero on the flat/mouse-look path reproduces the
+    // old origin-at-zero maths exactly.
+    let eye = gyro.p4.xyz;
     let c = gyro.p3.xyz;
     let rad = max(gyro.p3.w, 1e-3);
-    let b = dot(ray, c);
-    let disc = b * b - (dot(c, c) - rad * rad);
+    let oc = c - eye;
+    let b = dot(ray, oc);
+    let disc = b * b - (dot(oc, oc) - rad * rad);
     if (disc < 0.0 || b <= 0.0) {
         discard;
     }
     let t = b - sqrt(disc);
-    let hit = ray * t;
+    let hit = eye + ray * t;
     // The ball stands out of the dash: only what is above the surface is
     // there to see — below it is the dash's own metal, which the cabin
     // has drawn. No bowl, no cavity.
@@ -192,7 +206,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var p = (canopy(in.ndc, aspect) - canopy(gyro.b.zw, aspect)) / max(gyro.p0.w, 0.25);
     if (in_dash) {
         let duv = dial_plane_uv(in.ndc, aspect, gyro.p0, gyro.p1, gyro.p2, gyro.p3,
-                                DIAL_DASH_N, gyro.e.x, gyro.e.y);
+                                DIAL_DASH_N, gyro.e.x, gyro.e.y, gyro.p4.xyz);
         if (duv.z < 0.5) {
             discard;
         }

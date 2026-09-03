@@ -493,10 +493,16 @@ fn sd_craft_hull(q: vec3<f32>, craft: f32) -> f32 {
 //
 // `place0..3`: right, up, fwd of the head in ship frame (w of fwd: tan of
 // half the fov), and the dial's centre (w: metres per drawing unit).
+// `eye`: the live eye's own seat in the ship's frame (zero at the cockpit
+// origin, always zero on the flat/mouse-look path) — the ray is cast from
+// there, not from the ship's origin, so each eye in VR meets the face
+// plane from its own seat: a shared origin gives the plane zero disparity
+// while the ray-marched bezel around it sits at its true depth, a
+// vergence conflict in the pilot's primary fixation area (SPEC §5.3).
 // The dial's basis: U along the ship's x, V = N x U on the dash plane.
 fn dial_plane_uv(ndc: vec2<f32>, aspect: f32, right: vec4<f32>, up: vec4<f32>,
                  fwd: vec4<f32>, centre: vec4<f32>, dash_n: vec3<f32>,
-                 lean: f32, rot: f32) -> vec3<f32> {
+                 lean: f32, rot: f32, eye: vec3<f32>) -> vec3<f32> {
     let tan_half = fwd.w;
     let ray = normalize(fwd.xyz + right.xyz * (ndc.x * tan_half * aspect) + up.xyz * (ndc.y * tan_half));
     // The face's plane: the dash's, leaned toward the pilot by the tilt
@@ -507,11 +513,11 @@ fn dial_plane_uv(ndc: vec2<f32>, aspect: f32, right: vec4<f32>, up: vec4<f32>,
     if (denom > -1e-4) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
-    let t = dot(centre.xyz, normal) / denom;
+    let t = dot(centre.xyz - eye, normal) / denom;
     if (t <= 0.0) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
-    let hit = ray * t - centre.xyz;
+    let hit = eye + ray * t - centre.xyz;
     // The dial's own axes in its plane: the ship's x projected onto the
     // face (exactly x when there is no lean), the upright from the
     // normal, and the whole frame turned by the in-plane rotation so the
