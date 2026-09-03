@@ -248,33 +248,65 @@ const AUTO_SCALE_RAISE_S: f32 = 3.0;
 /// — `on_glass`'s eye offset is always zero there.
 const VR_HUD_DISTANCE_M: f32 = 1.0;
 
-/// FARFALL_VR_LABEL=1's own L/R corner mark: one font pixel in canopy
-/// units. a9869ff's first real-runtime capture showed no mark visible
-/// in either eye at the old 0.045 — this is deliberately unmissable
-/// (SPEC §5.3): a single-letter glyph is thin ink even doubled, so
-/// erring toward "too big to miss" costs nothing a corner mark can't
-/// spare. `xr_composite` and `eye_order_self_check` both read this, so
-/// the self-check's own readback patch can never drift out of sync
-/// with where the mark actually renders.
+/// FARFALL_VR_LABEL=1's own L/R corner mark's target angular height,
+/// degrees — a fixed *angle*, not a fixed canopy-NDC size, so it reads
+/// the same on a narrow-fov headset and a wide one (SPEC §5.3): a
+/// synth capture (e80e9af, before the race-condition fix below) showed
+/// the old fixed px_canopy=0.09 filling ~35% of the eye's own width, a
+/// close obscuring plane by itself. [`label_px_canopy`] converts this
+/// into the per-font-pixel canopy size from the live eye's own vertical
+/// tangent.
 #[cfg(not(target_arch = "wasm32"))]
-const LABEL_PX_CANOPY: f32 = 0.09;
+const LABEL_TARGET_DEG: f32 = 4.0;
 /// The mark's own top-left anchor, canopy NDC, before the per-eye
 /// parallax shift: comfortably inside the frame's outer top corner, not
 /// jammed against the literal rim — `canopy_glass`'s own dimming grows
 /// sharply for `length(ndc*aspect, ndc.y) > 0.75`, and the old anchor's
 /// magnitude sat well past that, which — thin ink, no backdrop, and
 /// dimmed toward invisible by the glass itself — is the likeliest
-/// reason nothing showed. Eye 1's own anchor mirrors this so the mark's
-/// *right* edge sits the same distance from ITS outer edge that eye 0's
-/// *left* edge sits from its own.
+/// reason nothing showed on a9869ff's own capture. Eye 1's own anchor
+/// mirrors this so the mark's *right* edge sits the same distance from
+/// ITS outer edge that eye 0's *left* edge sits from its own.
 #[cfg(not(target_arch = "wasm32"))]
 const LABEL_CORNER_LEFT: [f32; 2] = [-0.78, 0.80];
-/// Glyph advance in font pixels (`farfall_render::text::ADVANCE`), so
-/// the mark's own width at [`LABEL_PX_CANOPY`] can mirror eye 0's
-/// anchor into eye 1's without duplicating that arithmetic at the call
-/// site.
+
+/// The per-font-pixel canopy size that makes a `GLYPH_H`-tall mark
+/// subtend [`LABEL_TARGET_DEG`] of the eye's own vertical field,
+/// computed from that eye's own tangent `ty` (its symmetric vertical
+/// half-fov's tan) — not a fixed NDC constant tuned for one particular
+/// headset's fov and wrong for any other. Linear in tangent space
+/// (canopy NDC 0..1 spans `atan(ty)` radians near centre), the same
+/// convention the capture-review measurements in this branch already
+/// use.
 #[cfg(not(target_arch = "wasm32"))]
-const LABEL_WIDTH_NDC: f32 = farfall_render::text::ADVANCE as f32 * LABEL_PX_CANOPY;
+fn label_px_canopy(ty: f32) -> f32 {
+    let rad_per_ndc = ty.max(1e-4).atan();
+    let glyph_height_ndc = LABEL_TARGET_DEG.to_radians() / rad_per_ndc;
+    glyph_height_ndc / farfall_render::text::GLYPH_H as f32
+}
+
+/// The label's own top-left anchor (canopy NDC, after the per-eye
+/// parallax shift) and per-font-pixel size for `eye` of `eyes` — the
+/// one place both `xr_composite`'s draw and `eye_order_self_check`'s
+/// readback compute this from, so a future change to one cannot
+/// silently stop matching the other the way the old hand-duplicated
+/// constants could.
+#[cfg(not(target_arch = "wasm32"))]
+fn label_geometry(eye: usize, eyes: &[VrEye; 2]) -> ([f32; 2], f32) {
+    let e = &eyes[eye];
+    let tx = (e.tan[0] + e.tan[1]).max(1e-3) * 0.5;
+    let ty = (e.tan[2] + e.tan[3]).max(1e-3) * 0.5;
+    let d = VR_HUD_DISTANCE_M;
+    let shift = [-e.pos.x / (d * tx), -e.pos.y / (d * ty)];
+    let px = label_px_canopy(ty);
+    let width_ndc = farfall_render::text::ADVANCE as f32 * px;
+    let corner = if eye == 0 {
+        LABEL_CORNER_LEFT
+    } else {
+        [-LABEL_CORNER_LEFT[0] - width_ndc, LABEL_CORNER_LEFT[1]]
+    };
+    ([corner[0] + shift[0], corner[1] + shift[1]], px)
+}
 
 /// A glass anchor as the turned head sees it: the glass is a sphere about
 /// the pilot, so every element is re-projected, not slid (look.rs). The
@@ -1262,7 +1294,20 @@ struct VrPair {
     /// swapchain image, so the headset itself (not just the mirror)
     /// proves which eye is which before anyone puts it on.
     label_bitmap: farfall_render::text::TextBitmap,
-    label_hud: farfall_render::hud::HudPass,
+    /// One `HudPass` per eye, not one shared: both eyes' label passes
+    /// are recorded into the SAME encoder before the single
+    /// `queue.submit()` at the end of `xr_composite`, and
+    /// `HudPass::update` writes its uniform buffer via
+    /// `queue.write_buffer` — a queued write, not one interleaved with
+    /// the encoder's own recorded commands. Two `update()` calls to one
+    /// shared buffer before one submit both land before either render
+    /// pass actually runs on the GPU, so the *second* write (eye 1's
+    /// "R", eye 1's own anchor) is what BOTH passes read — exactly the
+    /// bug a synth capture caught: a giant "R" in both eyes, positioned
+    /// by eye 1's own shift even inside eye 0's image. A distinct
+    /// buffer per eye makes the two writes independent regardless of
+    /// submission timing.
+    label_hud: [farfall_render::hud::HudPass; 2],
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1291,7 +1336,10 @@ impl VrPair {
             to_window,
             mirror_swap,
             label_bitmap: farfall_render::text::TextBitmap::new(),
-            label_hud: farfall_render::hud::HudPass::new(device, xr_format, 1),
+            label_hud: [
+                farfall_render::hud::HudPass::new(device, xr_format, 1),
+                farfall_render::hud::HudPass::new(device, xr_format, 1),
+            ],
         }
     }
 
@@ -7033,18 +7081,19 @@ fn xr_begin_frame(gpu: &mut Gpu, game: &mut Game) -> XrGate {
 }
 
 /// Read a small patch of `texture` (a `wgpu::Bgra8UnormSrgb`-shaped
-/// image) back to the CPU and return the fraction of its texels that
-/// read as bright hologram-cyan ink — "ink is present here," not a
-/// glyph classifier. Blocks (`device.poll`); only ever called from the
-/// one-shot eye-order self-check, never in the steady frame loop.
+/// image) back to the CPU as tightly-packed BGRA8 rows (the
+/// `COPY_BYTES_PER_ROW_ALIGNMENT` padding stripped) — the eye-order
+/// self-check's one readback, shared by its ink-presence and glyph-
+/// shape checks. `None` on any device or mapping failure. Blocks
+/// (`device.poll`); only ever called from that one-shot self-check.
 #[cfg(not(target_arch = "wasm32"))]
-fn readback_ink_fraction(
+fn readback_patch(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     origin: (u32, u32),
     size: (u32, u32),
-) -> f32 {
+) -> Option<Vec<u8>> {
     let unpadded = size.0 * 4;
     let bytes_per_row =
         unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -7089,52 +7138,131 @@ fn readback_ink_fraction(
         let _ = tx.send(r);
     });
     if device.poll(wgpu::PollType::wait_indefinitely()).is_err() {
-        return 0.0;
+        return None;
     }
     let Ok(Ok(())) = rx.recv() else {
-        return 0.0;
+        return None;
     };
     let Ok(mapped) = slice.get_mapped_range() else {
-        return 0.0;
+        return None;
     };
-    let mut lit = 0u32;
-    let mut total = 0u32;
+    let mut out = Vec::with_capacity((size.0 * size.1 * 4) as usize);
     for row in 0..size.1 {
         let start = (row * bytes_per_row) as usize;
         let end = start + (size.0 * 4) as usize;
-        for px in mapped[start..end].chunks_exact(4) {
-            // Bgra8UnormSrgb: b, g, r, a. The label's hologram cyan
-            // ([0.45, 0.92, 1.0, 0.96], hud.wgsl) is bright with green
-            // and blue well above red — distinct enough from dash metal
-            // or a starfield that this needs no exact colour match.
-            let (b, g, r) = (px[0] as u32, px[1] as u32, px[2] as u32);
-            total += 1;
-            if g > 140 && b > 140 && r + 40 < g {
-                lit += 1;
-            }
-        }
+        out.extend_from_slice(&mapped[start..end]);
     }
     drop(mapped);
     buffer.unmap();
-    if total == 0 {
-        0.0
-    } else {
-        lit as f32 / total as f32
-    }
+    Some(out)
 }
 
-/// FARFALL_VR_LABEL=1: on the first labelled composite, read back each
-/// eye's own upper-outer corner (where `xr_composite` draws that eye's
-/// own L/R mark) and confirm ink actually landed there — proof the
-/// per-eye draw pass wrote into the swapchain image it was meant for,
-/// not that the eyes got crossed somewhere in the render or composite
-/// loop. Runs identically for a real or synthetic headset (`FARFALL_VR=
-/// synth`), which is the whole point: this class of bug is now caught
-/// by a bench row, on any machine, before it reaches a human. Logs "VR:
-/// eye order self-check OK" or FAILED; under `FARFALL_BENCH=1` a
-/// failure exits 9.
+/// Bright hologram cyan ([0.45, 0.92, 1.0, 0.96], hud.wgsl) — green and
+/// blue well above red — is distinct enough from dash metal or a
+/// starfield that a readback patch needs no exact colour match to tell
+/// ink from background.
 #[cfg(not(target_arch = "wasm32"))]
-fn eye_order_self_check(gpu: &Gpu) {
+fn is_ink(bgra: &[u8]) -> bool {
+    let (b, g, r) = (bgra[0] as u32, bgra[1] as u32, bgra[2] as u32);
+    g > 140 && b > 140 && r + 40 < g
+}
+
+/// The fraction of a tightly-packed BGRA8 patch (from [`readback_patch`])
+/// that reads as ink — "ink is present here," not a glyph classifier.
+#[cfg(not(target_arch = "wasm32"))]
+fn ink_fraction(bgra: &[u8]) -> f32 {
+    let total = bgra.len() / 4;
+    if total == 0 {
+        return 0.0;
+    }
+    let lit = bgra.chunks_exact(4).filter(|px| is_ink(px)).count();
+    lit as f32 / total as f32
+}
+
+/// Downsamples a tightly-packed BGRA8 patch into a `GLYPH_W x GLYPH_H`
+/// grid of "is this cell mostly ink" bools, in the same bit layout
+/// `farfall_render::text::glyph` returns (bit 0 = leftmost column) — a
+/// coarse box downsample, not a geometrically exact resample (the patch
+/// is not precisely registered to the glyph's own cell grid, only
+/// dominated by it), which [`glyph_match_score`] compares against the
+/// font's own reference shapes.
+#[cfg(not(target_arch = "wasm32"))]
+fn glyph_shape(bgra: &[u8], size: (u32, u32)) -> [u8; farfall_render::text::GLYPH_H] {
+    use farfall_render::text::{GLYPH_H, GLYPH_W};
+    let mut out = [0u8; GLYPH_H];
+    if size.0 == 0 || size.1 == 0 {
+        return out;
+    }
+    let cell_w = (size.0 as f32 / GLYPH_W as f32).max(1.0);
+    let cell_h = (size.1 as f32 / GLYPH_H as f32).max(1.0);
+    for (row, cell) in out.iter_mut().enumerate() {
+        let y0 = (row as f32 * cell_h) as u32;
+        let y1 = (((row + 1) as f32 * cell_h).ceil() as u32)
+            .min(size.1)
+            .max(y0 + 1);
+        for col in 0..GLYPH_W {
+            let x0 = (col as f32 * cell_w) as u32;
+            let x1 = (((col + 1) as f32 * cell_w).ceil() as u32)
+                .min(size.0)
+                .max(x0 + 1);
+            let mut lit = 0u32;
+            let mut total = 0u32;
+            for y in y0..y1 {
+                let row_start = (y * size.0 * 4) as usize;
+                for x in x0..x1 {
+                    let idx = row_start + (x * 4) as usize;
+                    if idx + 4 <= bgra.len() {
+                        total += 1;
+                        if is_ink(&bgra[idx..idx + 4]) {
+                            lit += 1;
+                        }
+                    }
+                }
+            }
+            if total > 0 && (lit as f32 / total as f32) > 0.15 {
+                *cell |= 1 << col;
+            }
+        }
+    }
+    out
+}
+
+/// How many of the `GLYPH_W * GLYPH_H` cells agree (both lit or both
+/// unlit) between an observed shape ([`glyph_shape`]) and a reference
+/// one (`farfall_render::text::glyph`) — an exact match scores
+/// `GLYPH_W * GLYPH_H`; a exact mismatch on every cell scores 0.
+#[cfg(not(target_arch = "wasm32"))]
+fn glyph_match_score(
+    observed: [u8; farfall_render::text::GLYPH_H],
+    reference: [u8; farfall_render::text::GLYPH_H],
+) -> u32 {
+    observed
+        .iter()
+        .zip(reference.iter())
+        .map(|(o, r)| {
+            (0..farfall_render::text::GLYPH_W as u32)
+                .filter(|c| (o >> c) & 1 == (r >> c) & 1)
+                .count() as u32
+        })
+        .sum()
+}
+
+/// FARFALL_VR_LABEL=1: on the first labelled composite, read back both
+/// of each eye's corners (its own outer one, and the inner one where
+/// the OTHER eye's mark would land if the two ever got crossed) and
+/// confirm: ink in the outer corner, none in the inner one, and the
+/// outer corner's own shape reads as the right letter — L for eye 0, R
+/// for eye 1 — not merely "some cyan ink somewhere near here," which
+/// passed a synth capture (e80e9af) that actually showed the SAME
+/// oversized "R" landing in both eyes at eye 1's own position (a
+/// uniform-buffer race this branch also fixes — see `VrPair::
+/// label_hud`). Runs identically for a real or synthetic headset,
+/// which is the whole point: this class of bug is now caught by a
+/// bench row, on any machine, before it reaches a human. Logs "VR: eye
+/// order self-check OK" or FAILED, and exactly what failed; under
+/// `FARFALL_BENCH=1` a failure exits 9.
+#[cfg(not(target_arch = "wasm32"))]
+fn eye_order_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
     let Some(session) = gpu.xr.as_ref() else {
         return;
     };
@@ -7146,45 +7274,92 @@ fn eye_order_self_check(gpu: &Gpu) {
     // makes is inside this scope.
     let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let eye_size = session.eye_size();
-    // Bounds the mark's own rectangle (LABEL_CORNER_LEFT, LABEL_PX_CANOPY,
-    // xr_composite) with wide margin: plain screen-space geometry stands
-    // in for the canopy warp here, so the patch has to comfortably
-    // outsize both that approximation's own error and the per-eye
-    // parallax shift, not pin the mark's exact pixel.
-    let far_x = (LABEL_CORNER_LEFT[0] + LABEL_WIDTH_NDC + 1.0) / 2.0;
-    let far_y = (1.0
-        - (LABEL_CORNER_LEFT[1] - farfall_render::text::GLYPH_H as f32 * LABEL_PX_CANOPY))
-        / 2.0;
-    let patch = (
-        (eye_size.0 as f32 * (far_x * 1.3).min(0.5))
-            .round()
-            .max(1.0) as u32,
-        (eye_size.1 as f32 * (far_y * 1.3).min(0.55))
-            .round()
-            .max(1.0) as u32,
-    );
+    // Plain screen-space geometry stands in for the canopy warp: a
+    // patch generously larger than the mark's own rectangle (margin
+    // 1.6x per axis) absorbs that approximation's own error and the
+    // per-eye parallax shift without needing to invert the warp.
+    let to_px = |nx: f32, ny: f32| -> (i64, i64) {
+        (
+            ((nx + 1.0) / 2.0 * eye_size.0 as f32) as i64,
+            ((1.0 - ny) / 2.0 * eye_size.1 as f32) as i64,
+        )
+    };
+    let patch_for = |eye: usize, corner_ndc: [f32; 2], px: f32| -> ((u32, u32), (u32, u32)) {
+        let width_ndc = farfall_render::text::ADVANCE as f32 * px;
+        let height_ndc = farfall_render::text::GLYPH_H as f32 * px;
+        let cx = corner_ndc[0] + width_ndc / 2.0;
+        let cy = corner_ndc[1] - height_ndc / 2.0;
+        let margin = 1.6;
+        let (x0, y0) = to_px(
+            cx - width_ndc / 2.0 * margin,
+            cy + height_ndc / 2.0 * margin,
+        );
+        let (x1, y1) = to_px(
+            cx + width_ndc / 2.0 * margin,
+            cy - height_ndc / 2.0 * margin,
+        );
+        let clamp_x = |v: i64| v.clamp(0, eye_size.0 as i64 - 1) as u32;
+        let clamp_y = |v: i64| v.clamp(0, eye_size.1 as i64 - 1) as u32;
+        let (ox, oy) = (clamp_x(x0.min(x1)), clamp_y(y0.min(y1)));
+        let (ex, ey) = (clamp_x(x0.max(x1)), clamp_y(y0.max(y1)));
+        let _ = eye; // corner_ndc already carries the eye-specific geometry
+        ((ox, oy), ((ex - ox).max(1), (ey - oy).max(1)))
+    };
     let mut ok = true;
     for eye in 0..2 {
         let Some(texture) = session.acquired_eye_texture(eye) else {
             ok = false;
             continue;
         };
-        let origin_x = if eye == 0 {
-            0
-        } else {
-            eye_size.0.saturating_sub(patch.0)
-        };
-        let fraction =
-            readback_ink_fraction(&gpu.device, &gpu.queue, texture, (origin_x, 0), patch);
-        // A drawn mark lights a clear few percent of its own corner;
-        // total silence there is the eye swap this exists to catch.
-        if fraction < 0.005 {
-            ok = false;
-            log::error!(
-                "VR: eye order self-check: eye {eye}'s own corner has no ink \
-                 (lit fraction {fraction:.4}) — the label may have landed in \
-                 the wrong eye's image"
-            );
+        let (outer_anchor, px) = label_geometry(eye, eyes);
+        // The inner corner: where the OTHER eye's own mark would land
+        // in THIS eye's image if the two were ever crossed — mirroring
+        // label_geometry's own eye-1-from-eye-0 formula.
+        let width_ndc = farfall_render::text::ADVANCE as f32 * px;
+        let inner_anchor = [-outer_anchor[0] - width_ndc, outer_anchor[1]];
+        let expected = if eye == 0 { 'L' } else { 'R' };
+        let wrong = if eye == 0 { 'R' } else { 'L' };
+
+        let (origin, size) = patch_for(eye, outer_anchor, px);
+        match readback_patch(&gpu.device, &gpu.queue, texture, origin, size) {
+            Some(bytes) => {
+                let fraction = ink_fraction(&bytes);
+                if fraction < 0.01 {
+                    ok = false;
+                    log::error!(
+                        "VR: eye order self-check: eye {eye}'s own outer corner has no ink \
+                         (lit fraction {fraction:.4})"
+                    );
+                } else {
+                    let shape = glyph_shape(&bytes, size);
+                    let want = glyph_match_score(shape, farfall_render::text::glyph(expected));
+                    let dont = glyph_match_score(shape, farfall_render::text::glyph(wrong));
+                    if want <= dont {
+                        ok = false;
+                        log::error!(
+                            "VR: eye order self-check: eye {eye}'s outer corner reads as \
+                             '{wrong}' (score {dont}), not '{expected}' (score {want})"
+                        );
+                    }
+                }
+            }
+            None => {
+                ok = false;
+                log::error!("VR: eye order self-check: eye {eye}'s outer corner readback failed");
+            }
+        }
+
+        let (origin, size) = patch_for(eye, inner_anchor, px);
+        if let Some(bytes) = readback_patch(&gpu.device, &gpu.queue, texture, origin, size) {
+            let fraction = ink_fraction(&bytes);
+            if fraction > 0.01 {
+                ok = false;
+                log::error!(
+                    "VR: eye order self-check: eye {eye}'s INNER corner has ink \
+                     (lit fraction {fraction:.4}) — the other eye's mark may have \
+                     landed here too"
+                );
+            }
         }
     }
     if let Some(e) = pollster::block_on(scope.pop()) {
@@ -7285,32 +7460,16 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
             pair.label_bitmap
                 .draw(0, 0, if eye == 0 { "L" } else { "R" });
             let aspect = swapchain_eye_size.0 as f32 / swapchain_eye_size.1.max(1) as f32;
-            let e = &eyes[eye];
-            let tx = (e.tan[0] + e.tan[1]).max(1e-3) * 0.5;
-            let ty = (e.tan[2] + e.tan[3]).max(1e-3) * 0.5;
-            let d = VR_HUD_DISTANCE_M;
-            let shift = [-e.pos.x / (d * tx), -e.pos.y / (d * ty)];
-            // Outer corner: away from the nose (left for eye 0, right for
-            // eye 1), high enough to clear the instrument cluster, and
-            // comfortably inside the rim's own dimming (LABEL_CORNER_LEFT).
-            let corner = if eye == 0 {
-                LABEL_CORNER_LEFT
-            } else {
-                [
-                    -LABEL_CORNER_LEFT[0] - LABEL_WIDTH_NDC,
-                    LABEL_CORNER_LEFT[1],
-                ]
-            };
+            let (anchor, px) = label_geometry(eye, &eyes);
             let mut block = farfall_render::hud::HudBlock::glass(
-                [corner[0] + shift[0], corner[1] + shift[1]],
-                LABEL_PX_CANOPY,
+                anchor,
+                px,
                 aspect,
                 swapchain_eye_size.1 as f32,
             );
             block.no_backdrop = true; // ink on the glass, no plate behind it
-            pair.label_hud
-                .update(&gpu.queue, &pair.label_bitmap, &block);
-            pair.label_hud.draw(&mut pass);
+            pair.label_hud[eye].update(&gpu.queue, &pair.label_bitmap, &block);
+            pair.label_hud[eye].draw(&mut pass);
         }
     }
     if mirror_pair {
@@ -7386,7 +7545,7 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
     gpu.queue.submit([encoder.finish()]);
     if label && !gpu.eye_order_checked {
         gpu.eye_order_checked = true;
-        eye_order_self_check(gpu);
+        eye_order_self_check(gpu, &eyes);
     }
     // Present (below, in redraw) must never block the XR frame: end_frame
     // — the runtime's own submission — always runs here, before redraw
@@ -8929,6 +9088,68 @@ mod tests {
             (degrees - 1.2).abs() < 0.3,
             "{degrees} degrees per glyph, want 1.2 +/- 0.3"
         );
+    }
+
+    /// SPEC §5.3: the L/R corner mark's own angular size must not
+    /// depend on which headset it is drawn for — an e80e9af synth
+    /// capture showed a fixed px_canopy=0.09 filling ~35% of the eye's
+    /// own width, unmistakable for the wrong reason. Same linear
+    /// convention as the readout's own measurement above.
+    #[test]
+    fn the_label_measures_about_its_own_target_degrees() {
+        let fov_y_deg = 110.0f32;
+        let ty = (fov_y_deg.to_radians() * 0.5).tan();
+        let px = label_px_canopy(ty);
+        let glyph_ndc_height = farfall_render::text::GLYPH_H as f32 * px;
+        let degrees = (glyph_ndc_height / 2.0) * fov_y_deg;
+        assert!(
+            (degrees - LABEL_TARGET_DEG).abs() < 0.3,
+            "{degrees} degrees, want {LABEL_TARGET_DEG} +/- 0.3"
+        );
+        // A much narrower headset gets a bigger canopy fraction for the
+        // same degrees — the whole point of computing from ty.
+        let narrow_ty = (60f32.to_radians() * 0.5).tan();
+        assert!(
+            label_px_canopy(narrow_ty) > px,
+            "a narrower fov should need more canopy per degree"
+        );
+    }
+
+    /// The eye-order self-check's own shape identification: painting a
+    /// patch that exactly reproduces one glyph's bit pattern must score
+    /// that glyph over the other one — the machine check for "is this
+    /// really an L, not an R," not just "is there ink somewhere."
+    #[test]
+    fn glyph_shape_readback_identifies_the_letter_it_was_painted_as() {
+        use farfall_render::text::{glyph, GLYPH_H, GLYPH_W};
+        for &c in &['L', 'R'] {
+            let bits = glyph(c);
+            // One BGRA8 texel per font cell — glyph_shape's own box
+            // downsample degenerates to an exact read at 1:1.
+            let mut bgra = vec![0u8; GLYPH_W * GLYPH_H * 4];
+            for (row, &bits_row) in bits.iter().enumerate() {
+                for col in 0..GLYPH_W {
+                    let lit = (bits_row >> col) & 1 != 0;
+                    let idx = (row * GLYPH_W + col) * 4;
+                    if lit {
+                        // Bright cyan: matches is_ink's own threshold.
+                        bgra[idx..idx + 4].copy_from_slice(&[255, 255, 0, 255]);
+                    }
+                }
+            }
+            let shape = glyph_shape(&bgra, (GLYPH_W as u32, GLYPH_H as u32));
+            let own = glyph_match_score(shape, glyph(c));
+            let other = glyph_match_score(shape, glyph(if c == 'L' { 'R' } else { 'L' }));
+            assert!(
+                own > other,
+                "{c}: own score {own} did not beat the other letter's {other}"
+            );
+            assert_eq!(
+                own,
+                (GLYPH_W * GLYPH_H) as u32,
+                "{c}: an exact painting should score a perfect match"
+            );
+        }
     }
 
     /// A headset for the given eye alone, level-eyed and centred (no
