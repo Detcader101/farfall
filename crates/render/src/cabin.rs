@@ -170,6 +170,12 @@ impl CabinUniforms {
         self
     }
 
+    /// The seat `with_eye` last set — xyz only, for a diagnostic log
+    /// line; `w` is the craft flag (`with_craft`), not part of the seat.
+    pub fn eye_xyz(&self) -> Vec3 {
+        Vec3::new(self.eye[0], self.eye[1], self.eye[2])
+    }
+
     /// The craft the hull round the pilot belongs to: 0 the fighter, 1
     /// the helicopter (common.wgsl sd_craft_hull — SPEC §6.5c).
     pub fn with_craft(mut self, craft: f32) -> Self {
@@ -194,9 +200,23 @@ impl CabinUniforms {
     }
 
     /// Did the head or the light move — a re-march at the moving size —
-    /// as against a sharp re-render of the same view?
+    /// as against a sharp re-render of the same view? A VR eye switch is
+    /// a moved view too (SPEC §5.3): the seat itself (`eye`, `with_eye`)
+    /// is part of where the ray originates, and this comparison used to
+    /// miss it entirely — an eye toggling every single frame, at the
+    /// same head orientation, never registered as "moved", so the
+    /// cabin's own progressive-refinement cache (four strips, meant to
+    /// sharpen a *held* view over a few frames) kept feeding eye 1's
+    /// draw call whatever texture eye 0's had barely begun refining a
+    /// moment earlier in the SAME frame. A synth capture caught it: the
+    /// dash, the dial housings and the gyro's own bowl were pixel-
+    /// identical between the two eyes, a mono cabin under a stereo
+    /// headset.
     pub fn view_moved(&self, other: &CabinUniforms) -> bool {
-        self.right != other.right || self.up != other.up || self.fwd != other.fwd
+        self.right != other.right
+            || self.up != other.up
+            || self.fwd != other.fwd
+            || self.eye != other.eye
     }
 }
 
@@ -988,6 +1008,44 @@ mod tests {
         // No floor: stock size, whatever the frame costs.
         g.step(100.0, 0.0);
         assert_eq!(g.scale, MOVING_SCALE);
+    }
+
+    /// SPEC §5.3: a VR eye switch is a moved view too. A synth capture
+    /// caught this the hard way — two eyes at the same head orientation
+    /// but different seats rendered a pixel-identical cabin, because
+    /// this exact case (`right`/`up`/`fwd` unchanged, only `eye`
+    /// different) used to read as "did not move" and let the
+    /// progressive-refinement cache feed eye 1's draw whatever eye 0's
+    /// had barely begun sharpening a moment earlier in the same frame.
+    #[test]
+    fn switching_vr_eyes_alone_counts_as_a_moved_view() {
+        let cam = CameraFrame {
+            orient: Quat::IDENTITY,
+            fov_y: 1.0,
+            aspect: 1.5,
+            time_s: 0.0,
+            exposure: 1.0,
+        };
+        let look = CabinLook {
+            glow: 1.0,
+            metal: 0.8,
+            on: true,
+            thrust: [0.0; 4],
+            style: 0,
+        };
+        let fit = stock_fit();
+        let base = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &[], &fit);
+        let left_eye = base.with_eye(Vec3::new(-0.032, 0.0, 0.0));
+        let right_eye = base.with_eye(Vec3::new(0.032, 0.0, 0.0));
+        assert_ne!(
+            left_eye, right_eye,
+            "the two eyes' own uniforms must differ"
+        );
+        assert!(
+            left_eye.view_moved(&right_eye),
+            "an eye switch alone, same head orientation, must count as a moved view — \
+             the exact case that let one eye's cached march feed the other's draw"
+        );
     }
 
     /// An instrument dragged up the glass misses the dash: its face stays
