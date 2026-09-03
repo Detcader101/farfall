@@ -412,6 +412,9 @@ impl StickMap {
             (Named::HoloIn, HAT_BIT + 2),
             (Named::ScaleUp, HAT_BIT + 1),
             (Named::ScaleDown, HAT_BIT + 3),
+            // Headset-only, but every named control gets a stick home;
+            // button 9 is the shifted layer's one still free.
+            (Named::VrRecentre, 9),
         ] {
             shifted[n as usize] = Some(b);
         }
@@ -1425,6 +1428,9 @@ const BUTTON_ORDER: [Named; Named::COUNT] = [
     Named::Bay,
     Named::ScaleDown,
     Named::ScaleUp,
+    // Headset-only: last, since a HOTAS wizard for a flat pilot has no use
+    // for it, but every Named control gets an offered button.
+    Named::VrRecentre,
 ];
 
 fn steps() -> Vec<Step> {

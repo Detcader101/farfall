@@ -206,6 +206,10 @@ pub const HOLO_RANGE_MAX: f32 = 4.0;
 pub const HOLO_RANGE_STEP: f32 = 0.5;
 pub const FPS_FLOOR_CHOICES: [f32; 5] = [0.0, 30.0, 60.0, 90.0, 120.0];
 
+/// VR RENDER SCALE: a factor on the runtime's recommended per-eye size.
+pub const VR_SCALE_MIN: f32 = 0.5;
+pub const VR_SCALE_MAX: f32 = 1.5;
+
 /// The landing hoops' spacings on offer, metres.
 pub const LANDING_SPACINGS: [f32; 4] = [100.0, 250.0, 500.0, 1000.0];
 
@@ -228,6 +232,14 @@ pub struct Settings {
     /// SCALE is then the ceiling, never the floor.
     pub auto_scale: bool,
     pub vsync: bool,
+    /// VR HEADSET: born into the Vulkan device an OpenXR runtime hands out,
+    /// instead of the flat one — a start-up choice, since the device itself
+    /// differs (SPEC §5.3). `FARFALL_VR` overrides this at launch without
+    /// touching the file. Off by default: no headset means no surprise
+    /// SteamVR launch.
+    pub vr_headset: bool,
+    /// A factor on the OpenXR runtime's recommended per-eye render size.
+    pub vr_scale: f32,
     /// RESUME: pick up where the last session left off (~/.farfall/world.cfg)
     /// on start, and write it on every quit and every 30 s of sim time. Off:
     /// the world file is neither read nor written, and NEW GAME still
@@ -433,6 +445,8 @@ impl Default for Settings {
             scale: 1.0,
             auto_scale: false,
             vsync: true,
+            vr_headset: false,
+            vr_scale: 1.0,
             resume: true,
             bindings: Bindings::default(),
             layout: Layout::default(),
@@ -550,6 +564,8 @@ pub const KEYS: &[&str] = &[
     "graphics.scale",
     "graphics.vsync",
     "graphics.auto-scale",
+    "graphics.vr",
+    "graphics.vr-scale",
     "graphics.fov",
     "graphics.fps-floor",
     "graphics.sky",
@@ -851,6 +867,14 @@ impl Settings {
                 }
                 "graphics.vsync" => s.vsync = matches!(v, "on" | "true" | "1"),
                 "graphics.auto-scale" => s.auto_scale = matches!(v, "on" | "true" | "1"),
+                "graphics.vr" => s.vr_headset = matches!(v, "on" | "true" | "1"),
+                "graphics.vr-scale" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.vr_scale = f.clamp(VR_SCALE_MIN, VR_SCALE_MAX);
+                        }
+                    }
+                }
                 "game.resume" => s.resume = matches!(v, "on" | "true" | "1"),
                 "ui.safe-edge" => {
                     if let Ok(f) = v.trim_end_matches('%').parse::<f32>() {
@@ -1451,6 +1475,11 @@ impl Settings {
             "graphics.auto-scale = {}\n",
             if self.auto_scale { "on" } else { "off" }
         ));
+        out.push_str(&format!(
+            "graphics.vr = {}\n",
+            if self.vr_headset { "on" } else { "off" }
+        ));
+        out.push_str(&format!("graphics.vr-scale = {:.2}\n", self.vr_scale));
         out.push_str(&format!(
             "game.resume = {}\n",
             if self.resume { "on" } else { "off" }

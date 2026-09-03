@@ -146,10 +146,14 @@ pub enum Named {
     /// (SPEC §6.5b). On foot the same key boards the ship at the hull;
     /// landed beside a pad it boards the helicopter first.
     Disembark,
+    /// Re-seat the headset's tracked space on the ship's nose (SPEC
+    /// §5.3): only meaningful with a headset on, but rebindable and
+    /// listed like every other control regardless.
+    VrRecentre,
 }
 
 impl Named {
-    pub const COUNT: usize = 26;
+    pub const COUNT: usize = 27;
     pub const ALL: [Named; Named::COUNT] = [
         Named::Boost,
         Named::Brake,
@@ -177,6 +181,7 @@ impl Named {
         Named::HoloOut,
         Named::HoloIn,
         Named::Disembark,
+        Named::VrRecentre,
     ];
 
     /// Menu label.
@@ -208,6 +213,7 @@ impl Named {
             Named::HoloOut => "HOLO WIDER",
             Named::HoloIn => "HOLO CLOSER",
             Named::Disembark => "DISEMBARK",
+            Named::VrRecentre => "VR RECENTRE",
         }
     }
 
@@ -240,6 +246,7 @@ impl Named {
             Named::HoloOut => "holo-out",
             Named::HoloIn => "holo-in",
             Named::Disembark => "disembark",
+            Named::VrRecentre => "vr-recentre",
         }
     }
 
@@ -278,6 +285,9 @@ impl Named {
             // I is the one letter the dash did not already answer to
             // (Enter is the menu's and is reserved).
             Named::Disembark => KeyCode::KeyI,
+            // HOME is otherwise unused; a headset-only control gets a
+            // key nothing else on the dash wants.
+            Named::VrRecentre => KeyCode::Home,
         }
     }
 }

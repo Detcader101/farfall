@@ -26,6 +26,7 @@ use crate::settings::{
     HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
 };
 use crate::settings::{BAY_SCANLINES_MAX, BAY_SIZE_MAX, BAY_SIZE_MIN, EXPOSURE_MAX, EXPOSURE_MIN};
+use crate::settings::{VR_SCALE_MAX, VR_SCALE_MIN};
 use crate::stick::{Device, Flight, StickItem};
 use farfall_render::hud::Scrollbar;
 use farfall_render::text::{
@@ -343,6 +344,11 @@ pub const HELP: &[HelpGroup] = &[
                 "DESIGN MODE: THE MOUSE DRAGS DIALS; A CARD SHOWS THE DIAL UNDER IT AND ITS OWN KEYS.",
             ),
             named(
+                Named::VrRecentre,
+                "RECENTRE THE VIEW",
+                "WITH A HEADSET ON, RE-SEAT ITS TRACKED SPACE ON THE SHIP'S NOSE FROM WHERE YOU SIT NOW.",
+            ),
+            named(
                 Named::Capture,
                 "SCREENSHOT",
                 "SAVE A SCREENSHOT OF THE FRAME TO THE TEMP FOLDER. F12 DOES THE SAME.",
@@ -449,6 +455,8 @@ enum Item {
     Scale,
     AutoScale,
     Vsync,
+    VrHeadset,
+    VrScale,
     Resume,
     NewGame,
     Quit,
@@ -583,6 +591,8 @@ impl Item {
             Item::Scale => "RENDER SCALE",
             Item::AutoScale => "AUTO SCALE",
             Item::Vsync => "VSYNC",
+            Item::VrHeadset => "VR HEADSET",
+            Item::VrScale => "VR RENDER SCALE",
             Item::Resume => "RESUME",
             Item::NewGame => "NEW GAME",
             Item::Quit => "QUIT GAME",
@@ -733,6 +743,10 @@ impl Item {
             Item::Scale => "THE WORLD IS DRAWN AT THIS SHARE OF THE SCREEN'S SIZE; THE GLASS STAYS SHARP.",
             Item::AutoScale => "LET THE RENDER SCALE GOVERN ITSELF DOWN TO HOLD THE FPS FLOOR.",
             Item::Vsync => "WAIT FOR THE DISPLAY EACH FRAME: NO TEARING, A LITTLE LAG.",
+            Item::VrHeadset => {
+                "OPEN INTO A HEADSET NEXT LAUNCH INSTEAD OF THE FLAT VIEW. NEEDS A RESTART."
+            }
+            Item::VrScale => "A FACTOR ON THE HEADSET'S OWN RECOMMENDED RENDER SIZE.",
             Item::CockpitStick => {
                 "THE STICK AND LEVER ON THE CONSOLE MOVE WITH YOUR OWN DEMAND - HOTAS OR KEYS."
             }
@@ -845,6 +859,8 @@ impl Item {
             Item::MinersGrowth => one("miners.growth"),
             Item::Scale => one("graphics.scale"),
             Item::AutoScale => one("graphics.auto-scale"),
+            Item::VrHeadset => one("graphics.vr"),
+            Item::VrScale => one("graphics.vr-scale"),
             Item::Vsync => one("graphics.vsync"),
             Item::Bind(a) => vec![format!("control.{}", a.key())],
             // A named control's row carries its key and its stick button
@@ -959,6 +975,8 @@ impl Item {
             Item::Scale => format!("{:.0}%", s.scale * 100.0),
             Item::AutoScale => (if s.auto_scale { "ON" } else { "OFF" }).to_string(),
             Item::Vsync => (if s.vsync { "ON" } else { "OFF" }).to_string(),
+            Item::VrHeadset => (if s.vr_headset { "ON" } else { "OFF" }).to_string(),
+            Item::VrScale => format!("{:.0}%", s.vr_scale * 100.0),
             Item::Resume => (if s.resume { "ON" } else { "OFF" }).to_string(),
             Item::NewGame => String::new(),
             Item::Quit => String::new(),
@@ -1305,6 +1323,8 @@ impl Menu {
                 Item::Scale,
                 Item::AutoScale,
                 Item::Vsync,
+                Item::VrHeadset,
+                Item::VrScale,
                 Item::FpsFloor,
                 Item::Fov,
                 Item::Camera,
@@ -1779,6 +1799,11 @@ impl Menu {
                 s.vsync = !s.vsync;
                 MenuEvent::Changed(Change::Graphics)
             }
+            Item::VrHeadset => {
+                s.vr_headset = !s.vr_headset;
+                MenuEvent::Changed(Change::Graphics)
+            }
+            Item::VrScale => step_f32(&mut s.vr_scale, forward, 0.1, VR_SCALE_MIN, VR_SCALE_MAX),
             Item::Resume => {
                 s.resume = !s.resume;
                 MenuEvent::Changed(Change::Graphics)
