@@ -240,6 +240,14 @@ const AUTO_SCALE_MIN: f32 = 0.35;
 const AUTO_SCALE_STEP_S: f32 = 0.75;
 /// How long the rate must sit on the floor before the scale is raised.
 const AUTO_SCALE_RAISE_S: f32 = 3.0;
+/// The assumed distance, metres, of the virtual plane every VR glass
+/// overlay is painted on (SPEC §5.3) — the readout, glass-style dials,
+/// the mini map, the eye-order label. Not yet a menu setting
+/// (`vr.hud-distance` is the eventual key); a reasonable dash-distance
+/// estimate a pilot's own pass can retune. Flat flight never reads this
+/// — `on_glass`'s eye offset is always zero there.
+const VR_HUD_DISTANCE_M: f32 = 1.0;
+
 /// A glass anchor as the turned head sees it: the glass is a sphere about
 /// the pilot, so every element is re-projected, not slid (look.rs). The
 /// anchors are laid out in a REFERENCE projection — the pilot's base field
@@ -249,8 +257,21 @@ const AUTO_SCALE_RAISE_S: f32 = 3.0;
 /// deliberately kept screen-fixed, the pilot's own look in DESIGN mode, or
 /// a headset's real orientation so the glass stays cockpit-fixed in VR
 /// instead of following the pilot's face (see [`Game::glass_head`]).
-fn on_glass(head: Quat, cam: &CameraFrame, ref_tan: f32, a: [f32; 2]) -> [f32; 2] {
-    look::reproject_with(head, a, ref_tan, (cam.fov_y * 0.5).tan(), cam.aspect)
+/// `eye_pos` is that same headset's per-eye seat (zero everywhere but
+/// VR): without it every glass element sits at optical infinity while
+/// the cabin around it has real depth, which reads as a close plane
+/// obscuring the view (SPEC §5.3) — reproject_with_eye's own parallax
+/// shift is what puts it on the glass instead.
+fn on_glass(head: Quat, eye_pos: Vec3, cam: &CameraFrame, ref_tan: f32, a: [f32; 2]) -> [f32; 2] {
+    look::reproject_with_eye(
+        head,
+        eye_pos,
+        VR_HUD_DISTANCE_M,
+        a,
+        ref_tan,
+        (cam.fov_y * 0.5).tan(),
+        cam.aspect,
+    )
 }
 
 /// Where a dial sits and whether it shows: a hidden instrument keeps any
@@ -260,12 +281,13 @@ fn on_glass(head: Quat, cam: &CameraFrame, ref_tan: f32, a: [f32; 2]) -> [f32; 2
 fn slot_of(
     layout: &cockpit::Layout,
     head: Quat,
+    eye_pos: Vec3,
     cam: &CameraFrame,
     ref_tan: f32,
     i: Instrument,
 ) -> ([f32; 2], f32) {
     match layout.anchor(i) {
-        Some(a) => (on_glass(head, cam, ref_tan, a), 1.0),
+        Some(a) => (on_glass(head, eye_pos, cam, ref_tan, a), 1.0),
         None => ([0.0, 0.0], 0.0),
     }
 }
@@ -1224,12 +1246,25 @@ impl VrPair {
 impl Gpu {
     /// Every dial and overlay, from the cockpit layout: an instrument whose
     /// slot is Off gets visibility zero and draws nothing at all.
-    fn update_instruments(&self, game: &Game, cam: &CameraFrame, aspect: f32, altitude_m: f32) {
+    /// `eye_ship`: the pose's own eye seat in the ship's frame
+    /// (`pose.eye_ship`) — the same one the cabin's ray marcher already
+    /// draws from (`CabinUniforms::with_eye`) — so a DIAL's face plane
+    /// ray-casts from the same seat as the ray-marched bezel around it,
+    /// not a shared, disparity-free ship origin (SPEC §5.3).
+    fn update_instruments(
+        &self,
+        game: &Game,
+        cam: &CameraFrame,
+        aspect: f32,
+        altitude_m: f32,
+        eye_ship: Vec3,
+    ) {
         let layout = &game.settings.layout;
         let h = self.scene.size().1 as f32;
         let sway = game.holo_sway.sway();
         let look = &game.look;
         let glass_head = game.glass_head();
+        let glass_eye_pos = game.glass_eye_pos();
         let ref_tan = game.ref_tan();
         // Each dial's own style, size and fade, over the cockpit's.
         let tweak = |i: Instrument| game.dial_tweak(i);
@@ -1252,14 +1287,21 @@ impl Gpu {
                 let a = layout.anchor(i)?;
                 let dir = farfall_render::cabin::anchor_direction(a, ref_tan, cam.aspect);
                 if let Some(p) = farfall_render::cabin::Placement::in_dash(
-                    head, t, dir, tw.size, tw.tilt, tw.lean,
+                    head, t, dir, tw.size, tw.tilt, tw.lean, eye_ship,
                 ) {
                     return Some(p);
                 }
             }
             Some(farfall_render::cabin::Placement::glass_sized(tw.size * fov_scale).tilted(tw.tilt))
         };
-        let (speed_anchor, speed_on) = slot_of(layout, glass_head, cam, ref_tan, Instrument::Speed);
+        let (speed_anchor, speed_on) = slot_of(
+            layout,
+            glass_head,
+            glass_eye_pos,
+            cam,
+            ref_tan,
+            Instrument::Speed,
+        );
         self.passes.gauge.update(
             &self.queue,
             &GaugeUniforms::speed(
@@ -1281,7 +1323,14 @@ impl Gpu {
                 tweak(Instrument::Speed).rotate,
             ),
         );
-        let (alt_anchor, alt_on) = slot_of(layout, glass_head, cam, ref_tan, Instrument::Altitude);
+        let (alt_anchor, alt_on) = slot_of(
+            layout,
+            glass_head,
+            glass_eye_pos,
+            cam,
+            ref_tan,
+            Instrument::Altitude,
+        );
         self.passes.alt_gauge.update(
             &self.queue,
             &GaugeUniforms::altitude(
@@ -1301,7 +1350,14 @@ impl Gpu {
                 tweak(Instrument::Altitude).rotate,
             ),
         );
-        let (g_anchor, g_on) = slot_of(layout, glass_head, cam, ref_tan, Instrument::GForce);
+        let (g_anchor, g_on) = slot_of(
+            layout,
+            glass_head,
+            glass_eye_pos,
+            cam,
+            ref_tan,
+            Instrument::GForce,
+        );
         self.passes.g_gauge.update(
             &self.queue,
             &GaugeUniforms::g_force(
@@ -1321,7 +1377,14 @@ impl Gpu {
                 tweak(Instrument::GForce).rotate,
             ),
         );
-        let (gv_anchor, gv_on) = slot_of(layout, glass_head, cam, ref_tan, Instrument::GVector);
+        let (gv_anchor, gv_on) = slot_of(
+            layout,
+            glass_head,
+            glass_eye_pos,
+            cam,
+            ref_tan,
+            Instrument::GVector,
+        );
         self.passes.gvec.update(
             &self.queue,
             &GaugeUniforms::g_vector(
@@ -1341,7 +1404,14 @@ impl Gpu {
                 tweak(Instrument::GVector).rotate,
             ),
         );
-        let (gyro_anchor, gyro_on) = slot_of(layout, glass_head, cam, ref_tan, Instrument::Gyro);
+        let (gyro_anchor, gyro_on) = slot_of(
+            layout,
+            glass_head,
+            glass_eye_pos,
+            cam,
+            ref_tan,
+            Instrument::Gyro,
+        );
         // Each dial's patch of the target: a full-screen pass that discards
         // is not free, so the dials draw only where they are.
         let size = self.scene.size();
@@ -1370,7 +1440,7 @@ impl Gpu {
             .warthog(warthog(Instrument::Gyro))
             .placed(placed(Instrument::Gyro))
             .oriented(tweak(Instrument::Gyro).lean, tweak(Instrument::Gyro).rotate)
-            .ball_if(game.gyro_ball(cam, tweak(Instrument::Gyro))),
+            .ball_if(game.gyro_ball(cam, tweak(Instrument::Gyro), eye_ship)),
         );
         // The design guide: the glass ruled, every shown dial's anchor and
         // reach, the gaze.
@@ -1400,7 +1470,7 @@ impl Gpu {
             }
             let anchors: Vec<[f32; 2]> = anchors
                 .into_iter()
-                .map(|a| on_glass(look.rotation(), cam, ref_tan, a))
+                .map(|a| on_glass(look.rotation(), Vec3::ZERO, cam, ref_tan, a))
                 .take(8)
                 .collect();
             self.passes.guide.update(
@@ -1409,7 +1479,7 @@ impl Gpu {
                     aspect,
                     game.settings.guide || game.design,
                     layout.safe_edge,
-                    on_glass(look.rotation(), cam, ref_tan, gaze),
+                    on_glass(look.rotation(), Vec3::ZERO, cam, ref_tan, gaze),
                     DRAG_REACH,
                     look.engaged() || game.design,
                     &anchors,
@@ -2329,7 +2399,13 @@ impl Game {
             centre: if mini {
                 let cam = self.camera(aspect);
                 let a = self.settings.layout.inset(self.mini_map_anchor());
-                let c = on_glass(self.glass_head(), &cam, self.ref_tan(), a);
+                let c = on_glass(
+                    self.glass_head(),
+                    self.glass_eye_pos(),
+                    &cam,
+                    self.ref_tan(),
+                    a,
+                );
                 // An instrument, not scenery: a far-turned head must
                 // not swing the pane off the screen's edge.
                 map::mini_centre_on_screen(aspect, c, self.mini_map_half_h())
@@ -2959,11 +3035,17 @@ impl Game {
         if self.menu.open || self.pane_open() || self.card_open {
             a
         } else if self.design {
-            on_glass(self.look.rotation(), cam, self.ref_tan(), a)
+            on_glass(self.look.rotation(), Vec3::ZERO, cam, self.ref_tan(), a)
         } else if self.vr.is_some() {
-            on_glass(self.glass_head(), cam, self.ref_tan(), a)
+            on_glass(
+                self.glass_head(),
+                self.glass_eye_pos(),
+                cam,
+                self.ref_tan(),
+                a,
+            )
         } else {
-            on_glass(Quat::IDENTITY, cam, self.ref_tan(), a)
+            on_glass(Quat::IDENTITY, Vec3::ZERO, cam, self.ref_tan(), a)
         }
     }
 
@@ -3013,10 +3095,14 @@ impl Game {
     /// The gyro as a geometric ball: when it is JET or WARTHOG and sits
     /// on the dash, its sphere's placement and the world's up and east in
     /// the ship's frame, for the gyro pass to paint.
+    /// `eye_ship`: the pose's own eye seat (`pose.eye_ship`), so the
+    /// ball's own ray-sphere cast starts from the same seat as the
+    /// ray-marched dash around it (SPEC §5.3), matching `in_dash`.
     fn gyro_ball(
         &self,
         cam: &CameraFrame,
         tw: DialEffective,
+        eye_ship: glam::Vec3,
     ) -> Option<(farfall_render::cabin::Placement, glam::Vec3, glam::Vec3)> {
         use farfall_render::cabin::anchor_direction;
         use glam::Vec3;
@@ -3032,13 +3118,19 @@ impl Game {
         // patch fills with magnified globe (a beige plate poking into
         // frame). Once its glass anchor has left the screen there is no
         // honest picture of it left to draw — cull it.
-        let live = on_glass(self.glass_head(), cam, self.ref_tan(), a);
+        let live = on_glass(
+            self.glass_head(),
+            self.glass_eye_pos(),
+            cam,
+            self.ref_tan(),
+            a,
+        );
         if live[0].abs() > 1.2 || live[1].abs() > 1.2 {
             return None;
         }
         let dir = anchor_direction(a, self.ref_tan(), cam.aspect);
         let t = (cam.fov_y * 0.5).tan();
-        let place = farfall_render::cabin::Placement::ball(self.head(), t, dir, tw.size)?;
+        let place = farfall_render::cabin::Placement::ball(self.head(), t, dir, tw.size, eye_ship)?;
         let ship_inv = self.state.ship.orient.as_quat().inverse();
         let up_w = self.up_world().as_vec3();
         let east_w = {
@@ -4060,6 +4152,19 @@ impl Game {
         match &self.vr {
             Some(vr) => vr.eyes[self.vr_eye.min(1)].head,
             None => self.look.rotation(),
+        }
+    }
+
+    /// The active eye's own seat, for `on_glass`'s parallax shift — zero
+    /// in flat flight, always (that shift is a no-op there by
+    /// construction). Deliberately the eye's own small IPD-scale offset
+    /// alone, not `pose.eye_ship`: a glass overlay sits in front of the
+    /// pilot's face regardless of which pose (cockpit, chase, EVA) the
+    /// world is drawn from, never at a chase rig's own seat.
+    fn glass_eye_pos(&self) -> Vec3 {
+        match &self.vr {
+            Some(vr) => vr.eyes[self.vr_eye.min(1)].pos,
+            None => Vec3::ZERO,
         }
     }
 
@@ -6069,10 +6174,28 @@ impl App {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        let vr_pair = xr_session
-            .as_ref()
-            .zip(xr_format)
-            .map(|(session, fmt)| VrPair::new(&device, config.format, fmt, session.eye_size()));
+        let vr_pair = xr_session.as_ref().zip(xr_format).map(|(session, fmt)| {
+            // xrblit.wgsl is a bare passthrough (no manual gamma math): it
+            // relies entirely on the sample view and the store view both
+            // being correctly tagged sRGB or not. The pair render target
+            // is built at the window's own surface format (matching the
+            // flat-mode scene target, SceneTarget::new(.., config.format,
+            // ..) — same tonemap pass, same target-format contract); the
+            // XR swapchain is *always* one of SWAPCHAIN_FORMATS' sRGB
+            // variants (xr::try_init hard-errors otherwise). If those two
+            // formats ever disagree, the headset leg either double- or
+            // never-gamma-corrects — log it plainly so a dim headset and
+            // a correct-looking mirror point straight here.
+            if config.format != fmt {
+                log::warn!(
+                    "VR: window surface format {:?} != XR swapchain format {fmt:?} — \
+                     the headset image may be gamma-mismatched even though the desktop \
+                     mirror (drawn in the window's own format) looks right",
+                    config.format
+                );
+            }
+            VrPair::new(&device, config.format, fmt, session.eye_size())
+        });
         self.gpu = Some(Gpu {
             #[cfg(not(target_arch = "wasm32"))]
             xr: xr_session,
@@ -6813,19 +6936,38 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
         pair.to_swapchain.draw(&mut pass);
         // FARFALL_VR_LABEL=1: stamped into the same pass, onto the same
         // swapchain image the headset itself will show — proves the eye
-        // order on the headset side, not only the desktop mirror.
+        // order on the headset side, not only the desktop mirror. A small
+        // opaque glyph in the eye's own upper-outer corner, at the same
+        // ~1 m glass depth as every other overlay (VR_HUD_DISTANCE_M):
+        // no plate, no full-eye tint, and a genuine per-eye parallax
+        // shift, not a coincidence of matching screen position — a
+        // zero-disparity full-eye label is itself the "close obscuring
+        // plane" this exists to rule out.
         if label {
             pair.label_bitmap.clear();
             pair.label_bitmap
                 .draw(0, 0, if eye == 0 { "L" } else { "R" });
             let aspect = swapchain_eye_size.0 as f32 / swapchain_eye_size.1.max(1) as f32;
+            let e = &eyes[eye];
+            let tx = (e.tan[0] + e.tan[1]).max(1e-3) * 0.5;
+            let ty = (e.tan[2] + e.tan[3]).max(1e-3) * 0.5;
+            let d = VR_HUD_DISTANCE_M;
+            let shift = [-e.pos.x / (d * tx), -e.pos.y / (d * ty)];
+            // Outer corner: away from the nose (left for eye 0, right for
+            // eye 1), high enough to clear the instrument cluster.
+            let corner = if eye == 0 {
+                [-0.92, 0.86]
+            } else {
+                [0.80, 0.86]
+            };
+            let px_canopy = 0.045; // a corner mark, not a panel
             let mut block = farfall_render::hud::HudBlock::glass(
-                [-0.09, 0.12],
-                0.16,
+                [corner[0] + shift[0], corner[1] + shift[1]],
+                px_canopy,
                 aspect,
                 swapchain_eye_size.1 as f32,
             );
-            block.flat = true; // an opaque backdrop: unmissable, not glass-subtle
+            block.no_backdrop = true; // ink on the glass, no plate behind it
             pair.label_hud
                 .update(&gpu.queue, &pair.label_bitmap, &block);
             pair.label_hud.draw(&mut pass);
@@ -7015,7 +7157,13 @@ fn redraw(
                         .sight
                         .update(&gpu.queue, &game.sight_uniforms(&pose));
                     let (altitude_m, _) = game.altitude_vspeed();
-                    gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
+                    gpu.update_instruments(
+                        game,
+                        &cam,
+                        aspect,
+                        altitude_m as f32,
+                        pose.eye_ship.as_vec3(),
+                    );
                     // The capture should show what the pilot
                     // sees, text included. The HUD pipeline is
                     // single-sample (it draws in the present
@@ -7355,7 +7503,13 @@ fn redraw(
         let wu = game.wind_uniforms(&pose, gpu.scene.size().1 as f32);
         gpu.passes.wind.update(&gpu.queue, &wu);
         let (altitude_m, _) = game.altitude_vspeed();
-        gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
+        gpu.update_instruments(
+            game,
+            &cam,
+            aspect,
+            altitude_m as f32,
+            pose.eye_ship.as_vec3(),
+        );
 
         // Scale the readout with the surface so it keeps the same
         // apparent size on a retina fullscreen and a small window;
@@ -8584,13 +8738,13 @@ mod tests {
         let cam = game.camera(1.5);
         let tw = game.dial_tweak(Instrument::Gyro);
         assert!(
-            game.gyro_ball(&cam, tw).is_some(),
+            game.gyro_ball(&cam, tw, glam::Vec3::ZERO).is_some(),
             "centred: the ball shows"
         );
         game.look.aim(1.2, 0.0);
         let cam = game.camera(1.5);
         assert!(
-            game.gyro_ball(&cam, tw).is_none(),
+            game.gyro_ball(&cam, tw, glam::Vec3::ZERO).is_none(),
             "turned 69\u{b0} right: the ball's anchor is off screen"
         );
     }
