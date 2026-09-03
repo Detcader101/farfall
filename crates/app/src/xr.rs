@@ -807,12 +807,22 @@ pub struct VrDevice {
 /// `wgpu::TextureView` (session lifetime — re-wrapping per frame would
 /// leak wgpu-hal identities).
 struct EyeSwapchain {
-    handle: openxr::Swapchain<openxr::Vulkan>,
+    /// Declared (and so dropped, field order) before `handle`: these
+    /// wrap the swapchain's own VkImages via `create_texture_from_hal`
+    /// with `TextureMemory::External` (wgpu never owns or frees that
+    /// memory itself), but `handle`'s own drop calls `xrDestroySwapchain`
+    /// — which the OpenXR spec has destroy the images too. Dropping
+    /// wgpu's views of them only *after* the runtime has already done
+    /// that is a use-after-free at the Vulkan layer, likely to surface
+    /// as a native crash rather than a clean Rust panic — one candidate
+    /// for a real-headset bench row's own unexplained non-zero exit
+    /// after a run that otherwise completed cleanly.
+    views: Vec<wgpu::TextureView>,
     /// Parallel to `views` — kept so the eye-order self-check can read
     /// back the currently-acquired image (`copy_texture_to_buffer` needs
     /// the `wgpu::Texture` itself, not a view of it).
     textures: Vec<wgpu::Texture>,
-    views: Vec<wgpu::TextureView>,
+    handle: openxr::Swapchain<openxr::Vulkan>,
     /// Set by `acquire`, consumed by `release`.
     acquired: Option<usize>,
 }
