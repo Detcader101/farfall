@@ -155,6 +155,92 @@ getting *this* seam wrong (letting VR-specific state leak past `pose()`
 and `head()` into gameplay code) would have been the expensive mistake,
 and both backends were built to avoid it.
 
+### 5.3b Hands and interactions
+
+Built on branch `fable/vr-hands` (off `fable/vr`, native OpenXR only —
+WebXR has no controller input in this codebase and none is added here).
+Four seams, each following §5.3's own pattern of a data type on `Game`
+that the flat/WebXR paths simply never populate:
+
+- **Action set + poses** (`crates/app/src/xr_input.rs`): one action set
+  `"flight"` — aim pose, grip pose, trigger value, squeeze value,
+  thumbstick, A/B click, haptic output, per hand — suggested for
+  `/interaction_profiles/valve/index_controller`, with a
+  `/interaction_profiles/khr/simple_controller` fallback for whatever
+  that profile actually has (grip/aim pose, trigger via the profile's
+  boolean `select/click` through OpenXR's own click→float conversion,
+  haptics; no analog squeeze, thumbstick or A/B). `XrInput::new` attaches
+  the set to the session once, right after `xr::init` succeeds and
+  before the event loop's first `begin_frame` — OpenXR requires every
+  action set be attached before the session leaves its unattached
+  state. Synced and located each frame from `xr_begin_frame`, in the
+  same recentred LOCAL space and predicted display time the eyes are,
+  landing on `Game::vr_hands: VrHands { left, right: Option<HandPose> }`
+  — the ship frame, the same convention `VrEye` uses.
+- **Hand glyphs** (`crates/render/src/hands.rs`, `shaders/hands.wgsl`):
+  a capsule-and-ring SDF raymarch per tracked hand at its grip pose,
+  drawn in the ship pass right after the cabin, in the game's existing
+  TRON/JET emissive vocabulary rather than a photoreal controller model.
+  Per-eye parallax through the same `with_eye`-shifted-position
+  convention `cabin`/`ghost`/`shield` already use — a hand a third of a
+  metre from the eye shows real stereo disparity a distant cabin rarely
+  does, and this pass must not repeat that zero-disparity mistake. No
+  depth buffer exists to test a hand against the cabin's own raymarch,
+  so `hands::dash_occlusion` approximates it: full brightness a few
+  centimetres proud of the dash's own plane (`cabin::DASH_C`/`DASH_N`),
+  fading to nothing a few centimetres behind it.
+- **Laser point-and-press** (`crates/app/src/xr_laser.rs`): the right
+  hand's aim ray intersects a virtual glass `VR_GLASS_M` (1m) in front
+  of the current eye's own forward axis — the exact plane that eye's
+  own symmetric render already treats as its screen — landing on the
+  same screen NDC `Game::cursor_screen` speaks. `cursor_screen` prefers
+  that hit (behind setting `vr.beam`) and falls through to the real
+  mouse whenever the beam has nothing to report, so a desk-side mouse
+  on the mirror window still works with VR up. `vr_laser_tick` (once a
+  frame, before `game.tick()`) does trigger rising-edge detection and
+  resolves a click against the CONTROLS card, the bay card, the menu
+  and the map through the exact row/col hit-test and `MenuEvent` path
+  the mouse's own left-click uses — deliberately narrower than the
+  mouse handler, since drag and fire-on-release stay the physical
+  mouse/HOTAS's own job. `hands.wgsl` also draws the beam itself, a
+  thin capsule from the hand to the hit point, and the hit shows as the
+  existing mouse pointer glyph (now VR-aware for free).
+- **Virtual stick and throttle** (`crates/app/src/xr_grab.rs`): a grab
+  state machine ported from Hotham's pattern (`examples/grab_object.rs`,
+  Apache-2.0/MIT) — squeeze past 60% within 12cm of the stick's or
+  throttle's own rest position (`cockpit.wgsl`'s own grip/lever
+  geometry) takes it; squeeze below 40% releases it, the gap deliberate
+  hysteresis against flutter at a shared threshold. Held displacement
+  maps to pitch/roll (the stick, XZ) and yaw (the grip's own twist) or
+  thrust (the throttle, Z alone) through a dead zone, a linear
+  sensitivity, and a clamp. Feeds `InputState::set_vr_stick`, summed
+  into `Controls` the same way the physical stick's own axes are — but
+  the physical stick, the instant it moves past a small override dead
+  zone, wins outright rather than fighting the virtual one
+  (`InputState::summed`). The cabin's own physical stick/lever model
+  already reads `Controls` for its lean, so it visibly follows a VR
+  grab with no extra wiring. A held hand's glyph brightens and tightens
+  (`HandGlyph::held`, read back from `GrabRig::holder`).
+- **Haptics**: a pulse on a click (confirmatory, light), on taking a
+  grab (firmer, a touch longer — there is something to feel taking
+  hold of), and on letting one go (lightest of all) — `xr_input::
+  XrInput::pulse` through `lib.rs`'s `pulse_hand`, silently a no-op
+  wherever there is no native session or no bound haptic action.
+
+Settings `vr.hands` and `vr.beam` (default on) gate the glyphs and the
+beam independently; both follow the menu's existing VR HEADSET/VR
+RENDER SCALE rows.
+
+Not yet built: `XR_EXT_hand_tracking` pinch as an alternative to a
+controller's squeeze (SPEC's own MVP order item (f)) — left for a later
+pass if a headset without controllers is ever the target. Nothing here
+has been worn: the pure geometry (binding tables, pose conversion,
+ray/plane intersection, the grab state machine, dash occlusion) is
+tested without a headset, and the whole thing builds and runs flat/
+WebXR-side-effect-free with VR HEADSET off, but Jay Jay's Index pass —
+same as §5.3's own eyes-only seam — is owed before any of this earns
+`complete` in `features.yaml`.
+
 ## 6. Rendering doctrine
 
 ### 6.1 Image policy (P1 made concrete)
