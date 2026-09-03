@@ -286,6 +286,26 @@ pub fn synth_head_pose(script: HeadScript, t: f32, bench_seconds: f32) -> (Quat,
     }
 }
 
+/// The synthetic headset's own two eyes, split by `ipd` about `head`'s
+/// own local +X from `pos`/`head` (the current [`synth_head_pose`]) —
+/// pulled out of `SynthSession::begin_frame` as a pure function so the
+/// eye-position split itself has a direct, GPU-free test: "is the eye
+/// VALUE actually different" was one of three candidates a real-runtime
+/// capture narrowed a mono-cabin comfort bug to, and this settles it
+/// for the synthetic path outright rather than by reading the code
+/// again.
+pub fn synth_eyes(head: Quat, pos: Vec3, ipd: f32, tan: [[f32; 4]; 2]) -> [VrEye; 2] {
+    let half = ipd * 0.5;
+    std::array::from_fn(|i| {
+        let local_x = if i == 0 { -half } else { half };
+        VrEye {
+            head,
+            pos: pos + head * Vec3::new(local_x, 0.0, 0.0),
+            tan: tan[i],
+        }
+    })
+}
+
 #[cfg(test)]
 mod pure_math_tests {
     use super::*;
@@ -577,6 +597,39 @@ mod pure_math_tests {
             let (q, p) = synth_head_pose(HeadScript::Still, t, 20.0);
             assert!(q.angle_between(Quat::IDENTITY) < 1e-6);
             assert_eq!(p, Vec3::ZERO);
+        }
+    }
+
+    /// A real-runtime capture narrowed a mono-cabin comfort bug to one
+    /// of three candidates, including "the synth VrView's own eye
+    /// positions might not actually differ." They do: eye 0 sits at
+    /// exactly `-ipd/2` and eye 1 at `+ipd/2` along the head's own
+    /// local +X, for any head/position the current script has produced
+    /// — this settles that candidate outright for the synthetic path.
+    #[test]
+    fn synth_eyes_split_by_the_full_ipd_about_the_head() {
+        let ipd = 0.064;
+        let tan = [[1.0; 4]; 2];
+        for (head, pos) in [
+            (Quat::IDENTITY, Vec3::ZERO),
+            (Quat::from_rotation_y(0.7), Vec3::new(0.1, 0.0, -0.2)),
+        ] {
+            let eyes = synth_eyes(head, pos, ipd, tan);
+            let sep = (eyes[1].pos - eyes[0].pos).length();
+            assert!(
+                (sep - ipd).abs() < 1e-6,
+                "eyes must be exactly ipd apart: {:?} vs {:?} (sep {sep})",
+                eyes[0].pos,
+                eyes[1].pos
+            );
+            // Eye 0 is the more negative along the head's own local +X
+            // (a level head: world x too) — the runtime-order convention
+            // this whole branch's diagnostics assume.
+            let local = |p: Vec3| head.inverse() * (p - pos);
+            assert!(
+                local(eyes[0].pos).x < local(eyes[1].pos).x,
+                "eye 0 must be the left (more negative local x) eye"
+            );
         }
     }
 
@@ -1882,6 +1935,10 @@ pub struct SynthSession {
     script: HeadScript,
     bench_seconds: f32,
     start: std::time::Instant,
+    /// Set once the first frame has logged its eye-position diagnostic
+    /// — `RealSession`'s own equivalent, so a synth bench log shows the
+    /// same evidence a real headset's does.
+    logged_eye_diagnostic: bool,
 }
 
 /// A synthetic Index's own recommended per-eye size, before `vr_scale`
@@ -1943,15 +2000,18 @@ impl SynthSession {
     pub fn begin_frame(&mut self, _force_render: bool) -> Frame {
         let t = self.start.elapsed().as_secs_f32();
         let (head, pos) = synth_head_pose(self.script, t, self.bench_seconds);
-        let half_ipd = SYNTH_IPD_M * 0.5;
-        let eyes = std::array::from_fn(|i| {
-            let local_x = if i == 0 { -half_ipd } else { half_ipd };
-            VrEye {
-                head,
-                pos: pos + head * Vec3::new(local_x, 0.0, 0.0),
-                tan: Self::eye_tan(i),
-            }
-        });
+        let tan = [Self::eye_tan(0), Self::eye_tan(1)];
+        let eyes = synth_eyes(head, pos, SYNTH_IPD_M, tan);
+        if !self.logged_eye_diagnostic {
+            self.logged_eye_diagnostic = true;
+            let ipd_m = (eyes[1].pos - eyes[0].pos).length();
+            log::info!(
+                "VR: synth eye 0 x={:+.4}m, eye 1 x={:+.4}m — eye 0 should be the more \
+                 negative; full IPD {ipd_m:.4}m",
+                eyes[0].pos.x,
+                eyes[1].pos.x,
+            );
+        }
         Frame::Open {
             should_render: true,
             eyes,
@@ -2043,6 +2103,7 @@ pub fn init_synth(
         script,
         bench_seconds,
         start: std::time::Instant::now(),
+        logged_eye_diagnostic: false,
     };
     (XrSession::Synth(Box::new(session)), format)
 }
