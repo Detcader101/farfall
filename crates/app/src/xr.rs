@@ -553,6 +553,17 @@ pub struct XrSession {
     /// The runtime's own recommended per-eye size, unscaled — the input
     /// to [`eye_render_size`]; see the note where `eye_size` is set.
     recommended_size: (u32, u32),
+    /// The runtime's own current display rate, Hz, read once at session
+    /// start if `fb_display_refresh_rate` was offered — `None` off an
+    /// unsupporting runtime, not a failure. Never set (SPEC §5.3);
+    /// bench uses it for `hz=`/`headroom_ms=`, reporting `hz=unknown`
+    /// rather than assuming 90 when it is `None`.
+    display_refresh_hz: Option<f32>,
+    /// Wall-clock time the last `begin_frame` spent inside
+    /// `FrameWaiter::wait` — the runtime's own pacing, not this app's
+    /// (SPEC §5.3: never assumed, never set, only ever paced by this
+    /// wait). Read by the bench stamp's `xr_wait_ms`.
+    last_wait_ms: f32,
     event_storage: openxr::EventDataBuffer,
     session_running: bool,
     frame_open: bool,
@@ -1008,6 +1019,8 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
             eyes,
             eye_size,
             recommended_size,
+            display_refresh_hz,
+            last_wait_ms: 0.0,
             event_storage: openxr::EventDataBuffer::new(),
             session_running: false,
             frame_open: false,
@@ -1049,6 +1062,18 @@ impl XrSession {
     /// the size the *render* itself wants, which is not the same thing.
     pub fn recommended_size(&self) -> (u32, u32) {
         self.recommended_size
+    }
+
+    /// Wall-clock milliseconds the most recent `begin_frame` spent
+    /// inside `FrameWaiter::wait` — the runtime's own pacing.
+    pub fn last_wait_ms(&self) -> f32 {
+        self.last_wait_ms
+    }
+
+    /// The runtime's own current display rate, Hz — `None` if it never
+    /// offered `fb_display_refresh_rate`.
+    pub fn display_refresh_hz(&self) -> Option<f32> {
+        self.display_refresh_hz
     }
 
     /// Poll session-state events and, if the runtime wants a frame,
@@ -1097,6 +1122,7 @@ impl XrSession {
         if !self.session_running {
             return Frame::Idle;
         }
+        let wait_start = std::time::Instant::now();
         let state = match self.frame_wait.wait() {
             Ok(s) => s,
             Err(e) => {
@@ -1104,6 +1130,7 @@ impl XrSession {
                 return Frame::Lost;
             }
         };
+        self.last_wait_ms = wait_start.elapsed().as_secs_f32() * 1000.0;
         if self.frame_stream.begin().is_err() {
             return Frame::Lost;
         }
