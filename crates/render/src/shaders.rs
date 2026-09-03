@@ -9,6 +9,7 @@ pub const STARFIELD: &str = include_str!("../../../shaders/starfield.wgsl");
 pub const PLANET: &str = include_str!("../../../shaders/planet.wgsl");
 pub const HUD: &str = include_str!("../../../shaders/hud.wgsl");
 pub const BLIT: &str = include_str!("../../../shaders/blit.wgsl");
+pub const XRBLIT: &str = include_str!("../../../shaders/xrblit.wgsl");
 pub const BAKE: &str = include_str!("../../../shaders/bake.wgsl");
 pub const GAUGE: &str = include_str!("../../../shaders/gauge.wgsl");
 pub const THERMAL: &str = include_str!("../../../shaders/thermal.wgsl");
@@ -46,6 +47,7 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("planet", PLANET, &["vs_main", "fs_main"]),
     ("hud", HUD, &["vs_main", "fs_main"]),
     ("blit", BLIT, &["vs_main", "fs_main"]),
+    ("xrblit", XRBLIT, &["vs_main", "fs_main"]),
     (
         "bake",
         BAKE,

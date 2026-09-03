@@ -14,6 +14,7 @@ pub mod attitude;
 pub mod bake;
 pub mod belt;
 pub mod blit;
+pub mod blit_xr;
 pub mod bodies;
 pub mod cabin;
 pub mod debris;
