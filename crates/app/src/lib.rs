@@ -7349,28 +7349,46 @@ type PxBox = ((u32, u32), (u32, u32));
 /// FARFALL_VR_LABEL=1: on the first labelled composite, read back both
 /// of each eye's corners (its own outer one, and the inner one where
 /// the OTHER eye's mark would land if the two ever got crossed) and
-/// confirm: ink in the outer corner, none in the inner one, and the
-/// outer corner's own shape reads as the right letter — L for eye 0, R
-/// for eye 1 — not merely "some cyan ink somewhere near here," which
-/// passed a synth capture (e80e9af) that actually showed the SAME
+/// confirm: the outer corner's own shape reads as the right letter — L
+/// for eye 0, R for eye 1, mask-compared against the font's own
+/// reference shapes, not merely "some cyan ink somewhere near here,"
+/// which passed a synth capture (e80e9af) that actually showed the SAME
 /// oversized "R" landing in both eyes at eye 1's own position (a
 /// uniform-buffer race this branch also fixes — see `VrPair::
-/// label_hud`). Runs identically for a real or synthetic headset,
-/// which is the whole point: this class of bug is now caught by a
-/// bench row, on any machine, before it reaches a human. Logs "VR: eye
-/// order self-check OK" or FAILED, and exactly what failed; under
-/// `FARFALL_BENCH=1` a failure exits 9.
+/// label_hud`); and that the inner corner does NOT read as the wrong
+/// letter, by the same shape comparison — not merely "no ink at all,"
+/// which false-failed on a live SteamVR session where the readout, the
+/// mini-map and the pitch ladder legitimately sit inner-side of one
+/// eye's own label and lit the old crude ink-fraction check. Runs
+/// identically for a real or synthetic headset, which is the whole
+/// point: this class of bug is now caught by a bench row, on any
+/// machine, before it reaches a human. Logs "VR: eye order self-check
+/// OK" or FAILED, and exactly what failed — at error level under
+/// `FARFALL_BENCH=1` (which also exits 9 on a failure), at warn level
+/// otherwise: ordinary HUD content is unlikely to score a strong shape
+/// match by coincidence, but this check is not yet proven content-proof
+/// on a live, unscripted session the way a bench row's synth/still
+/// baseline is.
 #[cfg(not(target_arch = "wasm32"))]
 fn eye_order_self_check(gpu: &Gpu, eyes: &[VrEye; 2], hud_distance: f32) {
     let Some(session) = gpu.xr.as_ref() else {
         return;
+    };
+    let log_fail = |msg: String| {
+        if gpu.cfg.bench {
+            log::error!("{msg}");
+        } else {
+            log::warn!("{msg}");
+        }
     };
     // A validation error in here (a usage-flag mismatch this class has
     // now hit twice: the mirror-pair crash, then this self-check's own
     // first real-runtime run) must read as a failed self-check, not
     // crash the session it exists to protect — wgpu panics on an
     // unhandled validation error, so every device call this function
-    // makes is inside this scope.
+    // makes is inside this scope. A genuine device error is always
+    // logged at error level, bench or not — it is never content-driven
+    // ambiguity.
     let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let eye_size = session.eye_size();
     // Plain screen-space geometry stands in for the canopy warp: a
@@ -7425,39 +7443,51 @@ fn eye_order_self_check(gpu: &Gpu, eyes: &[VrEye; 2], hud_distance: f32) {
                 let fraction = ink_fraction(&bytes);
                 if fraction < 0.01 {
                     ok = false;
-                    log::error!(
+                    log_fail(format!(
                         "VR: eye order self-check: eye {eye}'s own outer corner has no ink \
                          (lit fraction {fraction:.4})"
-                    );
+                    ));
                 } else {
                     let shape = glyph_shape(&bytes, size);
                     let want = glyph_match_score(shape, farfall_render::text::glyph(expected));
                     let dont = glyph_match_score(shape, farfall_render::text::glyph(wrong));
                     if want <= dont {
                         ok = false;
-                        log::error!(
+                        log_fail(format!(
                             "VR: eye order self-check: eye {eye}'s outer corner reads as \
                              '{wrong}' (score {dont}), not '{expected}' (score {want})"
-                        );
+                        ));
                     }
                 }
             }
             None => {
                 ok = false;
-                log::error!("VR: eye order self-check: eye {eye}'s outer corner readback failed");
+                log_fail(format!(
+                    "VR: eye order self-check: eye {eye}'s outer corner readback failed"
+                ));
             }
         }
 
+        // The inner corner: not "no ink at all" (a live SteamVR session
+        // false-failed here — the readout, the mini-map and the pitch
+        // ladder legitimately sit inner-side of one eye's own label and
+        // lit that crude a check), but "does not read as the WRONG
+        // letter" — the same shape comparison the outer corner uses,
+        // just checked the other way round. Ordinary HUD content is a
+        // coarse box downsample away from a real 5x7 glyph's exact
+        // shape; a genuine leak of the other eye's mark is not.
         let (origin, size) = patch_for(eye, inner_anchor, px);
         if let Some(bytes) = readback_patch(&gpu.device, &gpu.queue, texture, origin, size) {
-            let fraction = ink_fraction(&bytes);
-            if fraction > 0.01 {
+            let shape = glyph_shape(&bytes, size);
+            let wrong_score = glyph_match_score(shape, farfall_render::text::glyph(wrong));
+            let cells = (farfall_render::text::GLYPH_W * farfall_render::text::GLYPH_H) as u32;
+            if wrong_score * 100 >= cells * 85 {
                 ok = false;
-                log::error!(
-                    "VR: eye order self-check: eye {eye}'s INNER corner has ink \
-                     (lit fraction {fraction:.4}) — the other eye's mark may have \
+                log_fail(format!(
+                    "VR: eye order self-check: eye {eye}'s INNER corner reads as '{wrong}' \
+                     (score {wrong_score} of {cells}) — the other eye's mark may have \
                      landed here too"
-                );
+                ));
             }
         }
     }
@@ -7468,7 +7498,7 @@ fn eye_order_self_check(gpu: &Gpu, eyes: &[VrEye; 2], hud_distance: f32) {
     if ok {
         log::info!("VR: eye order self-check OK");
     } else {
-        log::error!("VR: eye order self-check FAILED");
+        log_fail("VR: eye order self-check FAILED".to_string());
         if gpu.cfg.bench {
             std::process::exit(9);
         }
@@ -7661,6 +7691,13 @@ fn mirror_eye_order_self_check(
     hud_distance: f32,
     swapchain_eye_size: (u32, u32),
 ) {
+    let log_fail = |msg: String| {
+        if gpu.cfg.bench {
+            log::error!("{msg}");
+        } else {
+            log::warn!("{msg}");
+        }
+    };
     let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let (ww, wh) = (gpu.config.width, gpu.config.height);
     let half_w = (ww / 2).max(1);
@@ -7702,26 +7739,28 @@ fn mirror_eye_order_self_check(
                 let fraction = ink_fraction(&bytes);
                 if fraction < 0.01 {
                     ok = false;
-                    log::error!(
+                    log_fail(format!(
                         "VR: mirror eye-order self-check: eye {eye}'s own corner in the \
                          window has no ink (lit fraction {fraction:.4})"
-                    );
+                    ));
                 } else {
                     let shape = glyph_shape(&bytes, size);
                     let want = glyph_match_score(shape, farfall_render::text::glyph(expected));
                     let dont = glyph_match_score(shape, farfall_render::text::glyph(wrong));
                     if want <= dont {
                         ok = false;
-                        log::error!(
+                        log_fail(format!(
                             "VR: mirror eye-order self-check: eye {eye}'s window corner reads \
                              as '{wrong}' (score {dont}), not '{expected}' (score {want})"
-                        );
+                        ));
                     }
                 }
             }
             None => {
                 ok = false;
-                log::error!("VR: mirror eye-order self-check: eye {eye}'s window readback failed");
+                log_fail(format!(
+                    "VR: mirror eye-order self-check: eye {eye}'s window readback failed"
+                ));
             }
         }
     }
@@ -7732,7 +7771,7 @@ fn mirror_eye_order_self_check(
     if ok {
         log::info!("VR: mirror eye-order self-check OK");
     } else {
-        log::error!("VR: mirror eye-order self-check FAILED");
+        log_fail("VR: mirror eye-order self-check FAILED".to_string());
         if gpu.cfg.bench {
             std::process::exit(9);
         }
@@ -9570,6 +9609,31 @@ mod tests {
                 own,
                 (GLYPH_W * GLYPH_H) as u32,
                 "{c}: an exact painting should score a perfect match"
+            );
+        }
+    }
+
+    /// SPEC §5.3: a live SteamVR session false-failed the eye-order
+    /// self-check's own inner-corner test — the readout, the mini-map
+    /// and the pitch ladder legitimately sit inner-side of one eye's
+    /// own label, and the old check ("any ink at all") read their
+    /// ordinary cyan content as a leaked glyph. Generic bright content
+    /// (every cell lit — a much bigger mismatch than any real HUD
+    /// element, which is comparably sparse) must not score highly
+    /// enough against either letter to trip the 85%-of-cells threshold
+    /// the fixed inner-corner check uses.
+    #[test]
+    fn generic_bright_content_does_not_read_as_either_letter() {
+        use farfall_render::text::{glyph, GLYPH_H, GLYPH_W};
+        let bgra = [255u8, 255, 0, 255].repeat(GLYPH_W * GLYPH_H);
+        let shape = glyph_shape(&bgra, (GLYPH_W as u32, GLYPH_H as u32));
+        let cells = (GLYPH_W * GLYPH_H) as u32;
+        for &c in &['L', 'R'] {
+            let score = glyph_match_score(shape, glyph(c));
+            assert!(
+                score * 100 < cells * 85,
+                "a fully-lit patch scored {score} of {cells} against '{c}' — \
+                 that would false-fail the inner-corner check"
             );
         }
     }
