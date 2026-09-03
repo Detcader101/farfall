@@ -827,6 +827,15 @@ struct EyeSwapchain {
     acquired: Option<usize>,
 }
 
+impl Drop for EyeSwapchain {
+    fn drop(&mut self) {
+        // RUST_LOG=debug: the finer-grained half of RealSession's own
+        // teardown trace — this runs once per eye, between "session
+        // ended" and "instance dropped" in the log.
+        log::debug!("VR teardown: EyeSwapchain::drop entered (releasing wrapped images)");
+    }
+}
+
 impl EyeSwapchain {
     fn acquire(&mut self) -> &wgpu::TextureView {
         let index = self.handle.acquire_image().expect("xr: acquire_image");
@@ -973,21 +982,55 @@ impl XrSession {
     pub fn is_synth(&self) -> bool {
         matches!(self, Self::Synth(_))
     }
+
+    /// A second, reference-counted handle on the real runtime's own
+    /// OpenXR instance — `None` for a synthetic session, which has no
+    /// real instance. `openxr::Instance::clone` is cheap (the native
+    /// instance is only destroyed once every clone has dropped); this
+    /// exists solely so a caller can hold the instance alive past this
+    /// `XrSession`'s own drop — see `Gpu::xr_instance_keepalive`.
+    pub fn instance_handle(&self) -> Option<openxr::Instance> {
+        match self {
+            Self::Real(s) => Some(s.instance.clone()),
+            Self::Synth(_) => None,
+        }
+    }
 }
 
 /// A running native VR session: the OpenXR side of the seam, plus the
 /// two swapchains the flat-rendered pair is cropped into each frame.
+///
+/// Field order here IS drop order (Rust drops a struct's fields in
+/// declaration order, after its own `Drop::drop` runs) and this order
+/// is deliberate, not alphabetical or historical: OpenXR (like Vulkan)
+/// requires child objects destroyed before the parents that own them —
+/// the swapchains' own images before the swapchains, the swapchains
+/// and every other session-owned handle before the session, the
+/// session before the instance. A real-headset bench row's own
+/// unexplained non-zero exit (5 — the low byte of Windows'
+/// STATUS_ACCESS_VIOLATION, 0xC0000005, truncated) after a run that
+/// otherwise completed and captured cleanly is consistent with exactly
+/// this being backwards: the OLD order dropped `instance` first and
+/// `eyes` (holding the wrapped swapchain images and the swapchains
+/// themselves) last, i.e. destroyed the parent while the runtime still
+/// had live child handles into it.
 pub struct RealSession {
-    instance: openxr::Instance,
-    session: openxr::Session<openxr::Vulkan>,
-    frame_wait: openxr::FrameWaiter,
-    frame_stream: openxr::FrameStream<openxr::Vulkan>,
+    // ---- Session-owned handles, most-dependent first --------------
+    eyes: [EyeSwapchain; 2],
+    /// The last frame's views, held so `end_frame` can build the
+    /// composition layer after the caller has rendered.
+    last_views: [openxr::View; 2],
+    event_storage: openxr::EventDataBuffer,
     space: openxr::Space,
     /// The runtime's own, never-recentred LOCAL origin — see the note at
     /// its creation in `try_init`.
     natural_local: openxr::Space,
-    blend_mode: openxr::EnvironmentBlendMode,
-    eyes: [EyeSwapchain; 2],
+    frame_stream: openxr::FrameStream<openxr::Vulkan>,
+    frame_wait: openxr::FrameWaiter,
+    session: openxr::Session<openxr::Vulkan>,
+    // ---- The instance: the root, dropped last ----------------------
+    instance: openxr::Instance,
+    // ---- Plain data, no drop-order significance --------------------
     eye_size: (u32, u32),
     /// The runtime's own recommended per-eye size, unscaled — the input
     /// to [`eye_render_size`]; see the note where `eye_size` is set.
@@ -1003,7 +1046,7 @@ pub struct RealSession {
     /// (SPEC §5.3: never assumed, never set, only ever paced by this
     /// wait). Read by the bench stamp's `xr_wait_ms`.
     last_wait_ms: f32,
-    event_storage: openxr::EventDataBuffer,
+    blend_mode: openxr::EnvironmentBlendMode,
     session_running: bool,
     frame_open: bool,
     /// Set once the first located frame has logged its diagnostic line
@@ -1032,9 +1075,6 @@ pub struct RealSession {
     /// when the runtime actually asked for it.
     runtime_wants_this_frame: bool,
     predicted_display_time: openxr::Time,
-    /// The last frame's views, held so `end_frame` can build the
-    /// composition layer after the caller has rendered.
-    last_views: [openxr::View; 2],
 }
 
 const VIEW_TYPE: openxr::ViewConfigurationType = openxr::ViewConfigurationType::PRIMARY_STEREO;
@@ -1950,17 +1990,33 @@ impl RealSession {
 
 impl Drop for RealSession {
     fn drop(&mut self) {
+        // RUST_LOG=debug traces every step of native teardown — added
+        // after a real-headset bench row exited 5 (STATUS_ACCESS_
+        // VIOLATION's low byte) with no other diagnostic, well after
+        // "benchmark complete, exiting" had already logged: whichever
+        // step this log line stops appearing before is where the
+        // native crash actually happens.
+        log::debug!("VR teardown: RealSession::drop entered");
         // Matched `begin()`s must not outlive the frame; an unmatched one
         // here means the app is exiting mid-frame, which the runtime
         // tolerates far better than a dangling `frame_stream.begin()`.
         if self.frame_open {
+            log::debug!("VR teardown: ending the open frame");
             let _ = self
                 .frame_stream
                 .end(self.predicted_display_time, self.blend_mode, &[]);
+            log::debug!("VR teardown: open frame ended");
         }
         if self.session_running {
+            log::debug!("VR teardown: ending the session");
             let _ = self.session.end();
+            log::debug!("VR teardown: session ended (not yet destroyed)");
         }
+        log::debug!(
+            "VR teardown: RealSession::drop returning; fields drop next in \
+             declaration order (eyes/views/spaces/frame objects/session, \
+             instance last)"
+        );
     }
 }
 

@@ -1303,6 +1303,24 @@ struct Gpu {
     bench_captured: bool,
     /// Spin frames taken so far.
     bench_spin_taken: u32,
+    /// A second handle on the OpenXR instance, held only to outlive
+    /// `device`/`queue` above (SPEC §5.3): `openxr::Instance` is a
+    /// reference-counted handle (Clone is cheap; the native instance is
+    /// only actually destroyed once every clone has dropped), and `xr`
+    /// — the FIRST field, so the first to drop — owns the session's own
+    /// clone. The runtime's own Vulkan device (what `device`/`queue`
+    /// wrap) is a child of the instance's Vulkan connection, so
+    /// destroying the instance before `device`/`queue` finish their own
+    /// teardown is a parent-before-child violation, the same class of
+    /// bug `RealSession`'s own field order (eyes before session before
+    /// instance) exists to avoid one level up. Declared LAST (Rust
+    /// drops a struct's fields in declaration order) so this clone —
+    /// and so the instance's real destruction — outlives every field
+    /// above it, `device`/`queue` included, regardless of whichever
+    /// order `xr`'s own drop finishes in.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(dead_code)] // held purely for its own drop timing, never read
+    xr_instance_keepalive: Option<openxr::Instance>,
 }
 
 /// Native VR's offscreen stereo pair and the two cut-out blits that read
@@ -6507,9 +6525,16 @@ impl App {
             }
             VrPair::new(&device, config.format, fmt, session.eye_size())
         });
+        // A second handle on the instance, taken before xr_session
+        // itself moves into the field below — see
+        // Gpu::xr_instance_keepalive for why.
+        #[cfg(not(target_arch = "wasm32"))]
+        let xr_instance_keepalive = xr_session.as_ref().and_then(xr::XrSession::instance_handle);
         self.gpu = Some(Gpu {
             #[cfg(not(target_arch = "wasm32"))]
             xr: xr_session,
+            #[cfg(not(target_arch = "wasm32"))]
+            xr_instance_keepalive,
             window,
             device,
             queue,
@@ -7242,24 +7267,39 @@ fn readback_patch(
     slice.map_async(wgpu::MapMode::Read, move |r| {
         let _ = tx.send(r);
     });
-    if device.poll(wgpu::PollType::wait_indefinitely()).is_err() {
+    // Every path out of here from this point on calls buffer.unmap()
+    // before returning, success or failure: a buffer with a pending or
+    // completed map still active when it drops is documented UB in
+    // wgpu, not just a leak — a plausible contributor to a real-
+    // headset bench row's own unexplained native crash on exit
+    // (`std::process::exit` skips this entirely, which is exactly why
+    // that shortcut could mask it; `FARFALL_BENCH_EXIT=drop` does not).
+    // unmap() is safe to call whether or not the map ever completed —
+    // it also cancels a still-pending one.
+    let poll_ok = device.poll(wgpu::PollType::wait_indefinitely()).is_ok();
+    if !poll_ok {
+        buffer.unmap();
         return None;
     }
     let Ok(Ok(())) = rx.recv() else {
+        buffer.unmap();
         return None;
     };
-    let Ok(mapped) = slice.get_mapped_range() else {
-        return None;
+    let out = match slice.get_mapped_range() {
+        Ok(mapped) => {
+            let mut out = Vec::with_capacity((size.0 * size.1 * 4) as usize);
+            for row in 0..size.1 {
+                let start = (row * bytes_per_row) as usize;
+                let end = start + (size.0 * 4) as usize;
+                out.extend_from_slice(&mapped[start..end]);
+            }
+            drop(mapped);
+            Some(out)
+        }
+        Err(_) => None,
     };
-    let mut out = Vec::with_capacity((size.0 * size.1 * 4) as usize);
-    for row in 0..size.1 {
-        let start = (row * bytes_per_row) as usize;
-        let end = start + (size.0 * 4) as usize;
-        out.extend_from_slice(&mapped[start..end]);
-    }
-    drop(mapped);
     buffer.unmap();
-    Some(out)
+    out
 }
 
 /// Bright hologram cyan ([0.45, 0.92, 1.0, 0.96], hud.wgsl) — green and
