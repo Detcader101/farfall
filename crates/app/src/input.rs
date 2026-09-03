@@ -547,6 +547,14 @@ pub struct InputState {
     /// shaped (deadzone, curve) by the stick map. A physical stick is its
     /// own ramp, so it bypasses the key smoothing and adds to it.
     stick: [f64; 6],
+    /// VR GRAB (SPEC §5.3b(d)): the virtual stick/throttle's demand this
+    /// frame, same layout as `stick` — set by `xr_grab::GrabRig::update`
+    /// through `set_vr_stick`. Overridden by the physical stick the
+    /// moment IT moves (see `summed`'s own doc comment), never summed
+    /// with it: a HOTAS pilot's hands are not also gripping a virtual
+    /// stick, and a VR pilot's grab must not fight a HOTAS left resting
+    /// near centre.
+    vr_stick: [f64; 6],
     /// The throttle gestures: the lever hard back holds the air brake,
     /// a slam holds the chaos drive (see crate::stick::Gestures).
     stick_brake: bool,
@@ -578,6 +586,19 @@ impl InputState {
 
     pub fn set_stick(&mut self, axes: [f64; 6]) {
         for (dst, v) in self.stick.iter_mut().zip(axes) {
+            *dst = if v.is_finite() {
+                v.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
+        }
+    }
+
+    /// VR GRAB (SPEC §5.3b(d)): the virtual stick/throttle's demand this
+    /// frame, same shape and the same non-finite/clamp handling as
+    /// [`Self::set_stick`].
+    pub fn set_vr_stick(&mut self, axes: [f64; 6]) {
+        for (dst, v) in self.vr_stick.iter_mut().zip(axes) {
             *dst = if v.is_finite() {
                 v.clamp(-1.0, 1.0)
             } else {
@@ -627,6 +648,7 @@ impl InputState {
         self.hyper = false;
         self.axes = [0.0; 6];
         self.stick = [0.0; 6];
+        self.vr_stick = [0.0; 6];
         self.stick_brake = false;
         self.stick_hyper = false;
     }
@@ -668,10 +690,28 @@ impl InputState {
     }
 
     /// The keys' smoothed axes plus the stick's, each component clamped.
+    /// The physical stick reads as "moved" past this on any axis — a
+    /// deadzone-sized margin, so a HOTAS merely resting near centre
+    /// (its own deadzone already applied upstream in `stick.rs`, but a
+    /// hair of noise can still survive it) does not steal the VR grab
+    /// away from a pilot who is not touching it at all.
+    const VR_OVERRIDE_DEADZONE: f64 = 0.02;
+
     fn summed(&self) -> [f64; 6] {
+        // VR GRAB (SPEC §5.3b(d)): the physical stick always wins the
+        // moment it moves — summing it with a virtual grab would let
+        // the two fight, and a HOTAS pilot's demand is never meant to
+        // share an axis with a VR one. Whichever wins, it is summed
+        // with the keys exactly as `stick` always was.
+        let hotas_moved = self
+            .stick
+            .iter()
+            .any(|v| v.abs() > Self::VR_OVERRIDE_DEADZONE);
         let mut out = [0.0; 6];
         for (i, o) in out.iter_mut().enumerate() {
-            *o = (self.axes[i] + self.stick[i]).clamp(-1.0, 1.0);
+            let physical = self.axes[i] + self.stick[i];
+            let vr = if hotas_moved { 0.0 } else { self.vr_stick[i] };
+            *o = (physical + vr).clamp(-1.0, 1.0);
         }
         out
     }
@@ -1018,5 +1058,42 @@ mod tests {
         for (i, (action, ..)) in AXES.iter().enumerate() {
             assert_eq!(*action as usize, i, "AXES order must match enum order");
         }
+    }
+
+    /// VR GRAB (SPEC §5.3b(d)): with the physical stick untouched, the
+    /// virtual one's demand reaches the controls.
+    #[test]
+    fn a_resting_hotas_lets_the_virtual_stick_through() {
+        let mut s = InputState::default();
+        s.set_vr_stick([0.0, 0.0, -0.5, 0.3, 0.0, -0.2]);
+        let c = s.controls(false);
+        assert!((c.thrust_body.z + 0.5).abs() < 1e-9, "{c:?}");
+        assert!((c.torque_body.x - 0.3).abs() < 1e-9, "{c:?}");
+        assert!((c.torque_body.z + 0.2).abs() < 1e-9, "{c:?}");
+    }
+
+    /// VR GRAB: the moment the physical stick actually moves, it wins
+    /// outright — the virtual demand is dropped, not summed with it.
+    #[test]
+    fn a_moved_hotas_overrides_the_virtual_stick_entirely() {
+        let mut s = InputState::default();
+        s.set_vr_stick([0.0, 0.0, -0.5, 0.3, 0.0, -0.2]);
+        s.set_stick([0.0, 0.0, 0.0, 0.9, 0.0, 0.0]);
+        let c = s.controls(false);
+        assert_eq!(c.thrust_body.z, 0.0, "the VR throttle demand is dropped");
+        assert!((c.torque_body.x - 0.9).abs() < 1e-9, "the HOTAS pitch wins");
+        assert_eq!(c.torque_body.z, 0.0, "the VR roll demand is dropped too");
+    }
+
+    /// A HOTAS sitting within its own tiny residual noise still counts
+    /// as "not moved" — only a real push past the override deadzone
+    /// takes the virtual stick away.
+    #[test]
+    fn hotas_noise_inside_the_override_deadzone_does_not_steal_the_grab() {
+        let mut s = InputState::default();
+        s.set_vr_stick([0.0, 0.0, -0.5, 0.0, 0.0, 0.0]);
+        s.set_stick([0.0, 0.0, 0.0, 0.01, 0.0, 0.0]);
+        let c = s.controls(false);
+        assert!((c.thrust_body.z + 0.5).abs() < 1e-9, "{c:?}");
     }
 }

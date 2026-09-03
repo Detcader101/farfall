@@ -52,6 +52,9 @@ mod xr_input;
 // target-independent (unlike `xr_input`), so it builds on wasm too —
 // see its own module doc.
 mod xr_laser;
+// VR GRAB (fable/vr-hands): the virtual stick/throttle grab state
+// machine. Pure and target-independent, like `xr_laser`.
+mod xr_grab;
 
 use glam::{DQuat, DVec3, Quat, Vec3};
 use std::sync::Arc;
@@ -2060,6 +2063,12 @@ struct Game {
     /// `xr_input` itself) touches this.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     vr_trigger_down: bool,
+    /// VR GRAB (SPEC §5.3b(d)): the virtual stick/throttle's own state
+    /// machine — advanced once a frame from `vr_hands` (in `tick`, on
+    /// every target: harmless and always empty without a headset),
+    /// feeding `input.set_vr_stick` and this frame's `HandGlyph::held`
+    /// flags.
+    vr_grab: xr_grab::GrabRig,
     params: sim::WorldParams,
     state: sim::WorldState,
     input: InputState,
@@ -2318,6 +2327,7 @@ impl Game {
             vr_recentre: false,
             vr_hands: VrHands::default(),
             vr_trigger_down: false,
+            vr_grab: xr_grab::GrabRig::new(),
             params,
             state,
             input: InputState::default(),
@@ -4860,19 +4870,26 @@ impl Game {
             return HandsUniforms::none(cam, pose.head);
         }
         let eye = pose.eye_ship.as_vec3();
-        let glyph = |h: Option<HandPose>| {
+        // VR GRAB (SPEC §5.3b(d)): a hand's glyph tightens/brightens
+        // while it is the one actually holding the stick or throttle.
+        let is_held = |hand: xr_grab::Hand| {
+            self.vr_grab.stick.holder() == Some(hand)
+                || self.vr_grab.throttle.holder() == Some(hand)
+        };
+        let glyph = |h: Option<HandPose>, hand: xr_grab::Hand| {
             h.map(|h| HandGlyph {
                 pos: h.grip.1 - eye,
                 rot: h.grip.0,
                 trigger: h.trigger,
                 squeeze: h.squeeze,
-                // The grab state machine (SPEC §5.3b(d)) sets this once
-                // it lands; until then no hand is ever "held".
-                held: false,
+                held: is_held(hand),
             })
         };
         let (left, right) = if self.settings.vr_hands {
-            (glyph(self.vr_hands.left), glyph(self.vr_hands.right))
+            (
+                glyph(self.vr_hands.left, xr_grab::Hand::Left),
+                glyph(self.vr_hands.right, xr_grab::Hand::Right),
+            )
         } else {
             (None, None)
         };
@@ -5063,6 +5080,21 @@ impl Game {
         let mut frame_dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
         self.frame_dt = frame_dt.min(0.25) as f32;
+
+        // VR GRAB (SPEC §5.3b(d)): advance the virtual stick/throttle
+        // before anything below reads controls. Harmless and always
+        // empty without a headset — `vr_hands` stays `VrHands::default()`.
+        let hand_state = |h: Option<HandPose>| {
+            h.map(|h| {
+                let (yaw, _, _) = h.grip.0.to_euler(glam::EulerRot::YXZ);
+                (h.grip.1, h.squeeze, yaw)
+            })
+        };
+        let vr_axes = self.vr_grab.update(
+            hand_state(self.vr_hands.left),
+            hand_state(self.vr_hands.right),
+        );
+        self.input.set_vr_stick(vr_axes);
 
         // Instruments are presentation, not physics: the velocity hologram
         // keeps living even when the sim is frozen for a benchmark —
