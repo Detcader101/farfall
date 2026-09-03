@@ -211,17 +211,31 @@ pub fn reproject_with(
 
 /// [`reproject_with`], plus the per-eye parallax a VR overlay needs to
 /// actually sit ON the glass instead of at optical infinity (SPEC §5.3):
-/// `eye_pos` is the eye's own seat offset (zero in flat flight, where
-/// this is a no-op — the whole point) and `hud_distance` the assumed
-/// distance, metres, of the virtual plane the overlay is painted on. A
-/// world-fixed point at that distance appears shifted, in tangent space,
-/// by the eye's own offset divided by the distance — the same reasoning
-/// a rangefinder or a car's near wing mirror uses — so both eyes
-/// converge on the same plane instead of each drawing it at the
-/// rotation-only position `reproject_with` alone gives, which is exactly
-/// the mismatch that reads as "a close, obscuring plane": everything
-/// ray-marched around it has real depth, and an unshifted overlay does
-/// not.
+/// `eye_pos` is the eye's own seat offset, in the SHIP's frame (zero in
+/// flat flight, where this is a no-op — the whole point), and
+/// `hud_distance` the assumed distance, metres, of the virtual plane the
+/// overlay is painted on. A world-fixed point at that distance appears
+/// shifted, in tangent space, by the eye's own offset divided by the
+/// distance — the same reasoning a rangefinder or a car's near wing
+/// mirror uses — so both eyes converge on the same plane instead of each
+/// drawing it at the rotation-only position `reproject_with` alone
+/// gives, which is exactly the mismatch that reads as "a close,
+/// obscuring plane": everything ray-marched around it has real depth,
+/// and an unshifted overlay does not.
+///
+/// The shift itself has to be in the HEAD's own local frame (right/up
+/// from the pilot's own current view), not the ship's — this overlay is
+/// glass-anchored and already follows the head via `reproject_with`
+/// above, so its own parallax must too. A real-headset capture caught
+/// this: with the head yawed 87° from the ship's nose, the measured
+/// shift read as roughly 6% of the level-head figure, because the raw
+/// ship-frame `eye_pos.x` (the pilot's actual left-right) had rotated
+/// almost entirely onto the ship's own forward/back axis by then, and
+/// this function used it unrotated. `head.inverse() * eye_pos` (the
+/// same rotation `reproject_with` already applies to the reference
+/// direction `d`) fixes it: a stock 64mm IPD then reads as a full,
+/// constant shift regardless of where the pilot is looking, exactly as
+/// it should — the eyes never move relative to the head.
 pub fn reproject_with_eye(
     head: Quat,
     eye_pos: Vec3,
@@ -234,7 +248,11 @@ pub fn reproject_with_eye(
     let [x, y] = reproject_with(head, ndc, tan_half_ref, tan_half_fov, aspect);
     let t = tan_half_fov.max(1e-4);
     let d = hud_distance.max(0.05);
-    [x - eye_pos.x / (d * t * aspect), y - eye_pos.y / (d * t)]
+    let local_eye = head.inverse() * eye_pos;
+    [
+        x - local_eye.x / (d * t * aspect),
+        y - local_eye.y / (d * t),
+    ]
 }
 
 #[cfg(test)]
@@ -287,6 +305,49 @@ mod tests {
         assert_eq!(
             left[1], right[1],
             "no vertical offset for a level, centred IPD"
+        );
+    }
+
+    /// SPEC §5.3: a real-headset capture caught the parallax shift
+    /// nearly vanishing at a large yaw (0.00237 NDC measured against
+    /// ~0.0396 expected, head yawed 87°) — `eye_pos` is the eye's own
+    /// seat in the SHIP's frame, and the old code used its x/y directly
+    /// as a head-local shift, so at a large yaw the pilot's actual
+    /// left-right IPD offset had rotated mostly onto the ship's own
+    /// forward/back axis and had almost nothing left on the axis this
+    /// function reads. The eyes never move relative to the head, so the
+    /// shift's own magnitude (isolated from reproject_with's separate
+    /// rotation-only term) must be identical at any yaw, not just zero
+    /// yaw.
+    #[test]
+    fn the_eye_shift_survives_a_90_degree_yawed_head() {
+        let ipd = 0.064;
+        // The eye's own local offset from the head — constant, the same
+        // number a runtime reports at any orientation. Its SHIP-frame
+        // position (what VrEye::pos actually carries, and what
+        // reproject_with_eye is called with) is this offset turned by
+        // the head, exactly as SynthSession/a real runtime's own
+        // locate_views build it — never a fixed ship-frame vector held
+        // constant while the head turns.
+        let local_offset = Vec3::new(-ipd / 2.0, 0.0, 0.0); // eye 0
+        let ndc = [0.0, 0.0];
+        let (tan_half_ref, tan_half_fov, aspect, d) = (0.7, 0.6, 1.6, 1.0);
+        let shift_at = |head: Quat| -> f32 {
+            let eye_pos = head * local_offset;
+            let with_eye =
+                reproject_with_eye(head, eye_pos, d, ndc, tan_half_ref, tan_half_fov, aspect);
+            let rotation_only = reproject_with(head, ndc, tan_half_ref, tan_half_fov, aspect);
+            with_eye[0] - rotation_only[0]
+        };
+        let level = shift_at(Quat::IDENTITY);
+        let yawed = shift_at(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        assert!(
+            level.abs() > 1e-4,
+            "the shift must be real to begin with: {level}"
+        );
+        assert!(
+            (level.abs() - yawed.abs()).abs() < 1e-5,
+            "the shift's own magnitude must survive a 90 degree yaw: level={level} yawed={yawed}"
         );
     }
 
