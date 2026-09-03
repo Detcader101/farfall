@@ -31,6 +31,17 @@ crate-type = ["cdylib", "rlib"]
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Media_Multimedia"] }
 
+# Native VR (SPEC §5.3): the OpenXR session and the raw Vulkan handshake that
+# hands wgpu-hal a device born from the runtime instead of a bare adapter
+# pick. `openxr`'s "loaded" default dynamically loads the runtime's loader
+# (SteamVR's, at runtime, never linked) — no `static` feature, ever. `ash`
+# is pinned to the same major version wgpu-hal's own (private) dependency
+# uses, since the two must agree bit-for-bit on `ash::Instance`/`ash::Device`
+# for `wgpu_hal::vulkan::Instance::from_raw`/`device_from_raw` to accept them.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+openxr = "0.21"
+ash = "0.38"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
