@@ -19,7 +19,7 @@
 //! it. On the web that crop is the browser's WebGL compositor
 //! (`web/xr.js`'s `tangents()` + the quad it draws). Native has no
 //! browser, so [`cutout_uv`] is that same crop as a pure, tested Rust
-//! function, and [`XrSession::end_frame`] runs it as a real GPU pass
+//! function, and [`RealSession::end_frame`] runs it as a real GPU pass
 //! (`shaders/xrblit.wgsl`) from the rendered pair into each eye's OpenXR
 //! swapchain image.
 //!
@@ -109,7 +109,7 @@ fn yaw_only(q: Quat) -> Quat {
 /// pose in an ambient one, giving the first pose in the ambient frame —
 /// ordinary rigid-transform composition. Recentring a session that was
 /// already recentred needs this: OpenXR's `pose_in_reference_space`
-/// (`XrSession::recentre` below) is always relative to the *runtime's*
+/// (`RealSession::recentre` below) is always relative to the *runtime's*
 /// own natural LOCAL origin, never to whichever LOCAL space happens to
 /// be current, so a second recentre that skipped this would drift —
 /// composing onto the current space's own located pose is what keeps a
@@ -192,6 +192,74 @@ pub fn eye_render_size(recommended: (u32, u32), tans: [[f32; 4]; 2], vr_scale: f
         ((recommended.0 as f32) * factor_x * scale).ceil().max(1.0) as u32,
         ((recommended.1 as f32) * factor_y * scale).ceil().max(1.0) as u32,
     )
+}
+
+/// `FARFALL_VR_SCRIPT`: a synthetic bench headset's deterministic head
+/// motion — a pure function of bench time, so a comfort/depth regression
+/// shows up the same way on every run, on any machine, with no headset
+/// attached. `Still` is the default: a synthetic headset with no script
+/// is a fixed observer, exactly where a real one's tracking would settle
+/// once the pilot stopped moving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HeadScript {
+    #[default]
+    Still,
+    /// A yaw sweep, ±60°.
+    Look,
+    /// 6-DoF: ±0.25 m sideways, up to 0.2 m forward, no rotation — the
+    /// comfort/parallax invariants (overlay depth, dial-face disparity)
+    /// depend on eye *position*, which `Look`/`Nod`/`Spin` never move.
+    Lean,
+    /// A pitch nod, ±25°.
+    Nod,
+    /// A full yaw turn over the whole bench run.
+    Spin,
+}
+
+impl HeadScript {
+    /// `FARFALL_VR_SCRIPT=still|look|lean|nod|spin`; anything else (or
+    /// unset) is `Still`.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "look" => Self::Look,
+            "lean" => Self::Lean,
+            "nod" => Self::Nod,
+            "spin" => Self::Spin,
+            _ => Self::Still,
+        }
+    }
+}
+
+/// The synthetic headset's head pose (orientation, position — ship/
+/// LOCAL frame) at bench time `t` seconds, for `script`. `bench_seconds`
+/// only shapes `Spin` (one full turn over the run); the oscillating
+/// scripts (`Look`/`Lean`/`Nod`) run their own fixed period regardless
+/// of run length, so a short bench still exercises the full sweep.
+/// Feeds `VrEye` exactly as a real runtime's `locate_views` would — see
+/// `SynthSession::begin_frame`.
+pub fn synth_head_pose(script: HeadScript, t: f32, bench_seconds: f32) -> (Quat, Vec3) {
+    use std::f32::consts::TAU;
+    match script {
+        HeadScript::Still => (Quat::IDENTITY, Vec3::ZERO),
+        HeadScript::Look => {
+            let yaw = 60f32.to_radians() * (t * TAU / 8.0).sin();
+            (Quat::from_rotation_y(yaw), Vec3::ZERO)
+        }
+        HeadScript::Lean => {
+            let w = t * TAU / 6.0;
+            let pos = Vec3::new(0.25 * w.sin(), 0.0, -0.2 * w.cos());
+            (Quat::IDENTITY, pos)
+        }
+        HeadScript::Nod => {
+            let pitch = 25f32.to_radians() * (t * TAU / 5.0).sin();
+            (Quat::from_rotation_x(pitch), Vec3::ZERO)
+        }
+        HeadScript::Spin => {
+            let period = bench_seconds.max(1.0);
+            let yaw = (t / period).fract() * TAU;
+            (Quat::from_rotation_y(yaw), Vec3::ZERO)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -450,6 +518,110 @@ mod pure_math_tests {
             recommended.1
         );
     }
+
+    #[test]
+    fn head_script_parses_the_five_names_and_anything_else_is_still() {
+        assert_eq!(HeadScript::parse("look"), HeadScript::Look);
+        assert_eq!(HeadScript::parse("lean"), HeadScript::Lean);
+        assert_eq!(HeadScript::parse("nod"), HeadScript::Nod);
+        assert_eq!(HeadScript::parse("spin"), HeadScript::Spin);
+        assert_eq!(HeadScript::parse("still"), HeadScript::Still);
+        assert_eq!(HeadScript::parse("bogus"), HeadScript::Still);
+        assert_eq!(HeadScript::parse(""), HeadScript::Still);
+        assert_eq!(HeadScript::default(), HeadScript::Still);
+    }
+
+    #[test]
+    fn still_never_moves() {
+        for t in [0.0, 1.3, 50.0] {
+            let (q, p) = synth_head_pose(HeadScript::Still, t, 20.0);
+            assert!(q.angle_between(Quat::IDENTITY) < 1e-6);
+            assert_eq!(p, Vec3::ZERO);
+        }
+    }
+
+    #[test]
+    fn look_sweeps_yaw_to_exactly_60_degrees_at_its_peak_and_no_further() {
+        let mut max_yaw = 0.0f32;
+        let mut t = 0.0f32;
+        while t < 8.0 {
+            let (q, _) = synth_head_pose(HeadScript::Look, t, 20.0);
+            let (yaw, _, _) = q.to_euler(glam::EulerRot::YXZ);
+            max_yaw = max_yaw.max(yaw.abs());
+            t += 0.01;
+        }
+        assert!(
+            (max_yaw.to_degrees() - 60.0).abs() < 0.5,
+            "peak yaw {} deg",
+            max_yaw.to_degrees()
+        );
+    }
+
+    #[test]
+    fn lean_moves_position_on_two_axes_and_never_rotates() {
+        let (q0, p0) = synth_head_pose(HeadScript::Lean, 0.0, 20.0);
+        let (_, p1) = synth_head_pose(HeadScript::Lean, 1.5, 20.0);
+        assert!(
+            q0.angle_between(Quat::IDENTITY) < 1e-6,
+            "lean never turns the head"
+        );
+        assert!(p0 != p1, "position must actually move over time");
+        let mut max_x = 0.0f32;
+        let mut max_z = 0.0f32;
+        let mut t = 0.0f32;
+        while t < 6.0 {
+            let (_, p) = synth_head_pose(HeadScript::Lean, t, 20.0);
+            max_x = max_x.max(p.x.abs());
+            max_z = max_z.max(p.z.abs());
+            assert_eq!(p.y, 0.0, "lean does not lift or drop the head");
+            t += 0.01;
+        }
+        assert!((max_x - 0.25).abs() < 0.01, "sideways peak {max_x}");
+        assert!((max_z - 0.2).abs() < 0.01, "forward peak {max_z}");
+    }
+
+    #[test]
+    fn nod_pitches_to_exactly_25_degrees_at_its_peak() {
+        let mut max_pitch = 0.0f32;
+        let mut t = 0.0f32;
+        while t < 5.0 {
+            let (q, _) = synth_head_pose(HeadScript::Nod, t, 20.0);
+            let (_, pitch, _) = q.to_euler(glam::EulerRot::YXZ);
+            max_pitch = max_pitch.max(pitch.abs());
+            t += 0.01;
+        }
+        assert!(
+            (max_pitch.to_degrees() - 25.0).abs() < 0.5,
+            "peak pitch {} deg",
+            max_pitch.to_degrees()
+        );
+    }
+
+    #[test]
+    fn spin_completes_exactly_one_full_turn_over_the_bench() {
+        let bench_seconds = 20.0;
+        let (start, _) = synth_head_pose(HeadScript::Spin, 0.0, bench_seconds);
+        let (quarter, _) = synth_head_pose(HeadScript::Spin, bench_seconds * 0.25, bench_seconds);
+        let (mid, _) = synth_head_pose(HeadScript::Spin, bench_seconds * 0.5, bench_seconds);
+        assert!(start.angle_between(Quat::IDENTITY) < 1e-4);
+        assert!(
+            quarter.angle_between(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)) < 1e-3,
+            "{quarter:?}"
+        );
+        assert!(
+            mid.angle_between(Quat::from_rotation_y(std::f32::consts::PI)) < 1e-3,
+            "{mid:?}"
+        );
+        // A whole number of periods later, the turn has come all the way
+        // back round to the start — one full turn per `bench_seconds`,
+        // not a partial or a multiple of one.
+        let (back_around, _) =
+            synth_head_pose(HeadScript::Spin, bench_seconds * 2.0, bench_seconds);
+        assert!(
+            back_around.angle_between(Quat::IDENTITY) < 1e-3,
+            "{back_around:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -497,6 +669,10 @@ pub struct VrDevice {
 /// leak wgpu-hal identities).
 struct EyeSwapchain {
     handle: openxr::Swapchain<openxr::Vulkan>,
+    /// Parallel to `views` — kept so the eye-order self-check can read
+    /// back the currently-acquired image (`copy_texture_to_buffer` needs
+    /// the `wgpu::Texture` itself, not a view of it).
+    textures: Vec<wgpu::Texture>,
     views: Vec<wgpu::TextureView>,
     /// Set by `acquire`, consumed by `release`.
     acquired: Option<usize>,
@@ -517,6 +693,12 @@ impl EyeSwapchain {
             let _ = self.handle.release_image();
         }
     }
+
+    /// The image `acquire` most recently handed out — `None` before the
+    /// first `acquire` of a session.
+    fn acquired_texture(&self) -> Option<&wgpu::Texture> {
+        self.acquired.map(|i| &self.textures[i])
+    }
 }
 
 /// What a frame's `begin_frame` found.
@@ -526,19 +708,127 @@ pub enum Frame {
     /// or present this call.
     Idle,
     /// A frame is open (`frame_stream.begin()` was called) and must be
-    /// matched by [`XrSession::end_frame`] or [`XrSession::skip_frame`].
+    /// matched by [`RealSession::end_frame`] or [`RealSession::skip_frame`].
     Open {
         should_render: bool,
         eyes: [VrEye; 2],
     },
     /// The runtime is gone (instance loss, or the session exited):
-    /// caller drops this `XrSession` and falls back to flat.
+    /// caller drops this `RealSession` and falls back to flat.
     Lost,
+}
+
+/// A native VR session, real or synthetic — the one type every other
+/// module reaches for (`Gpu::xr: Option<XrSession>`), so a synthetic
+/// bench headset (`FARFALL_VR=synth`) runs the exact same call sequence
+/// (`begin_frame` → `acquire_eye` → `end_frame`/`skip_frame`) and the
+/// exact same `xr_composite` crop/label/mirror pass a real one does —
+/// the comfort and eye-order self-checks it exists to let a bench run
+/// without a headset are only honest if nothing downstream of this type
+/// can tell the difference.
+pub enum XrSession {
+    Real(Box<RealSession>),
+    Synth(Box<SynthSession>),
+}
+
+impl XrSession {
+    /// The runtime's own recommended per-eye size, unscaled.
+    pub fn eye_size(&self) -> (u32, u32) {
+        match self {
+            Self::Real(s) => s.eye_size(),
+            Self::Synth(s) => s.eye_size(),
+        }
+    }
+
+    /// See [`RealSession::recommended_size`].
+    pub fn recommended_size(&self) -> (u32, u32) {
+        match self {
+            Self::Real(s) => s.recommended_size(),
+            Self::Synth(s) => s.recommended_size(),
+        }
+    }
+
+    /// The runtime's own current display rate, Hz — `None` off an
+    /// unsupporting runtime or build; a synthetic headset always
+    /// reports a fixed 90 Hz (SPEC §5.3, `FARFALL_VR=synth`).
+    pub fn display_refresh_hz(&self) -> Option<f32> {
+        match self {
+            Self::Real(s) => s.display_refresh_hz(),
+            Self::Synth(s) => s.display_refresh_hz(),
+        }
+    }
+
+    /// Wall-clock time the last `begin_frame` spent waiting on the
+    /// runtime's own pacing — always zero for a synthetic headset,
+    /// which free-runs (SPEC §5.3): there is no compositor to wait on.
+    pub fn last_wait_ms(&self) -> f32 {
+        match self {
+            Self::Real(s) => s.last_wait_ms(),
+            Self::Synth(s) => s.last_wait_ms(),
+        }
+    }
+
+    /// See [`RealSession::begin_frame`].
+    pub fn begin_frame(&mut self, force_render: bool) -> Frame {
+        match self {
+            Self::Real(s) => s.begin_frame(force_render),
+            Self::Synth(s) => s.begin_frame(force_render),
+        }
+    }
+
+    /// See [`RealSession::skip_frame`].
+    pub fn skip_frame(&mut self) {
+        match self {
+            Self::Real(s) => s.skip_frame(),
+            Self::Synth(s) => s.skip_frame(),
+        }
+    }
+
+    /// This eye's swapchain image to render into.
+    pub fn acquire_eye(&mut self, eye: usize) -> &wgpu::TextureView {
+        match self {
+            Self::Real(s) => s.acquire_eye(eye),
+            Self::Synth(s) => s.acquire_eye(eye),
+        }
+    }
+
+    /// The `wgpu::Texture` behind this eye's currently-acquired image —
+    /// the eye-order self-check's readback target.
+    pub fn acquired_eye_texture(&self, eye: usize) -> Option<&wgpu::Texture> {
+        match self {
+            Self::Real(s) => s.acquired_eye_texture(eye),
+            Self::Synth(s) => s.acquired_eye_texture(eye),
+        }
+    }
+
+    /// See [`RealSession::end_frame`].
+    pub fn end_frame(&mut self) {
+        match self {
+            Self::Real(s) => s.end_frame(),
+            Self::Synth(s) => s.end_frame(),
+        }
+    }
+
+    /// VR RECENTRE — a no-op for a synthetic headset, whose head pose is
+    /// already a deterministic pure function of bench time
+    /// ([`synth_head_pose`]), not a runtime's own drifting tracking
+    /// origin; there is nothing here for a recentre to correct.
+    pub fn recentre(&mut self, head: VrEye) {
+        if let Self::Real(s) = self {
+            s.recentre(head);
+        }
+    }
+
+    /// Whether this is the synthetic bench headset, not a real runtime
+    /// — for the stamp line's `synth=1`.
+    pub fn is_synth(&self) -> bool {
+        matches!(self, Self::Synth(_))
+    }
 }
 
 /// A running native VR session: the OpenXR side of the seam, plus the
 /// two swapchains the flat-rendered pair is cropped into each frame.
-pub struct XrSession {
+pub struct RealSession {
     instance: openxr::Instance,
     session: openxr::Session<openxr::Vulkan>,
     frame_wait: openxr::FrameWaiter,
@@ -622,7 +912,7 @@ const SWAPCHAIN_FORMATS: &[(ash::vk::Format, wgpu::TextureFormat)] = &[
 /// and never launches a runtime that is not already running.
 pub fn init(render_scale: f32) -> Option<(VrDevice, XrSession, wgpu::TextureFormat)> {
     match try_init(render_scale) {
-        Ok(ok) => Some(ok),
+        Ok((vr, session, fmt)) => Some((vr, XrSession::Real(Box::new(session)), fmt)),
         Err(e) => {
             log::warn!("VR: {e}; falling back to the flat view");
             None
@@ -630,7 +920,7 @@ pub fn init(render_scale: f32) -> Option<(VrDevice, XrSession, wgpu::TextureForm
     }
 }
 
-fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureFormat), Error> {
+fn try_init(render_scale: f32) -> Result<(VrDevice, RealSession, wgpu::TextureFormat), Error> {
     let render_scale = render_scale.clamp(SCALE_MIN, SCALE_MAX);
 
     #[cfg(target_os = "windows")]
@@ -956,7 +1246,7 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
             let images = handle
                 .enumerate_images()
                 .map_err(|e| Error::Session(format!("enumerate_images: {e}")))?;
-            let views = images
+            let (textures, views): (Vec<_>, Vec<_>) = images
                 .into_iter()
                 .enumerate()
                 .map(|(i, raw)| {
@@ -1010,14 +1300,16 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
                         },
                         wgpu::wgt::TextureUses::UNINITIALIZED,
                     );
-                    texture.create_view(&wgpu::TextureViewDescriptor {
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor {
                         label: Some(&label),
                         ..Default::default()
-                    })
+                    });
+                    (texture, view)
                 })
-                .collect();
+                .unzip();
             Ok(EyeSwapchain {
                 handle,
+                textures,
                 views,
                 acquired: None,
             })
@@ -1074,7 +1366,7 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
             eye_size.1,
         );
 
-        let session_for_teardown = XrSession {
+        let session_for_teardown = RealSession {
             instance: xr_instance,
             session,
             frame_wait,
@@ -1119,7 +1411,7 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
     }
 }
 
-impl XrSession {
+impl RealSession {
     /// The swapchain's own per-eye size (recommended × VR RENDER SCALE).
     pub fn eye_size(&self) -> (u32, u32) {
         self.eye_size
@@ -1337,6 +1629,13 @@ impl XrSession {
         self.eyes[eye].acquire()
     }
 
+    /// The `wgpu::Texture` behind this eye's currently-acquired image —
+    /// the eye-order self-check's readback target. `None` before the
+    /// first `acquire_eye` of the session.
+    pub fn acquired_eye_texture(&self, eye: usize) -> Option<&wgpu::Texture> {
+        self.eyes[eye].acquired_texture()
+    }
+
     /// Release both swapchain images and end the frame — with a stereo
     /// projection layer at this frame's located poses/fovs when the
     /// runtime actually asked for one (`should_render` was true), or
@@ -1459,7 +1758,7 @@ impl XrSession {
     }
 }
 
-impl Drop for XrSession {
+impl Drop for RealSession {
     fn drop(&mut self) {
         // Matched `begin()`s must not outlive the frame; an unmatched one
         // here means the app is exiting mid-frame, which the runtime
@@ -1473,4 +1772,196 @@ impl Drop for XrSession {
             let _ = self.session.end();
         }
     }
+}
+
+// ---------------------------------------------------------------------
+// The synthetic bench headset (FARFALL_VR=synth, SPEC §5.3): needs no
+// OpenXR runtime, so this half of the module compiles and runs on any
+// machine, with a plain wgpu device — no ash/hal, no `#[cfg(test)]`
+// wall between it and a real GPU test, unlike everything above it.
+// ---------------------------------------------------------------------
+
+/// A synthetic Valve-Index-shaped headset needing no OpenXR runtime
+/// (`FARFALL_VR=synth`): the whole render/comfort/label pipeline
+/// (`xr_composite`, the mirror, the eye-order and overlay-depth self-
+/// checks) can be benched on the desktop, on any machine, any time —
+/// comfort regressions get caught by a bench row before a human ever
+/// wears the real thing. Its two "swapchain" images are ordinary wgpu
+/// textures built with the identical format/usage/label pattern
+/// `RealSession::try_init`'s `make_eye` uses, so `xr_composite`'s
+/// crop+label+mirror pass is genuinely the same code, not a stand-in.
+pub struct SynthSession {
+    eye_size: (u32, u32),
+    recommended_size: (u32, u32),
+    /// Parallel to `views` — kept for the eye-order self-check's
+    /// readback (`copy_texture_to_buffer` needs the `wgpu::Texture`
+    /// itself), matching `EyeSwapchain`'s own reason for keeping both.
+    textures: [wgpu::Texture; 2],
+    views: [wgpu::TextureView; 2],
+    script: HeadScript,
+    bench_seconds: f32,
+    start: std::time::Instant,
+}
+
+/// A synthetic Index's own recommended per-eye size, before `vr_scale`
+/// and the hull-vs-true inflation `eye_render_size` applies on top — the
+/// same two steps a real runtime's own recommendation goes through
+/// (`RealSession::try_init`'s own `eye_size`/`recommended_size` split).
+const SYNTH_RECOMMENDED_SIZE: (u32, u32) = (2016, 2240);
+
+/// A synthetic Index's own display rate, Hz — always reported, unlike a
+/// real runtime's `fb_display_refresh_rate` (which may be absent).
+const SYNTH_HZ: f32 = 90.0;
+
+/// A synthetic Index's own IPD, metres — a stock value, split ±half
+/// about the head's own position along its local +X.
+const SYNTH_IPD_M: f32 = 0.064;
+
+/// A synthetic Index's own per-eye field of view, degrees — magnitudes
+/// only, as `(left, right, up, down)`; [`fov_tangents`] applies OpenXR's
+/// own left/down sign. The right eye is this mirrored left-for-right,
+/// same up/down, as a real Index's own lenses are.
+const SYNTH_FOV_LEFT_EYE_DEG: (f32, f32, f32, f32) = (54.0, 46.0, 55.0, 55.0);
+
+impl SynthSession {
+    fn eye_tan(eye: usize) -> [f32; 4] {
+        let (l, r, u, d) = SYNTH_FOV_LEFT_EYE_DEG;
+        let (l, r) = if eye == 0 { (l, r) } else { (r, l) };
+        fov_tangents(
+            (-l).to_radians(),
+            r.to_radians(),
+            u.to_radians(),
+            (-d).to_radians(),
+        )
+    }
+
+    /// The swapchain's own per-eye size (recommended × VR RENDER SCALE)
+    /// — see [`RealSession::eye_size`].
+    pub fn eye_size(&self) -> (u32, u32) {
+        self.eye_size
+    }
+
+    /// See [`RealSession::recommended_size`].
+    pub fn recommended_size(&self) -> (u32, u32) {
+        self.recommended_size
+    }
+
+    pub fn display_refresh_hz(&self) -> Option<f32> {
+        Some(SYNTH_HZ)
+    }
+
+    /// Always zero: free-running, nothing here waits on a compositor.
+    pub fn last_wait_ms(&self) -> f32 {
+        0.0
+    }
+
+    /// The deterministic head pose at the current bench time
+    /// ([`synth_head_pose`]), split into two eyes at the stock IPD about
+    /// the head's own local +X — position and orientation feed `VrEye`
+    /// exactly as a real runtime's `locate_views` would.
+    pub fn begin_frame(&mut self, _force_render: bool) -> Frame {
+        let t = self.start.elapsed().as_secs_f32();
+        let (head, pos) = synth_head_pose(self.script, t, self.bench_seconds);
+        let half_ipd = SYNTH_IPD_M * 0.5;
+        let eyes = std::array::from_fn(|i| {
+            let local_x = if i == 0 { -half_ipd } else { half_ipd };
+            VrEye {
+                head,
+                pos: pos + head * Vec3::new(local_x, 0.0, 0.0),
+                tan: Self::eye_tan(i),
+            }
+        });
+        Frame::Open {
+            should_render: true,
+            eyes,
+        }
+    }
+
+    pub fn skip_frame(&mut self) {}
+
+    pub fn acquire_eye(&mut self, eye: usize) -> &wgpu::TextureView {
+        &self.views[eye]
+    }
+
+    /// Always available — a synthetic session has no ring buffer, just
+    /// the one persistent image per eye.
+    pub fn acquired_eye_texture(&self, eye: usize) -> Option<&wgpu::Texture> {
+        Some(&self.textures[eye])
+    }
+
+    pub fn end_frame(&mut self) {}
+}
+
+/// Build a synthetic headset: no OpenXR runtime, no real GPU interop —
+/// `device` is the ordinary flat-path wgpu device (`request_flat_device`
+/// in lib.rs), since a synthetic session never needs one born from a
+/// runtime's own Vulkan instance. `render_scale`/`bench_seconds` mirror
+/// the real path's own knobs (`FARFALL_VR_SCALE`, the bench's own run
+/// length — `Spin`'s only input, see `synth_head_pose`).
+pub fn init_synth(
+    device: &wgpu::Device,
+    render_scale: f32,
+    script: HeadScript,
+    bench_seconds: f32,
+) -> (XrSession, wgpu::TextureFormat) {
+    let render_scale = render_scale.clamp(SCALE_MIN, SCALE_MAX);
+    let eye_size = (
+        ((SYNTH_RECOMMENDED_SIZE.0 as f32) * render_scale)
+            .round()
+            .max(1.0) as u32,
+        ((SYNTH_RECOMMENDED_SIZE.1 as f32) * render_scale)
+            .round()
+            .max(1.0) as u32,
+    );
+    // SWAPCHAIN_FORMATS' own first (most-preferred) choice — the same
+    // format a real runtime almost always offers, so a synth bench row
+    // exercises the identical sRGB round-trip xrblit.wgsl relies on.
+    let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let mut textures: Vec<wgpu::Texture> = Vec::with_capacity(2);
+    let mut views: Vec<wgpu::TextureView> = Vec::with_capacity(2);
+    for eye in 0..2 {
+        let label = format!("xr swapchain eye {eye} image 0");
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(&label),
+            size: wgpu::Extent3d {
+                width: eye_size.0,
+                height: eye_size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(&label),
+            ..Default::default()
+        });
+        textures.push(texture);
+        views.push(view);
+    }
+    log::info!(
+        "VR: synthetic headset up ({}x{} per eye, {SYNTH_HZ} Hz, script {script:?})",
+        eye_size.0,
+        eye_size.1,
+    );
+    let session = SynthSession {
+        eye_size,
+        recommended_size: SYNTH_RECOMMENDED_SIZE,
+        textures: textures.try_into().unwrap_or_else(|v: Vec<_>| {
+            panic!(
+                "synth headset builds exactly 2 eye textures, got {}",
+                v.len()
+            )
+        }),
+        views: views
+            .try_into()
+            .unwrap_or_else(|_| panic!("synth headset builds exactly 2 eye views")),
+        script,
+        bench_seconds,
+        start: std::time::Instant::now(),
+    };
+    (XrSession::Synth(Box::new(session)), format)
 }
