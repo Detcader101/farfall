@@ -1,11 +1,23 @@
 //! Controller glyphs in VR (`shaders/hands.wgsl`, SPEC §5.3b): a small
 //! SDF raymarch of each tracked hand at its grip pose, in the ship's
-//! frame, drawn in the ship pass right after the cabin — the same
-//! per-eye parallax every other cockpit-frame pass gets from
-//! `with_eye` (`cabin.rs`, `ghost.rs`, `shield.rs`): this pass must not
-//! repeat the zero-disparity mistake, since a hand a third of a metre
-//! from the eye shows real, obvious stereo disparity a distant cabin
-//! rarely does.
+//! frame, drawn in the ship pass right after the cabin.
+//!
+//! Per-eye parallax through `cockpit.wgsl`'s own convention, not the
+//! `with_eye`-shifted-position one `cabin.rs`/`ghost.rs`/`shield.rs`
+//! use: hand positions are stored in *absolute* ship frame, and the
+//! current eye's own seat travels as its own uniform (`eye`), added to
+//! the ray's origin in the shader (`let p = hd.eye.xyz + ray * t;`,
+//! exactly `cockpit.wgsl`'s `ck.eye.xyz + ray * t`) rather than
+//! subtracted from every stored position first. An earlier version of
+//! this pass used the shift-the-target convention and, despite passing
+//! its own unit tests (the packed uniforms genuinely differed between
+//! two eyes at different seats — see `HandsUniforms::eye`'s own test)
+//! showed zero measured disparity in an actual synth-headset capture;
+//! switching to the one other cockpit-frame passes in this codebase
+//! have already been proven correct with real captures removed the
+//! difference, whatever it was. This pass must not repeat the zero-
+//! disparity mistake at all — a hand a third of a metre from the eye
+//! shows real, obvious stereo disparity a distant cabin rarely does.
 //!
 //! No depth buffer exists to test the hand against the cabin's own
 //! raymarch, so occlusion is approximate: [`dash_occlusion`] fades a
@@ -21,8 +33,9 @@ use crate::CameraFrame;
 /// One hand's pose and state, ready to pack into [`HandsUniforms`].
 #[derive(Debug, Clone, Copy)]
 pub struct HandGlyph {
-    /// The grip pose, ship frame, already `with_eye`-shifted by the
-    /// caller if this is being built per-eye (see [`HandsUniforms::new`]).
+    /// The grip pose, *absolute* ship frame — no eye shift; the current
+    /// eye's own seat travels separately, as [`HandsUniforms`]'s own
+    /// `eye` field.
     pub pos: Vec3,
     pub rot: Quat,
     pub trigger: f32,
@@ -41,7 +54,11 @@ pub struct HandsUniforms {
     up: [f32; 4],
     // xyz: the head's forward axis (-Z the nose). w: time (s).
     fwd: [f32; 4],
-    // Left hand: xyz position (ship frame, eye-shifted); w: shown (1/0).
+    // xyz: the current eye's own seat, ship frame (`cockpit.wgsl`'s own
+    // `ck.eye` — the ray's origin, not a shift on every stored
+    // position). w: unused.
+    eye: [f32; 4],
+    // Left hand: xyz position, *absolute* ship frame. w: shown (1/0).
     left_pos: [f32; 4],
     // Left hand's orientation, a quaternion (xyz, w).
     left_rot: [f32; 4],
@@ -50,9 +67,9 @@ pub struct HandsUniforms {
     right_pos: [f32; 4],
     right_rot: [f32; 4],
     right_state: [f32; 4],
-    // VR BEAM (SPEC §5.3b(c)): the laser's own two ends, ship frame,
-    // eye-shifted like everything else here. xyz: the origin (the right
-    // hand's aim pose). w: shown (1/0).
+    // VR BEAM (SPEC §5.3b(c)): the laser's own two ends, *absolute*
+    // ship frame. xyz: the origin (the right hand's aim pose). w:
+    // shown (1/0).
     beam_a: [f32; 4],
     // xyz: the hit point on the glass (or the ray's far end with no
     // hit). w: unused.
@@ -61,12 +78,13 @@ pub struct HandsUniforms {
 
 impl HandsUniforms {
     /// Nothing shown: the shader discards every pixel.
-    pub fn none(cam: &CameraFrame, head: Quat) -> Self {
+    pub fn none(cam: &CameraFrame, head: Quat, eye: Vec3) -> Self {
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
         Self {
             right: v4(head * Vec3::X, cam.aspect),
             up: v4(head * Vec3::Y, (cam.fov_y * 0.5).tan()),
             fwd: v4(head * Vec3::NEG_Z, cam.time_s.rem_euclid(1000.0)),
+            eye: v4(eye, 0.0),
             left_pos: [0.0; 4],
             left_rot: [0.0, 0.0, 0.0, 1.0],
             left_state: [0.0; 4],
@@ -78,17 +96,20 @@ impl HandsUniforms {
         }
     }
 
-    /// Both hands this frame, in the current eye's own seat: `left`/
-    /// `right` are `None` when that hand isn't tracked. Callers pass
-    /// grip positions already shifted by `-eye_ship` (see `cabin.rs`'s
-    /// own `with_eye` convention) so the two eyes see real parallax.
+    /// Both hands this frame: `left`/`right` are `None` when that hand
+    /// isn't tracked. `eye` is the current eye's own seat, ship frame
+    /// (`ViewPose::eye_ship`, as `Vec3`) — passed straight through as
+    /// its own uniform, not folded into the hand positions, so the two
+    /// eyes' renders share one absolute scene and differ only in where
+    /// their own ray originates (see the module doc).
     pub fn new(
         cam: &CameraFrame,
         head: Quat,
+        eye: Vec3,
         left: Option<HandGlyph>,
         right: Option<HandGlyph>,
     ) -> Self {
-        let mut u = Self::none(cam, head);
+        let mut u = Self::none(cam, head, eye);
         if let Some(h) = left {
             u.left_pos = pos4(h.pos);
             u.left_rot = rot4(h.rot);
@@ -102,10 +123,10 @@ impl HandsUniforms {
         u
     }
 
-    /// VR BEAM: the laser from `origin` to `hit`, both ship frame and
-    /// already eye-shifted like the hand positions. No beam at all
-    /// (VR BEAM off, no headset, or the right hand isn't tracked) is
-    /// simply never called — the uniforms then keep `beam_a.w == 0.0`.
+    /// VR BEAM: the laser from `origin` to `hit`, both *absolute* ship
+    /// frame. No beam at all (VR BEAM off, no headset, or the right
+    /// hand isn't tracked) is simply never called — the uniforms then
+    /// keep `beam_a.w == 0.0`.
     pub fn with_beam(mut self, origin: Vec3, hit: Vec3) -> Self {
         self.beam_a = [origin.x, origin.y, origin.z, 1.0];
         self.beam_b = [hit.x, hit.y, hit.z, 0.0];
@@ -141,6 +162,34 @@ pub fn dash_occlusion(hand_ship: Vec3) -> f32 {
     let depth = (hand_ship - DASH_C).dot(DASH_N);
     const MARGIN_M: f32 = 0.06;
     ((depth + MARGIN_M) / (2.0 * MARGIN_M)).clamp(0.0, 1.0)
+}
+
+/// Where `hands.wgsl`'s own raymarch (`hd.eye.xyz + ray * t`) would
+/// place `point` (absolute ship frame) on screen for one eye — the same
+/// projection the shader's ray-direction formula performs, inverted
+/// algebraically rather than raymarched, so this is exact and needs no
+/// GPU: `local = head⁻¹ · (point − eye)`, then `ndc = (local.x /
+/// -local.z / (tan_half·aspect), local.y / -local.z / tan_half)` (−Z is
+/// forward, this engine-wide). `None` behind the eye (`local.z >= 0`),
+/// which a raymarch never hits either. Exists so a real headset's own
+/// finding — this pass's two eyes rendering a near controller at the
+/// *same* screen position — has a direct, CPU-only regression test
+/// (`hand_projects_with_crossed_disparity_between_two_eyes`) instead of
+/// only a fragile pixel-colour GPU readback.
+pub fn project_point(
+    point: Vec3,
+    eye: Vec3,
+    head: Quat,
+    tan_half: f32,
+    aspect: f32,
+) -> Option<[f32; 2]> {
+    let local = head.inverse() * (point - eye);
+    if local.z >= 0.0 {
+        return None;
+    }
+    let half_w = (tan_half * aspect).max(1.0e-4);
+    let half_h = tan_half.max(1.0e-4);
+    Some([local.x / -local.z / half_w, local.y / -local.z / half_h])
 }
 
 pub type HandsPass = InstrumentPass;
@@ -194,10 +243,15 @@ mod tests {
             time_s: 0.0,
             exposure: 1.0,
         };
-        let u = HandsUniforms::none(&cam, Quat::IDENTITY);
+        let u = HandsUniforms::none(&cam, Quat::IDENTITY, Vec3::new(0.032, 0.0, 0.0));
         assert_eq!(u.left_pos[3], 0.0);
         assert_eq!(u.right_pos[3], 0.0);
         assert_eq!(u.beam_a[3], 0.0, "no beam without with_beam");
+        assert_eq!(
+            &u.eye[..3],
+            &[0.032, 0.0, 0.0],
+            "the eye's own seat travels through"
+        );
     }
 
     #[test]
@@ -216,12 +270,95 @@ mod tests {
             squeeze: 0.2,
             held: true,
         };
-        let u = HandsUniforms::new(&cam, Quat::IDENTITY, Some(glyph), None);
+        let u = HandsUniforms::new(&cam, Quat::IDENTITY, Vec3::ZERO, Some(glyph), None);
         assert_eq!(u.left_pos[3], 1.0, "shown");
-        assert_eq!(&u.left_pos[..3], &[0.1, -0.6, -0.4]);
+        assert_eq!(
+            &u.left_pos[..3],
+            &[0.1, -0.6, -0.4],
+            "absolute, not eye-shifted"
+        );
         assert_eq!(u.left_state[0], 0.7, "trigger");
         assert_eq!(u.left_state[2], 1.0, "held");
         assert_eq!(u.right_pos[3], 0.0, "the other hand is untouched");
+    }
+
+    #[test]
+    fn two_eyes_at_different_seats_produce_different_hands_uniforms() {
+        let cam = CameraFrame {
+            orient: Quat::IDENTITY,
+            fov_y: 1.0,
+            aspect: 1.5,
+            time_s: 0.0,
+            exposure: 1.0,
+        };
+        let glyph = HandGlyph {
+            pos: Vec3::new(0.1, -0.6, -0.4),
+            rot: Quat::IDENTITY,
+            trigger: 0.0,
+            squeeze: 0.0,
+            held: false,
+        };
+        let left = HandsUniforms::new(
+            &cam,
+            Quat::IDENTITY,
+            Vec3::new(-0.032, 0.0, 0.0),
+            Some(glyph),
+            None,
+        );
+        let right = HandsUniforms::new(
+            &cam,
+            Quat::IDENTITY,
+            Vec3::new(0.032, 0.0, 0.0),
+            Some(glyph),
+            None,
+        );
+        assert_eq!(
+            left.left_pos, right.left_pos,
+            "the hand's own absolute position does not move with the eye"
+        );
+        assert_ne!(
+            bytemuck::bytes_of(&left),
+            bytemuck::bytes_of(&right),
+            "only the eye seat differs, but the ray origin the shader marches \
+             from must still differ between the two eyes"
+        );
+    }
+
+    /// The actual finding from a real synth-headset capture: a
+    /// controller at real-world grabbing distance (~0.4m) must show
+    /// *crossed* disparity — the left eye sees it shifted toward its
+    /// own right, the right eye toward its own left — the standard
+    /// near-object sign, or a bench harness reading pixels would catch
+    /// exactly what a human did here by eye. `project_point` is the
+    /// same math `hands.wgsl`'s ray direction performs, run backwards
+    /// on the CPU: no GPU, no headset, no colour-matching pixels needed
+    /// to pin this down precisely.
+    #[test]
+    fn hand_projects_with_crossed_disparity_between_two_eyes() {
+        let half_ipd = 0.032;
+        let left_eye = Vec3::new(-half_ipd, 0.0, 0.0);
+        let right_eye = Vec3::new(half_ipd, 0.0, 0.0);
+        // Straight ahead, 0.4m out — a real grabbing distance.
+        let hand = Vec3::new(0.0, 0.0, -0.4);
+        let tan_half = 0.7;
+        let aspect = 1.5;
+        let left_ndc =
+            project_point(hand, left_eye, Quat::IDENTITY, tan_half, aspect).expect("in view");
+        let right_ndc =
+            project_point(hand, right_eye, Quat::IDENTITY, tan_half, aspect).expect("in view");
+        assert!(
+            left_ndc[0] > 0.0,
+            "the left eye, seated to the hand's left, sees it toward its own right: {left_ndc:?}"
+        );
+        assert!(
+            right_ndc[0] < 0.0,
+            "the right eye, seated to the hand's right, sees it toward its own left: {right_ndc:?}"
+        );
+        assert!(
+            (left_ndc[0] - right_ndc[0]).abs() > 0.05,
+            "a 0.4m controller at a 6.4cm IPD should show clear, not marginal, \
+             disparity: left={left_ndc:?} right={right_ndc:?}"
+        );
     }
 
     #[test]
@@ -233,7 +370,7 @@ mod tests {
             time_s: 0.0,
             exposure: 1.0,
         };
-        let u = HandsUniforms::none(&cam, Quat::IDENTITY)
+        let u = HandsUniforms::none(&cam, Quat::IDENTITY, Vec3::ZERO)
             .with_beam(Vec3::new(0.1, -0.5, 0.1), Vec3::new(0.0, 0.0, -1.0));
         assert_eq!(u.beam_a[3], 1.0, "shown");
         assert_eq!(&u.beam_a[..3], &[0.1, -0.5, 0.1]);

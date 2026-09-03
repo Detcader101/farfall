@@ -4867,10 +4867,10 @@ impl Game {
     /// outside VR, or with the setting off.
     fn hands_uniforms(&self, pose: &ViewPose) -> HandsUniforms {
         let cam = &pose.cam;
-        if self.vr.is_none() {
-            return HandsUniforms::none(cam, pose.head);
-        }
         let eye = pose.eye_ship.as_vec3();
+        if self.vr.is_none() {
+            return HandsUniforms::none(cam, pose.head, eye);
+        }
         // VR GRAB (SPEC §5.3b(d)): a hand's glyph tightens/brightens
         // while it is the one actually holding the stick or throttle.
         let is_held = |hand: xr_grab::Hand| {
@@ -4879,7 +4879,7 @@ impl Game {
         };
         let glyph = |h: Option<HandPose>, hand: xr_grab::Hand| {
             h.map(|h| HandGlyph {
-                pos: h.grip.1 - eye,
+                pos: h.grip.1,
                 rot: h.grip.0,
                 trigger: h.trigger,
                 squeeze: h.squeeze,
@@ -4894,13 +4894,13 @@ impl Game {
         } else {
             (None, None)
         };
-        let u = HandsUniforms::new(cam, pose.head, left, right);
+        let u = HandsUniforms::new(cam, pose.head, eye, left, right);
         // VR BEAM (SPEC §5.3b(c)): the same hit `vr_laser_ndc`/
         // `vr_laser_tick` already used this frame, so the beam always
         // points exactly where the click would land.
         if self.settings.vr_beam {
             if let (Some((_, hit)), Some(h)) = (self.vr_laser_hit(), self.vr_hands.right) {
-                return u.with_beam(h.aim.1 - eye, hit - eye);
+                return u.with_beam(h.aim.1, hit);
             }
         }
         u
@@ -10036,6 +10036,64 @@ mod tests {
             left_cabin, right_cabin,
             "two eyes at different seats must march the cabin from \
              different origins, or leaning toward the dash does nothing"
+        );
+    }
+
+    /// The same fix, for the hand glyphs (SPEC §5.3b): two eyes at
+    /// different seats must march `hands.wgsl` from different origins
+    /// too, or a controller three-quarters of a metre out shows the
+    /// zero-disparity mistake VR's own dial/cabin fix already exists to
+    /// avoid. This only proves `Game::hands_uniforms` itself packs a
+    /// per-eye difference into the uniforms — it cannot see whether the
+    /// GPU actually renders that difference as real disparity (a real
+    /// headset capture already caught a case where it didn't, despite
+    /// this exact assertion passing: `hands.rs`'s own
+    /// `two_eyes_at_different_seats_produce_different_hands_uniforms`
+    /// pins the specific invariant that fix relies on — an absolute
+    /// hand position that does *not* move with the eye, and a
+    /// `HandsUniforms::eye` field that does). `HandsUniforms` has no
+    /// `PartialEq` (it derives `Pod` instead, for the GPU upload), so
+    /// the two are compared as raw bytes.
+    #[test]
+    fn two_vr_eyes_at_different_seats_produce_different_hand_uniforms() {
+        let mut game = Game::new();
+        let left = VrEye {
+            head: Quat::IDENTITY,
+            pos: Vec3::new(-0.032, 0.0, 0.0),
+            tan: [1.0, 1.0, 1.0, 1.0],
+        };
+        let right = VrEye {
+            head: Quat::IDENTITY,
+            pos: Vec3::new(0.032, 0.0, 0.0),
+            tan: [1.0, 1.0, 1.0, 1.0],
+        };
+        game.vr = Some(VrView {
+            eyes: [left, right],
+        });
+        game.vr_hands.right = Some(HandPose {
+            aim: (Quat::IDENTITY, Vec3::new(0.2, -0.55, -0.4)),
+            grip: (Quat::IDENTITY, Vec3::new(0.2, -0.55, -0.4)),
+            trigger: 0.0,
+            squeeze: 0.0,
+            thumbstick: (0.0, 0.0),
+            a: false,
+            b: false,
+        });
+        game.vr_eye = 0;
+        let left_pose = game.pose(1.5);
+        let left_hands = game.hands_uniforms(&left_pose);
+        game.vr_eye = 1;
+        let right_pose = game.pose(1.5);
+        let right_hands = game.hands_uniforms(&right_pose);
+        assert_ne!(
+            left_pose.eye_ship, right_pose.eye_ship,
+            "the two eyes' own seats must differ"
+        );
+        assert_ne!(
+            bytemuck::bytes_of(&left_hands),
+            bytemuck::bytes_of(&right_hands),
+            "two eyes at different seats must place the hand glyph from \
+             different origins, or a hand near the eye shows no disparity"
         );
     }
 

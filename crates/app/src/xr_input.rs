@@ -278,9 +278,20 @@ fn ease(f: f32) -> f32 {
     f * f * (3.0 - 2.0 * f)
 }
 
+/// The aim ray's own downward pitch for every script that isn't
+/// `laser-menu` (radians, about +X): pointed at the console rather than
+/// forward at the pilot's own eye height, so `xr_laser::ray_hits_glass`
+/// naturally misses the virtual glass and no beam draws — a synthetic
+/// hand reaching for the stick or throttle is not also trying to point
+/// at a panel, and a beam terminating somewhere in the dial cluster
+/// (this pitch's own -Z-forward default would have hit roughly there)
+/// reads as "the hand target is wrong" even when it is the unrelated
+/// laser doing that, not the grip position.
+const AIM_DOWN_PITCH_RAD: f32 = -1.3;
+
 fn pose_at(pos: Vec3, trigger: f32, squeeze: f32) -> HandPose {
     HandPose {
-        aim: (Quat::IDENTITY, pos),
+        aim: (Quat::from_rotation_x(AIM_DOWN_PITCH_RAD), pos),
         grip: (Quat::IDENTITY, pos),
         trigger,
         squeeze,
@@ -885,6 +896,35 @@ mod pure_tests {
                     || label.contains("point"),
                 "{label}"
             );
+        }
+    }
+
+    /// Every non-laser script's aim points at the console, not the
+    /// glass — a grab-focused script must never spuriously show the
+    /// laser beam (SPEC §5.3b(c)) just because `pose_at`'s aim happened
+    /// to line up with the virtual glass 1m ahead.
+    #[test]
+    fn non_laser_scripts_aim_away_from_the_virtual_glass() {
+        for script in [
+            HandScript::Idle,
+            HandScript::ReachStick,
+            HandScript::GrabStickRoll,
+            HandScript::ThrottlePush,
+        ] {
+            let (hands, _) = synth_hands(script, 3.0);
+            for hand in [hands.left, hands.right] {
+                let Some(h) = hand else { continue };
+                let dir = h.aim.0 * Vec3::NEG_Z;
+                let hit = crate::xr_laser::ray_hits_glass(
+                    h.aim.1,
+                    dir,
+                    Vec3::ZERO,
+                    Quat::IDENTITY,
+                    0.7,
+                    1.5,
+                );
+                assert!(hit.is_none(), "{script:?} hand aims at the glass: {dir:?}");
+            }
         }
     }
 

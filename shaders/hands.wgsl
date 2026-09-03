@@ -8,6 +8,12 @@
 // axis; the whole glyph brightens and tightens while held (grabbing the
 // stick or throttle, SPEC §5.3b(d)). Additive: light only, drawn in the
 // ship pass right after the cabin.
+//
+// Per-eye parallax the way cockpit.wgsl's own furniture gets it: hand
+// positions are absolute ship frame, and the ray marches from the
+// current eye's own seat (`hd.eye.xyz + ray * t`), not from the origin
+// with every position pre-shifted by it — see hands.rs's module doc for
+// why.
 
 struct Hands {
     // xyz: the head's right axis, ship frame. w: aspect.
@@ -16,7 +22,9 @@ struct Hands {
     up: vec4<f32>,
     // xyz: the head's forward axis (-Z the nose). w: time (s).
     fwd: vec4<f32>,
-    // xyz: left grip position, ship frame (eye-shifted). w: shown (1/0).
+    // xyz: the current eye's own seat, ship frame — the ray's origin.
+    eye: vec4<f32>,
+    // xyz: left grip position, absolute ship frame. w: shown (1/0).
     left_pos: vec4<f32>,
     // Left grip orientation, a quaternion (xyz, w).
     left_rot: vec4<f32>,
@@ -25,7 +33,7 @@ struct Hands {
     right_pos: vec4<f32>,
     right_rot: vec4<f32>,
     right_state: vec4<f32>,
-    // VR BEAM: the laser's origin (xyz, ship frame, eye-shifted) and
+    // VR BEAM: the laser's origin (xyz, absolute ship frame) and
     // whether it is shown at all (w).
     beam_a: vec4<f32>,
     // The laser's hit point (xyz); w unused.
@@ -69,8 +77,8 @@ fn sd_hand_dot(p: vec3<f32>, squeeze: f32) -> f32 {
     return length(p - vec3<f32>(0.0, -0.02, -0.05)) - (0.010 + squeeze * 0.008);
 }
 
-// Both hands' combined field at a point in the ship's (eye-shifted)
-// frame: returns the nearer distance and which hand/part it belongs to
+// Both hands' combined field at a point in absolute ship frame:
+// returns the nearer distance and which hand/part it belongs to
 // so the fragment shader can shade it — x: distance, y: hand (0 left, 1
 // right, -1 none), z: part (0 body, 1 dot, 2 beam).
 fn sd_hands(p: vec3<f32>) -> vec3<f32> {
@@ -128,9 +136,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var t = 0.05;
     var hit = false;
     var info = vec3<f32>(1e9, -1.0, 0.0);
-    var p = vec3<f32>(0.0);
+    var p = hd.eye.xyz;
     for (var i = 0u; i < STEPS; i += 1u) {
-        p = ray * t;
+        p = hd.eye.xyz + ray * t;
         info = sd_hands(p);
         if (info.x < 0.0015) {
             hit = true;
