@@ -703,6 +703,19 @@ struct Config {
     /// A factor on the OpenXR runtime's recommended per-eye render size.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     vr_scale: f32,
+    /// FARFALL_VR=synth: a synthetic Valve-Index-shaped headset needing
+    /// no OpenXR runtime (SPEC §5.3) — `vr` is also true whenever this
+    /// is, so every other `vr`-gated path (device setup, instrument
+    /// placement, `xr_composite`) runs unchanged; only `xr::init` itself
+    /// is skipped in favour of `xr::init_synth`.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    vr_synth: bool,
+    /// FARFALL_VR_SCRIPT: the synthetic headset's deterministic head
+    /// motion. `xr::HeadScript` only exists off wasm32 (`mod xr` is
+    /// native-only, WebXR drives `Game::vr` from the page instead), so
+    /// this field is too — unused off a synthetic headset either way.
+    #[cfg(not(target_arch = "wasm32"))]
+    vr_script: xr::HeadScript,
     /// FARFALL_VR_MIRROR=pair: the desktop mirror shows both cropped
     /// eyes side by side — exactly what the headset sees, provable
     /// before anyone wears it — instead of the default single letterboxed
@@ -797,11 +810,25 @@ impl Config {
         // most benches never want a headset — but `FARFALL_BENCH=1
         // FARFALL_VR=1` is the VR bench (SPEC §5.3): a deaf run inside
         // the OpenXR session, explicit VR always wins over a bare bench.
-        let vr = match std::env::var("FARFALL_VR").as_deref() {
-            Ok("1" | "on" | "true") => true,
-            Ok("0" | "off" | "false") => false,
-            _ => settings.vr_headset && !bench,
-        };
+        // FARFALL_VR=synth: a synthetic headset, needing no OpenXR
+        // runtime — for benching the whole VR pipeline (comfort/depth/
+        // eye-order self-checks included) on any machine, any time
+        // (SPEC §5.3). `vr` is also true here, so every other `vr`-gated
+        // path runs exactly as it would for a real headset.
+        let vr_synth = std::env::var("FARFALL_VR").as_deref() == Ok("synth");
+        let vr = vr_synth
+            || match std::env::var("FARFALL_VR").as_deref() {
+                Ok("1" | "on" | "true") => true,
+                Ok("0" | "off" | "false") => false,
+                _ => settings.vr_headset && !bench,
+            };
+        #[cfg(not(target_arch = "wasm32"))]
+        let vr_script = xr::HeadScript::parse(
+            std::env::var("FARFALL_VR_SCRIPT")
+                .ok()
+                .as_deref()
+                .unwrap_or(""),
+        );
         let vr_scale = std::env::var("FARFALL_VR_SCALE")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
@@ -830,6 +857,9 @@ impl Config {
             bench_seconds,
             vr,
             vr_scale,
+            vr_synth,
+            #[cfg(not(target_arch = "wasm32"))]
+            vr_script,
             vr_mirror_pair,
             vr_label,
             vr_force_render,
@@ -1051,6 +1081,18 @@ impl Gpu {
         0.0
     }
 
+    /// Whether the active native session is the synthetic bench headset
+    /// (`FARFALL_VR=synth`), not a real runtime — the VR bench stamp's
+    /// `synth=`. `false` off any build without a native session.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn xr_is_synth(&self) -> bool {
+        self.xr.as_ref().is_some_and(xr::XrSession::is_synth)
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn xr_is_synth(&self) -> bool {
+        false
+    }
+
     /// The scene textures were recreated: point the post pass at the new
     /// world and the blit at the new ship target, or they sample a
     /// destroyed view.
@@ -1110,6 +1152,17 @@ struct Gpu {
     /// window (SPEC §5.3).
     #[cfg(not(target_arch = "wasm32"))]
     vr_pair: Option<VrPair>,
+    /// Set once the eye-order self-check has run (`xr_composite`) — a
+    /// GPU readback, so it runs exactly once per session, on the first
+    /// labelled composite, not every frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    eye_order_checked: bool,
+    /// Set once the overlay-depth self-check has logged its measured
+    /// per-eye tangent shift (`update_instruments`, which only takes
+    /// `&self`) — a pure measurement, but only worth a log line once a
+    /// session.
+    #[cfg(not(target_arch = "wasm32"))]
+    overlay_depth_logged: std::cell::Cell<bool>,
     /// The picture: bloom, exposure, tonemap and the drive's distortion,
     /// done to the world before the ship is drawn over it.
     post: PostPass,
@@ -1266,6 +1319,29 @@ impl Gpu {
         let glass_head = game.glass_head();
         let glass_eye_pos = game.glass_eye_pos();
         let ref_tan = game.ref_tan();
+        // Overlay-depth self-check: once a session, measure (not just
+        // assert in a unit test) that the two eyes' own on_glass shift
+        // actually differ — proof the live per-frame eye positions are
+        // really reaching reproject_with_eye, not just the pure maths
+        // in isolation (SPEC §5.3).
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.overlay_depth_logged.get() {
+            if let Some(vr) = &game.vr {
+                self.overlay_depth_logged.set(true);
+                let t = (cam.fov_y * 0.5).tan();
+                let shift = |eye_pos: Vec3| on_glass(glass_head, eye_pos, cam, ref_tan, [0.0, 0.0]);
+                let s0 = shift(vr.eyes[0].pos);
+                let s1 = shift(vr.eyes[1].pos);
+                let diff = ((s0[0] - s1[0]).powi(2) + (s0[1] - s1[1]).powi(2)).sqrt();
+                let ipd = (vr.eyes[1].pos - vr.eyes[0].pos).length();
+                let expected = ipd / (VR_HUD_DISTANCE_M * t.max(1e-4) * cam.aspect.max(1e-4));
+                log::info!(
+                    "VR: overlay-depth self-check: eyes' on_glass shift differs by \
+                     {diff:.5} NDC units at hud-distance {VR_HUD_DISTANCE_M}m (IPD \
+                     {ipd:.4}m, ~{expected:.5} expected)"
+                );
+            }
+        }
         // Each dial's own style, size and fade, over the cockpit's.
         let tweak = |i: Instrument| game.dial_tweak(i);
         let fade = |i: Instrument, level: f32| if tweak(i).stay { 1.0 } else { level };
@@ -1743,11 +1819,12 @@ impl Gpu {
                     format!(
                         " vr={}x{}x2 scale={:.2} hz={} render_ms={render_ms:.3} \
                          render_ms_1pct={render_ms_1pct:.3} xr_wait_ms={xr_wait_ms:.3} \
-                         headroom_ms={headroom_ms:.3}",
+                         headroom_ms={headroom_ms:.3} synth={}",
                         eye.0,
                         eye.1,
                         self.cfg.vr_scale,
                         hz.map_or_else(|| "unknown".to_string(), |h| format!("{h:.1}")),
+                        self.xr_is_synth() as u8,
                     )
                 });
                 log::info!(
@@ -6005,14 +6082,23 @@ impl App {
         // OpenXR runtime, so this has to happen before wgpu's own instance
         // does — `xr::init` never launches a runtime that isn't already
         // running, and any failure here falls back to flat with a log line.
+        // FARFALL_VR=synth skips this entirely: a synthetic headset needs
+        // no runtime and no special-cased device, so it is built later,
+        // after the ordinary flat device exists (see `finish_init`) — the
+        // exact reason `cfg.vr_synth` never calls `xr::init` here.
         #[cfg(not(target_arch = "wasm32"))]
-        let xr_init = cfg.vr.then(|| xr::init(cfg.vr_scale)).flatten();
+        let xr_init = (cfg.vr && !cfg.vr_synth)
+            .then(|| xr::init(cfg.vr_scale))
+            .flatten();
         // A VR bench that silently ran flat is a lie: the whole point of
         // FARFALL_BENCH=1 FARFALL_VR=1 is numbers and captures from
         // inside the OpenXR session, so a bench, unlike ordinary play,
-        // never falls back — it fails the run outright.
+        // never falls back — it fails the run outright. Never fires for
+        // synth: `xr_init` is deliberately `None` there, and `finish_init`
+        // builds the synthetic session unconditionally (it cannot fail
+        // the way a real runtime's init can).
         #[cfg(not(target_arch = "wasm32"))]
-        if cfg.bench && cfg.vr && xr_init.is_none() {
+        if cfg.bench && cfg.vr && !cfg.vr_synth && xr_init.is_none() {
             log::error!("VR bench: OpenXR init failed (see the warning above); exiting");
             std::process::exit(3);
         }
@@ -6090,17 +6176,31 @@ impl App {
         parts: GpuParts,
         #[cfg(not(target_arch = "wasm32"))] xr: Option<(xr::XrSession, wgpu::TextureFormat)>,
     ) {
-        #[cfg(not(target_arch = "wasm32"))]
-        let (xr_session, xr_format) = match xr {
-            Some((s, f)) => (Some(s), Some(f)),
-            None => (None, None),
-        };
         let GpuParts {
             device,
             queue,
             config,
             msaa_supported,
         } = parts;
+        // FARFALL_VR=synth: no real session came from `xr_init` (it was
+        // never attempted — see `App::init_gpu`), so the synthetic
+        // headset is built here instead, now that the ordinary flat
+        // device exists. Cannot fail the way a real runtime's init can:
+        // it is plain wgpu textures on a device already in hand.
+        #[cfg(not(target_arch = "wasm32"))]
+        let (xr_session, xr_format) = match xr {
+            Some((s, f)) => (Some(s), Some(f)),
+            None if cfg.vr_synth => {
+                let (s, f) = xr::init_synth(
+                    &device,
+                    cfg.vr_scale,
+                    cfg.vr_script,
+                    cfg.bench_seconds as f32,
+                );
+                (Some(s), Some(f))
+            }
+            None => (None, None),
+        };
         let mut cfg = cfg;
         if !msaa_supported.contains(&cfg.msaa) {
             let fallback = msaa_supported
@@ -6207,6 +6307,10 @@ impl App {
             scene,
             #[cfg(not(target_arch = "wasm32"))]
             vr_pair,
+            #[cfg(not(target_arch = "wasm32"))]
+            eye_order_checked: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            overlay_depth_logged: std::cell::Cell::new(false),
             post,
             blit,
             passes,
@@ -6864,6 +6968,155 @@ fn xr_begin_frame(gpu: &mut Gpu, game: &mut Game) -> XrGate {
     }
 }
 
+/// Read a small patch of `texture` (a `wgpu::Bgra8UnormSrgb`-shaped
+/// image) back to the CPU and return the fraction of its texels that
+/// read as bright hologram-cyan ink — "ink is present here," not a
+/// glyph classifier. Blocks (`device.poll`); only ever called from the
+/// one-shot eye-order self-check, never in the steady frame loop.
+#[cfg(not(target_arch = "wasm32"))]
+fn readback_ink_fraction(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    origin: (u32, u32),
+    size: (u32, u32),
+) -> f32 {
+    let unpadded = size.0 * 4;
+    let bytes_per_row =
+        unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("eye order self-check readback"),
+        size: (bytes_per_row * size.1) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("eye order self-check copy"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: origin.0,
+                y: origin.1,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(size.1),
+            },
+        },
+        wgpu::Extent3d {
+            width: size.0,
+            height: size.1,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    if device.poll(wgpu::PollType::wait_indefinitely()).is_err() {
+        return 0.0;
+    }
+    let Ok(Ok(())) = rx.recv() else {
+        return 0.0;
+    };
+    let Ok(mapped) = slice.get_mapped_range() else {
+        return 0.0;
+    };
+    let mut lit = 0u32;
+    let mut total = 0u32;
+    for row in 0..size.1 {
+        let start = (row * bytes_per_row) as usize;
+        let end = start + (size.0 * 4) as usize;
+        for px in mapped[start..end].chunks_exact(4) {
+            // Bgra8UnormSrgb: b, g, r, a. The label's hologram cyan
+            // ([0.45, 0.92, 1.0, 0.96], hud.wgsl) is bright with green
+            // and blue well above red — distinct enough from dash metal
+            // or a starfield that this needs no exact colour match.
+            let (b, g, r) = (px[0] as u32, px[1] as u32, px[2] as u32);
+            total += 1;
+            if g > 140 && b > 140 && r + 40 < g {
+                lit += 1;
+            }
+        }
+    }
+    drop(mapped);
+    buffer.unmap();
+    if total == 0 {
+        0.0
+    } else {
+        lit as f32 / total as f32
+    }
+}
+
+/// FARFALL_VR_LABEL=1: on the first labelled composite, read back each
+/// eye's own upper-outer corner (where `xr_composite` draws that eye's
+/// own L/R mark) and confirm ink actually landed there — proof the
+/// per-eye draw pass wrote into the swapchain image it was meant for,
+/// not that the eyes got crossed somewhere in the render or composite
+/// loop. Runs identically for a real or synthetic headset (`FARFALL_VR=
+/// synth`), which is the whole point: this class of bug is now caught
+/// by a bench row, on any machine, before it reaches a human. Logs "VR:
+/// eye order self-check OK" or FAILED; under `FARFALL_BENCH=1` a
+/// failure exits 9.
+#[cfg(not(target_arch = "wasm32"))]
+fn eye_order_self_check(gpu: &Gpu) {
+    let Some(session) = gpu.xr.as_ref() else {
+        return;
+    };
+    let eye_size = session.eye_size();
+    // Generous relative to the label's own ~13% width (px_canopy=0.045,
+    // xr_composite): this stands in for the canopy warp with plain
+    // screen-space geometry, so the patch has to comfortably outsize
+    // any warp-induced offset, not pin the mark's exact pixel.
+    let patch = (
+        (eye_size.0 as f32 * 0.22).round().max(1.0) as u32,
+        (eye_size.1 as f32 * 0.22).round().max(1.0) as u32,
+    );
+    let mut ok = true;
+    for eye in 0..2 {
+        let Some(texture) = session.acquired_eye_texture(eye) else {
+            ok = false;
+            continue;
+        };
+        let origin_x = if eye == 0 {
+            0
+        } else {
+            eye_size.0.saturating_sub(patch.0)
+        };
+        let fraction =
+            readback_ink_fraction(&gpu.device, &gpu.queue, texture, (origin_x, 0), patch);
+        // A drawn mark lights a clear few percent of its own corner;
+        // total silence there is the eye swap this exists to catch.
+        if fraction < 0.005 {
+            ok = false;
+            log::error!(
+                "VR: eye order self-check: eye {eye}'s own corner has no ink \
+                 (lit fraction {fraction:.4}) — the label may have landed in \
+                 the wrong eye's image"
+            );
+        }
+    }
+    if ok {
+        log::info!("VR: eye order self-check OK");
+    } else {
+        log::error!("VR: eye order self-check FAILED");
+        if gpu.cfg.bench {
+            std::process::exit(9);
+        }
+    }
+}
+
 /// The crop-and-mirror step native VR needs and WebXR gets for free from
 /// the browser's own compositor (`web/xr.js`): cut each eye's true
 /// asymmetric field back out of the wide symmetric pair just rendered
@@ -7044,6 +7297,10 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
         pair.to_window.draw(&mut pass);
     }
     gpu.queue.submit([encoder.finish()]);
+    if label && !gpu.eye_order_checked {
+        gpu.eye_order_checked = true;
+        eye_order_self_check(gpu);
+    }
     // Present (below, in redraw) must never block the XR frame: end_frame
     // — the runtime's own submission — always runs here, before redraw
     // reaches gpu.queue.present(frame).
