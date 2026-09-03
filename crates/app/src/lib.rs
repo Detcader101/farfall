@@ -7138,6 +7138,13 @@ fn eye_order_self_check(gpu: &Gpu) {
     let Some(session) = gpu.xr.as_ref() else {
         return;
     };
+    // A validation error in here (a usage-flag mismatch this class has
+    // now hit twice: the mirror-pair crash, then this self-check's own
+    // first real-runtime run) must read as a failed self-check, not
+    // crash the session it exists to protect — wgpu panics on an
+    // unhandled validation error, so every device call this function
+    // makes is inside this scope.
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let eye_size = session.eye_size();
     // Bounds the mark's own rectangle (LABEL_CORNER_LEFT, LABEL_PX_CANOPY,
     // xr_composite) with wide margin: plain screen-space geometry stands
@@ -7179,6 +7186,10 @@ fn eye_order_self_check(gpu: &Gpu) {
                  the wrong eye's image"
             );
         }
+    }
+    if let Some(e) = pollster::block_on(scope.pop()) {
+        ok = false;
+        log::error!("VR: eye order self-check: a device validation error, not a swapped eye: {e}");
     }
     if ok {
         log::info!("VR: eye order self-check OK");

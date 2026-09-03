@@ -51,6 +51,20 @@ use crate::VrEye;
 const SCALE_MIN: f32 = 0.5;
 const SCALE_MAX: f32 = 1.5;
 
+/// Every wgpu usage a per-eye image is ever asked to support — real or
+/// synthetic — in one place, so a usage-flag panic (this class has now
+/// hit twice: the mirror-pair crash, then the eye-order self-check's
+/// own readback) can't recur a third time from a caller adding a new
+/// use of the eye image without updating every descriptor that builds
+/// one. RENDER_ATTACHMENT: the crop pass draws into it. TEXTURE_BINDING:
+/// the mirror-pair path and the label pass sample it. COPY_SRC: the
+/// eye-order self-check reads a corner back
+/// (`copy_texture_to_buffer`). `eye_texture_usage_covers_every_caller`
+/// pins the exact set this covers.
+const EYE_TEXTURE_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
+    .union(wgpu::TextureUsages::TEXTURE_BINDING)
+    .union(wgpu::TextureUsages::COPY_SRC);
+
 // ---------------------------------------------------------------------
 // Pure maths — the part of this module that runs without a headset, a
 // runtime, or a GPU, and is unit-tested accordingly.
@@ -276,6 +290,22 @@ pub fn synth_head_pose(script: HeadScript, t: f32, bench_seconds: f32) -> (Quat,
 mod pure_math_tests {
     use super::*;
     use std::f32::consts::FRAC_PI_4;
+
+    /// This class of bug has hit twice now: the mirror-pair crash (a
+    /// missing TEXTURE_BINDING), then the eye-order self-check's own
+    /// first real-runtime run (a missing COPY_SRC). Every wgpu usage any
+    /// caller needs from a per-eye image must be a part of
+    /// EYE_TEXTURE_USAGE, or the descriptor that grants it has silently
+    /// fallen out of sync with what actually reads the texture.
+    #[test]
+    fn eye_texture_usage_covers_every_caller() {
+        // xr_composite's crop pass draws into it.
+        assert!(EYE_TEXTURE_USAGE.contains(wgpu::TextureUsages::RENDER_ATTACHMENT));
+        // FARFALL_VR_MIRROR=pair and the L/R label both sample it.
+        assert!(EYE_TEXTURE_USAGE.contains(wgpu::TextureUsages::TEXTURE_BINDING));
+        // The eye-order self-check reads a corner back.
+        assert!(EYE_TEXTURE_USAGE.contains(wgpu::TextureUsages::COPY_SRC));
+    }
 
     #[test]
     fn a_symmetric_fov_gives_matching_left_right_and_up_down_tangents() {
@@ -1261,8 +1291,16 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, RealSession, wgpu::TextureFo
             let handle = session
                 .create_swapchain(&openxr::SwapchainCreateInfo {
                     create_flags: openxr::SwapchainCreateFlags::EMPTY,
+                    // COLOR_ATTACHMENT: the crop pass draws into it.
+                    // SAMPLED: the mirror-pair/label paths sample it.
+                    // TRANSFER_SRC: the eye-order self-check's own
+                    // texture-to-buffer readback — the Vulkan-level
+                    // mirror of EYE_TEXTURE_USAGE's COPY_SRC below; the
+                    // VkImage must allow it before wgpu's own
+                    // TextureUsages::COPY_SRC can mean anything.
                     usage_flags: openxr::SwapchainUsageFlags::COLOR_ATTACHMENT
-                        | openxr::SwapchainUsageFlags::SAMPLED,
+                        | openxr::SwapchainUsageFlags::SAMPLED
+                        | openxr::SwapchainUsageFlags::TRANSFER_SRC,
                     format: vk_format.as_raw() as u32,
                     sample_count: 1,
                     width: eye_size.0,
@@ -1293,7 +1331,8 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, RealSession, wgpu::TextureFo
                         dimension: wgpu::wgt::TextureDimension::D2,
                         format: wgpu_format,
                         usage: wgpu::wgt::TextureUses::COLOR_TARGET
-                            | wgpu::wgt::TextureUses::RESOURCE,
+                            | wgpu::wgt::TextureUses::RESOURCE
+                            | wgpu::wgt::TextureUses::COPY_SRC,
                         memory_flags: hal::MemoryFlags::empty(),
                         view_formats: Vec::new(),
                     };
@@ -1303,13 +1342,13 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, RealSession, wgpu::TextureFo
                         None,
                         hal::vulkan::TextureMemory::External,
                     );
-                    // TEXTURE_BINDING alongside RENDER_ATTACHMENT: the
-                    // mirror-pair path (FARFALL_VR_MIRROR=pair) samples
-                    // these images to build the desktop mirror from
-                    // exactly what the headset receives — the VkImage
-                    // was already created with SAMPLED usage_flags
-                    // above, so wgpu's own validation is what was
-                    // missing, not anything Vulkan itself would refuse.
+                    // EYE_TEXTURE_USAGE: every wgpu usage anything ever
+                    // does with this image (the crop draw,
+                    // mirror-pair/label sampling, the eye-order
+                    // self-check's own readback) — the VkImage/hal_desc
+                    // above already grants the matching Vulkan-level
+                    // usages, so wgpu's own validation is the only thing
+                    // that was ever missing here (twice, now).
                     let texture = wgpu_device.create_texture_from_hal::<hal::api::Vulkan>(
                         hal_texture,
                         &wgpu::TextureDescriptor {
@@ -1323,8 +1362,7 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, RealSession, wgpu::TextureFo
                             sample_count: 1,
                             dimension: wgpu::TextureDimension::D2,
                             format: wgpu_format,
-                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                                | wgpu::TextureUsages::TEXTURE_BINDING,
+                            usage: EYE_TEXTURE_USAGE,
                             view_formats: &[],
                         },
                         wgpu::wgt::TextureUses::UNINITIALIZED,
@@ -1975,7 +2013,7 @@ pub fn init_synth(
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: EYE_TEXTURE_USAGE,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
