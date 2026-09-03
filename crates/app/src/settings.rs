@@ -210,6 +210,24 @@ pub const FPS_FLOOR_CHOICES: [f32; 5] = [0.0, 30.0, 60.0, 90.0, 120.0];
 pub const VR_SCALE_MIN: f32 = 0.5;
 pub const VR_SCALE_MAX: f32 = 1.5;
 
+/// VR TEXT SCALE: a factor on the readout's flat-play angular size, in
+/// VR only (see `Game::text_fov_scale`). Range wide enough either side
+/// of the measured default (`Game::VR_TEXT_SCALE_DEFAULT`) for a pilot
+/// to retune by feel on the actual headset.
+pub const VR_TEXT_SCALE_MIN: f32 = 0.2;
+pub const VR_TEXT_SCALE_MAX: f32 = 3.0;
+/// Measured, not estimated (SPEC §5.3): a real headset capture (a9869ff)
+/// put a glyph at roughly 10° by eye against a 1.2° target — the old
+/// estimate (6.0) was wrong by close to an order of magnitude either
+/// way. This value is what `lib.rs::tests::
+/// the_vr_readout_measures_about_1_2_degrees_a_glyph` computes the app's
+/// own formula needs for exactly 1.2° at an Index-like eye (2740 px,
+/// 110° vertical): that test's own run of the real code puts the OLD
+/// 6.0 at ~5.7°, not the ~10° the screenshot read by eye — a
+/// discrepancy worth Jay Jay's own headset pass to settle, flagged in
+/// the PR, not silently resolved either way.
+pub const VR_TEXT_SCALE_DEFAULT: f32 = 1.27;
+
 /// The landing hoops' spacings on offer, metres.
 pub const LANDING_SPACINGS: [f32; 4] = [100.0, 250.0, 500.0, 1000.0];
 
@@ -240,6 +258,10 @@ pub struct Settings {
     pub vr_headset: bool,
     /// A factor on the OpenXR runtime's recommended per-eye render size.
     pub vr_scale: f32,
+    /// A factor on the readout's own flat-play angular size, in VR only
+    /// (`Game::text_fov_scale`) — see `VR_TEXT_SCALE_MIN`/`MAX` and
+    /// `Game::VR_TEXT_SCALE_DEFAULT`, a measured (not estimated) figure.
+    pub vr_text_scale: f32,
     /// RESUME: pick up where the last session left off (~/.farfall/world.cfg)
     /// on start, and write it on every quit and every 30 s of sim time. Off:
     /// the world file is neither read nor written, and NEW GAME still
@@ -447,6 +469,7 @@ impl Default for Settings {
             vsync: true,
             vr_headset: false,
             vr_scale: 1.0,
+            vr_text_scale: VR_TEXT_SCALE_DEFAULT,
             resume: true,
             bindings: Bindings::default(),
             layout: Layout::default(),
@@ -566,6 +589,7 @@ pub const KEYS: &[&str] = &[
     "graphics.auto-scale",
     "graphics.vr",
     "graphics.vr-scale",
+    "graphics.vr-text-scale",
     "graphics.fov",
     "graphics.fps-floor",
     "graphics.sky",
@@ -872,6 +896,13 @@ impl Settings {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.vr_scale = f.clamp(VR_SCALE_MIN, VR_SCALE_MAX);
+                        }
+                    }
+                }
+                "graphics.vr-text-scale" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.vr_text_scale = f.clamp(VR_TEXT_SCALE_MIN, VR_TEXT_SCALE_MAX);
                         }
                     }
                 }
@@ -1480,6 +1511,10 @@ impl Settings {
             if self.vr_headset { "on" } else { "off" }
         ));
         out.push_str(&format!("graphics.vr-scale = {:.2}\n", self.vr_scale));
+        out.push_str(&format!(
+            "graphics.vr-text-scale = {:.2}\n",
+            self.vr_text_scale
+        ));
         out.push_str(&format!(
             "game.resume = {}\n",
             if self.resume { "on" } else { "off" }

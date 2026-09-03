@@ -26,7 +26,7 @@ use crate::settings::{
     HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
 };
 use crate::settings::{BAY_SCANLINES_MAX, BAY_SIZE_MAX, BAY_SIZE_MIN, EXPOSURE_MAX, EXPOSURE_MIN};
-use crate::settings::{VR_SCALE_MAX, VR_SCALE_MIN};
+use crate::settings::{VR_SCALE_MAX, VR_SCALE_MIN, VR_TEXT_SCALE_MAX, VR_TEXT_SCALE_MIN};
 use crate::stick::{Device, Flight, StickItem};
 use farfall_render::hud::Scrollbar;
 use farfall_render::text::{
@@ -457,6 +457,7 @@ enum Item {
     Vsync,
     VrHeadset,
     VrScale,
+    VrTextScale,
     Resume,
     NewGame,
     Quit,
@@ -593,6 +594,7 @@ impl Item {
             Item::Vsync => "VSYNC",
             Item::VrHeadset => "VR HEADSET",
             Item::VrScale => "VR RENDER SCALE",
+            Item::VrTextScale => "VR TEXT SCALE",
             Item::Resume => "RESUME",
             Item::NewGame => "NEW GAME",
             Item::Quit => "QUIT GAME",
@@ -747,6 +749,7 @@ impl Item {
                 "OPEN INTO A HEADSET NEXT LAUNCH INSTEAD OF THE FLAT VIEW. NEEDS A RESTART."
             }
             Item::VrScale => "A FACTOR ON THE HEADSET'S OWN RECOMMENDED RENDER SIZE.",
+            Item::VrTextScale => "A FACTOR ON THE READOUT'S ANGULAR SIZE, IN VR ONLY.",
             Item::CockpitStick => {
                 "THE STICK AND LEVER ON THE CONSOLE MOVE WITH YOUR OWN DEMAND - HOTAS OR KEYS."
             }
@@ -861,6 +864,7 @@ impl Item {
             Item::AutoScale => one("graphics.auto-scale"),
             Item::VrHeadset => one("graphics.vr"),
             Item::VrScale => one("graphics.vr-scale"),
+            Item::VrTextScale => one("graphics.vr-text-scale"),
             Item::Vsync => one("graphics.vsync"),
             Item::Bind(a) => vec![format!("control.{}", a.key())],
             // A named control's row carries its key and its stick button
@@ -977,6 +981,7 @@ impl Item {
             Item::Vsync => (if s.vsync { "ON" } else { "OFF" }).to_string(),
             Item::VrHeadset => (if s.vr_headset { "ON" } else { "OFF" }).to_string(),
             Item::VrScale => format!("{:.0}%", s.vr_scale * 100.0),
+            Item::VrTextScale => format!("{:.0}%", s.vr_text_scale * 100.0),
             Item::Resume => (if s.resume { "ON" } else { "OFF" }).to_string(),
             Item::NewGame => String::new(),
             Item::Quit => String::new(),
@@ -1325,6 +1330,7 @@ impl Menu {
                 Item::Vsync,
                 Item::VrHeadset,
                 Item::VrScale,
+                Item::VrTextScale,
                 Item::FpsFloor,
                 Item::Fov,
                 Item::Camera,
@@ -1804,6 +1810,13 @@ impl Menu {
                 MenuEvent::Changed(Change::Graphics)
             }
             Item::VrScale => step_f32(&mut s.vr_scale, forward, 0.1, VR_SCALE_MIN, VR_SCALE_MAX),
+            Item::VrTextScale => step_f32(
+                &mut s.vr_text_scale,
+                forward,
+                0.05,
+                VR_TEXT_SCALE_MIN,
+                VR_TEXT_SCALE_MAX,
+            ),
             Item::Resume => {
                 s.resume = !s.resume;
                 MenuEvent::Changed(Change::Graphics)
