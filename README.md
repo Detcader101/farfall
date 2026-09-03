@@ -10,12 +10,22 @@ a custom wgpu renderer with a procedural starfield at MSAA 4x, CI on two platfor
 and the living spec. Not yet a game — deliberately (see the milestones in
 [SPEC.md](SPEC.md) §9).
 
+## Editions
+
+One codebase, two editions of the same game — see [docs/EDITIONS.md](docs/EDITIONS.md):
+
+- **NATIVE** — a single-player exe for Windows, macOS and Linux; HOTAS out of the box; native OpenXR VR (`fable/vr`). `cargo run --release -p farfall-app`.
+- **WEB** — the GitHub Pages build at **https://detcader101.github.io/farfall/**: wasm, WebXR VR in the page, and the multiplayer edition (host peer-to-peer over the deterministic sim with a ShedNet-hosted Europe relay — [docs/PLAN-MULTIPLAYER.md](docs/PLAN-MULTIPLAYER.md)). `./web/build.sh`.
+
+The sim, the renderer, every shader and every settings file are shared; only the shell, the input poll, the XR seam and the netcode differ.
+
 ## Read this first
 
 | Doc | What it is |
 |---|---|
 | [SPEC.md](SPEC.md) | The living specification: pillars, architecture, doctrines, milestones. **Changes here before code.** |
 | [TASKS.md](TASKS.md) | Current milestone broken into cold-startable, tests-first tasks. |
+| [docs/EDITIONS.md](docs/EDITIONS.md) | The two editions — NATIVE (single-player, OpenXR) and WEB (Pages, WebXR, multiplayer) — what is shared and what differs. |
 | [docs/RESEARCH-2026-08.md](docs/RESEARCH-2026-08.md) | The stack/license/WebXR research this project is built on (verified 2026-08-19). |
 
 ## Quickstart
