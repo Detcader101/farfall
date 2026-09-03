@@ -265,8 +265,11 @@ fn rows(c: char) -> [&'static str; GLYPH_H] {
     }
 }
 
-/// A glyph's rows as bit masks: bit 0 is the leftmost column.
-fn glyph(c: char) -> [u8; GLYPH_H] {
+/// A glyph's rows as bit masks: bit 0 is the leftmost column. Public so
+/// a caller that has rasterised a glyph some other way (the VR
+/// eye-order self-check's own pixel readback, say) can mask-compare
+/// against the font's own reference shape instead of re-deriving it.
+pub fn glyph(c: char) -> [u8; GLYPH_H] {
     let mut out = [0u8; GLYPH_H];
     for (row, line) in rows(c).iter().enumerate() {
         for (col, ch) in line.bytes().enumerate() {

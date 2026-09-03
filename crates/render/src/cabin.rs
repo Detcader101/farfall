@@ -1268,4 +1268,48 @@ mod tests {
              {hit_flat:?} vs {old_hit:?}"
         );
     }
+
+    /// The machine test for "the eyes are the wrong way round" (SPEC
+    /// §5.3): not merely that the two eyes hit different points on the
+    /// dash (the test above), but that the *sign* of the difference is
+    /// real, physically-correct crossed disparity, not its mirror
+    /// image. `dial_hit`'s own algebra (`hit = eye + ray*t - centre`)
+    /// moves a fixed ray's own hit point in the SAME direction the eye
+    /// moves; by the inverse relationship that is exactly what crossed
+    /// disparity is — a FIXED dash point's apparent bearing shifts
+    /// AWAY from an eye that has moved TOWARD it (the eye passed the
+    /// point on its own side), so a real left eye (more negative x)
+    /// must resolve a straight-ahead ray to a hit LEFT of where a real
+    /// right eye's own straight-ahead ray resolves it. Getting eye 0
+    /// and eye 1 backwards anywhere upstream (the runtime's own view
+    /// order, or a sign flipped in this maths) would show up here as
+    /// the two hits swapping sides, not merely moving.
+    #[test]
+    fn a_dash_point_shows_crossed_not_uncrossed_disparity() {
+        // Roughly the dash's own real depth from the pilot's seat, not
+        // a synthetic distance — DASH_C sits about 1.2 m from the
+        // ship's origin, close enough to the "0.6-0.9 m dash" the
+        // comfort review's own capture reasoned from.
+        let down = anchor_direction([0.0, -0.6], 0.55, 1.5);
+        let ipd = 0.064;
+        let left_eye = Vec3::new(-ipd / 2.0, 0.0, 0.0); // eye 0, the real left
+        let right_eye = Vec3::new(ipd / 2.0, 0.0, 0.0); // eye 1, the real right
+        let left = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.0, left_eye).unwrap();
+        let right =
+            Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.0, right_eye).unwrap();
+        // A straight-ahead ray (ndc = 0) from each eye's own seat.
+        let hit_left = dial_hit(&left, [0.0, 0.0], 1.5);
+        let hit_right = dial_hit(&right, [0.0, 0.0], 1.5);
+        assert!(
+            hit_left.x < hit_right.x,
+            "eye 0 (left, x={:+.4}) must resolve its own straight-ahead ray to a hit \
+             LEFT of eye 1's (right, x={:+.4}) — crossed disparity: hit_left={:?} \
+             hit_right={:?}. If this is reversed, the eyes read as swapped no matter \
+             what the runtime itself reports.",
+            left_eye.x,
+            right_eye.x,
+            hit_left,
+            hit_right,
+        );
+    }
 }
