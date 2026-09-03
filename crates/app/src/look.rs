@@ -209,9 +209,86 @@ pub fn reproject_with(
     [v.x / (depth * t * aspect), v.y / (depth * t)]
 }
 
+/// [`reproject_with`], plus the per-eye parallax a VR overlay needs to
+/// actually sit ON the glass instead of at optical infinity (SPEC §5.3):
+/// `eye_pos` is the eye's own seat offset (zero in flat flight, where
+/// this is a no-op — the whole point) and `hud_distance` the assumed
+/// distance, metres, of the virtual plane the overlay is painted on. A
+/// world-fixed point at that distance appears shifted, in tangent space,
+/// by the eye's own offset divided by the distance — the same reasoning
+/// a rangefinder or a car's near wing mirror uses — so both eyes
+/// converge on the same plane instead of each drawing it at the
+/// rotation-only position `reproject_with` alone gives, which is exactly
+/// the mismatch that reads as "a close, obscuring plane": everything
+/// ray-marched around it has real depth, and an unshifted overlay does
+/// not.
+pub fn reproject_with_eye(
+    head: Quat,
+    eye_pos: Vec3,
+    hud_distance: f32,
+    ndc: [f32; 2],
+    tan_half_ref: f32,
+    tan_half_fov: f32,
+    aspect: f32,
+) -> [f32; 2] {
+    let [x, y] = reproject_with(head, ndc, tan_half_ref, tan_half_fov, aspect);
+    let t = tan_half_fov.max(1e-4);
+    let d = hud_distance.max(0.05);
+    [x - eye_pos.x / (d * t * aspect), y - eye_pos.y / (d * t)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_zero_eye_offset_reproduces_reproject_with_exactly() {
+        let head = Quat::from_rotation_y(0.3);
+        let ndc = [0.2, -0.1];
+        let plain = reproject_with(head, ndc, 0.7, 0.6, 1.6);
+        let with_eye = reproject_with_eye(head, Vec3::ZERO, 1.0, ndc, 0.7, 0.6, 1.6);
+        assert_eq!(
+            plain, with_eye,
+            "eye_pos = 0 must be a no-op — the flat path"
+        );
+    }
+
+    #[test]
+    fn two_eyes_a_metre_from_the_glass_differ_by_ipd_over_distance() {
+        let head = Quat::IDENTITY;
+        let ndc = [0.0, 0.0];
+        let (tan_half_ref, tan_half_fov, aspect, d) = (0.7, 0.6, 1.6, 1.0);
+        let ipd = 0.064; // a stock 64mm IPD
+        let left = reproject_with_eye(
+            head,
+            Vec3::new(-ipd / 2.0, 0.0, 0.0),
+            d,
+            ndc,
+            tan_half_ref,
+            tan_half_fov,
+            aspect,
+        );
+        let right = reproject_with_eye(
+            head,
+            Vec3::new(ipd / 2.0, 0.0, 0.0),
+            d,
+            ndc,
+            tan_half_ref,
+            tan_half_fov,
+            aspect,
+        );
+        // Tangent-space separation is ipd/d; converted to this NDC by
+        // the same (t * aspect) reproject_with_eye itself divides by.
+        let expected_ndc_gap = (ipd / d) / (tan_half_fov * aspect);
+        assert!(
+            (left[0] - right[0]).abs() - expected_ndc_gap < 1e-5,
+            "left={left:?} right={right:?} expected gap {expected_ndc_gap}"
+        );
+        assert_eq!(
+            left[1], right[1],
+            "no vertical offset for a level, centred IPD"
+        );
+    }
 
     #[test]
     fn mouse_does_nothing_unless_engaged() {
