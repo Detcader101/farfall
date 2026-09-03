@@ -105,6 +105,40 @@ fn yaw_only(q: Quat) -> Quat {
     Quat::from_rotation_y(yaw)
 }
 
+/// Compose a pose given in some space's own frame with that space's own
+/// pose in an ambient one, giving the first pose in the ambient frame —
+/// ordinary rigid-transform composition. Recentring a session that was
+/// already recentred needs this: OpenXR's `pose_in_reference_space`
+/// (`XrSession::recentre` below) is always relative to the *runtime's*
+/// own natural LOCAL origin, never to whichever LOCAL space happens to
+/// be current, so a second recentre that skipped this would drift —
+/// composing onto the current space's own located pose is what keeps a
+/// long session's repeated recentres exact instead of compounding.
+pub fn compose_pose(outer: (Quat, Vec3), inner: (Quat, Vec3)) -> (Quat, Vec3) {
+    let (oq, op) = outer;
+    let (iq, ip) = inner;
+    (oq * iq, op + oq * ip)
+}
+
+/// The UV rectangle to sample from the rendered pair (both eyes, side by
+/// side, left eye's half first) for eye `eye`'s crop into its own
+/// OpenXR swapchain image: that eye's own half of the pair (eye 0 ↔
+/// u∈[0,0.5], eye 1 ↔ u∈[0.5,1] — matching the render loop's own
+/// `set_viewport((eye * ew), ...)`, `redraw` in lib.rs) composed with
+/// its own [`cutout_uv`] crop, from its own tangents. Eye identity is
+/// never re-derived here — `eyes[eye]` is trusted, so the only place
+/// that can mismatch it is the caller passing the wrong `eyes` array.
+pub fn pair_source_rect(eye: usize, eyes: &[VrEye; 2]) -> [f32; 4] {
+    let local = cutout_uv(eyes[eye].tan);
+    let eye_u0 = eye as f32 * 0.5;
+    [
+        eye_u0 + local[0] * 0.5,
+        local[1],
+        eye_u0 + local[2] * 0.5,
+        local[3],
+    ]
+}
+
 /// A centred, aspect-preserving viewport of `content`'s own shape within
 /// a `window`-sized destination — the mirror's letterbox, since the
 /// window is resizable independently of the headset's own eye size.
@@ -197,6 +231,48 @@ mod pure_math_tests {
     }
 
     #[test]
+    fn composing_onto_the_identity_space_changes_nothing() {
+        let inner = (Quat::from_rotation_y(0.4), Vec3::new(1.0, 2.0, 3.0));
+        let (q, p) = compose_pose((Quat::IDENTITY, Vec3::ZERO), inner);
+        assert!(q.angle_between(inner.0) < 1e-6);
+        assert!((p - inner.1).length() < 1e-6);
+    }
+
+    #[test]
+    fn composing_two_pure_translations_adds_them() {
+        let outer = (Quat::IDENTITY, Vec3::new(5.0, 0.0, 0.0));
+        let inner = (Quat::IDENTITY, Vec3::new(0.0, 0.0, 2.0));
+        let (q, p) = compose_pose(outer, inner);
+        assert!(q.angle_between(Quat::IDENTITY) < 1e-6);
+        assert!((p - Vec3::new(5.0, 0.0, 2.0)).length() < 1e-6);
+    }
+
+    #[test]
+    fn a_recentred_space_composed_again_is_the_second_recentres_own_seat() {
+        // Recentre once (yaw 90 degrees, moved 1m on X) — this is the
+        // pose a *second* recentre must land on, expressed in the
+        // runtime's own natural origin, given the same head pose again
+        // relative to the now-current (already-recentred) space.
+        let first = (Quat::from_rotation_y(std::f32::consts::FRAC_PI_2), Vec3::X);
+        // A second recentre with the head dead ahead and unmoved,
+        // relative to the space `first` established, must land exactly
+        // back on `first` itself in natural terms — recentring twice
+        // with no head motion between them is a no-op.
+        let (q, p) = compose_pose(first, (Quat::IDENTITY, Vec3::ZERO));
+        // `Quat::angle_between` is glam's `acos_approx`, not exact acos —
+        // it reads a few tenths of a degree off zero even for the same
+        // value composed with itself, so the tolerance here is looser
+        // than the other pure-math tests', which never round-trip
+        // through it this way.
+        assert!(
+            q.angle_between(first.0) < 1e-3,
+            "q={q:?} first.0={:?}",
+            first.0
+        );
+        assert!((p - first.1).length() < 1e-6);
+    }
+
+    #[test]
     fn a_window_the_same_shape_as_its_content_fills_it_exactly() {
         let (x, y, w, h) = letterbox((1000, 500), (2000, 1000));
         assert_eq!((x, y, w, h), (0, 0, 1000, 500));
@@ -217,6 +293,69 @@ mod pure_math_tests {
         assert_eq!((x, w), (0, 400), "fills the window's width");
         assert!(y > 0 && h < 800, "{y},{h}");
         assert_eq!(y * 2 + h, 800, "centred");
+    }
+
+    /// Two distinguishable eyes: index 0 skewed wide on its own left
+    /// (as a real left eye's outboard/temporal edge is), index 1 wide
+    /// on its own right — so a mismatch (either eye's crop coming from
+    /// the wrong half, or from the other eye's fov) shows up as a wrong
+    /// *shape* of crop, not just a wrong number.
+    fn distinguishable_eyes() -> [VrEye; 2] {
+        let e = |tan: [f32; 4]| VrEye {
+            head: Quat::IDENTITY,
+            pos: Vec3::ZERO,
+            tan,
+        };
+        [e([2.0, 1.0, 1.0, 1.0]), e([1.0, 2.0, 1.0, 1.0])]
+    }
+
+    #[test]
+    fn eye_0s_crop_samples_the_pairs_left_half() {
+        let eyes = distinguishable_eyes();
+        let rect = pair_source_rect(0, &eyes);
+        assert!(
+            rect[0] >= 0.0 && rect[2] <= 0.5,
+            "{rect:?} left of the midline"
+        );
+    }
+
+    #[test]
+    fn eye_1s_crop_samples_the_pairs_right_half() {
+        let eyes = distinguishable_eyes();
+        let rect = pair_source_rect(1, &eyes);
+        assert!(
+            rect[0] >= 0.5 && rect[2] <= 1.0,
+            "{rect:?} right of the midline"
+        );
+    }
+
+    #[test]
+    fn each_eyes_crop_uses_that_same_eyes_own_fov_not_the_others() {
+        let eyes = distinguishable_eyes();
+        // Eye 0's tan is wider on its own left (index 0 of its tan):
+        // within its own half, its crop should touch that half's own
+        // left edge (u local 0) and stop short on the right — the
+        // mirror-image shape `a_wider_left_frustum_...` already pins
+        // for `cutout_uv` alone. If eye 1's tan (wide on ITS right) were
+        // used instead, the crop would touch the OTHER edge.
+        let rect0 = pair_source_rect(0, &eyes);
+        assert!(
+            (rect0[0] - 0.0).abs() < 1e-6,
+            "{rect0:?}: eye 0 should touch u=0"
+        );
+        assert!(
+            rect0[2] < 0.5 - 1e-6,
+            "{rect0:?}: eye 0 should stop short of the midline"
+        );
+        let rect1 = pair_source_rect(1, &eyes);
+        assert!(
+            (rect1[2] - 1.0).abs() < 1e-6,
+            "{rect1:?}: eye 1 should touch u=1"
+        );
+        assert!(
+            rect1[0] > 0.5 + 1e-6,
+            "{rect1:?}: eye 1 should start past the midline"
+        );
     }
 }
 
@@ -312,12 +451,19 @@ pub struct XrSession {
     frame_wait: openxr::FrameWaiter,
     frame_stream: openxr::FrameStream<openxr::Vulkan>,
     space: openxr::Space,
+    /// The runtime's own, never-recentred LOCAL origin — see the note at
+    /// its creation in `try_init`.
+    natural_local: openxr::Space,
     blend_mode: openxr::EnvironmentBlendMode,
     eyes: [EyeSwapchain; 2],
     eye_size: (u32, u32),
     event_storage: openxr::EventDataBuffer,
     session_running: bool,
     frame_open: bool,
+    /// Set once the first located frame has logged its diagnostic line
+    /// (see `begin_frame`) — never repeated, so a long session's log
+    /// isn't spammed once a frame.
+    logged_eye_diagnostic: bool,
     predicted_display_time: openxr::Time,
     /// The last frame's views, held so `end_frame` can build the
     /// composition layer after the caller has rendered.
@@ -586,9 +732,18 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
 
         // LOCAL: gravity-level, seated at session start — exactly the
         // ship's own frame (+X right, +Y up, −Z the nose), no fix-up.
+        // `natural_local` is a second handle on that exact same origin,
+        // kept for the life of the session so a recentre — which always
+        // has to land relative to *it*, never to whichever LOCAL space
+        // happens to be current — can locate the current one against it
+        // and compose (`compose_pose`) instead of drifting on a second
+        // recentre.
         let space = session
             .create_reference_space(openxr::ReferenceSpaceType::LOCAL, openxr::Posef::IDENTITY)
             .map_err(|e| Error::Session(format!("create_reference_space: {e}")))?;
+        let natural_local = session
+            .create_reference_space(openxr::ReferenceSpaceType::LOCAL, openxr::Posef::IDENTITY)
+            .map_err(|e| Error::Session(format!("create_reference_space (natural): {e}")))?;
 
         let view_configs = xr_instance
             .enumerate_view_configuration_views(system, VIEW_TYPE)
@@ -708,12 +863,14 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
             frame_wait,
             frame_stream,
             space,
+            natural_local,
             blend_mode,
             eyes,
             eye_size,
             event_storage: openxr::EventDataBuffer::new(),
             session_running: false,
             frame_open: false,
+            logged_eye_diagnostic: false,
             predicted_display_time: openxr::Time::from_nanos(0),
             last_views: [openxr::View {
                 pose: openxr::Posef::IDENTITY,
@@ -836,6 +993,23 @@ impl XrSession {
                 ),
             }
         });
+        // A one-shot diagnostic, not a guess: view 0 is the eye array
+        // index every downstream mapping (the pair's left half, the
+        // left OpenXR swapchain, the left composition-layer view) is
+        // built to mean "left" — per spec, guaranteed, but never
+        // confirmed against this specific runtime/headset until it is
+        // actually worn. If eye 0's X here is not the more negative of
+        // the two, that is the runtime disagreeing with the spec, not a
+        // bug in the mapping itself; see SPEC §5.3.
+        if !self.logged_eye_diagnostic {
+            self.logged_eye_diagnostic = true;
+            log::info!(
+                "VR: eye 0 (should be left) x={:+.4}m, eye 1 (should be right) x={:+.4}m \
+                 — eye 0 should be the more negative",
+                eyes[0].pos.x,
+                eyes[1].pos.x,
+            );
+        }
         Frame::Open {
             should_render: true,
             eyes,
@@ -911,13 +1085,44 @@ impl XrSession {
     /// (SPEC §5.3; see [`recentre_pose`]). Only meaningful once a frame
     /// has located a head; a call before then is a harmless no-op.
     pub fn recentre(&mut self, head: VrEye) {
-        let (yaw, pos) = recentre_pose(head.head, head.pos);
+        // `head` is already relative to `self.space`, which may itself
+        // be an earlier recentre — but `create_reference_space`'s pose
+        // is always relative to the runtime's *natural* LOCAL origin.
+        // Locate the current space against that natural one and compose
+        // (`compose_pose`) onto it, so a second recentre lands exactly
+        // instead of drifting by however far the first one moved.
+        let located = match self
+            .space
+            .locate(&self.natural_local, self.predicted_display_time)
+        {
+            Ok(l) => l,
+            Err(e) => {
+                log::warn!("VR: recentre: locate (current space in natural): {e}");
+                return;
+            }
+        };
+        let space_in_natural = (
+            Quat::from_xyzw(
+                located.pose.orientation.x,
+                located.pose.orientation.y,
+                located.pose.orientation.z,
+                located.pose.orientation.w,
+            )
+            .normalize(),
+            Vec3::new(
+                located.pose.position.x,
+                located.pose.position.y,
+                located.pose.position.z,
+            ),
+        );
+        let head_in_space = recentre_pose(head.head, head.pos);
+        let (q, pos) = compose_pose(space_in_natural, head_in_space);
         let pose = openxr::Posef {
             orientation: openxr::Quaternionf {
-                x: yaw.x,
-                y: yaw.y,
-                z: yaw.z,
-                w: yaw.w,
+                x: q.x,
+                y: q.y,
+                z: q.z,
+                w: q.w,
             },
             position: openxr::Vector3f {
                 x: pos.x,
