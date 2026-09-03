@@ -464,6 +464,13 @@ pub struct XrSession {
     /// (see `begin_frame`) — never repeated, so a long session's log
     /// isn't spammed once a frame.
     logged_eye_diagnostic: bool,
+    /// Whether the runtime itself asked for this frame's content
+    /// (`XrFrameState::should_render`), consulted by `end_frame`: a
+    /// forced render (bench, a desk-side capture) always renders the
+    /// pair, but only *submits* it to the OpenXR swapchain — a real
+    /// `CompositionLayerProjection` rather than an empty layer list —
+    /// when the runtime actually asked for it.
+    runtime_wants_this_frame: bool,
     predicted_display_time: openxr::Time,
     /// The last frame's views, held so `end_frame` can build the
     /// composition layer after the caller has rendered.
@@ -871,6 +878,7 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
             session_running: false,
             frame_open: false,
             logged_eye_diagnostic: false,
+            runtime_wants_this_frame: false,
             predicted_display_time: openxr::Time::from_nanos(0),
             last_views: [openxr::View {
                 pose: openxr::Posef::IDENTITY,
@@ -905,7 +913,18 @@ impl XrSession {
     /// block for it (`FrameWaiter::wait`) and open it
     /// (`FrameStream::begin`). Every `Open` result must be matched by
     /// [`Self::end_frame`] or [`Self::skip_frame`] before the next call.
-    pub fn begin_frame(&mut self) -> Frame {
+    ///
+    /// `force_render`: render (and return `should_render: true`) even
+    /// when the runtime's own `should_render` is false — a bench run or
+    /// a desk-side capture needs a picture whether the compositor
+    /// currently wants one submitted or not (the session commonly sits
+    /// VISIBLE-but-unfocused with the headset on the desk, which is not
+    /// the same as `should_render` being false, but this covers the
+    /// case even if it is). The frame is still rendered either way;
+    /// `end_frame` alone decides, from what the runtime actually asked
+    /// for, whether to submit it as a real composition layer or an
+    /// empty one — never sending a layer the runtime didn't ask for.
+    pub fn begin_frame(&mut self, force_render: bool) -> Frame {
         loop {
             match self.instance.poll_event(&mut self.event_storage) {
                 Ok(Some(openxr::Event::SessionStateChanged(e))) => match e.state() {
@@ -948,15 +967,27 @@ impl XrSession {
         }
         self.frame_open = true;
         self.predicted_display_time = state.predicted_display_time;
-        if !state.should_render {
-            return Frame::Open {
-                should_render: false,
-                eyes: [VrEye {
-                    head: Quat::IDENTITY,
-                    pos: Vec3::ZERO,
-                    tan: [1.0, 1.0, 1.0, 1.0],
-                }; 2],
-            };
+        self.runtime_wants_this_frame = state.should_render;
+        // No render this call, one way or another: `nothing_to_render`
+        // is the one payload for every "skip, but the frame is still
+        // open and must still be matched by end_frame/skip_frame" case
+        // below — should_render was false and nothing forced it anyway,
+        // or locate_views could not be trusted. None of these tear the
+        // session down (that is Frame::Lost's job, for the runtime
+        // actually going away); a frame that briefly can't be located is
+        // not a lost session, and reusing last frame's stale views to
+        // render anyway is exactly the kind of thing that reads as
+        // "wrong" once it is worn.
+        let nothing_to_render = || Frame::Open {
+            should_render: false,
+            eyes: [VrEye {
+                head: Quat::IDENTITY,
+                pos: Vec3::ZERO,
+                tan: [1.0, 1.0, 1.0, 1.0],
+            }; 2],
+        };
+        if !state.should_render && !force_render {
+            return nothing_to_render();
         }
         let (_flags, views) =
             match self
@@ -965,13 +996,18 @@ impl XrSession {
             {
                 Ok(v) => v,
                 Err(e) => {
-                    log::warn!("VR: locate_views: {e}");
-                    return Frame::Lost;
+                    log::warn!("VR: locate_views: {e}; skipping this frame");
+                    self.runtime_wants_this_frame = false;
+                    return nothing_to_render();
                 }
             };
         if views.len() < 2 {
-            log::warn!("VR: runtime offered {} views, need 2", views.len());
-            return Frame::Lost;
+            log::warn!(
+                "VR: runtime offered {} views, need 2; skipping this frame",
+                views.len()
+            );
+            self.runtime_wants_this_frame = false;
+            return nothing_to_render();
         }
         self.last_views = [views[0], views[1]];
         let eyes = std::array::from_fn(|i| {
@@ -1033,8 +1069,14 @@ impl XrSession {
         self.eyes[eye].acquire()
     }
 
-    /// Release both swapchain images and end the frame with a stereo
-    /// projection layer at this frame's located poses/fovs.
+    /// Release both swapchain images and end the frame — with a stereo
+    /// projection layer at this frame's located poses/fovs when the
+    /// runtime actually asked for one (`should_render` was true), or
+    /// with none at all when it was a forced render (bench, a desk-side
+    /// capture) the runtime itself did not request: the swapchain images
+    /// are still cropped and released above, so the pair, the mirror
+    /// and any capture still have a real frame to show, but nothing is
+    /// submitted to a compositor that did not ask for it.
     pub fn end_frame(&mut self) {
         for e in &mut self.eyes {
             e.release();
@@ -1043,6 +1085,15 @@ impl XrSession {
             return;
         }
         self.frame_open = false;
+        if !self.runtime_wants_this_frame {
+            if let Err(e) = self
+                .frame_stream
+                .end(self.predicted_display_time, self.blend_mode, &[])
+            {
+                log::warn!("VR: frame_stream.end (forced render, no layer): {e}");
+            }
+            return;
+        }
         let rect = openxr::Rect2Di {
             offset: openxr::Offset2Di { x: 0, y: 0 },
             extent: openxr::Extent2Di {
