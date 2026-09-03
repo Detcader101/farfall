@@ -1232,6 +1232,16 @@ struct Gpu {
     /// labelled composite, not every frame.
     #[cfg(not(target_arch = "wasm32"))]
     eye_order_checked: bool,
+    /// Set once the stereo-disparity self-check has run — a full-image
+    /// GPU readback, once per session, not every frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    stereo_checked: bool,
+    /// Set once both eyes have logged their trace line (FARFALL_BENCH=1
+    /// only) — the exact per-eye pos/eye_ship/cabin-eye/glass-eye values
+    /// at the point each is written, for tracing a comfort bug without
+    /// guessing from the outside.
+    #[cfg(not(target_arch = "wasm32"))]
+    vr_eye_traced: [bool; 2],
     /// Set once the overlay-depth self-check has logged its measured
     /// per-eye tangent shift (`update_instruments`, which only takes
     /// `&self`) — a pure measurement, but only worth a log line once a
@@ -6422,6 +6432,10 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             eye_order_checked: false,
             #[cfg(not(target_arch = "wasm32"))]
+            stereo_checked: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            vr_eye_traced: [false; 2],
+            #[cfg(not(target_arch = "wasm32"))]
             overlay_depth_logged: std::cell::Cell::new(false),
             post,
             blit,
@@ -7376,6 +7390,134 @@ fn eye_order_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
     }
 }
 
+/// The machine test for "both eyes are rendering from one viewpoint" —
+/// a synth capture caught exactly that (a stereo headset showing a mono
+/// cabin: the dash, dial housings and gyro ball pixel-identical between
+/// the two eyes, traced to `CabinPass`'s own progressive-refinement
+/// cache treating an eye switch as "the view didn't move" — fixed
+/// alongside this check, see `CabinUniforms::view_moved`). On the first
+/// composite, diffs the two eyes' own swapchain images pixel-for-pixel
+/// (excluding the label's own corner boxes when FARFALL_VR_LABEL=1) and
+/// requires at least 2% of pixels to differ: at any real dash distance
+/// and a stock IPD, a genuine stereo render disagrees on far more than
+/// that everywhere the dash, the dials or the gyro ball show. Logs the
+/// measured percentage either way; exits 9 under FARFALL_BENCH=1 if
+/// it's under the floor.
+#[cfg(not(target_arch = "wasm32"))]
+fn stereo_disparity_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
+    let Some(session) = gpu.xr.as_ref() else {
+        return;
+    };
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let eye_size = session.eye_size();
+    let label_boxes: Vec<((u32, u32), (u32, u32))> = if gpu.cfg.vr_label {
+        (0..2)
+            .map(|eye| {
+                let (anchor, px) = label_geometry(eye, eyes);
+                let width_ndc = farfall_render::text::ADVANCE as f32 * px;
+                let height_ndc = farfall_render::text::GLYPH_H as f32 * px;
+                let margin = 1.6;
+                let to_px = |nx: f32, ny: f32| -> (i64, i64) {
+                    (
+                        ((nx + 1.0) / 2.0 * eye_size.0 as f32) as i64,
+                        ((1.0 - ny) / 2.0 * eye_size.1 as f32) as i64,
+                    )
+                };
+                let cx = anchor[0] + width_ndc / 2.0;
+                let cy = anchor[1] - height_ndc / 2.0;
+                let (x0, y0) = to_px(
+                    cx - width_ndc / 2.0 * margin,
+                    cy + height_ndc / 2.0 * margin,
+                );
+                let (x1, y1) = to_px(
+                    cx + width_ndc / 2.0 * margin,
+                    cy - height_ndc / 2.0 * margin,
+                );
+                let clamp_x = |v: i64| v.clamp(0, eye_size.0 as i64 - 1) as u32;
+                let clamp_y = |v: i64| v.clamp(0, eye_size.1 as i64 - 1) as u32;
+                let (ox, oy) = (clamp_x(x0.min(x1)), clamp_y(y0.min(y1)));
+                let (ex, ey) = (clamp_x(x0.max(x1)), clamp_y(y0.max(y1)));
+                ((ox, oy), ((ex - ox).max(1), (ey - oy).max(1)))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let textures = [
+        session.acquired_eye_texture(0),
+        session.acquired_eye_texture(1),
+    ];
+    let (Some(t0), Some(t1)) = (textures[0], textures[1]) else {
+        log::error!("VR: stereo disparity self-check: an eye's own texture is unavailable");
+        if gpu.cfg.bench {
+            std::process::exit(9);
+        }
+        return;
+    };
+    let bytes = [
+        readback_patch(&gpu.device, &gpu.queue, t0, (0, 0), eye_size),
+        readback_patch(&gpu.device, &gpu.queue, t1, (0, 0), eye_size),
+    ];
+    let (Some(b0), Some(b1)) = (&bytes[0], &bytes[1]) else {
+        log::error!("VR: stereo disparity self-check: a full-eye readback failed");
+        if gpu.cfg.bench {
+            std::process::exit(9);
+        }
+        return;
+    };
+    let mut differing = 0u64;
+    let mut total = 0u64;
+    for y in 0..eye_size.1 {
+        for x in 0..eye_size.0 {
+            if label_boxes
+                .iter()
+                .any(|&((ox, oy), (sw, sh))| x >= ox && x < ox + sw && y >= oy && y < oy + sh)
+            {
+                continue;
+            }
+            let idx = ((y * eye_size.0 + x) * 4) as usize;
+            if idx + 4 > b0.len() || idx + 4 > b1.len() {
+                continue;
+            }
+            total += 1;
+            let d: u32 = b0[idx..idx + 4]
+                .iter()
+                .zip(&b1[idx..idx + 4])
+                .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs())
+                .sum();
+            // A modest per-channel-sum threshold: past ordinary sRGB
+            // dithering/rounding noise, well below "a different pixel
+            // of the scene."
+            if d > 24 {
+                differing += 1;
+            }
+        }
+    }
+    let pct = if total == 0 {
+        0.0
+    } else {
+        differing as f64 / total as f64 * 100.0
+    };
+    log::info!(
+        "VR: stereo disparity self-check: {pct:.2}% of pixels differ between the two eyes \
+         ({differing} of {total}, label boxes excluded)"
+    );
+    let mut ok = pct >= 2.0;
+    if !ok {
+        log::error!(
+            "VR: stereo disparity self-check FAILED: only {pct:.2}% differ (want >= 2%) — \
+             the two eyes may be rendering from one viewpoint"
+        );
+    }
+    if let Some(e) = pollster::block_on(scope.pop()) {
+        ok = false;
+        log::error!("VR: stereo disparity self-check: a device validation error: {e}");
+    }
+    if !ok && gpu.cfg.bench {
+        std::process::exit(9);
+    }
+}
+
 /// The crop-and-mirror step native VR needs and WebXR gets for free from
 /// the browser's own compositor (`web/xr.js`): cut each eye's true
 /// asymmetric field back out of the wide symmetric pair just rendered
@@ -7546,6 +7688,10 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
     if label && !gpu.eye_order_checked {
         gpu.eye_order_checked = true;
         eye_order_self_check(gpu, &eyes);
+    }
+    if !gpu.stereo_checked {
+        gpu.stereo_checked = true;
+        stereo_disparity_self_check(gpu, &eyes);
     }
     // Present (below, in redraw) must never block the XR frame: end_frame
     // — the runtime's own submission — always runs here, before redraw
@@ -8057,6 +8203,26 @@ fn redraw(
             gpu.passes.cabin.ensure(&gpu.device, sw, sh);
             let (cu, bu) = game.cabin_uniforms(&cam);
             let cu = cu.with_eye(pose.eye_ship.as_vec3());
+            // FARFALL_BENCH=1: the exact per-eye values at the point
+            // each uniform is actually written, once per eye — tracing
+            // a comfort bug from the log instead of guessing at it from
+            // outside (SPEC §5.3).
+            #[cfg(not(target_arch = "wasm32"))]
+            if gpu.cfg.bench && game.vr.is_some() && !gpu.vr_eye_traced[eye as usize] {
+                gpu.vr_eye_traced[eye as usize] = true;
+                let vr_pos = game
+                    .vr
+                    .as_ref()
+                    .map(|vr| vr.eyes[game.vr_eye.min(1)].pos)
+                    .unwrap_or(Vec3::ZERO);
+                log::info!(
+                    "VR: eye {eye} pos={:?} eye_ship={:?} cabin.eye={:?} glass_eye={:?}",
+                    vr_pos,
+                    pose.eye_ship,
+                    cu.eye_xyz(),
+                    game.glass_eye_pos(),
+                );
+            }
             gpu.passes.cabin.update(&gpu.queue, &mut encoder, &cu, &bu);
         }
         {
@@ -9174,6 +9340,68 @@ mod tests {
             tan: [1.4, 0.7, 0.6, 0.5],
         };
         VrView { eyes: [eye, eye] }
+    }
+
+    /// A headset with its two eyes at genuinely different seats, a
+    /// stock 64mm IPD split about the origin — every other VR test
+    /// helper in this file (`vr_view_facing`, `canted_vr_view`) puts the
+    /// SAME eye in both array slots, which cannot catch a bug where the
+    /// live per-eye position never actually reaches the draw.
+    fn vr_view_stereo() -> VrView {
+        let ipd = 0.064;
+        let e = |x: f32| VrEye {
+            head: Quat::IDENTITY,
+            pos: Vec3::new(x, 0.0, 0.0),
+            tan: [1.0, 1.0, 1.0, 1.0],
+        };
+        VrView {
+            eyes: [e(-ipd / 2.0), e(ipd / 2.0)],
+        }
+    }
+
+    /// SPEC §5.3, the comfort bug a synth capture caught: a pixel diff
+    /// of the two eyes' own renders showed 0% difference outside the
+    /// label glyphs — dash, dials, gyro ball, readout, all pixel-
+    /// identical, meaning `pose()` was suspected of handing both eye
+    /// iterations the same `eye_ship`. It does not: `vr_eye` alone
+    /// selects which of `vr.eyes` a pose is built from, and with two
+    /// genuinely different eyes (`vr_view_stereo`, unlike every other
+    /// VR test helper here) they must differ by the seats' own
+    /// distance.
+    #[test]
+    fn pose_gives_a_different_eye_ship_for_each_vr_eye() {
+        let mut game = Game::new();
+        game.vr = Some(vr_view_stereo());
+        game.vr_eye = 0;
+        let pose0 = game.pose(1.5);
+        game.vr_eye = 1;
+        let pose1 = game.pose(1.5);
+        let sep = (pose0.eye_ship - pose1.eye_ship).length();
+        assert!(
+            (sep - 0.064).abs() < 1e-6,
+            "eye_ship must differ by the full IPD: {:?} vs {:?} (sep {sep})",
+            pose0.eye_ship,
+            pose1.eye_ship
+        );
+    }
+
+    /// The same suspicion, for the readout's own glass placement:
+    /// `Game::glass_eye_pos` must return the live `vr_eye`'s own
+    /// position, not a fixed one — this is what `on_glass`'s parallax
+    /// shift for the readout, the mini map and every other glass
+    /// overlay is built from.
+    #[test]
+    fn glass_eye_pos_differs_for_each_vr_eye() {
+        let mut game = Game::new();
+        game.vr = Some(vr_view_stereo());
+        game.vr_eye = 0;
+        let p0 = game.glass_eye_pos();
+        game.vr_eye = 1;
+        let p1 = game.glass_eye_pos();
+        assert!(
+            (p0 - p1).length() > 0.01,
+            "glass_eye_pos must differ between eyes: {p0:?} vs {p1:?}"
+        );
     }
 
     /// A headset's fov is the runtime's alone (SPEC §5.3): every pose
