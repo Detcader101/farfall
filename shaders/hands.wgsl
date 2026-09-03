@@ -25,6 +25,11 @@ struct Hands {
     right_pos: vec4<f32>,
     right_rot: vec4<f32>,
     right_state: vec4<f32>,
+    // VR BEAM: the laser's origin (xyz, ship frame, eye-shifted) and
+    // whether it is shown at all (w).
+    beam_a: vec4<f32>,
+    // The laser's hit point (xyz); w unused.
+    beam_b: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> hd: Hands;
@@ -67,7 +72,7 @@ fn sd_hand_dot(p: vec3<f32>, squeeze: f32) -> f32 {
 // Both hands' combined field at a point in the ship's (eye-shifted)
 // frame: returns the nearer distance and which hand/part it belongs to
 // so the fragment shader can shade it — x: distance, y: hand (0 left, 1
-// right, -1 none), z: part (0 body, 1 dot).
+// right, -1 none), z: part (0 body, 1 dot, 2 beam).
 fn sd_hands(p: vec3<f32>) -> vec3<f32> {
     var best = vec3<f32>(1e9, -1.0, 0.0);
     if (hd.left_pos.w > 0.5) {
@@ -88,6 +93,15 @@ fn sd_hands(p: vec3<f32>) -> vec3<f32> {
             best = vec3<f32>(d, 1.0, select(0.0, 1.0, dot_d < body));
         }
     }
+    // VR BEAM: a thin capsule from the hand to the hit point — right
+    // hand's own part code (2), so the fragment shader can pick a
+    // colour independent of whichever hand is nearer at that point.
+    if (hd.beam_a.w > 0.5) {
+        let beam_d = sd_capsule_ab(p, hd.beam_a.xyz, hd.beam_b.xyz, 0.0025);
+        if (beam_d < best.x) {
+            best = vec3<f32>(beam_d, 1.0, 2.0);
+        }
+    }
     return best;
 }
 
@@ -105,7 +119,7 @@ const MAX_T: f32 = 4.0;
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    if (hd.left_pos.w < 0.5 && hd.right_pos.w < 0.5) {
+    if (hd.left_pos.w < 0.5 && hd.right_pos.w < 0.5 && hd.beam_a.w < 0.5) {
         discard;
     }
     let aspect = hd.right.w;
@@ -129,6 +143,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     if (!hit) {
         discard;
+    }
+    // The beam is its own part (2): a steady cyan-white line, no
+    // occlusion fade or hand state to read (it is not "a hand").
+    if (info.z > 1.5) {
+        let beam_colour = vec3<f32>(0.55, 0.85, 1.0) * 1.6;
+        return vec4<f32>(beam_colour, 1.0);
     }
     let hand = info.y;
     let fade = select(hd.right_state.w, hd.left_state.w, hand < 0.5);

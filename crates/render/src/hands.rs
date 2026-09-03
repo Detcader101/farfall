@@ -50,6 +50,13 @@ pub struct HandsUniforms {
     right_pos: [f32; 4],
     right_rot: [f32; 4],
     right_state: [f32; 4],
+    // VR BEAM (SPEC §5.3b(c)): the laser's own two ends, ship frame,
+    // eye-shifted like everything else here. xyz: the origin (the right
+    // hand's aim pose). w: shown (1/0).
+    beam_a: [f32; 4],
+    // xyz: the hit point on the glass (or the ray's far end with no
+    // hit). w: unused.
+    beam_b: [f32; 4],
 }
 
 impl HandsUniforms {
@@ -66,6 +73,8 @@ impl HandsUniforms {
             right_pos: [0.0; 4],
             right_rot: [0.0, 0.0, 0.0, 1.0],
             right_state: [0.0; 4],
+            beam_a: [0.0; 4],
+            beam_b: [0.0; 4],
         }
     }
 
@@ -91,6 +100,16 @@ impl HandsUniforms {
             u.right_state = state4(h);
         }
         u
+    }
+
+    /// VR BEAM: the laser from `origin` to `hit`, both ship frame and
+    /// already eye-shifted like the hand positions. No beam at all
+    /// (VR BEAM off, no headset, or the right hand isn't tracked) is
+    /// simply never called — the uniforms then keep `beam_a.w == 0.0`.
+    pub fn with_beam(mut self, origin: Vec3, hit: Vec3) -> Self {
+        self.beam_a = [origin.x, origin.y, origin.z, 1.0];
+        self.beam_b = [hit.x, hit.y, hit.z, 0.0];
+        self
     }
 }
 
@@ -178,6 +197,7 @@ mod tests {
         let u = HandsUniforms::none(&cam, Quat::IDENTITY);
         assert_eq!(u.left_pos[3], 0.0);
         assert_eq!(u.right_pos[3], 0.0);
+        assert_eq!(u.beam_a[3], 0.0, "no beam without with_beam");
     }
 
     #[test]
@@ -202,5 +222,21 @@ mod tests {
         assert_eq!(u.left_state[0], 0.7, "trigger");
         assert_eq!(u.left_state[2], 1.0, "held");
         assert_eq!(u.right_pos[3], 0.0, "the other hand is untouched");
+    }
+
+    #[test]
+    fn with_beam_carries_both_ends_and_marks_itself_shown() {
+        let cam = CameraFrame {
+            orient: Quat::IDENTITY,
+            fov_y: 1.0,
+            aspect: 1.5,
+            time_s: 0.0,
+            exposure: 1.0,
+        };
+        let u = HandsUniforms::none(&cam, Quat::IDENTITY)
+            .with_beam(Vec3::new(0.1, -0.5, 0.1), Vec3::new(0.0, 0.0, -1.0));
+        assert_eq!(u.beam_a[3], 1.0, "shown");
+        assert_eq!(&u.beam_a[..3], &[0.1, -0.5, 0.1]);
+        assert_eq!(&u.beam_b[..3], &[0.0, 0.0, -1.0]);
     }
 }

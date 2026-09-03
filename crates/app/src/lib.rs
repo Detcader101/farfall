@@ -48,6 +48,10 @@ mod xr;
 // module doc. Non-wasm only, exactly like `xr` itself.
 #[cfg(not(target_arch = "wasm32"))]
 mod xr_input;
+// VR LASER (fable/vr-hands): the aim-ray/glass-plane maths. Pure and
+// target-independent (unlike `xr_input`), so it builds on wasm too —
+// see its own module doc.
+mod xr_laser;
 
 use glam::{DQuat, DVec3, Quat, Vec3};
 use std::sync::Arc;
@@ -2050,6 +2054,12 @@ struct Game {
     // `hands_uniforms` (SPEC §5.3b) on every target, including wasm's
     // flat/WebXR build (where it just stays `None`/`None`).
     vr_hands: VrHands,
+    /// VR LASER (SPEC §5.3b(c)): the right hand's trigger last frame,
+    /// for rising-edge detection — a click fires once per squeeze, not
+    /// every frame it is held. Only `vr_laser_tick` (native only, like
+    /// `xr_input` itself) touches this.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    vr_trigger_down: bool,
     params: sim::WorldParams,
     state: sim::WorldState,
     input: InputState,
@@ -2307,6 +2317,7 @@ impl Game {
             vr_eye: 0,
             vr_recentre: false,
             vr_hands: VrHands::default(),
+            vr_trigger_down: false,
             params,
             state,
             input: InputState::default(),
@@ -3266,14 +3277,52 @@ impl Game {
         }
     }
 
-    /// The cursor as screen NDC.
+    /// The cursor as screen NDC: the mouse's own position, or — once
+    /// VR BEAM has something to say (a headset up, the right hand
+    /// tracked, its aim ray actually on the glass) — the laser's hit on
+    /// the current eye's own glass plane instead (SPEC §5.3b(c)), so
+    /// the panels take a VR click through the exact same NDC-driven
+    /// code the mouse's own click already does. Falls through to the
+    /// mouse whenever the beam has no hit to report, so a desk-side
+    /// mouse on the mirror window still works with VR up.
     fn cursor_screen(&self) -> Option<[f32; 2]> {
+        if self.settings.vr_beam {
+            if let Some(ndc) = self.vr_laser_ndc() {
+                return Some(ndc);
+            }
+        }
         let (cx, cy) = self.cursor?;
         let (w, h) = self.window_size;
         if w < 1.0 || h < 1.0 {
             return None;
         }
         Some([cx / w * 2.0 - 1.0, 1.0 - cy / h * 2.0])
+    }
+
+    /// VR LASER: the right hand's aim ray against the current eye's own
+    /// glass plane — its screen NDC and its hit point (ship frame,
+    /// *not* eye-shifted; `hands_uniforms` shifts it itself, the same
+    /// as every other cockpit-frame position) — or `None` with no
+    /// headset, no tracked right hand, or a ray that misses the glass.
+    fn vr_laser_hit(&self) -> Option<([f32; 2], Vec3)> {
+        let vr = self.vr.as_ref()?;
+        let h = self.vr_hands.right?;
+        let eye = vr.eyes[self.vr_eye.min(1)];
+        let (fov_y, aspect) = eye.symmetric();
+        let tan_half = (fov_y * 0.5).tan();
+        xr_laser::ray_hits_glass(
+            h.aim.1,
+            h.aim.0 * Vec3::NEG_Z,
+            eye.pos,
+            eye.head,
+            tan_half,
+            aspect,
+        )
+    }
+
+    /// VR LASER: just the screen NDC half of [`Self::vr_laser_hit`].
+    fn vr_laser_ndc(&self) -> Option<[f32; 2]> {
+        self.vr_laser_hit().map(|(ndc, _)| ndc)
     }
 
     /// Where the text block goes on the SCREEN this frame: the pause
@@ -4807,7 +4856,7 @@ impl Game {
     /// outside VR, or with the setting off.
     fn hands_uniforms(&self, pose: &ViewPose) -> HandsUniforms {
         let cam = &pose.cam;
-        if self.vr.is_none() || !self.settings.vr_hands {
+        if self.vr.is_none() {
             return HandsUniforms::none(cam, pose.head);
         }
         let eye = pose.eye_ship.as_vec3();
@@ -4822,12 +4871,21 @@ impl Game {
                 held: false,
             })
         };
-        HandsUniforms::new(
-            cam,
-            pose.head,
-            glyph(self.vr_hands.left),
-            glyph(self.vr_hands.right),
-        )
+        let (left, right) = if self.settings.vr_hands {
+            (glyph(self.vr_hands.left), glyph(self.vr_hands.right))
+        } else {
+            (None, None)
+        };
+        let u = HandsUniforms::new(cam, pose.head, left, right);
+        // VR BEAM (SPEC §5.3b(c)): the same hit `vr_laser_ndc`/
+        // `vr_laser_tick` already used this frame, so the beam always
+        // points exactly where the click would land.
+        if self.settings.vr_beam {
+            if let (Some((_, hit)), Some(h)) = (self.vr_laser_hit(), self.vr_hands.right) {
+                return u.with_beam(h.aim.1 - eye, hit - eye);
+            }
+        }
+        u
     }
 
     /// The ship itself, for an eye outside it; in the cockpit there is
@@ -7258,6 +7316,72 @@ fn xr_begin_frame(gpu: &mut Gpu, game: &mut Game) -> XrGate {
     }
 }
 
+/// VR LASER (SPEC §5.3b(c)): on the right hand's trigger rising edge,
+/// resolve the beam's hit against the panels through the exact code the
+/// mouse's own left-click uses (`Game::vr_laser_ndc` stands in for
+/// `Game::cursor_screen`'s mouse read, which already prefers it) — the
+/// CONTROLS card, the bay card, the menu and the map. Deliberately
+/// narrower than the mouse handler: it never picks up a glass drag or
+/// arms the fire-on-release fallback, since those are the physical
+/// mouse/HOTAS's own job and the virtual stick/throttle grab (SPEC
+/// §5.3b(d)) is a separate path. A no-op with no runtime, no tracked
+/// right hand, VR BEAM off, or (the bench is hermetic) no event loop.
+#[cfg(not(target_arch = "wasm32"))]
+fn vr_laser_tick(gpu: &mut Gpu, game: &mut Game, event_loop: Option<&ActiveEventLoop>) {
+    let Some(h) = game.vr_hands.right else {
+        game.vr_trigger_down = false;
+        return;
+    };
+    let pressed = h.trigger > 0.6;
+    let rising = pressed && !game.vr_trigger_down;
+    game.vr_trigger_down = pressed;
+    if !rising || !game.settings.vr_beam {
+        return;
+    }
+    let Some(event_loop) = event_loop else {
+        return;
+    };
+    let Some(at) = game.vr_laser_ndc() else {
+        return;
+    };
+    game.press_flash = 1.0;
+    if game.card_open {
+        game.close_card();
+        return;
+    }
+    // In VR `Game::pose`/`camera` always overrides the aspect with the
+    // current eye's own symmetric one (see `pose`'s VR branch), so the
+    // placeholder passed in here is never actually used — `cam.aspect`
+    // read back out is the same eye aspect `vr_laser_ndc` just used.
+    let cam = game.camera(1.0);
+    let aspect = cam.aspect;
+    let px = panel::px_canopy(gpu.config.height as f32) * game.text_fov_scale(&cam);
+    let text_w = game.text_w(px);
+    if game.bay_open() && game.bay_click(at, aspect, text_w, px) {
+        return;
+    }
+    if game.menu.open || game.map_open() {
+        let anchor = game.text_anchor(aspect, px);
+        let on = at[0] >= anchor[0] - 0.01
+            && at[0] <= anchor[0] + text_w / aspect + 0.01
+            && at[1] <= anchor[1];
+        if on {
+            let row = ((anchor[1] - at[1]) / (LINE as f32 * px)).floor() as usize;
+            let col = ((at[0] - anchor[0]) * aspect / (farfall_render::text::ADVANCE as f32 * px))
+                .floor()
+                .max(0.0) as usize;
+            let ev = if game.map_open() {
+                game.map_panel.click(row, col, &mut game.settings)
+            } else {
+                game.menu.click(row, col, &mut game.settings)
+            };
+            if ev != MenuEvent::Nothing {
+                apply_menu_event(game, gpu, event_loop, ev);
+            }
+        }
+    }
+}
+
 /// Read a small patch of `texture` (a `wgpu::Bgra8UnormSrgb`-shaped
 /// image) back to the CPU as tightly-packed BGRA8 rows (the
 /// `COPY_BYTES_PER_ROW_ALIGNMENT` padding stripped) — the eye-order
@@ -7944,6 +8068,10 @@ fn redraw(
         gpu.window.request_redraw();
         return;
     }
+    // VR LASER (SPEC §5.3b(c)): resolve this frame's trigger click, if
+    // any, against the panels before the tick that gates it runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    vr_laser_tick(gpu, game, event_loop);
     game.tick();
     if let Some(audio) = &audio {
         audio.set(&game.audio_levels());
