@@ -972,6 +972,29 @@ impl Gpu {
         None
     }
 
+    /// This frame's per-eye render size (SPEC §5.3: the runtime's own
+    /// recommended size, inflated by the hull-vs-true ratio from the
+    /// real tangents — `xr::eye_render_size`), resizing the pair to
+    /// match if it isn't already there. `None` on every build without a
+    /// native session.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ensure_vr_render_size(&mut self, tans: [[f32; 4]; 2]) -> Option<(u32, u32)> {
+        let recommended = self.xr.as_ref()?.recommended_size();
+        let render_size = xr::eye_render_size(recommended, tans, self.cfg.vr_scale);
+        if self.vr_pair.as_mut()?.ensure(&self.device, render_size) {
+            log::info!(
+                "VR: render resized to {}x{} per eye",
+                render_size.0,
+                render_size.1
+            );
+        }
+        Some(render_size)
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn ensure_vr_render_size(&mut self, _tans: [[f32; 4]; 2]) -> Option<(u32, u32)> {
+        None
+    }
+
     /// The scene textures were recreated: point the post pass at the new
     /// world and the blit at the new ship target, or they sample a
     /// destroyed view.
@@ -1074,6 +1097,7 @@ struct VrPair {
     view: wgpu::TextureView,
     /// (2 * one eye's width, one eye's height).
     size: (u32, u32),
+    surface_format: wgpu::TextureFormat,
     to_swapchain: farfall_render::blit_xr::XrBlitPass,
     to_window: farfall_render::blit_xr::XrBlitPass,
     /// FARFALL_VR_MIRROR=pair: a second window-format blit, rebound each
@@ -1098,21 +1122,7 @@ impl VrPair {
         eye_size: (u32, u32),
     ) -> Self {
         let size = (eye_size.0 * 2, eye_size.1);
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("vr pair"),
-            size: wgpu::Extent3d {
-                width: size.0.max(1),
-                height: size.1.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: surface_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = Self::make_texture(device, surface_format, size);
         let mut to_swapchain = farfall_render::blit_xr::XrBlitPass::new(device, xr_format);
         to_swapchain.rebind(device, &view);
         let mut to_window = farfall_render::blit_xr::XrBlitPass::new(device, surface_format);
@@ -1124,12 +1134,56 @@ impl VrPair {
         Self {
             view,
             size,
+            surface_format,
             to_swapchain,
             to_window,
             mirror_swap,
             label_bitmap: farfall_render::text::TextBitmap::new(),
             label_hud: farfall_render::hud::HudPass::new(device, xr_format, 1),
         }
+    }
+
+    fn make_texture(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        size: (u32, u32),
+    ) -> wgpu::TextureView {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vr pair"),
+            size: wgpu::Extent3d {
+                width: size.0.max(1),
+                height: size.1.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    /// Resize the pair to `2 * eye_render_size` if it isn't already
+    /// there — Index-matching (SPEC §5.3): the render itself has to be
+    /// bigger than the runtime's own recommended size, by the
+    /// hull-vs-true ratio (`eye_render_size`), and that ratio is only
+    /// known once the first real frame's tangents arrive, so this runs
+    /// every frame and only actually reallocates the one time the size
+    /// changes (normally once, ever, for a fixed headset). Returns
+    /// whether it reallocated, matching `SceneTarget::ensure`'s own
+    /// convention.
+    fn ensure(&mut self, device: &wgpu::Device, render_size: (u32, u32)) -> bool {
+        let size = (render_size.0 * 2, render_size.1);
+        if size == self.size {
+            return false;
+        }
+        self.view = Self::make_texture(device, self.surface_format, size);
+        self.size = size;
+        self.to_swapchain.rebind(device, &self.view);
+        self.to_window.rebind(device, &self.view);
+        true
     }
 }
 
@@ -2935,7 +2989,27 @@ impl Game {
             return 1.0;
         }
         let t = (cam.fov_y * 0.5).tan().max(1e-4);
-        let base = (self.ref_tan() / t).clamp(0.4, 1.25);
+        let mut base = (self.ref_tan() / t).clamp(0.4, 1.25);
+        // SPEC §5.3, readability at the Index's ~55° vertical fov: this
+        // whole formula holds *angular* size constant across fov by
+        // design (px_canopy's own NDC-per-glyph is fov-independent, so
+        // ref_tan/live_tan here cancels back out to ref_tan alone once
+        // it reaches the shader) — but the 1.25 ceiling above, tuned for
+        // flat play's 50-110 degree FOV_MIN/MAX range, caps that well
+        // short of what a headset needs: at readout size 1.0 it works
+        // out to roughly 0.19 degrees per glyph, nowhere near
+        // comfortable to read through a headset (a 0.6 m panel at the
+        // ~0.9 m the dash sits from the seat, ~32 columns wide, wants
+        // roughly 1.2 degrees a glyph). VR_TEXT_SCALE is one constant,
+        // deliberately separate from the flat clamp, closing most of
+        // that gap at the readout's own default size (leaving room
+        // above and below it via ui.readout.size, unaffected in flat
+        // flight) — an estimate to start from, not a measurement no
+        // headset has confirmed; Jay Jay's own pass tunes it from here.
+        if self.vr.is_some() {
+            const VR_TEXT_SCALE: f32 = 6.0;
+            base *= VR_TEXT_SCALE;
+        }
         // In flight the block is the readout — a glass element with its
         // own SIZE (ui.readout.size), scaled like any dial.
         if self.panel_open() {
@@ -5238,26 +5312,37 @@ impl Game {
     /// foot, else the cockpit's, or the chase rig's when the CAMERA
     /// setting says so.
     fn pose(&self, aspect: f32) -> ViewPose {
-        if let Some(w) = &self.eva {
-            return self.eva_pose(aspect, w);
-        }
-        if self.chase_active() {
+        let mut pose = if let Some(w) = &self.eva {
+            self.eva_pose(aspect, w)
+        } else if self.chase_active() {
             self.chase_pose(aspect)
         } else {
-            let mut pose = ViewPose {
+            ViewPose {
                 cam: self.cam_for(aspect, self.head()),
                 head: self.head(),
                 eye_ship: DVec3::ZERO,
-            };
-            if let Some(vr) = &self.vr {
-                let eye = vr.eyes[self.vr_eye.min(1)];
-                let (fov_y, aspect) = eye.symmetric();
-                pose.cam.fov_y = fov_y;
-                pose.cam.aspect = aspect;
-                pose.eye_ship = eye.pos.as_dvec3();
             }
-            pose
+        };
+        // A headset's fov is the runtime's alone — never settings.fov,
+        // FARFALL_FOV, the thrust flare, a warp's fov_scale, or the
+        // 2.9-radian clamp cam_for applies for every other view: a
+        // changing fov in a headset is instant sickness. Every pose
+        // variant gets this, not only the cockpit's — chase and EVA in
+        // VR must see through the real eye too, or switching to either
+        // would silently drop back to a flat, settings-driven fov.
+        // eye.pos is added, not assigned: it is the eye's own small
+        // offset from wherever this pose's own seat already is (zero in
+        // the cockpit, CHASE_EYE_SHIP in chase, the walker's own eye on
+        // foot), giving every pose its correct stereo parallax rather
+        // than only the cockpit's.
+        if let Some(vr) = &self.vr {
+            let eye = vr.eyes[self.vr_eye.min(1)];
+            let (fov_y, vr_aspect) = eye.symmetric();
+            pose.cam.fov_y = fov_y;
+            pose.cam.aspect = vr_aspect;
+            pose.eye_ship += eye.pos.as_dvec3();
         }
+        pose
     }
 
     /// The chase rig: an eye a few lengths back and a little above, pitched
@@ -6585,11 +6670,23 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
     let label = gpu.cfg.vr_label;
     let mirror_pair = gpu.cfg.vr_mirror_pair;
     let (ww, wh) = (gpu.config.width, gpu.config.height);
+    // The swapchain's own per-eye size — what MIRROR=pair actually
+    // shows, since it sources from the (post-crop) swapchain images
+    // themselves, not the wider render. Distinct from the render's own
+    // per-eye size (the default single-eye mirror's own letterbox,
+    // since that mode shows the render's un-cropped half): the render is
+    // inflated by the hull-vs-true ratio (eye_render_size) and can have
+    // a different aspect ratio than the swapchain outright.
+    let swapchain_eye_size = gpu
+        .xr
+        .as_ref()
+        .expect("xr_composite implies gpu.xr")
+        .eye_size();
     let pair = gpu
         .vr_pair
         .as_mut()
         .expect("xr_composite is only called with vr_pair set");
-    let eye_size = (pair.size.0 / 2, pair.size.1);
+    let render_eye_size = (pair.size.0 / 2, pair.size.1);
     let eyes = game
         .vr
         .as_ref()
@@ -6637,12 +6734,12 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
             pair.label_bitmap.clear();
             pair.label_bitmap
                 .draw(0, 0, if eye == 0 { "L" } else { "R" });
-            let aspect = eye_size.0 as f32 / eye_size.1.max(1) as f32;
+            let aspect = swapchain_eye_size.0 as f32 / swapchain_eye_size.1.max(1) as f32;
             let mut block = farfall_render::hud::HudBlock::glass(
                 [-0.09, 0.12],
                 0.16,
                 aspect,
-                eye_size.1 as f32,
+                swapchain_eye_size.1 as f32,
             );
             block.flat = true; // an opaque backdrop: unmissable, not glass-subtle
             pair.label_hud
@@ -6662,7 +6759,7 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
                 &gpu.queue,
                 &farfall_render::blit_xr::XrBlitUniforms::new([0.0, 0.0, 1.0, 1.0]),
             );
-            let (x, y, w, h) = xr::letterbox((half_w, wh), eye_size);
+            let (x, y, w, h) = xr::letterbox((half_w, wh), swapchain_eye_size);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("xr mirror pair"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -6700,7 +6797,7 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
             &gpu.queue,
             &farfall_render::blit_xr::XrBlitUniforms::new([0.0, 0.0, 0.5, 1.0]),
         );
-        let (x, y, w, h) = xr::letterbox((ww, wh), eye_size);
+        let (x, y, w, h) = xr::letterbox((ww, wh), render_eye_size);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("xr mirror"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -7066,21 +7163,31 @@ fn redraw(
     // native session (always, on the web build), so this needs no cfg of
     // its own.
     let native_vr = gpu.xr_eye_size().is_some() && game.vr.is_some();
+    // In VR the surface is the stereo pair, side by side; each eye is a
+    // full draw of its own, from its own seat, into its own half. The
+    // render itself is sized bigger than the runtime's own recommended
+    // size (eye_render_size, SPEC §5.3: canted lenses mean the symmetric
+    // hull this engine actually renders is wider than the true field,
+    // so undersizing it here would soften everything on the crop) —
+    // ensure() only actually reallocates the one time this changes,
+    // normally once, the first frame real tangents arrive.
+    let eyes: u32 = if game.vr.is_some() { 2 } else { 1 };
+    let (ew, eh) = if native_vr {
+        let tans = {
+            let e = &game.vr.as_ref().expect("native_vr implies game.vr").eyes;
+            [e[0].tan, e[1].tan]
+        };
+        gpu.ensure_vr_render_size(tans)
+            .expect("native_vr implies ensure_vr_render_size")
+    } else {
+        (gpu.config.width / eyes, gpu.config.height)
+    };
     let view = if native_vr {
         gpu.vr_pair_view()
             .expect("vr_pair is created alongside gpu.xr")
             .clone()
     } else {
         frame_view.clone()
-    };
-
-    // In VR the surface is the stereo pair, side by side; each eye is a
-    // full draw of its own, from its own seat, into its own half.
-    let eyes: u32 = if game.vr.is_some() { 2 } else { 1 };
-    let (ew, eh) = if native_vr {
-        gpu.xr_eye_size().expect("native_vr implies xr_eye_size")
-    } else {
-        (gpu.config.width / eyes, gpu.config.height)
     };
     let mut cpu_seconds = sim_seconds;
     let mut captured: Option<Capture> = None;
@@ -8165,6 +8272,85 @@ mod tests {
             tan: [1.0, 1.0, 1.0, 1.0],
         };
         VrView { eyes: [eye, eye] }
+    }
+
+    /// SPEC §5.3, canted lenses: an eye whose asymmetric tangents could
+    /// never arise from any flat fov setting, so a test against it can
+    /// tell "the eye's own fov" from "a flat fov that happens to match".
+    fn canted_vr_view() -> VrView {
+        let eye = VrEye {
+            head: Quat::IDENTITY,
+            pos: Vec3::new(-0.03, 0.0, 0.0),
+            tan: [1.4, 0.7, 0.6, 0.5],
+        };
+        VrView { eyes: [eye, eye] }
+    }
+
+    /// A headset's fov is the runtime's alone (SPEC §5.3): every pose
+    /// variant — cockpit, chase, and (by the same code path) EVA — must
+    /// take the eye's own symmetric hull, never settings.fov, the
+    /// thrust flare, or a warp's fov_scale. A changing fov in a headset
+    /// is instant sickness, so this is checked with those knobs pushed
+    /// to their most extreme, most-likely-to-leak values.
+    #[test]
+    fn vr_fov_is_the_eyes_own_regardless_of_flat_fov_knobs_cockpit_and_chase() {
+        let mut game = Game::new();
+        game.vr = Some(canted_vr_view());
+        game.settings.fov = 179.0; // the widest flat setting allows
+        game.effort = 1.0; // full thrust flare
+        let (expected_fov_y, expected_aspect) = game.vr.as_ref().unwrap().eyes[0].symmetric();
+
+        let cockpit = game.pose(1.7);
+        assert!(
+            (cockpit.cam.fov_y - expected_fov_y).abs() < 1e-5,
+            "cockpit fov_y leaked a flat value: {} vs {expected_fov_y}",
+            cockpit.cam.fov_y
+        );
+        assert!(
+            (cockpit.cam.aspect - expected_aspect).abs() < 1e-5,
+            "cockpit aspect leaked a flat value: {} vs {expected_aspect}",
+            cockpit.cam.aspect
+        );
+
+        game.settings.camera_chase = true;
+        let chase = game.pose(1.7);
+        assert!(
+            (chase.cam.fov_y - expected_fov_y).abs() < 1e-5,
+            "chase fov_y leaked a flat value: {} vs {expected_fov_y}",
+            chase.cam.fov_y
+        );
+        assert!(
+            (chase.cam.aspect - expected_aspect).abs() < 1e-5,
+            "chase aspect leaked a flat value: {} vs {expected_aspect}",
+            chase.cam.aspect
+        );
+        // The eye's own IPD offset must still reach chase's seat, added
+        // to the chase rig's own fixed seat rather than replacing it.
+        assert_ne!(
+            chase.eye_ship, CHASE_EYE_SHIP,
+            "the eye offset never reached chase"
+        );
+        assert!((chase.eye_ship - (CHASE_EYE_SHIP + DVec3::new(-0.03, 0.0, 0.0))).length() < 1e-6);
+    }
+
+    /// SPEC §5.3, readability: a headset's narrower vertical fov (the
+    /// Index's ~55 degrees against the flat reference's 70) needs the
+    /// readout scaled well past the flat clamp's own ceiling to stay
+    /// legible, without changing anything about flat flight's own sizing.
+    #[test]
+    fn vr_scales_the_readout_up_past_flats_own_fov_clamp() {
+        let mut game = Game::new();
+        let cam = game.camera(1.5);
+        let flat_scale = game.text_fov_scale(&cam);
+
+        game.vr = Some(canted_vr_view());
+        let vr_cam = game.pose(1.5).cam;
+        let vr_scale = game.text_fov_scale(&vr_cam);
+
+        assert!(
+            vr_scale > flat_scale * 2.0,
+            "vr={vr_scale} flat={flat_scale}: VR should read markedly larger"
+        );
     }
 
     /// SPEC §5.3: in flat flight the readout is deliberately screen-fixed
