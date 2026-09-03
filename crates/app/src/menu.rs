@@ -26,7 +26,10 @@ use crate::settings::{
     HOOP_SIZE_MIN, LANDING_SPACINGS, MSAA_CHOICES,
 };
 use crate::settings::{BAY_SCANLINES_MAX, BAY_SIZE_MAX, BAY_SIZE_MIN, EXPOSURE_MAX, EXPOSURE_MIN};
-use crate::settings::{VR_SCALE_MAX, VR_SCALE_MIN, VR_TEXT_SCALE_MAX, VR_TEXT_SCALE_MIN};
+use crate::settings::{
+    VR_HUD_DISTANCE_MAX, VR_HUD_DISTANCE_MIN, VR_SCALE_MAX, VR_SCALE_MIN, VR_TEXT_SCALE_MAX,
+    VR_TEXT_SCALE_MIN,
+};
 use crate::stick::{Device, Flight, StickItem};
 use farfall_render::hud::Scrollbar;
 use farfall_render::text::{
@@ -458,6 +461,7 @@ enum Item {
     VrHeadset,
     VrScale,
     VrTextScale,
+    VrHudDistance,
     Resume,
     NewGame,
     Quit,
@@ -595,6 +599,7 @@ impl Item {
             Item::VrHeadset => "VR HEADSET",
             Item::VrScale => "VR RENDER SCALE",
             Item::VrTextScale => "VR TEXT SCALE",
+            Item::VrHudDistance => "VR HUD DISTANCE",
             Item::Resume => "RESUME",
             Item::NewGame => "NEW GAME",
             Item::Quit => "QUIT GAME",
@@ -750,6 +755,7 @@ impl Item {
             }
             Item::VrScale => "A FACTOR ON THE HEADSET'S OWN RECOMMENDED RENDER SIZE.",
             Item::VrTextScale => "A FACTOR ON THE READOUT'S ANGULAR SIZE, IN VR ONLY.",
+            Item::VrHudDistance => "THE GLASS PLANE VR OVERLAYS SIT ON, METRES.",
             Item::CockpitStick => {
                 "THE STICK AND LEVER ON THE CONSOLE MOVE WITH YOUR OWN DEMAND - HOTAS OR KEYS."
             }
@@ -865,6 +871,7 @@ impl Item {
             Item::VrHeadset => one("graphics.vr"),
             Item::VrScale => one("graphics.vr-scale"),
             Item::VrTextScale => one("graphics.vr-text-scale"),
+            Item::VrHudDistance => one("graphics.vr-hud-distance"),
             Item::Vsync => one("graphics.vsync"),
             Item::Bind(a) => vec![format!("control.{}", a.key())],
             // A named control's row carries its key and its stick button
@@ -982,6 +989,7 @@ impl Item {
             Item::VrHeadset => (if s.vr_headset { "ON" } else { "OFF" }).to_string(),
             Item::VrScale => format!("{:.0}%", s.vr_scale * 100.0),
             Item::VrTextScale => format!("{:.0}%", s.vr_text_scale * 100.0),
+            Item::VrHudDistance => format!("{:.1}M", s.vr_hud_distance),
             Item::Resume => (if s.resume { "ON" } else { "OFF" }).to_string(),
             Item::NewGame => String::new(),
             Item::Quit => String::new(),
@@ -1331,6 +1339,7 @@ impl Menu {
                 Item::VrHeadset,
                 Item::VrScale,
                 Item::VrTextScale,
+                Item::VrHudDistance,
                 Item::FpsFloor,
                 Item::Fov,
                 Item::Camera,
@@ -1816,6 +1825,13 @@ impl Menu {
                 0.05,
                 VR_TEXT_SCALE_MIN,
                 VR_TEXT_SCALE_MAX,
+            ),
+            Item::VrHudDistance => step_f32(
+                &mut s.vr_hud_distance,
+                forward,
+                0.1,
+                VR_HUD_DISTANCE_MIN,
+                VR_HUD_DISTANCE_MAX,
             ),
             Item::Resume => {
                 s.resume = !s.resume;

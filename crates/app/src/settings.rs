@@ -228,6 +228,17 @@ pub const VR_TEXT_SCALE_MAX: f32 = 3.0;
 /// the PR, not silently resolved either way.
 pub const VR_TEXT_SCALE_DEFAULT: f32 = 1.27;
 
+/// VR HUD DISTANCE: the assumed distance, metres, of the virtual glass
+/// plane every VR overlay (the readout, glass-style dials, the mini
+/// map, the eye-order label) converges on — SPEC §5.3's own fix for the
+/// "close obscuring plane" report, previously a hardcoded constant
+/// (`Game::VR_HUD_DISTANCE_M`). 1.0 m is a dash-distance estimate, not
+/// a measurement no headset has confirmed; the range either side is
+/// wide enough for a pilot's own retune.
+pub const VR_HUD_DISTANCE_MIN: f32 = 0.4;
+pub const VR_HUD_DISTANCE_MAX: f32 = 3.0;
+pub const VR_HUD_DISTANCE_DEFAULT: f32 = 1.0;
+
 /// The landing hoops' spacings on offer, metres.
 pub const LANDING_SPACINGS: [f32; 4] = [100.0, 250.0, 500.0, 1000.0];
 
@@ -262,6 +273,9 @@ pub struct Settings {
     /// (`Game::text_fov_scale`) — see `VR_TEXT_SCALE_MIN`/`MAX` and
     /// `Game::VR_TEXT_SCALE_DEFAULT`, a measured (not estimated) figure.
     pub vr_text_scale: f32,
+    /// The virtual glass plane every VR overlay converges on, metres —
+    /// see `VR_HUD_DISTANCE_MIN`/`MAX`/`DEFAULT`.
+    pub vr_hud_distance: f32,
     /// RESUME: pick up where the last session left off (~/.farfall/world.cfg)
     /// on start, and write it on every quit and every 30 s of sim time. Off:
     /// the world file is neither read nor written, and NEW GAME still
@@ -470,6 +484,7 @@ impl Default for Settings {
             vr_headset: false,
             vr_scale: 1.0,
             vr_text_scale: VR_TEXT_SCALE_DEFAULT,
+            vr_hud_distance: VR_HUD_DISTANCE_DEFAULT,
             resume: true,
             bindings: Bindings::default(),
             layout: Layout::default(),
@@ -590,6 +605,7 @@ pub const KEYS: &[&str] = &[
     "graphics.vr",
     "graphics.vr-scale",
     "graphics.vr-text-scale",
+    "graphics.vr-hud-distance",
     "graphics.fov",
     "graphics.fps-floor",
     "graphics.sky",
@@ -903,6 +919,13 @@ impl Settings {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.vr_text_scale = f.clamp(VR_TEXT_SCALE_MIN, VR_TEXT_SCALE_MAX);
+                        }
+                    }
+                }
+                "graphics.vr-hud-distance" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.vr_hud_distance = f.clamp(VR_HUD_DISTANCE_MIN, VR_HUD_DISTANCE_MAX);
                         }
                     }
                 }
@@ -1514,6 +1537,10 @@ impl Settings {
         out.push_str(&format!(
             "graphics.vr-text-scale = {:.2}\n",
             self.vr_text_scale
+        ));
+        out.push_str(&format!(
+            "graphics.vr-hud-distance = {:.2}\n",
+            self.vr_hud_distance
         ));
         out.push_str(&format!(
             "game.resume = {}\n",
