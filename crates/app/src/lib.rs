@@ -7379,6 +7379,12 @@ fn vr_laser_tick(gpu: &mut Gpu, game: &mut Game, event_loop: Option<&ActiveEvent
     game.press_flash = 1.0;
     if game.card_open {
         game.close_card();
+        pulse_hand(
+            gpu,
+            xr_grab::Hand::Right,
+            HAPTIC_CLICK_AMPLITUDE,
+            HAPTIC_CLICK_S,
+        );
         return;
     }
     // In VR `Game::pose`/`camera` always overrides the aspect with the
@@ -7390,6 +7396,12 @@ fn vr_laser_tick(gpu: &mut Gpu, game: &mut Game, event_loop: Option<&ActiveEvent
     let px = panel::px_canopy(gpu.config.height as f32) * game.text_fov_scale(&cam);
     let text_w = game.text_w(px);
     if game.bay_open() && game.bay_click(at, aspect, text_w, px) {
+        pulse_hand(
+            gpu,
+            xr_grab::Hand::Right,
+            HAPTIC_CLICK_AMPLITUDE,
+            HAPTIC_CLICK_S,
+        );
         return;
     }
     if game.menu.open || game.map_open() {
@@ -7409,9 +7421,65 @@ fn vr_laser_tick(gpu: &mut Gpu, game: &mut Game, event_loop: Option<&ActiveEvent
             };
             if ev != MenuEvent::Nothing {
                 apply_menu_event(game, gpu, event_loop, ev);
+                pulse_hand(
+                    gpu,
+                    xr_grab::Hand::Right,
+                    HAPTIC_CLICK_AMPLITUDE,
+                    HAPTIC_CLICK_S,
+                );
             }
         }
     }
+}
+
+/// VR HAPTICS (SPEC §5.3b(e)): amplitude (0..1) and duration (seconds)
+/// for a click's confirmatory pulse, and for a grab's take/let-go —
+/// short and light for a click (a button press), a touch longer and
+/// firmer for taking hold of the stick or throttle, lightest of all for
+/// letting go (there is nothing left to confirm holding).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const HAPTIC_CLICK_AMPLITUDE: f32 = 0.35;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const HAPTIC_CLICK_S: f32 = 0.02;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const HAPTIC_GRAB_AMPLITUDE: f32 = 0.55;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const HAPTIC_GRAB_S: f32 = 0.05;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const HAPTIC_RELEASE_AMPLITUDE: f32 = 0.2;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const HAPTIC_RELEASE_S: f32 = 0.015;
+
+/// A short haptic pulse on one hand, through whichever of `gpu.xr`/
+/// `gpu.xr_input` is up — silently does nothing without a native
+/// session or hand input (flat play, WebXR, a synthetic headset with no
+/// real hand action set, or a runtime that never bound one).
+#[cfg(not(target_arch = "wasm32"))]
+fn pulse_hand(gpu: &Gpu, hand: xr_grab::Hand, amplitude: f32, duration_s: f32) {
+    let (Some(xr::XrSession::Real(real)), Some(input)) = (gpu.xr.as_ref(), gpu.xr_input.as_ref())
+    else {
+        return;
+    };
+    let index = match hand {
+        xr_grab::Hand::Left => 0,
+        xr_grab::Hand::Right => 1,
+    };
+    input.pulse(real.session_handle(), index, amplitude, duration_s);
+}
+
+/// VR HAPTICS: a pulse on each control whose holder changed this tick —
+/// a grab taken, or let go. `before`: `(stick.holder(), throttle.holder())`
+/// as it stood right before `game.tick()` advanced the rig.
+#[cfg(not(target_arch = "wasm32"))]
+fn vr_grab_haptics(gpu: &Gpu, game: &Game, before: (Option<xr_grab::Hand>, Option<xr_grab::Hand>)) {
+    let pulse_transition =
+        |gpu: &Gpu, was: Option<xr_grab::Hand>, now: Option<xr_grab::Hand>| match (was, now) {
+            (None, Some(h)) => pulse_hand(gpu, h, HAPTIC_GRAB_AMPLITUDE, HAPTIC_GRAB_S),
+            (Some(h), None) => pulse_hand(gpu, h, HAPTIC_RELEASE_AMPLITUDE, HAPTIC_RELEASE_S),
+            _ => {}
+        };
+    pulse_transition(gpu, before.0, game.vr_grab.stick.holder());
+    pulse_transition(gpu, before.1, game.vr_grab.throttle.holder());
 }
 
 /// Read a small patch of `texture` (a `wgpu::Bgra8UnormSrgb`-shaped
@@ -8104,7 +8172,13 @@ fn redraw(
     // any, against the panels before the tick that gates it runs.
     #[cfg(not(target_arch = "wasm32"))]
     vr_laser_tick(gpu, game, event_loop);
+    // VR HAPTICS (SPEC §5.3b(e)): a grab/release pulse compares the
+    // rig's holders either side of the tick that advances it.
+    #[cfg(not(target_arch = "wasm32"))]
+    let before_grab = (game.vr_grab.stick.holder(), game.vr_grab.throttle.holder());
     game.tick();
+    #[cfg(not(target_arch = "wasm32"))]
+    vr_grab_haptics(gpu, game, before_grab);
     if let Some(audio) = &audio {
         audio.set(&game.audio_levels());
     }

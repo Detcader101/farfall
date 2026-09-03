@@ -318,11 +318,9 @@ impl XrInput {
 
     /// A short haptic pulse on one hand (0 left, 1 right). `amplitude`
     /// 0..1, `duration_s` seconds. Logs and drops the error rather than
-    /// panicking — a haptic is confirmatory, never load-bearing.
-    ///
-    /// Not called yet within this commit; wired to grab/release/press
-    /// events by the haptics commit later in this sequence (SPEC §5.3b).
-    #[allow(dead_code)]
+    /// panicking — a haptic is confirmatory, never load-bearing. Called
+    /// from `lib.rs::pulse_hand` on a grab, a release, and a laser
+    /// click (SPEC §5.3b(e)).
     pub fn pulse(
         &self,
         session: &openxr::Session<openxr::Vulkan>,
