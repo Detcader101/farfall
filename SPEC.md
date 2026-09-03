@@ -173,8 +173,15 @@ that the flat/WebXR paths simply never populate:
   haptics; no analog squeeze, thumbstick or A/B), or `SynthHands`, a
   deterministic scripted pair of hands with no runtime at all —
   selected by `FARFALL_VR_HANDS` (defaulting to synthetic under
-  fable/vr's own `FARFALL_VR=synth`), so a bench exercises this whole
-  lane headless and 4-up on the desktop. `OpenXrHands::new` attaches
+  fable/vr's own `FARFALL_VR=synth`). `SynthHands` needs no session to
+  exist at all: `HandSource::hands`'s `locate` argument is `Option<(&
+  Space, Time)>`, `None` on a run with no VR view whatsoever, and
+  `Game::vr_grab`'s stick/throttle grab (ship-frame positions, no eye
+  needed) runs off `Game::vr_hands` unconditionally in `Game::tick` —
+  so a bench with no headset and no VR session at all still exercises
+  pose → grab state machine → `Controls`, deaf and 4-up on the desktop;
+  only the laser (SPEC §5.3b(c), which projects from an eye that does
+  not exist without a VR view) needs one. `OpenXrHands::new` attaches
   the set to the session once, right after `xr::init` succeeds and
   before the event loop's first `begin_frame` — OpenXR requires every
   action set be attached before the session leaves its unattached

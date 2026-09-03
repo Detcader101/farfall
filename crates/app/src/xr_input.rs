@@ -432,12 +432,14 @@ pub trait HandSource {
     /// a no-op). Call once a frame, before [`Self::hands`].
     fn sync(&self) -> openxr::Result<()>;
 
-    /// Both hands' state this frame. `space`/`time` locate a real
-    /// source's poses (the session's current LOCAL space, the
-    /// predicted display time) — a synthetic source ignores both and
-    /// reads `bench_t_s` (`Game::started.elapsed()`) instead, its one
-    /// and only clock.
-    fn hands(&mut self, space: &openxr::Space, time: openxr::Time, bench_t_s: f32) -> VrHands;
+    /// Both hands' state this frame. `locate`, when there is a session
+    /// to locate poses against (its current LOCAL space and the
+    /// predicted display time), is what a real source reads — `None`
+    /// on a headless run (no session at all, real or the sibling's
+    /// synthetic one) leaves a real source with nothing to report.
+    /// `bench_t_s` (`Game::started.elapsed()`) is a synthetic source's
+    /// one and only clock; it ignores `locate` either way.
+    fn hands(&mut self, locate: Option<(&openxr::Space, openxr::Time)>, bench_t_s: f32) -> VrHands;
 
     /// A short haptic pulse on one hand (0 left, 1 right). `amplitude`
     /// 0..1, `duration_s` seconds. A real source drops the error
@@ -630,7 +632,14 @@ impl HandSource for OpenXrHands {
             .sync_actions(&[openxr::ActiveActionSet::from(&self.action_set)])
     }
 
-    fn hands(&mut self, space: &openxr::Space, time: openxr::Time, _bench_t_s: f32) -> VrHands {
+    fn hands(
+        &mut self,
+        locate: Option<(&openxr::Space, openxr::Time)>,
+        _bench_t_s: f32,
+    ) -> VrHands {
+        let Some((space, time)) = locate else {
+            return VrHands::default();
+        };
         VrHands {
             left: self.hand(space, time, 0),
             right: self.hand(space, time, 1),
@@ -688,7 +697,11 @@ impl HandSource for SynthHands {
         Ok(())
     }
 
-    fn hands(&mut self, _space: &openxr::Space, _time: openxr::Time, bench_t_s: f32) -> VrHands {
+    fn hands(
+        &mut self,
+        _locate: Option<(&openxr::Space, openxr::Time)>,
+        bench_t_s: f32,
+    ) -> VrHands {
         let (hands, beats) = synth_hands(self.script, bench_t_s);
         for (i, beat) in beats.into_iter().enumerate() {
             if self.last_beat[i] != Some(beat) {
