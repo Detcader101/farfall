@@ -44,6 +44,10 @@ mod telemetry;
 pub mod web;
 #[cfg(not(target_arch = "wasm32"))]
 mod xr;
+// VR HANDS (fable/vr-hands): the Index controller action set — see the
+// module doc. Non-wasm only, exactly like `xr` itself.
+#[cfg(not(target_arch = "wasm32"))]
+mod xr_input;
 
 use glam::{DQuat, DVec3, Quat, Vec3};
 use std::sync::Arc;
@@ -1215,6 +1219,11 @@ struct Gpu {
     /// to `device` with it) before `device`/`queue` below are dropped.
     #[cfg(not(target_arch = "wasm32"))]
     xr: Option<xr::XrSession>,
+    /// VR HANDS (fable/vr-hands): the Index action set, attached to
+    /// `xr` right after it comes up (see `xr_input`'s module doc) —
+    /// `None` whenever `xr` itself is `None`.
+    #[cfg(not(target_arch = "wasm32"))]
+    xr_input: Option<xr_input::XrInput>,
     window: Arc<Window>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -2029,6 +2038,15 @@ struct Game {
     /// Set by VR RECENTRE; consumed by the XR session's own frame code,
     /// which owns the tracked space and clears it once re-seated.
     vr_recentre: bool,
+    // VR HANDS (fable/vr-hands): both controllers' state this frame, in
+    // the same recentred ship frame `vr`'s eyes are — set alongside them
+    // by `xr_begin_frame`; `VrHands::default()` (both `None`) whenever
+    // there is no native session or no headset input to report. Not read
+    // yet within this commit (only written) — the hands-drawing and
+    // laser-pointer commits later in this sequence (SPEC §5.3b) are its
+    // readers, on every target including wasm's flat/WebXR build.
+    #[allow(dead_code)]
+    vr_hands: VrHands,
     params: sim::WorldParams,
     state: sim::WorldState,
     input: InputState,
@@ -2285,6 +2303,7 @@ impl Game {
             vr: None,
             vr_eye: 0,
             vr_recentre: false,
+            vr_hands: VrHands::default(),
             params,
             state,
             input: InputState::default(),
@@ -5933,6 +5952,35 @@ pub struct VrView {
     pub eyes: [VrEye; 2],
 }
 
+// VR HANDS (fable/vr-hands): one controller's state, in the same ship
+// frame `VrEye` uses (see its own doc comment) — populated by
+// `xr_input::XrInput::hands` on native OpenXR; left `VrHands::default()`
+// (both `None`) on every other build (flat, WebXR) and whenever the
+// runtime has nothing tracked to report.
+#[derive(Debug, Clone, Copy)]
+pub struct HandPose {
+    /// The aim ray's pose: where the laser (SPEC §5.3b) is cast from.
+    pub aim: (Quat, Vec3),
+    /// The grip pose: where a held object (the stick, the throttle) is
+    /// anchored, and where the hand/controller glyph is drawn.
+    pub grip: (Quat, Vec3),
+    /// The analog trigger, 0..1.
+    pub trigger: f32,
+    /// The analog squeeze (the Index's force sensor), 0..1.
+    pub squeeze: f32,
+    /// The thumbstick, each axis -1..1.
+    pub thumbstick: (f32, f32),
+    pub a: bool,
+    pub b: bool,
+}
+
+/// Both hands, whichever the runtime currently tracks.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VrHands {
+    pub left: Option<HandPose>,
+    pub right: Option<HandPose>,
+}
+
 impl VrEye {
     /// A symmetric frustum wide enough to hold the eye's asymmetric one:
     /// the page maps the true frustum back out of it. Returns
@@ -6453,9 +6501,32 @@ impl App {
             }
             VrPair::new(&device, config.format, fmt, session.eye_size())
         });
+        // VR HANDS (fable/vr-hands): attach the Index action set right
+        // after the session comes up, before the event loop's first
+        // `xr_begin_frame` (see xr_input's module doc for why the
+        // ordering matters). Only a real session has an instance/session
+        // to attach to (a synthetic one, `xr::XrSession::Synth`, has
+        // neither); a failure here only loses hand input, so it is
+        // logged and swallowed rather than falling back to flat.
+        #[cfg(not(target_arch = "wasm32"))]
+        let xr_input = xr_session.as_ref().and_then(|session| {
+            let xr::XrSession::Real(real) = session else {
+                return None;
+            };
+            let (instance, raw_session) = real.raw_handles();
+            match xr_input::XrInput::new(instance, raw_session) {
+                Ok(input) => Some(input),
+                Err(e) => {
+                    log::warn!("VR: hand input setup failed ({e}); controllers will not track");
+                    None
+                }
+            }
+        });
         self.gpu = Some(Gpu {
             #[cfg(not(target_arch = "wasm32"))]
             xr: xr_session,
+            #[cfg(not(target_arch = "wasm32"))]
+            xr_input,
             window,
             device,
             queue,
@@ -7098,13 +7169,16 @@ fn xr_begin_frame(gpu: &mut Gpu, game: &mut Game) -> XrGate {
     match session.begin_frame(gpu.cfg.vr_force_render) {
         xr::Frame::Idle => {
             game.vr = None;
+            game.vr_hands = VrHands::default();
             XrGate::SkipFrame
         }
         xr::Frame::Lost => {
             log::warn!("VR: the session is gone; falling back to the flat view");
             gpu.xr = None;
+            gpu.xr_input = None;
             gpu.vr_pair = None;
             game.vr = None;
+            game.vr_hands = VrHands::default();
             XrGate::NoVr
         }
         xr::Frame::Open {
@@ -7113,6 +7187,7 @@ fn xr_begin_frame(gpu: &mut Gpu, game: &mut Game) -> XrGate {
         } => {
             session.skip_frame();
             game.vr = None;
+            game.vr_hands = VrHands::default();
             XrGate::SkipFrame
         }
         xr::Frame::Open {
@@ -7124,6 +7199,28 @@ fn xr_begin_frame(gpu: &mut Gpu, game: &mut Game) -> XrGate {
                 session.recentre(eyes[0]);
             }
             game.vr = Some(VrView { eyes });
+            // VR HANDS (fable/vr-hands): sync and locate the controllers
+            // in the same (possibly just-recentred) space and predicted
+            // time the eyes were just located in — hands and eyes are
+            // the same seam. `session` above only reborrowed `gpu.xr`,
+            // so `gpu.xr_input` (a disjoint field) is still free to
+            // borrow here. `xr_input` is only ever built for a real
+            // session (see `finish_init`), so a synthetic one just
+            // reports no hands rather than trying to read one.
+            game.vr_hands = match (&gpu.xr_input, &*session) {
+                (Some(input), xr::XrSession::Real(real)) => {
+                    let space = real.space();
+                    let time = real.predicted_display_time();
+                    let raw_session = real.session_handle();
+                    if let Err(e) = input.sync(raw_session) {
+                        log::warn!("VR: hand sync: {e}");
+                        VrHands::default()
+                    } else {
+                        input.hands(raw_session, space, time)
+                    }
+                }
+                _ => VrHands::default(),
+            };
             XrGate::Rendering
         }
     }

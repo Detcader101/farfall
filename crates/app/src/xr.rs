@@ -1602,6 +1602,43 @@ impl RealSession {
         self.display_refresh_hz
     }
 
+    // VR HANDS (fable/vr-hands): minimal accessors so `xr_input::XrInput`
+    // can be built and polled from outside this module — the instance
+    // and session to attach the action set to (once, right after
+    // `init`), and the current space/predicted display time to locate
+    // the hands in each frame, exactly as `begin_frame` locates the
+    // eyes. Only `RealSession` has any of these: a synthetic session
+    // (`SynthSession`) has no instance/session/space at all, so hand
+    // input is only ever attached to a real one — see `xr_input`'s own
+    // `hands_mode`. No new state here; these borrow what `try_init`/
+    // `begin_frame` already own.
+
+    /// The raw handles `xr_input::OpenXrHands::new` attaches its action
+    /// set to (and clones its own session from). Call once, right after
+    /// `init` returns — see that module's doc comment for why the
+    /// ordering matters.
+    pub fn raw_handles(&self) -> (&openxr::Instance, &openxr::Session<openxr::Vulkan>) {
+        (&self.instance, &self.session)
+    }
+
+    /// The session handle alone, for a per-frame `sync_actions`/action
+    /// state read.
+    pub fn session_handle(&self) -> &openxr::Session<openxr::Vulkan> {
+        &self.session
+    }
+
+    /// The current (possibly recentred) LOCAL space hands are located
+    /// against — the same space `begin_frame` locates the eyes in.
+    pub fn space(&self) -> &openxr::Space {
+        &self.space
+    }
+
+    /// This frame's predicted display time, set by the last
+    /// `begin_frame` call.
+    pub fn predicted_display_time(&self) -> openxr::Time {
+        self.predicted_display_time
+    }
+
     /// Poll session-state events and, if the runtime wants a frame,
     /// block for it (`FrameWaiter::wait`) and open it
     /// (`FrameStream::begin`). Every `Open` result must be matched by
