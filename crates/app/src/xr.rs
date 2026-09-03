@@ -179,6 +179,20 @@ fn hull_over_true(a: f32, b: f32) -> f32 {
 /// render serves both halves of the pair, so each axis takes whichever
 /// eye needs more.
 pub fn eye_render_size(recommended: (u32, u32), tans: [[f32; 4]; 2], vr_scale: f32) -> (u32, u32) {
+    let (factor_x, factor_y) = hull_over_true_factors(tans);
+    let scale = vr_scale.max(0.0);
+    (
+        ((recommended.0 as f32) * factor_x * scale).ceil().max(1.0) as u32,
+        ((recommended.1 as f32) * factor_y * scale).ceil().max(1.0) as u32,
+    )
+}
+
+/// The per-axis hull-vs-true factors [`eye_render_size`] inflates by —
+/// exposed on its own so a caller can log the real number instead of
+/// only the render size it produced, since "is this headset's own
+/// asymmetry really this many percent" is a question about the live
+/// tangents, not something the final pixel count alone answers.
+pub fn hull_over_true_factors(tans: [[f32; 4]; 2]) -> (f32, f32) {
     let factor_x = tans
         .iter()
         .map(|t| hull_over_true(t[0], t[1]))
@@ -187,11 +201,7 @@ pub fn eye_render_size(recommended: (u32, u32), tans: [[f32; 4]; 2], vr_scale: f
         .iter()
         .map(|t| hull_over_true(t[2], t[3]))
         .fold(0.0f32, f32::max);
-    let scale = vr_scale.max(0.0);
-    (
-        ((recommended.0 as f32) * factor_x * scale).ceil().max(1.0) as u32,
-        ((recommended.1 as f32) * factor_y * scale).ceil().max(1.0) as u32,
-    )
+    (factor_x, factor_y)
 }
 
 /// `FARFALL_VR_SCRIPT`: a synthetic bench headset's deterministic head
@@ -1211,6 +1221,25 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, RealSession, wgpu::TextureFo
             eye_size.0,
             eye_size.1,
         );
+        // The runtime's own "recommended" size already carries whatever
+        // supersampling percentage its compositor (SteamVR) has set —
+        // this engine's own hull inflation and VR RENDER SCALE both
+        // multiply on top of it, so an aggressive compositor setting
+        // compounds instead of being a separate, informed choice. A
+        // real Index panel is 1440x1600 per eye; recommend backing off
+        // once the runtime's ask is comfortably past what that panel
+        // could ever resolve.
+        const INDEX_PANEL: (f32, f32) = (1440.0, 1600.0);
+        let over = (rw as f32 / INDEX_PANEL.0).max(rh as f32 / INDEX_PANEL.1);
+        if over > 1.4 {
+            log::info!(
+                "VR: the runtime's recommended {rw}x{rh} is {:.0}% of the Index panel's own \
+                 1440x1600 — SteamVR's own resolution slider looks to be around {:.0}%; \
+                 consider 100% there before raising VR RENDER SCALE",
+                over * 100.0,
+                over * 100.0,
+            );
+        }
 
         let offered = session
             .enumerate_swapchain_formats()
@@ -1592,15 +1621,29 @@ impl RealSession {
         // session start, which is wherever the headset physically lay —
         // on the desk, yawed however many degrees off the pilot's actual
         // heading — until this runs. Waiting for FOCUSED (not merely a
-        // located head) means it fires once the compositor has actually
-        // handed the session the frame, not mid-transition while the
-        // runtime's own splash or dashboard still owns the view.
-        if self.became_focused && !self.auto_recentred {
+        // located head) normally means it fires once the compositor has
+        // actually handed the session the frame, not mid-transition
+        // while the runtime's own splash or dashboard still owns the
+        // view — but `force_render` (bench, a desk-side capture) is a
+        // headset left flat on the desk, which never reaches FOCUSED at
+        // all (a9869ff's own capture: +86.7° off LOCAL, uncorrected).
+        // Those runs already accept whatever pose the runtime hands
+        // back for `force_render` to work at all, so recentring on the
+        // first LOCATED frame regardless of focus costs nothing a desk
+        // capture wasn't already trusting, and is the only way it ever
+        // looks at the nose instead of wherever the desk happened to
+        // point.
+        if (self.became_focused || force_render) && !self.auto_recentred {
             self.auto_recentred = true;
             let (yaw, _pitch, _roll) = eyes[0].head.to_euler(glam::EulerRot::YXZ);
             log::info!(
-                "VR: auto-recentring on the first focused, located frame \
+                "VR: auto-recentring on the first {} frame \
                  (head yaw {:+.1}° from LOCAL, pos {:.3?})",
+                if self.became_focused {
+                    "focused, located"
+                } else {
+                    "located (forced render, not yet focused)"
+                },
                 yaw.to_degrees(),
                 eyes[0].pos,
             );

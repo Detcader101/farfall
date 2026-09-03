@@ -248,6 +248,34 @@ const AUTO_SCALE_RAISE_S: f32 = 3.0;
 /// — `on_glass`'s eye offset is always zero there.
 const VR_HUD_DISTANCE_M: f32 = 1.0;
 
+/// FARFALL_VR_LABEL=1's own L/R corner mark: one font pixel in canopy
+/// units. a9869ff's first real-runtime capture showed no mark visible
+/// in either eye at the old 0.045 — this is deliberately unmissable
+/// (SPEC §5.3): a single-letter glyph is thin ink even doubled, so
+/// erring toward "too big to miss" costs nothing a corner mark can't
+/// spare. `xr_composite` and `eye_order_self_check` both read this, so
+/// the self-check's own readback patch can never drift out of sync
+/// with where the mark actually renders.
+#[cfg(not(target_arch = "wasm32"))]
+const LABEL_PX_CANOPY: f32 = 0.09;
+/// The mark's own top-left anchor, canopy NDC, before the per-eye
+/// parallax shift: comfortably inside the frame's outer top corner, not
+/// jammed against the literal rim — `canopy_glass`'s own dimming grows
+/// sharply for `length(ndc*aspect, ndc.y) > 0.75`, and the old anchor's
+/// magnitude sat well past that, which — thin ink, no backdrop, and
+/// dimmed toward invisible by the glass itself — is the likeliest
+/// reason nothing showed. Eye 1's own anchor mirrors this so the mark's
+/// *right* edge sits the same distance from ITS outer edge that eye 0's
+/// *left* edge sits from its own.
+#[cfg(not(target_arch = "wasm32"))]
+const LABEL_CORNER_LEFT: [f32; 2] = [-0.78, 0.80];
+/// Glyph advance in font pixels (`farfall_render::text::ADVANCE`), so
+/// the mark's own width at [`LABEL_PX_CANOPY`] can mirror eye 0's
+/// anchor into eye 1's without duplicating that arithmetic at the call
+/// site.
+#[cfg(not(target_arch = "wasm32"))]
+const LABEL_WIDTH_NDC: f32 = farfall_render::text::ADVANCE as f32 * LABEL_PX_CANOPY;
+
 /// A glass anchor as the turned head sees it: the glass is a sphere about
 /// the pilot, so every element is re-projected, not slid (look.rs). The
 /// anchors are laid out in a REFERENCE projection — the pilot's base field
@@ -1043,10 +1071,25 @@ impl Gpu {
         let recommended = self.xr.as_ref()?.recommended_size();
         let render_size = xr::eye_render_size(recommended, tans, self.cfg.vr_scale);
         if self.vr_pair.as_mut()?.ensure(&self.device, render_size) {
+            // The factors themselves, not just the pixel count they
+            // produced: "is this headset's own lens asymmetry really
+            // this many percent" is a question the raw tangents answer
+            // directly, so log them rather than making a reviewer back
+            // them out of before/after sizes.
+            let (fx, fy) = xr::hull_over_true_factors(tans);
             log::info!(
-                "VR: render resized to {}x{} per eye",
+                "VR: render resized to {}x{} per eye (hull/true factor x={fx:.3} y={fy:.3}, \
+                 eye 0 tan L/R/U/D {:.3}/{:.3}/{:.3}/{:.3}, eye 1 {:.3}/{:.3}/{:.3}/{:.3})",
                 render_size.0,
-                render_size.1
+                render_size.1,
+                tans[0][0],
+                tans[0][1],
+                tans[0][2],
+                tans[0][3],
+                tans[1][0],
+                tans[1][1],
+                tans[1][2],
+                tans[1][3],
             );
         }
         Some(render_size)
@@ -1667,10 +1710,33 @@ impl Gpu {
     /// The world's scale this frame: the setting, or under AUTO SCALE
     /// the setting as a ceiling on the governor's factor.
     fn scale_target(&self, settings: &Settings) -> f32 {
-        if settings.auto_scale {
+        if self.vr_auto_scale_on(settings) {
             (settings.scale * self.auto_scale).clamp(AUTO_SCALE_MIN, 1.0)
         } else {
             settings.scale
+        }
+    }
+
+    /// AUTO SCALE's effective on/off: the pilot's own setting, or forced
+    /// on in VR (SPEC §5.3) — a native session's own compositor has a
+    /// real deadline every frame, unlike a flat monitor's vsync, so the
+    /// world's own resolution holding that pace is not optional the way
+    /// it is at the desk. HUD/text/dials are unaffected either way —
+    /// this governs `self.scene`'s own scale alone, drawn under them.
+    fn vr_auto_scale_on(&self, settings: &Settings) -> bool {
+        settings.auto_scale || self.cfg.vr
+    }
+
+    /// The FPS floor AUTO SCALE governs to: the pilot's own FPS FLOOR
+    /// setting, or the runtime's own live display rate in VR (SPEC
+    /// §5.3) — the compositor's actual pace always wins over a flat-
+    /// play choice nobody tuned with a headset in mind. Falls back to
+    /// the pilot's own setting when the runtime never reported a rate.
+    fn vr_fps_floor(&self, settings_floor: f32) -> f32 {
+        if self.cfg.vr {
+            self.xr_display_refresh_hz().unwrap_or(settings_floor)
+        } else {
+            settings_floor
         }
     }
 
@@ -1681,7 +1747,7 @@ impl Gpu {
     /// it back. Vsync pins the rate at the floor, so "room" is the rate
     /// sitting on the floor with no slow frames under it.
     fn govern_scale(&mut self, settings: &Settings, fps_floor: f32) {
-        if !settings.auto_scale || fps_floor <= 0.0 {
+        if !self.vr_auto_scale_on(settings) || fps_floor <= 0.0 {
             return;
         }
         let now = Instant::now();
@@ -3231,25 +3297,23 @@ impl Game {
         }
         let t = (cam.fov_y * 0.5).tan().max(1e-4);
         let mut base = (self.ref_tan() / t).clamp(0.4, 1.25);
-        // SPEC §5.3, readability at the Index's ~55° vertical fov: this
-        // whole formula holds *angular* size constant across fov by
-        // design (px_canopy's own NDC-per-glyph is fov-independent, so
-        // ref_tan/live_tan here cancels back out to ref_tan alone once
-        // it reaches the shader) — but the 1.25 ceiling above, tuned for
-        // flat play's 50-110 degree FOV_MIN/MAX range, caps that well
-        // short of what a headset needs: at readout size 1.0 it works
-        // out to roughly 0.19 degrees per glyph, nowhere near
-        // comfortable to read through a headset (a 0.6 m panel at the
-        // ~0.9 m the dash sits from the seat, ~32 columns wide, wants
-        // roughly 1.2 degrees a glyph). VR_TEXT_SCALE is one constant,
-        // deliberately separate from the flat clamp, closing most of
-        // that gap at the readout's own default size (leaving room
-        // above and below it via ui.readout.size, unaffected in flat
-        // flight) — an estimate to start from, not a measurement no
-        // headset has confirmed; Jay Jay's own pass tunes it from here.
+        // SPEC §5.3: this whole formula holds *angular* size constant
+        // across fov by design (px_canopy's own NDC-per-glyph is
+        // fov-independent, so ref_tan/live_tan here cancels back out to
+        // ref_tan alone once it reaches the shader) — but the 1.25
+        // ceiling above, tuned for flat play's 50-110 degree FOV_MIN/MAX
+        // range, is nowhere near what a headset's own much wider render
+        // fov needs capped. `vr.text-scale` (ui.readout.size's own VR
+        // sibling, `settings::VR_TEXT_SCALE_DEFAULT`) closes that gap —
+        // a MEASURED figure (see
+        // `tests::the_vr_readout_measures_about_1_2_degrees_a_glyph`),
+        // not an estimate: an early guess of 6.0 put a real headset
+        // capture's glyph at roughly 10° (a tenth of the vertical
+        // field) against a 1.2° target, wrong by close to an order of
+        // magnitude. Still a pilot's own knob (VR_TEXT_SCALE_MIN/MAX) —
+        // the measured default is a starting point, not a promise.
         if self.vr.is_some() {
-            const VR_TEXT_SCALE: f32 = 6.0;
-            base *= VR_TEXT_SCALE;
+            base *= self.settings.vr_text_scale;
         }
         // In flight the block is the readout — a glass element with its
         // own SIZE (ui.readout.size), scaled like any dial.
@@ -7075,13 +7139,22 @@ fn eye_order_self_check(gpu: &Gpu) {
         return;
     };
     let eye_size = session.eye_size();
-    // Generous relative to the label's own ~13% width (px_canopy=0.045,
-    // xr_composite): this stands in for the canopy warp with plain
-    // screen-space geometry, so the patch has to comfortably outsize
-    // any warp-induced offset, not pin the mark's exact pixel.
+    // Bounds the mark's own rectangle (LABEL_CORNER_LEFT, LABEL_PX_CANOPY,
+    // xr_composite) with wide margin: plain screen-space geometry stands
+    // in for the canopy warp here, so the patch has to comfortably
+    // outsize both that approximation's own error and the per-eye
+    // parallax shift, not pin the mark's exact pixel.
+    let far_x = (LABEL_CORNER_LEFT[0] + LABEL_WIDTH_NDC + 1.0) / 2.0;
+    let far_y = (1.0
+        - (LABEL_CORNER_LEFT[1] - farfall_render::text::GLYPH_H as f32 * LABEL_PX_CANOPY))
+        / 2.0;
     let patch = (
-        (eye_size.0 as f32 * 0.22).round().max(1.0) as u32,
-        (eye_size.1 as f32 * 0.22).round().max(1.0) as u32,
+        (eye_size.0 as f32 * (far_x * 1.3).min(0.5))
+            .round()
+            .max(1.0) as u32,
+        (eye_size.1 as f32 * (far_y * 1.3).min(0.55))
+            .round()
+            .max(1.0) as u32,
     );
     let mut ok = true;
     for eye in 0..2 {
@@ -7207,16 +7280,19 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
             let d = VR_HUD_DISTANCE_M;
             let shift = [-e.pos.x / (d * tx), -e.pos.y / (d * ty)];
             // Outer corner: away from the nose (left for eye 0, right for
-            // eye 1), high enough to clear the instrument cluster.
+            // eye 1), high enough to clear the instrument cluster, and
+            // comfortably inside the rim's own dimming (LABEL_CORNER_LEFT).
             let corner = if eye == 0 {
-                [-0.92, 0.86]
+                LABEL_CORNER_LEFT
             } else {
-                [0.80, 0.86]
+                [
+                    -LABEL_CORNER_LEFT[0] - LABEL_WIDTH_NDC,
+                    LABEL_CORNER_LEFT[1],
+                ]
             };
-            let px_canopy = 0.045; // a corner mark, not a panel
             let mut block = farfall_render::hud::HudBlock::glass(
                 [corner[0] + shift[0], corner[1] + shift[1]],
-                px_canopy,
+                LABEL_PX_CANOPY,
                 aspect,
                 swapchain_eye_size.1 as f32,
             );
@@ -8095,7 +8171,7 @@ fn redraw(
             }
         }
     }
-    gpu.govern_scale(&game.settings, game.settings.fps_floor);
+    gpu.govern_scale(&game.settings, gpu.vr_fps_floor(game.settings.fps_floor));
     let render_seconds = native_vr.then_some(cpu_seconds + gpu_wait_seconds);
     gpu.frame_timing(
         cpu_seconds,
@@ -8809,6 +8885,41 @@ mod tests {
         assert_ne!(centred, designing, "the design card is glass, and swings");
     }
 
+    /// SPEC §5.3: a real headset capture (a9869ff) showed the readout at
+    /// roughly 10 degrees a glyph, a tenth of the vertical field — the
+    /// old VR_TEXT_SCALE=6.0 estimate was wrong by close to an order of
+    /// magnitude. This measures what the app's own code actually
+    /// produces, for an Index-like eye (2740 px tall, ~110 degrees
+    /// vertical), against the 1.2-degree target — a number from the
+    /// real formula, not a hand estimate re-guessed a second time.
+    #[test]
+    fn the_vr_readout_measures_about_1_2_degrees_a_glyph() {
+        let mut game = Game::new();
+        game.vr = Some(vr_view_facing(Quat::IDENTITY));
+        let fov_y_deg = 110.0f32;
+        let cam = CameraFrame {
+            orient: Quat::IDENTITY,
+            fov_y: fov_y_deg.to_radians(),
+            aspect: 2468.0 / 2740.0,
+            time_s: 0.0,
+            exposure: 1.0,
+        };
+        let px = panel::px_canopy(2740.0) * game.text_fov_scale(&cam);
+        let glyph_ndc_height = farfall_render::text::GLYPH_H as f32 * px;
+        // The same linear pixel-fraction-times-total-fov conversion the
+        // capture review measured degrees-per-glyph with (glyph height
+        // as a fraction of the full vertical field, times that field's
+        // own degrees) — not the exact tangent-perspective conversion,
+        // so this number is directly comparable to a screenshot
+        // measurement, which is what VR_TEXT_SCALE_DEFAULT was tuned
+        // against.
+        let degrees = (glyph_ndc_height / 2.0) * fov_y_deg;
+        assert!(
+            (degrees - 1.2).abs() < 0.3,
+            "{degrees} degrees per glyph, want 1.2 +/- 0.3"
+        );
+    }
+
     /// A headset for the given eye alone, level-eyed and centred (no
     /// asymmetric FOV — the tests below care about rotation, not lens
     /// geometry) turned by `head`.
@@ -8882,8 +8993,13 @@ mod tests {
 
     /// SPEC §5.3, readability: a headset's narrower vertical fov (the
     /// Index's ~55 degrees against the flat reference's 70) needs the
-    /// readout scaled well past the flat clamp's own ceiling to stay
-    /// legible, without changing anything about flat flight's own sizing.
+    /// readout scaled past the flat clamp's own ceiling to stay legible,
+    /// without changing anything about flat flight's own sizing — but
+    /// only past it, not by the old VR_TEXT_SCALE=6.0 estimate's own
+    /// wild margin: a real capture (a9869ff) showed that put a glyph at
+    /// roughly 10 degrees against a 1.2-degree target, so
+    /// VR_TEXT_SCALE_DEFAULT is a measured ~1.27, not a guessed 6.0 —
+    /// see `the_vr_readout_measures_about_1_2_degrees_a_glyph`.
     #[test]
     fn vr_scales_the_readout_up_past_flats_own_fov_clamp() {
         let mut game = Game::new();
@@ -8895,8 +9011,8 @@ mod tests {
         let vr_scale = game.text_fov_scale(&vr_cam);
 
         assert!(
-            vr_scale > flat_scale * 2.0,
-            "vr={vr_scale} flat={flat_scale}: VR should read markedly larger"
+            vr_scale > flat_scale * 1.3,
+            "vr={vr_scale} flat={flat_scale}: VR should still read larger"
         );
     }
 
