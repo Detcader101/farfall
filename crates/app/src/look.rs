@@ -136,6 +136,10 @@ impl Look {
     /// laid out at the pilot's base field of view) and shown through the
     /// live one (thrust widens it, the drive flares it): the point is a
     /// direction fixed to the ship, and only its screen place changes.
+    /// Test-only: production code goes through the free function
+    /// [`reproject_with`] instead, since VR needs to reproject against a
+    /// headset's own head rather than a mouse-driven `Look`.
+    #[cfg(test)]
     pub fn reproject_from(
         &self,
         ndc: [f32; 2],
@@ -143,16 +147,7 @@ impl Look {
         tan_half_fov: f32,
         aspect: f32,
     ) -> [f32; 2] {
-        let tr = tan_half_ref.max(1e-4);
-        let t = tan_half_fov.max(1e-4);
-        let d = Vec3::new(ndc[0] * aspect * tr, ndc[1] * tr, -1.0).normalize();
-        let v = self.rotation().inverse() * d;
-        let depth = -v.z;
-        if depth < 0.02 {
-            let off = Vec2::new(v.x, v.y).normalize_or_zero() * 50.0;
-            return [off.x, off.y];
-        }
-        [v.x / (depth * t * aspect), v.y / (depth * t)]
+        reproject_with(self.rotation(), ndc, tan_half_ref, tan_half_fov, aspect)
     }
 
     /// A screen point (live NDC, this camera's tan(fov/2)) back to the
@@ -187,6 +182,31 @@ impl Look {
             (d.y / (depth * t)).clamp(-4.0, 4.0),
         ]
     }
+}
+
+/// [`Look::reproject_from`]'s own maths, against an arbitrary head
+/// rotation instead of a mouse-driven [`Look`]'s: the glass is a sphere
+/// around whichever head is looking through it, and a headset's is a
+/// real 3-DOF orientation `Look` (yaw/pitch only) cannot represent. A
+/// point fixed to the glass in a REFERENCE projection (the pilot's base
+/// field of view, head centred) lands here in the live one.
+pub fn reproject_with(
+    head: Quat,
+    ndc: [f32; 2],
+    tan_half_ref: f32,
+    tan_half_fov: f32,
+    aspect: f32,
+) -> [f32; 2] {
+    let tr = tan_half_ref.max(1e-4);
+    let t = tan_half_fov.max(1e-4);
+    let d = Vec3::new(ndc[0] * aspect * tr, ndc[1] * tr, -1.0).normalize();
+    let v = head.inverse() * d;
+    let depth = -v.z;
+    if depth < 0.02 {
+        let off = Vec2::new(v.x, v.y).normalize_or_zero() * 50.0;
+        return [off.x, off.y];
+    }
+    [v.x / (depth * t * aspect), v.y / (depth * t)]
 }
 
 #[cfg(test)]

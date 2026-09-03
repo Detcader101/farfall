@@ -244,9 +244,13 @@ const AUTO_SCALE_RAISE_S: f32 = 3.0;
 /// the pilot, so every element is re-projected, not slid (look.rs). The
 /// anchors are laid out in a REFERENCE projection — the pilot's base field
 /// of view, head centred — and shown through the live one, so a throttle
-/// flare or a warp does not slide them over the ship.
-fn on_glass(look: &Look, cam: &CameraFrame, ref_tan: f32, a: [f32; 2]) -> [f32; 2] {
-    look.reproject_from(a, ref_tan, (cam.fov_y * 0.5).tan(), cam.aspect)
+/// flare or a warp does not slide them over the ship. `head` is whichever
+/// rotation this glass is pinned against — the identity for a flat HUD
+/// deliberately kept screen-fixed, the pilot's own look in DESIGN mode, or
+/// a headset's real orientation so the glass stays cockpit-fixed in VR
+/// instead of following the pilot's face (see [`Game::glass_head`]).
+fn on_glass(head: Quat, cam: &CameraFrame, ref_tan: f32, a: [f32; 2]) -> [f32; 2] {
+    look::reproject_with(head, a, ref_tan, (cam.fov_y * 0.5).tan(), cam.aspect)
 }
 
 /// Where a dial sits and whether it shows: a hidden instrument keeps any
@@ -255,13 +259,13 @@ fn on_glass(look: &Look, cam: &CameraFrame, ref_tan: f32, a: [f32; 2]) -> [f32; 
 /// them.
 fn slot_of(
     layout: &cockpit::Layout,
-    look: &Look,
+    head: Quat,
     cam: &CameraFrame,
     ref_tan: f32,
     i: Instrument,
 ) -> ([f32; 2], f32) {
     match layout.anchor(i) {
-        Some(a) => (on_glass(look, cam, ref_tan, a), 1.0),
+        Some(a) => (on_glass(head, cam, ref_tan, a), 1.0),
         None => ([0.0, 0.0], 0.0),
     }
 }
@@ -1087,6 +1091,7 @@ impl Gpu {
         let h = self.scene.size().1 as f32;
         let sway = game.holo_sway.sway();
         let look = &game.look;
+        let glass_head = game.glass_head();
         let ref_tan = game.ref_tan();
         // Each dial's own style, size and fade, over the cockpit's.
         let tweak = |i: Instrument| game.dial_tweak(i);
@@ -1116,7 +1121,7 @@ impl Gpu {
             }
             Some(farfall_render::cabin::Placement::glass_sized(tw.size * fov_scale).tilted(tw.tilt))
         };
-        let (speed_anchor, speed_on) = slot_of(layout, look, cam, ref_tan, Instrument::Speed);
+        let (speed_anchor, speed_on) = slot_of(layout, glass_head, cam, ref_tan, Instrument::Speed);
         self.passes.gauge.update(
             &self.queue,
             &GaugeUniforms::speed(
@@ -1138,7 +1143,7 @@ impl Gpu {
                 tweak(Instrument::Speed).rotate,
             ),
         );
-        let (alt_anchor, alt_on) = slot_of(layout, look, cam, ref_tan, Instrument::Altitude);
+        let (alt_anchor, alt_on) = slot_of(layout, glass_head, cam, ref_tan, Instrument::Altitude);
         self.passes.alt_gauge.update(
             &self.queue,
             &GaugeUniforms::altitude(
@@ -1158,7 +1163,7 @@ impl Gpu {
                 tweak(Instrument::Altitude).rotate,
             ),
         );
-        let (g_anchor, g_on) = slot_of(layout, look, cam, ref_tan, Instrument::GForce);
+        let (g_anchor, g_on) = slot_of(layout, glass_head, cam, ref_tan, Instrument::GForce);
         self.passes.g_gauge.update(
             &self.queue,
             &GaugeUniforms::g_force(
@@ -1178,7 +1183,7 @@ impl Gpu {
                 tweak(Instrument::GForce).rotate,
             ),
         );
-        let (gv_anchor, gv_on) = slot_of(layout, look, cam, ref_tan, Instrument::GVector);
+        let (gv_anchor, gv_on) = slot_of(layout, glass_head, cam, ref_tan, Instrument::GVector);
         self.passes.gvec.update(
             &self.queue,
             &GaugeUniforms::g_vector(
@@ -1198,7 +1203,7 @@ impl Gpu {
                 tweak(Instrument::GVector).rotate,
             ),
         );
-        let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, ref_tan, Instrument::Gyro);
+        let (gyro_anchor, gyro_on) = slot_of(layout, glass_head, cam, ref_tan, Instrument::Gyro);
         // Each dial's patch of the target: a full-screen pass that discards
         // is not free, so the dials draw only where they are.
         let size = self.scene.size();
@@ -1257,7 +1262,7 @@ impl Gpu {
             }
             let anchors: Vec<[f32; 2]> = anchors
                 .into_iter()
-                .map(|a| on_glass(look, cam, ref_tan, a))
+                .map(|a| on_glass(look.rotation(), cam, ref_tan, a))
                 .take(8)
                 .collect();
             self.passes.guide.update(
@@ -1266,7 +1271,7 @@ impl Gpu {
                     aspect,
                     game.settings.guide || game.design,
                     layout.safe_edge,
-                    on_glass(look, cam, ref_tan, gaze),
+                    on_glass(look.rotation(), cam, ref_tan, gaze),
                     DRAG_REACH,
                     look.engaged() || game.design,
                     &anchors,
@@ -2148,7 +2153,7 @@ impl Game {
             centre: if mini {
                 let cam = self.camera(aspect);
                 let a = self.settings.layout.inset(self.mini_map_anchor());
-                let c = on_glass(&self.look, &cam, self.ref_tan(), a);
+                let c = on_glass(self.glass_head(), &cam, self.ref_tan(), a);
                 // An instrument, not scenery: a far-turned head must
                 // not swing the pane off the screen's edge.
                 map::mini_centre_on_screen(aspect, c, self.mini_map_half_h())
@@ -2765,18 +2770,24 @@ impl Game {
     /// panels sit on the screen and follow the head; the design card is
     /// on the glass, re-projected like a dial, beside the element it
     /// describes. The readout is the pilot's diagnostics, not glassware:
-    /// it keeps its screen place however the head is turned (glass-fixed
-    /// it drifted mid-sky through a spinning bench capture) — projected
-    /// with a centred head, so its saved anchor still means the same
-    /// spot and it still breathes with the field of view.
+    /// in flat flight it keeps its screen place however the head is
+    /// turned (glass-fixed it drifted mid-sky through a spinning bench
+    /// capture) — projected with a centred head, so its saved anchor
+    /// still means the same spot and it still breathes with the field of
+    /// view. In VR "the screen" is the pilot's own face, so that same
+    /// centred projection would glue it there instead — `glass_head`
+    /// swaps in the real headset rotation there, cockpit-fixed like a
+    /// dash dial (SPEC §5.3).
     fn text_screen_anchor(&self, cam: &CameraFrame, px: f32) -> [f32; 2] {
         let a = self.text_anchor(cam.aspect, px);
         if self.menu.open || self.pane_open() || self.card_open {
             a
         } else if self.design {
-            on_glass(&self.look, cam, self.ref_tan(), a)
+            on_glass(self.look.rotation(), cam, self.ref_tan(), a)
+        } else if self.vr.is_some() {
+            on_glass(self.glass_head(), cam, self.ref_tan(), a)
         } else {
-            on_glass(&Look::new(), cam, self.ref_tan(), a)
+            on_glass(Quat::IDENTITY, cam, self.ref_tan(), a)
         }
     }
 
@@ -2845,7 +2856,7 @@ impl Game {
         // patch fills with magnified globe (a beige plate poking into
         // frame). Once its glass anchor has left the screen there is no
         // honest picture of it left to draw — cull it.
-        let live = on_glass(&self.look, cam, self.ref_tan(), a);
+        let live = on_glass(self.glass_head(), cam, self.ref_tan(), a);
         if live[0].abs() > 1.2 || live[1].abs() > 1.2 {
             return None;
         }
@@ -3836,6 +3847,24 @@ impl Game {
             return vr.eyes[self.vr_eye.min(1)].head;
         }
         self.look.rotation() * self.shake.rotation()
+    }
+
+    /// The rotation most "glass" elements — glass-style dials, the mini
+    /// map, the design guide's anchors — are pinned against: the pilot's
+    /// real look, whether that is mouse-driven freelook (flat) or a
+    /// headset's own orientation (VR) — never `head()`'s shake, which
+    /// would wobble an instrument reading. In flat flight this is
+    /// exactly `self.look.rotation()`, as it always was; in VR it is the
+    /// active eye's own head, so these elements stay cockpit-fixed
+    /// instead of freezing at whatever the session started facing (see
+    /// `text_screen_anchor` for the readout's own, different rule: it
+    /// stays screen-fixed on purpose in flat flight, and only VR needs
+    /// this same swap for it).
+    fn glass_head(&self) -> glam::Quat {
+        match &self.vr {
+            Some(vr) => vr.eyes[self.vr_eye.min(1)].head,
+            None => self.look.rotation(),
+        }
     }
 
     /// The gun sight this frame: off with a panel up or in design.
@@ -6528,14 +6557,7 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
         }
     }
     for (eye, target) in swapchain_views.iter().enumerate() {
-        let local = xr::cutout_uv(eyes[eye].tan);
-        let eye_u0 = eye as f32 * 0.5;
-        let rect = [
-            eye_u0 + local[0] * 0.5,
-            local[1],
-            eye_u0 + local[2] * 0.5,
-            local[3],
-        ];
+        let rect = xr::pair_source_rect(eye, &eyes);
         pair.to_swapchain.update(
             &gpu.queue,
             &farfall_render::blit_xr::XrBlitUniforms::new(rect),
@@ -8013,6 +8035,101 @@ mod tests {
         game.design = true;
         let designing = game.text_screen_anchor(&game.camera(1.5), 0.002);
         assert_ne!(centred, designing, "the design card is glass, and swings");
+    }
+
+    /// A headset for the given eye alone, level-eyed and centred (no
+    /// asymmetric FOV — the tests below care about rotation, not lens
+    /// geometry) turned by `head`.
+    fn vr_view_facing(head: Quat) -> VrView {
+        let eye = VrEye {
+            head,
+            pos: Vec3::ZERO,
+            tan: [1.0, 1.0, 1.0, 1.0],
+        };
+        VrView { eyes: [eye, eye] }
+    }
+
+    /// SPEC §5.3: in flat flight the readout is deliberately screen-fixed
+    /// (see the test above) — a monitor does not move when the mouse
+    /// looks around. A headset's "screen" is the pilot's own face, so
+    /// the same rule there would glue the readout to it; VR must instead
+    /// keep the readout in a fixed cockpit spot, exactly like a dash
+    /// dial, as the pilot's real head turns.
+    #[test]
+    fn in_vr_the_readout_is_cockpit_fixed_and_moves_as_the_real_head_turns() {
+        let mut game = Game::new();
+        game.vr = Some(vr_view_facing(Quat::IDENTITY));
+        let centred = game.text_screen_anchor(&game.camera(1.5), 0.002);
+        game.vr = Some(vr_view_facing(Quat::from_rotation_y(0.6)));
+        let turned = game.text_screen_anchor(&game.camera(1.5), 0.002);
+        assert_ne!(
+            centred, turned,
+            "a VR readout frozen at the flat identity would not move \
+             with the real headset — it would be stuck to the pilot's face"
+        );
+    }
+
+    /// SPEC §5.3, 6-DoF: a headset's per-eye *position* (not only its
+    /// rotation) has to reach the cabin, or leaning toward the dash
+    /// would not bring it any closer — exactly the same pipeline the
+    /// chase rig's own fixed seat (`CHASE_EYE_SHIP`) already proves
+    /// works. Two eyes at the same orientation but different seats must
+    /// produce different `CabinUniforms` (their `eye` lane).
+    #[test]
+    fn two_vr_eyes_at_different_seats_produce_different_cabin_eye_uniforms() {
+        let mut game = Game::new();
+        let cam = game.camera(1.5);
+        let left = VrEye {
+            head: Quat::IDENTITY,
+            pos: Vec3::new(-0.032, 0.0, 0.0),
+            tan: [1.0, 1.0, 1.0, 1.0],
+        };
+        let right = VrEye {
+            head: Quat::IDENTITY,
+            pos: Vec3::new(0.032, 0.0, 0.0),
+            tan: [1.0, 1.0, 1.0, 1.0],
+        };
+        game.vr = Some(VrView {
+            eyes: [left, right],
+        });
+        let (cabin, _) = game.cabin_uniforms(&cam);
+        game.vr_eye = 0;
+        let left_pose = game.pose(1.5);
+        game.vr_eye = 1;
+        let right_pose = game.pose(1.5);
+        assert_ne!(
+            left_pose.eye_ship, right_pose.eye_ship,
+            "the two eyes' own seats must differ"
+        );
+        let left_cabin = cabin.with_eye(left_pose.eye_ship.as_vec3());
+        let right_cabin = cabin.with_eye(right_pose.eye_ship.as_vec3());
+        assert_ne!(
+            left_cabin, right_cabin,
+            "two eyes at different seats must march the cabin from \
+             different origins, or leaning toward the dash does nothing"
+        );
+    }
+
+    /// The same fix, for every glass-style dial anchor (`slot_of`) and
+    /// the mini map: `Game::glass_head` must return the active eye's own
+    /// head in VR, not the mouse-driven `Look` (which VR never touches
+    /// and which would otherwise freeze these at whatever the session
+    /// happened to start facing).
+    #[test]
+    fn glass_head_follows_the_headset_not_the_untouched_mouse_look() {
+        let mut game = Game::new();
+        game.look.aim(0.9, -0.2); // a mouse look VR never drives
+        let vr_head = Quat::from_rotation_y(-1.1) * Quat::from_rotation_x(0.3);
+        game.vr = Some(vr_view_facing(vr_head));
+        let got = game.glass_head();
+        assert!(
+            got.angle_between(vr_head) < 1e-5,
+            "glass_head should be the headset's own orientation, got {got:?}"
+        );
+        assert!(
+            got.angle_between(game.look.rotation()) > 1e-3,
+            "glass_head must not fall back to the untouched mouse look in VR"
+        );
     }
 
     /// The gyro ball is a real sphere cast in the dash: near the rim of
