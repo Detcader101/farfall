@@ -21,6 +21,7 @@ pub mod debris;
 pub mod dust;
 pub mod gauge;
 pub mod ghost;
+pub mod hands;
 pub mod heli;
 pub mod holo;
 pub mod hologram;

@@ -40,6 +40,7 @@ pub const NEBULA: &str = include_str!("../../../shaders/nebula.wgsl");
 pub const MIMIC: &str = include_str!("../../../shaders/mimic.wgsl");
 pub const DUST: &str = include_str!("../../../shaders/dust.wgsl");
 pub const WIND: &str = include_str!("../../../shaders/wind.wgsl");
+pub const HANDS: &str = include_str!("../../../shaders/hands.wgsl");
 
 /// Every pass: display name, source, and required entry points.
 pub const PASSES: &[(&str, &str, &[&str])] = &[
@@ -69,6 +70,7 @@ pub const PASSES: &[(&str, &str, &[&str])] = &[
     ("shield", SHIELD, &["vs_main", "fs_main"]),
     ("debris", DEBRIS, &["vs_main", "fs_main"]),
     ("ghost", GHOST, &["vs_main", "fs_main"]),
+    ("hands", HANDS, &["vs_main", "fs_main"]),
     ("heli", HELI, &["vs_main", "fs_main"]),
     ("jet", JET, &["vs_main", "fs_main"]),
     ("holo", HOLO, &["vs_main", "fs_main"]),

@@ -458,6 +458,8 @@ enum Item {
     VrHeadset,
     VrScale,
     VrTextScale,
+    VrHands,
+    VrBeam,
     Resume,
     NewGame,
     Quit,
@@ -595,6 +597,8 @@ impl Item {
             Item::VrHeadset => "VR HEADSET",
             Item::VrScale => "VR RENDER SCALE",
             Item::VrTextScale => "VR TEXT SCALE",
+            Item::VrHands => "VR HANDS",
+            Item::VrBeam => "VR BEAM",
             Item::Resume => "RESUME",
             Item::NewGame => "NEW GAME",
             Item::Quit => "QUIT GAME",
@@ -750,6 +754,8 @@ impl Item {
             }
             Item::VrScale => "A FACTOR ON THE HEADSET'S OWN RECOMMENDED RENDER SIZE.",
             Item::VrTextScale => "A FACTOR ON THE READOUT'S ANGULAR SIZE, IN VR ONLY.",
+            Item::VrHands => "SHOW THE TRACKED CONTROLLERS AS GLYPHS IN THE CABIN.",
+            Item::VrBeam => "THE RIGHT HAND'S LASER AND HIT DOT DRIVE THE PANELS.",
             Item::CockpitStick => {
                 "THE STICK AND LEVER ON THE CONSOLE MOVE WITH YOUR OWN DEMAND - HOTAS OR KEYS."
             }
@@ -865,6 +871,8 @@ impl Item {
             Item::VrHeadset => one("graphics.vr"),
             Item::VrScale => one("graphics.vr-scale"),
             Item::VrTextScale => one("graphics.vr-text-scale"),
+            Item::VrHands => one("vr.hands"),
+            Item::VrBeam => one("vr.beam"),
             Item::Vsync => one("graphics.vsync"),
             Item::Bind(a) => vec![format!("control.{}", a.key())],
             // A named control's row carries its key and its stick button
@@ -982,6 +990,8 @@ impl Item {
             Item::VrHeadset => (if s.vr_headset { "ON" } else { "OFF" }).to_string(),
             Item::VrScale => format!("{:.0}%", s.vr_scale * 100.0),
             Item::VrTextScale => format!("{:.0}%", s.vr_text_scale * 100.0),
+            Item::VrHands => (if s.vr_hands { "ON" } else { "OFF" }).to_string(),
+            Item::VrBeam => (if s.vr_beam { "ON" } else { "OFF" }).to_string(),
             Item::Resume => (if s.resume { "ON" } else { "OFF" }).to_string(),
             Item::NewGame => String::new(),
             Item::Quit => String::new(),
@@ -1331,6 +1341,8 @@ impl Menu {
                 Item::VrHeadset,
                 Item::VrScale,
                 Item::VrTextScale,
+                Item::VrHands,
+                Item::VrBeam,
                 Item::FpsFloor,
                 Item::Fov,
                 Item::Camera,
@@ -1817,6 +1829,14 @@ impl Menu {
                 VR_TEXT_SCALE_MIN,
                 VR_TEXT_SCALE_MAX,
             ),
+            Item::VrHands => {
+                s.vr_hands = !s.vr_hands;
+                MenuEvent::Changed(Change::Graphics)
+            }
+            Item::VrBeam => {
+                s.vr_beam = !s.vr_beam;
+                MenuEvent::Changed(Change::Graphics)
+            }
             Item::Resume => {
                 s.resume = !s.resume;
                 MenuEvent::Changed(Change::Graphics)

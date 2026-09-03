@@ -262,6 +262,13 @@ pub struct Settings {
     /// (`Game::text_fov_scale`) — see `VR_TEXT_SCALE_MIN`/`MAX` and
     /// `Game::VR_TEXT_SCALE_DEFAULT`, a measured (not estimated) figure.
     pub vr_text_scale: f32,
+    /// VR HANDS (SPEC §5.3b): draw the tracked controllers' glyphs in
+    /// the cabin. On by default — a headset with no visible hands reads
+    /// as broken, not minimal.
+    pub vr_hands: bool,
+    /// VR BEAM (SPEC §5.3b): the right hand's laser and hit dot that
+    /// drives the panels. On by default, alongside `vr_hands`.
+    pub vr_beam: bool,
     /// RESUME: pick up where the last session left off (~/.farfall/world.cfg)
     /// on start, and write it on every quit and every 30 s of sim time. Off:
     /// the world file is neither read nor written, and NEW GAME still
@@ -470,6 +477,8 @@ impl Default for Settings {
             vr_headset: false,
             vr_scale: 1.0,
             vr_text_scale: VR_TEXT_SCALE_DEFAULT,
+            vr_hands: true,
+            vr_beam: true,
             resume: true,
             bindings: Bindings::default(),
             layout: Layout::default(),
@@ -590,6 +599,8 @@ pub const KEYS: &[&str] = &[
     "graphics.vr",
     "graphics.vr-scale",
     "graphics.vr-text-scale",
+    "vr.hands",
+    "vr.beam",
     "graphics.fov",
     "graphics.fps-floor",
     "graphics.sky",
@@ -906,6 +917,8 @@ impl Settings {
                         }
                     }
                 }
+                "vr.hands" => s.vr_hands = matches!(v, "on" | "true" | "1"),
+                "vr.beam" => s.vr_beam = matches!(v, "on" | "true" | "1"),
                 "game.resume" => s.resume = matches!(v, "on" | "true" | "1"),
                 "ui.safe-edge" => {
                     if let Ok(f) = v.trim_end_matches('%').parse::<f32>() {
@@ -1514,6 +1527,14 @@ impl Settings {
         out.push_str(&format!(
             "graphics.vr-text-scale = {:.2}\n",
             self.vr_text_scale
+        ));
+        out.push_str(&format!(
+            "vr.hands = {}\n",
+            if self.vr_hands { "on" } else { "off" }
+        ));
+        out.push_str(&format!(
+            "vr.beam = {}\n",
+            if self.vr_beam { "on" } else { "off" }
         ));
         out.push_str(&format!(
             "game.resume = {}\n",

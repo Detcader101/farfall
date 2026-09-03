@@ -79,6 +79,7 @@ use farfall_render::{
         HoloSway, MachAlert,
     },
     ghost::{ghost_pass, GhostPass, GhostUniforms, GHOST_LIFE_S},
+    hands::{hands_pass, HandGlyph, HandsPass, HandsUniforms},
     holo::{holo_centre, holo_pass, HoloPass, HoloScene, HoloUniforms, HOLO_RADIUS_M},
     hologram::{
         hologram_pass, Callout, HologramCamera, HologramPass, HologramScene, HologramUniforms,
@@ -995,6 +996,9 @@ struct Passes {
     guide: InstrumentPass,
     /// The wireframe cabin around the head.
     cabin: farfall_render::cabin::CabinPass,
+    /// VR HANDS (SPEC §5.3b): the tracked controllers' glyphs, drawn in
+    /// the ship pass right after the cabin.
+    hands: HandsPass,
     /// The hull heat field, simulated on the GPU, and the sheath it lights.
     thermal: ThermalPass,
     plasma: PlasmaPass,
@@ -1052,6 +1056,7 @@ impl Passes {
             horizon: horizon_pass(device, format, msaa),
             guide: guide_pass(device, format, msaa),
             cabin: farfall_render::cabin::CabinPass::new(device, format, msaa, cabin_res),
+            hands: hands_pass(device, format, msaa),
             thermal,
             plasma,
             trajectory: TrajectoryPass::new(device, world, msaa),
@@ -2041,11 +2046,9 @@ struct Game {
     // VR HANDS (fable/vr-hands): both controllers' state this frame, in
     // the same recentred ship frame `vr`'s eyes are — set alongside them
     // by `xr_begin_frame`; `VrHands::default()` (both `None`) whenever
-    // there is no native session or no headset input to report. Not read
-    // yet within this commit (only written) — the hands-drawing and
-    // laser-pointer commits later in this sequence (SPEC §5.3b) are its
-    // readers, on every target including wasm's flat/WebXR build.
-    #[allow(dead_code)]
+    // there is no native session or no headset input to report. Read by
+    // `hands_uniforms` (SPEC §5.3b) on every target, including wasm's
+    // flat/WebXR build (where it just stays `None`/`None`).
     vr_hands: VrHands,
     params: sim::WorldParams,
     state: sim::WorldState,
@@ -4796,6 +4799,35 @@ impl Game {
         let rot_rel = (ship_inv * g.orient).as_quat();
         GhostUniforms::new(cam, head, now, age, dir_ship, rot_rel, self.settings.shield)
             .with_eye(pose.eye_ship.as_vec3())
+    }
+
+    /// VR HANDS (SPEC §5.3b): the tracked controllers' glyphs this eye,
+    /// at their grip poses shifted into this eye's own seat — the same
+    /// `with_eye` convention `ghost`/`shield`/`cabin` use. Nothing shown
+    /// outside VR, or with the setting off.
+    fn hands_uniforms(&self, pose: &ViewPose) -> HandsUniforms {
+        let cam = &pose.cam;
+        if self.vr.is_none() || !self.settings.vr_hands {
+            return HandsUniforms::none(cam, pose.head);
+        }
+        let eye = pose.eye_ship.as_vec3();
+        let glyph = |h: Option<HandPose>| {
+            h.map(|h| HandGlyph {
+                pos: h.grip.1 - eye,
+                rot: h.grip.0,
+                trigger: h.trigger,
+                squeeze: h.squeeze,
+                // The grab state machine (SPEC §5.3b(d)) sets this once
+                // it lands; until then no hand is ever "held".
+                held: false,
+            })
+        };
+        HandsUniforms::new(
+            cam,
+            pose.head,
+            glyph(self.vr_hands.left),
+            glyph(self.vr_hands.right),
+        )
     }
 
     /// The ship itself, for an eye outside it; in the cockpit there is
@@ -8324,6 +8356,11 @@ fn redraw(
         gpu.passes
             .ghost
             .update(&gpu.queue, &game.ghost_uniforms(&pose));
+        // VR HANDS (SPEC §5.3b): the tracked controllers' glyphs, this
+        // eye's own seat.
+        gpu.passes
+            .hands
+            .update(&gpu.queue, &game.hands_uniforms(&pose));
         gpu.passes.jet.update(&gpu.queue, &game.jet_uniforms(&pose));
         let du = game.dust_uniforms(&pose, gpu.scene.size().1 as f32);
         gpu.passes.dust.update(&gpu.queue, &du);
@@ -8479,6 +8516,14 @@ fn redraw(
                 gpu.passes.cabin.draw(&mut pass);
                 if gpu.cfg.draws("dust") {
                     gpu.passes.dust.draw_cabin(&mut pass, &du);
+                }
+                // VR HANDS (SPEC §5.3b): right after the cabin, so the
+                // hand glyphs sit over the dash/stick the same depth
+                // ordering a real hand would (approximate — see
+                // `hands::dash_occlusion`, this pass has no depth buffer
+                // of its own to test against the cabin's raymarch).
+                if gpu.cfg.draws("hands") && game.settings.vr_hands {
+                    gpu.passes.hands.draw(&mut pass);
                 }
             }
             if gpu.cfg.draws("gauge") && !game.exterior_view() {
