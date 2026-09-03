@@ -98,21 +98,62 @@ nothing else changes shape. Two consequences now:
 
 ### 5.3 The XR seam
 
-`render` exposes one trait boundary where flat and VR differ:
+As shipped, the seam is a data type, not a trait: [`app::VrEye`] (an eye's
+orientation, its seat in the ship's frame, and its frustum's four tangents
+— left, right, up, down, all positive) and `Option<VrView>` on `Game`.
+When it is `None` the whole app is exactly the flat game it always was;
+when it is `Some`, `Game::pose()` turns the active eye into a *symmetric*
+camera wide enough to hold its true asymmetric frustum
+(`VrEye::symmetric`), and `Game::head()` returns the eye's orientation
+with no freelook and no helmet-camera shake — a headset *is* the head.
+Everything downstream of `pose()`/`head()` (every world pass, the cabin,
+the sight) is unchanged by which kind of session set `game.vr`; the two
+XR backends differ only in how they populate it and in how they get the
+finished stereo pair back out to a display:
 
-```rust
-trait ViewProvider {           // sketch — final signature in code
-    fn views(&self) -> &[ViewPose];      // 1 for flat, 2 for stereo
-    fn begin_frame(&mut self) -> FrameTargets;
-    fn submit(&mut self, ...);
-}
-```
+- **WebXR** (`crates/app/src/web.rs::xr_frame`, `web/xr.js`): the page
+  owns the session and drives the whole frame loop from JavaScript. Each
+  browser frame it hands `xr_frame` both eyes' pose and tangents (11
+  floats each, straight off `XRView`), resizes the canvas to the pair's
+  width, and lets `redraw` render each eye — full width, symmetric FOV —
+  into its own half of that canvas. A small WebGL2 compositor
+  (`web/xr.js`) then reads the canvas back as a texture and, for each
+  eye, samples a UV rectangle computed from the tangents
+  (`tangents()` + the quad it draws) — the true asymmetric field cropped
+  back out of the wider symmetric render — into the headset's real
+  framebuffer. The browser's compositor is the crop; FARFALL's own code
+  never has to know it exists.
+- **Native OpenXR** (`crates/app/src/xr.rs`, Windows/SteamVR today):
+  there is no browser to crop for us, so this module does it as a real
+  GPU pass. `xr::init` is a start-up choice (VR HEADSET / `FARFALL_VR`):
+  it stands up an OpenXR session whose Vulkan device it also hands to
+  wgpu, through wgpu-hal's `from_raw`/`expose_adapter`/`device_from_raw`
+  — the runtime must approve the device before wgpu ever touches it, not
+  the other way round — and falls back to the flat renderer, logging
+  why, on any failure. Each frame `xr::XrSession::begin_frame` waits for
+  and opens the runtime's frame, locates both eyes in a `LOCAL` space
+  (gravity-level, seated at session start; OpenXR's own +X right/+Y
+  up/−Z forward is the ship's frame exactly, so no fix-up rotation is
+  needed), and hands back `game.vr` before `game.tick()` runs — the
+  predicted pose drives the frame it was predicted for. `redraw` renders
+  the pair into an offscreen texture exactly as the WebXR path renders
+  it into the canvas, then a small pass (`shaders/xrblit.wgsl`,
+  `crates/render/src/blit_xr.rs`) crops each eye's true field out of it
+  — the identical UV-rectangle maths as `xr.js`'s compositor, as a pure,
+  tested Rust function (`xr::cutout_uv`) — into that eye's OpenXR
+  swapchain image, and a plain aspect-fit crop of the left eye mirrors
+  into the actual window (present mode forced to `NoVsync`, so a 60 Hz
+  monitor never paces a 90 Hz headset). VR RECENTRE (default key HOME)
+  re-seats the `LOCAL` space on the current head's yaw and position —
+  pitch and roll are never touched, since the space is already
+  gravity-level and a recentre must not tilt the floor
+  (`xr::recentre_pose`).
 
-M0–M3 implement only `FlatView`. M4's spike implements `OpenXrView` (native,
-Windows/SteamVR) and evaluates `WebXrView` (browser, WebGL2 lane — see research
-doc for why WebGPU-in-XR isn't shippable yet). Everything above the trait is
-written once. **Getting this trait wrong is the most expensive mistake available
-in M1 — it gets a design review before M1 closes.**
+Everything above `game.vr`/`VrEye` — the sim, the render passes, the
+cockpit, the HUD — was written once and needs no XR-specific branch;
+getting *this* seam wrong (letting VR-specific state leak past `pose()`
+and `head()` into gameplay code) would have been the expensive mistake,
+and both backends were built to avoid it.
 
 ## 6. Rendering doctrine
 

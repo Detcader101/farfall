@@ -63,6 +63,9 @@ and velocity are independent, and orbits are conserved exactly.
 | `FARFALL_GPU_SYNC=1` | off | Profiling: block on GPU completion so timings measure the GPU, not submission |
 | `FARFALL_SKIP=starfield,plasma` | none | Profiling: leave named passes out (`starfield`, `bodies`, `planet`, `plasma`, `trajectory`, `gauge`, `hud`, `blit`) so each one's cost shows up as its absence |
 | `FARFALL_BENCH=1` | off | Freeze the sim at spawn (`FARFALL_BENCH_ALT`, `FARFALL_BENCH_SECONDS`) for comparable measurements; exits by itself. `FARFALL_BENCH_POS=x,y,z` parks the ship anywhere (with `FARFALL_BENCH_VEL` and `FARFALL_BENCH_LOOK`) to capture a scene; `FARFALL_BENCH_MAP=1` opens the 3D map, `FARFALL_BENCH_SPIN=n` turns the head a full circle and captures n frames, `FARFALL_BENCH_FULL=1` benches at the display's real size, `FARFALL_BENCH_THRUST=m,p,y,r` forces the throttle and RCS, `FARFALL_CAPTURE=final` captures the presented frame |
+| `FARFALL_VR=1\|0` | VR HEADSET setting | Native VR (SPEC §5.3, Windows/SteamVR): open into the headset's own Vulkan device this run instead of the flat one, overriding the settings file without touching it. `0` forces flat even with VR HEADSET on (a bench always forces flat). Never launches SteamVR itself — needs a runtime already running |
+| `FARFALL_VR_SCALE=1.2` | VR HEADSET's render-scale setting | A factor (0.5–1.5) on the OpenXR runtime's own recommended per-eye render size |
+| `FARFALL_OPENXR_LOADER=path` | the active runtime's own loader, else SteamVR's at `C:\Program Files (x86)\Steam\steamapps\common\SteamVR\bin\win64\openxr_loader.dll` | Override which `openxr_loader.dll` gets dynamically loaded, when the default OpenXR loader resolution doesn't find one |
 
 Frame stats appear on-screen and are summarised to the log every 5 s at
 `RUST_LOG=info`. The number that matters is the **1% low**, not the average —
