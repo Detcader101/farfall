@@ -571,6 +571,20 @@ pub struct XrSession {
     /// (see `begin_frame`) — never repeated, so a long session's log
     /// isn't spammed once a frame.
     logged_eye_diagnostic: bool,
+    /// Set once a `SessionState::FOCUSED` event has been seen, never
+    /// cleared — the gate for the one-shot auto-recentre below. Losing
+    /// and regaining focus (the SteamVR dashboard, say) must not
+    /// re-seat LOCAL a second time out from under a flying pilot.
+    became_focused: bool,
+    /// Set once the auto-recentre has run (see `begin_frame`): LOCAL is
+    /// wherever the runtime put it at session start, which can be
+    /// heavily yawed from where the pilot is actually facing if the
+    /// headset was lying on the desk when the session came up — this
+    /// runs the same maths as VR RECENTRE, once, the first time a frame
+    /// is both FOCUSED and has a real located head, so the seat is
+    /// never left silently wrong for however long it takes the pilot to
+    /// notice and press HOME themselves (SPEC §5.3).
+    auto_recentred: bool,
     /// Whether the runtime itself asked for this frame's content
     /// (`XrFrameState::should_render`), consulted by `end_frame`: a
     /// forced render (bench, a desk-side capture) always renders the
@@ -924,7 +938,7 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
         let hal_device_guard = wgpu_device
             .as_hal::<hal::api::Vulkan>()
             .ok_or_else(|| Error::Device("wgpu device has no Vulkan hal backend".into()))?;
-        let make_eye = || -> Result<EyeSwapchain, Error> {
+        let make_eye = |eye: usize| -> Result<EyeSwapchain, Error> {
             let handle = session
                 .create_swapchain(&openxr::SwapchainCreateInfo {
                     create_flags: openxr::SwapchainCreateFlags::EMPTY,
@@ -944,10 +958,12 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
                 .map_err(|e| Error::Session(format!("enumerate_images: {e}")))?;
             let views = images
                 .into_iter()
-                .map(|raw| {
+                .enumerate()
+                .map(|(i, raw)| {
+                    let label = format!("xr swapchain eye {eye} image {i}");
                     let vk_image = ash::vk::Image::from_raw(raw);
                     let hal_desc = hal::TextureDescriptor {
-                        label: Some("xr swapchain image"),
+                        label: Some(label.as_str()),
                         size: wgpu::wgt::Extent3d {
                             width: eye_size.0,
                             height: eye_size.1,
@@ -968,10 +984,17 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
                         None,
                         hal::vulkan::TextureMemory::External,
                     );
+                    // TEXTURE_BINDING alongside RENDER_ATTACHMENT: the
+                    // mirror-pair path (FARFALL_VR_MIRROR=pair) samples
+                    // these images to build the desktop mirror from
+                    // exactly what the headset receives — the VkImage
+                    // was already created with SAMPLED usage_flags
+                    // above, so wgpu's own validation is what was
+                    // missing, not anything Vulkan itself would refuse.
                     let texture = wgpu_device.create_texture_from_hal::<hal::api::Vulkan>(
                         hal_texture,
                         &wgpu::TextureDescriptor {
-                            label: Some("xr swapchain image"),
+                            label: Some(&label),
                             size: wgpu::Extent3d {
                                 width: eye_size.0,
                                 height: eye_size.1,
@@ -981,12 +1004,16 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
                             sample_count: 1,
                             dimension: wgpu::TextureDimension::D2,
                             format: wgpu_format,
-                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                                | wgpu::TextureUsages::TEXTURE_BINDING,
                             view_formats: &[],
                         },
                         wgpu::wgt::TextureUses::UNINITIALIZED,
                     );
-                    texture.create_view(&wgpu::TextureViewDescriptor::default())
+                    texture.create_view(&wgpu::TextureViewDescriptor {
+                        label: Some(&label),
+                        ..Default::default()
+                    })
                 })
                 .collect();
             Ok(EyeSwapchain {
@@ -995,8 +1022,47 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
                 acquired: None,
             })
         };
-        let eyes = [make_eye()?, make_eye()?];
+        let eyes = [make_eye(0)?, make_eye(1)?];
         drop(hal_device_guard);
+
+        // Self-check: FARFALL_VR_MIRROR=pair and the per-eye label both
+        // sample these wrapped swapchain images, and a wgpu usage-flag
+        // mismatch on them is a validation error, not a graceful
+        // failure — it crashed the whole session the first time this
+        // shipped (ece7006). Try to build the exact kind of bind group
+        // that path needs, right now while a fallback to flat is still
+        // cheap, instead of finding out mid-session.
+        {
+            let scope = wgpu_device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let probe_layout =
+                wgpu_device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("xr swapchain sample probe"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    }],
+                });
+            let _probe = wgpu_device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("xr swapchain sample probe"),
+                layout: &probe_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&eyes[0].views[0]),
+                }],
+            });
+            if let Some(e) = pollster::block_on(scope.pop()) {
+                return Err(Error::Session(format!(
+                    "swapchain images can't be sampled (the mirror-pair/label path would \
+                     crash on this): {e}"
+                )));
+            }
+        }
 
         log::info!(
             "VR: session up on {} runtime, {}x{} per eye, format {wgpu_format:?}",
@@ -1025,6 +1091,8 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
             session_running: false,
             frame_open: false,
             logged_eye_diagnostic: false,
+            became_focused: false,
+            auto_recentred: false,
             runtime_wants_this_frame: false,
             predicted_display_time: openxr::Time::from_nanos(0),
             last_views: [openxr::View {
@@ -1100,6 +1168,9 @@ impl XrSession {
                             return Frame::Lost;
                         }
                         self.session_running = true;
+                    }
+                    openxr::SessionState::FOCUSED => {
+                        self.became_focused = true;
                     }
                     openxr::SessionState::STOPPING => {
                         let _ = self.session.end();
@@ -1206,14 +1277,42 @@ impl XrSession {
         // actually worn. If eye 0's X here is not the more negative of
         // the two, that is the runtime disagreeing with the spec, not a
         // bug in the mapping itself; see SPEC §5.3.
+        //
+        // The X-only figure alone reads badly when the head is heavily
+        // yawed relative to LOCAL (a small apparent gap that looks like
+        // a mis-tracked IPD but is really geometry): the full |eye1 −
+        // eye0| separation and the head's own yaw are logged alongside
+        // it so a small number here is legible as "turned", not "wrong".
         if !self.logged_eye_diagnostic {
             self.logged_eye_diagnostic = true;
+            let ipd_m = (eyes[1].pos - eyes[0].pos).length();
+            let (yaw, _pitch, _roll) = eyes[0].head.to_euler(glam::EulerRot::YXZ);
             log::info!(
                 "VR: eye 0 (should be left) x={:+.4}m, eye 1 (should be right) x={:+.4}m \
-                 — eye 0 should be the more negative",
+                 — eye 0 should be the more negative; full IPD {ipd_m:.4}m; head yaw \
+                 {:+.1}° relative to LOCAL",
                 eyes[0].pos.x,
                 eyes[1].pos.x,
+                yaw.to_degrees(),
             );
+        }
+        // Auto-recentre, once: LOCAL is wherever the runtime put it at
+        // session start, which is wherever the headset physically lay —
+        // on the desk, yawed however many degrees off the pilot's actual
+        // heading — until this runs. Waiting for FOCUSED (not merely a
+        // located head) means it fires once the compositor has actually
+        // handed the session the frame, not mid-transition while the
+        // runtime's own splash or dashboard still owns the view.
+        if self.became_focused && !self.auto_recentred {
+            self.auto_recentred = true;
+            let (yaw, _pitch, _roll) = eyes[0].head.to_euler(glam::EulerRot::YXZ);
+            log::info!(
+                "VR: auto-recentring on the first focused, located frame \
+                 (head yaw {:+.1}° from LOCAL, pos {:.3?})",
+                yaw.to_degrees(),
+                eyes[0].pos,
+            );
+            self.recentre(eyes[0]);
         }
         Frame::Open {
             should_render: true,
