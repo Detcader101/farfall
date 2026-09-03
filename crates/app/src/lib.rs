@@ -9303,6 +9303,28 @@ impl ApplicationHandler for App {
         }
     }
 
+    /// Winit's own last hook before the event loop actually stops —
+    /// called exactly once, whichever path triggered `exit()` (window
+    /// close, Esc-quit, or the bench's own `el.exit()` under
+    /// `FARFALL_BENCH_EXIT=drop`). VR's native session is torn down
+    /// explicitly here, before `Gpu` itself starts to drop, rather
+    /// than left to an incidental end-of-scope drop once `App` (and
+    /// so `self.gpu`) finally goes out of scope back in `main` — see
+    /// `xr::XrSession::shutdown` for why this is deliberate rather
+    /// than just relying on field-order Drop.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            if let Some(xr_session) = gpu.xr.take() {
+                log::debug!(
+                    "VR teardown: App::exiting — tearing down the VR session \
+                     explicitly, before Gpu (device/queue) drop"
+                );
+                xr_session.shutdown();
+            }
+        }
+    }
+
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
         if self.gpu.as_ref().is_some_and(|g| g.cfg.bench) {
             return;

@@ -995,6 +995,38 @@ impl XrSession {
             Self::Synth(_) => None,
         }
     }
+
+    /// Explicit, logged teardown of the whole session — the eyes'
+    /// wrapped swapchain images, the two swapchains, the spaces, the
+    /// frame wait/stream objects, and finally the session itself —
+    /// called deliberately from `App::exiting`, before `Gpu` (and so
+    /// `device`/`queue`) begin their own drop, rather than left to
+    /// fire only when `Gpu`'s `xr` field happens to be dropped at the
+    /// very end of `main`. A no-op for a synthetic session.
+    ///
+    /// This does not change *which* order things are destroyed in —
+    /// that guarantee already comes from `RealSession`'s field order
+    /// (children before `session`, `session` before `instance`) and
+    /// `Gpu::xr_instance_keepalive` (the real `xrDestroyInstance`
+    /// deferred until after `device`/`queue` drop, wherever `xr`
+    /// itself sits in `Gpu`). It exists for deterministic *timing* —
+    /// a controlled, single call site instead of an incidental end-
+    /// of-scope drop — and to bracket the existing `RealSession::drop`
+    /// / `EyeSwapchain::drop` trace lines with a clear start/end
+    /// marker in a `RUST_LOG=debug` teardown log.
+    pub fn shutdown(self) {
+        if let Self::Real(session) = self {
+            log::debug!(
+                "VR teardown: explicit shutdown requested (App::exiting, before Gpu drops)"
+            );
+            drop(session);
+            log::debug!(
+                "VR teardown: explicit shutdown complete — session, swapchains and spaces \
+                 all dropped; this handle's instance clone released (real xrDestroyInstance \
+                 deferred to Gpu::xr_instance_keepalive, after device/queue drop)"
+            );
+        }
+    }
 }
 
 /// A running native VR session: the OpenXR side of the seam, plus the
