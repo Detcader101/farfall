@@ -33,13 +33,25 @@ pub fn radius(d_m: f64) -> f32 {
 /// half height is `half_w * aspect`). The rest of the screen is dimmed
 /// around it.
 pub fn pane_rect(aspect: f32, centre: [f32; 2]) -> [f32; 3] {
+    pane_rect_sized(aspect, centre, PANE_HALF_H)
+}
+
+/// The full map pane's half height, NDC.
+pub const PANE_HALF_H: f32 = 0.44;
+/// The mini map's half height, NDC: a gauge, not a screen.
+pub const MINI_HALF_H: f32 = 0.17;
+/// Where the mini map sits on the glass: the top-right corner, clear of
+/// the arch (the readout has the top-left).
+pub const MINI_ANCHOR: [f32; 2] = [0.80, 0.78];
+
+/// A pane of a given half height (see [`pane_rect`]).
+pub fn pane_rect_sized(aspect: f32, centre: [f32; 2], half_h: f32) -> [f32; 3] {
     let aspect = if aspect.is_finite() && aspect > 0.0 {
         aspect
     } else {
         1.0
     };
-    const HALF_H: f32 = 0.44;
-    let half_w = (HALF_H / aspect).min(0.4);
+    let half_w = (half_h / aspect).min(0.4);
     let c = |v: f32| {
         if v.is_finite() {
             v.clamp(-0.95, 0.95)
@@ -48,6 +60,30 @@ pub fn pane_rect(aspect: f32, centre: [f32; 2]) -> [f32; 3] {
         }
     };
     [c(centre[0]), c(centre[1]), half_w]
+}
+
+/// The mini map's centre pulled back on screen. The pane is an
+/// instrument, not scenery: a turned head may swing its glass anchor
+/// past the rim, but the pane itself stays whole on the screen, frame
+/// and all, at every head angle.
+pub fn mini_centre_on_screen(aspect: f32, centre: [f32; 2], half_h: f32) -> [f32; 2] {
+    let aspect = if aspect.is_finite() && aspect > 0.0 {
+        aspect
+    } else {
+        1.0
+    };
+    let half_w = (half_h / aspect).min(0.4);
+    // A hair of margin keeps the frame line off the very edge.
+    let margin = 0.01;
+    let c = |v: f32, half: f32| {
+        let reach = (1.0 - half - margin).max(0.0);
+        if v.is_finite() {
+            v.clamp(-reach, reach)
+        } else {
+            0.0
+        }
+    };
+    [c(centre[0], half_w), c(centre[1], half_w * aspect)]
 }
 
 pub const RINGS_MAX: u32 = 6;
@@ -144,18 +180,25 @@ pub struct MapLook {
     pub view: MapView,
     pub rings: u32,
     pub grid: bool,
+    /// The dart's craft: 0 the fighter, 1 the helicopter (SPEC §6.5c).
+    pub craft: f32,
     pub visibility: f32,
     pub aspect: f32,
     pub time_s: f32,
     /// The pane's centre on the glass.
     pub centre: [f32; 2],
+    /// The pane's half height (NDC): the full map, or the mini map.
+    pub half_h: f32,
+    /// Dim the rest of the screen round the pane (the full map does; a
+    /// gauge does not).
+    pub dim: bool,
 }
 
 impl MapUniforms {
     pub fn new(w: &MapWorld, l: &MapLook) -> Self {
         let (eye, right, up, fwd) = l.view.camera();
         let tan_half = (40.0f32).to_radians().tan();
-        let pane = pane_rect(l.aspect, l.centre);
+        let pane = pane_rect_sized(l.aspect, l.centre, l.half_h);
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
         let q = w.ship_orient.as_quat();
         // The ring of arrival as a map radius about the destination: in log
@@ -163,7 +206,7 @@ impl MapUniforms {
         let ring = radius(w.dest_arrival_m).max(0.04);
         Self {
             eye: v4(eye, l.visibility.clamp(0.0, 1.0)),
-            right: v4(right, 0.0),
+            right: v4(right, if l.dim { 1.0 } else { 0.0 }),
             up: v4(up, 0.0),
             fwd: v4(fwd, tan_half),
             pane: [pane[0], pane[1], pane[2], l.aspect],
@@ -172,7 +215,9 @@ impl MapUniforms {
             sun: v4(project3(w.sun), 0.22),
             ship: v4(project3(w.ship), 0.16),
             ship_right: v4(q * Vec3::X, 0.0),
-            ship_up: v4(q * Vec3::Y, 0.0),
+            // The dart's craft rides the up axis's spare lane: 0 the
+            // fighter, 1 the helicopter (SPEC §6.5c).
+            ship_up: v4(q * Vec3::Y, l.craft),
             ship_fwd: v4(q * Vec3::NEG_Z, 0.0),
             dest: v4(project3(w.dest_centre), ring),
             misc: [
@@ -202,6 +247,29 @@ mod tests {
         assert!((h.y - 1.6).abs() < 1e-5 && (h.x - 1.2).abs() < 1e-5, "{h}");
         // Inside the first ring: at the origin, never negative.
         assert_eq!(project3(DVec3::new(50.0, 0.0, 0.0)), Vec3::ZERO);
+    }
+
+    /// Looking back once clipped the mini map half off the top-left
+    /// corner: wherever the head swings its anchor, the whole pane —
+    /// frame included — must still fit on the screen.
+    #[test]
+    fn the_mini_pane_stays_whole_on_screen_at_every_head_angle() {
+        for aspect in [1.0f32, 4.0 / 3.0, 16.0 / 9.0] {
+            for centre in [[-50.0f32, 3.0], [0.95, 0.94], [1.4, -2.0], [f32::NAN, 0.2]] {
+                for half_h in [MINI_HALF_H * 0.25, MINI_HALF_H, MINI_HALF_H * 4.0] {
+                    let c = mini_centre_on_screen(aspect, centre, half_h);
+                    let [cx, cy, hw] = pane_rect_sized(aspect, c, half_h);
+                    let hh = hw * aspect;
+                    assert!(cx - hw >= -1.0 && cx + hw <= 1.0, "{aspect} {centre:?}");
+                    assert!(cy - hh >= -1.0 && cy + hh <= 1.0, "{aspect} {centre:?}");
+                }
+            }
+        }
+        // A pane already on the screen is left exactly where it is.
+        assert_eq!(
+            mini_centre_on_screen(1.5, [0.5, -0.3], MINI_HALF_H),
+            [0.5, -0.3]
+        );
     }
 
     #[test]
@@ -264,14 +332,18 @@ mod tests {
             view: MapView::default(),
             rings: 99,
             grid: true,
+            craft: 1.0,
             visibility: 2.0,
             aspect: 1.5,
             time_s: 3.0,
             centre: [0.4, 0.1],
+            half_h: PANE_HALF_H,
+            dim: true,
         };
         let u = MapUniforms::new(&w, &l);
         assert_eq!(u.eye[3], 1.0);
         assert_eq!(u.misc[1], RINGS_MAX as f32);
+        assert_eq!(u.ship_up[3], 1.0, "the dart's craft rides the spare lane");
         assert!(u.sun[1] > 0.0, "the Sun sits above the plane");
         assert!(u.uranus[0] > u.sun[0], "Uranus lies beyond the Sun");
         // Nose (-Z) turned about +Y by 90°: points along -X.

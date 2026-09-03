@@ -10,6 +10,7 @@ fn at(params: &farfall_sim::WorldParams, pos: DVec3, vel: DVec3) -> WorldState {
         vel_mps: vel,
         orient: DQuat::IDENTITY,
         ang_vel_radps: DVec3::ZERO,
+        ground: farfall_sim::Ground::Flight,
     };
     state
 }
@@ -98,8 +99,8 @@ fn a_ship_landed_on_the_moon_goes_with_it() {
     let [_, moon, _, _] = params.bodies(state.time_s);
     let rel = state.ship.pos_m - moon.centre;
     assert!(
-        (rel.length() - moon.radius_m).abs() < 0.5,
-        "not on the surface: {}",
+        (rel.length() - moon.radius_m - farfall_sim::GEAR_HEIGHT_M).abs() < 0.5,
+        "not on its gear on the surface: {}",
         rel.length() - moon.radius_m
     );
     let v_rel = state.ship.vel_mps - params.body_velocities(state.time_s)[1];

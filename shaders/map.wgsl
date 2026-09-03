@@ -20,7 +20,8 @@
 struct Map {
     // xyz: camera eye, map units. w: visibility 0..1
     eye: vec4<f32>,
-    // camera basis; w of fwd: tan(fov/2)
+    // camera basis; w of right: dim the screen round the pane (1) or not
+    // (0, a gauge); w of fwd: tan(fov/2)
     right: vec4<f32>,
     up: vec4<f32>,
     fwd: vec4<f32>,
@@ -48,7 +49,9 @@ struct Map {
 @group(0) @binding(0) var<uniform> map: Map;
 
 const DIM_ALPHA: f32 = 0.74;
-const PANE_ALPHA: f32 = 0.93;
+// The pane is the top layer: fully opaque, so a bright rock or boom
+// behind it never ghosts through the chart.
+const PANE_ALPHA: f32 = 1.0;
 const POLE_R: f32 = 0.012;
 const MARCH_STEPS: u32 = 72u;
 
@@ -99,11 +102,11 @@ fn sd_torus_y(p: vec3<f32>, c: vec3<f32>, big: f32, small: f32) -> f32 {
     return length(d) - small;
 }
 
-// The ship: the same fighter the pilot sits in (common.wgsl), scaled from
-// metres to the map's unit size — about fourteen metres long, so a unit
-// here is seven metres there.
+// The ship: the same craft the pilot sits in (common.wgsl, the craft
+// flag riding ship_up.w), scaled from metres to the map's unit size —
+// about fourteen metres long, so a unit here is seven metres there.
 fn sd_ship_local(q: vec3<f32>) -> f32 {
-    return sd_fighter_exterior(q * 7.0) / 7.0;
+    return sd_craft_exterior(q * 7.0, map.ship_up.w) / 7.0;
 }
 
 fn to_ship(p: vec3<f32>) -> vec3<f32> {
@@ -205,6 +208,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (vis < 0.01) {
         discard;
     }
+    // A gauge (the mini map) dims nothing round itself.
+    let dim_on = map.right.w;
     let aspect = map.pane.w;
     let cyan = vec3<f32>(0.22, 0.85, 1.0);
     let amber = vec3<f32>(1.0, 0.62, 0.18);
@@ -220,6 +225,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let corner = step(0.82, min(abs(local.x) / half.x, abs(local.y) / half.y));
     let frame = edge * (0.35 + 0.65 * corner);
     if (inside < 0.001 && frame < 0.001) {
+        if (dim_on < 0.5) {
+            discard;
+        }
         return vec4<f32>(vec3<f32>(0.0), DIM_ALPHA * vis);
     }
 
@@ -293,7 +301,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     let ground = vec3<f32>(0.01, 0.02, 0.04);
-    let alpha = mix(DIM_ALPHA, PANE_ALPHA, inside) * vis;
+    let alpha = mix(DIM_ALPHA * dim_on, PANE_ALPHA, inside) * vis;
     let lit = (colour * inside + cyan * frame * 0.9) * vis;
     return vec4<f32>(ground * alpha * inside + lit, alpha);
 }

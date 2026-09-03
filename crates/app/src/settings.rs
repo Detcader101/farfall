@@ -6,10 +6,12 @@
 //! that the defaults can't cover — unknown keys are ignored, bad values
 //! fall back, missing lines mean default.
 
-use crate::bay::{Mount, STOCK};
+use crate::bay::{Craft, Mount, STOCK};
 use crate::cockpit::{Instrument, Layout, Slot};
 use crate::input::{key_from_name, key_name, Action, Bindings, Named};
-use crate::warp::{Destination, Plan};
+use crate::stick::StickMap;
+use crate::warp::{Destination, Plan, LENGTH_MAX, LENGTH_MIN};
+pub use farfall_render::post::Tonemap;
 use std::path::PathBuf;
 
 /// "x,y" → a pair of finite numbers.
@@ -20,9 +22,11 @@ fn parse_pair(v: &str) -> Option<[f32; 2]> {
     (x.is_finite() && y.is_finite()).then_some([x, y])
 }
 
-/// Where the settings menu's text starts and the map pane is centred,
-/// until the pilot drags them.
-pub const MENU_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
+/// Where the settings menu's card is centred and the map pane is centred,
+/// until the pilot drags them. The card is a fixed size in canopy units
+/// (its width over the aspect on the screen), so it is kept by its
+/// centre and stays centred on any screen.
+pub const MENU_ANCHOR_DEFAULT: [f32; 2] = [0.0, 0.04];
 pub const MAP_ANCHOR_DEFAULT: [f32; 2] = [0.42, 0.12];
 /// The SHIP bay's panel: right of the hologram, up.
 pub const BAY_ANCHOR_DEFAULT: [f32; 2] = [0.95, 0.90];
@@ -33,7 +37,8 @@ pub const BAY_SIZE_DEFAULT: f32 = 0.28;
 pub const BAY_SIZE_MIN: f32 = 0.14;
 pub const BAY_SIZE_MAX: f32 = 0.45;
 pub const BAY_SCANLINES_MAX: f32 = 400.0;
-pub const READOUT_ANCHOR_DEFAULT: [f32; 2] = [-0.72, 0.62];
+/// The readout: the top-left corner of the glass, clear of the arch.
+pub const READOUT_ANCHOR_DEFAULT: [f32; 2] = [-0.96, 0.94];
 
 fn clamp_anchor(a: [f32; 2]) -> [f32; 2] {
     [a[0].clamp(-0.95, 0.95), a[1].clamp(-0.95, 0.95)]
@@ -51,10 +56,18 @@ pub struct DialTweak {
     /// Leaned toward the pilot about its own horizontal axis, degrees
     /// (−60..60): angles the face to read from where the pilot sits.
     pub tilt_deg: f32,
+    /// Leaned sideways about its own upright, degrees (−60..60): the
+    /// face turned toward a seat off to one side.
+    pub lean_deg: f32,
+    /// The face turned in its own plane, degrees (−180..180). The plate
+    /// and its markings turn together, so the needle still reads true.
+    pub rotate_deg: f32,
 }
 
 pub const TILT_MIN: f32 = -60.0;
 pub const TILT_MAX: f32 = 60.0;
+pub const ROTATE_MIN: f32 = -180.0;
+pub const ROTATE_MAX: f32 = 180.0;
 
 impl DialTweak {
     pub const DEFAULT: DialTweak = DialTweak {
@@ -62,6 +75,8 @@ impl DialTweak {
         style: None,
         stay: None,
         tilt_deg: 0.0,
+        lean_deg: 0.0,
+        rotate_deg: 0.0,
     };
 }
 
@@ -164,6 +179,10 @@ impl GaugeStyle {
     }
 }
 
+/// Exposure, a multiplier on the scene's own: two stops either way.
+pub const EXPOSURE_MIN: f32 = 0.25;
+pub const EXPOSURE_MAX: f32 = 4.0;
+
 /// Field of view limits, degrees.
 pub const FOV_MIN: f32 = 50.0;
 pub const FOV_MAX: f32 = 110.0;
@@ -173,9 +192,18 @@ pub const COCKPIT_RES_CHOICES: [f32; 3] = [0.5, 0.75, 1.0];
 
 /// Frame-rate floors on offer (0: none). The cabin's moving detail gives
 /// way while turning the head would cost more than the floor allows.
-pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.55, -0.55];
+/// The holo3PP floats in the glass at the upper right, under the mini map
+/// and outside the arch: clear of the five dials on the dash (it used to
+/// stand between the speed dial and the G meter, over both) and of the
+/// forward view. Pinned by `the_stock_hologram_sits_clear_of_the_dials_and_the_mini_map`.
+pub const HOLO_ANCHOR_DEFAULT: [f32; 2] = [0.81, 0.30];
 pub const HOLO_SIZE_MIN: f32 = 0.16;
 pub const HOLO_SIZE_MAX: f32 = 0.50;
+/// HOLO RANGE: how much space the hologram shows round the ship, as a
+/// multiple of the stock (the ship shrinks by the same factor).
+pub const HOLO_RANGE_MIN: f32 = 1.0;
+pub const HOLO_RANGE_MAX: f32 = 4.0;
+pub const HOLO_RANGE_STEP: f32 = 0.5;
 pub const FPS_FLOOR_CHOICES: [f32; 5] = [0.0, 30.0, 60.0, 90.0, 120.0];
 
 /// The landing hoops' spacings on offer, metres.
@@ -189,12 +217,22 @@ pub const ARMS_SHARDS_MAX: u32 = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
+    /// The file format's version (see [`SETTINGS_VERSION`]).
+    pub version: u32,
+    /// This run never writes the file back: a bench's settings are its
+    /// own. Runtime state, not a key — parse and render never touch it.
+    pub ephemeral: bool,
     pub msaa: u32,
     pub scale: f32,
     /// The world's scale governs itself to hold the FPS floor: RENDER
     /// SCALE is then the ceiling, never the floor.
     pub auto_scale: bool,
     pub vsync: bool,
+    /// RESUME: pick up where the last session left off (~/.farfall/world.cfg)
+    /// on start, and write it on every quit and every 30 s of sim time. Off:
+    /// the world file is neither read nor written, and NEW GAME still
+    /// forgets whatever is on disk.
+    pub resume: bool,
     pub bindings: Bindings,
     pub layout: Layout,
     /// Freelook: radians per mouse count, relative to the default.
@@ -215,12 +253,36 @@ pub struct Settings {
     pub cockpit_hull: f32,
     /// The cabin is drawn at this fraction of the scene's size.
     pub cockpit_res: f32,
+    /// The control column on the console mirrors the live stick demand.
+    pub cockpit_stick: bool,
     /// The least frame rate the pilot will have, or 0 for no floor.
     pub fps_floor: f32,
     /// The daytime sky's strength low down, 1 = stock.
     pub sky: f32,
+    /// The ground's live relief: 0 the baked continents only, 1 stock,
+    /// 2 an octave finer.
+    pub terrain_detail: f32,
+    /// The cloud deck: a multiplier on the preset's coverage, 0 clears it.
+    pub clouds: f32,
+    /// The night side's cities, 0 (dark) .. 2; 1 = stock.
+    pub city_lights: f32,
     /// The lens flare's strength, 1 = stock, 0 none.
     pub flare: f32,
+    /// The picture (the post pass): the bloom's strength, 0 (none) .. 2;
+    /// 1 = stock.
+    pub bloom: f32,
+    /// Exposure, a multiplier on the scene's own: 0.25 .. 4 (±2 stops),
+    /// 1 = stock. The eye's slow drift about it is built in.
+    pub exposure: f32,
+    /// The curve from radiance to the screen: OFF (a clip), SOFT, AGX.
+    pub tonemap: Tonemap,
+    /// The glass rim's chromatic fringing, 0 (none) .. 2; 1 = a hair.
+    pub fringe: f32,
+    /// Space dust and cabin motes: 0 none, 1 stock, up to 2.
+    pub dust: f32,
+    /// Wind ribbons in a planet's air: 0 none, 1 stock, up to 2. Visual
+    /// density only — the wind itself is the sim's and keeps blowing.
+    pub wind: f32,
     /// The nebula's glow, 0 (off) .. 3; 1 = stock.
     pub nebula: f32,
     /// Which nebula: the seed picks where the clouds sit and their shapes.
@@ -238,8 +300,10 @@ pub struct Settings {
     pub nebula_spread: f32,
     /// Base field of view, degrees (vertical).
     pub fov: f32,
-    /// Gauge style: TRON holograms on the glass; JET bowls hollowed into
-    /// the dash; DIAL real instruments set flush into the dash.
+    /// Gauge style: WARTHOG (the default) steam gauges on the dash; TRON
+    /// holograms on the glass; JET holograms over thin rings, the gyro a
+    /// real ball; DIAL period instruments on the dash. Nothing is ever
+    /// hollowed into the dash for any of them.
     pub gauge_style: GaugeStyle,
     /// Gauges stay lit (true) or fade by relevance (false).
     pub gauges_stay: bool,
@@ -253,10 +317,19 @@ pub struct Settings {
     pub dials: [DialTweak; Instrument::ALL.len()],
     /// Spacing of the landing hoops, metres.
     pub landing_spacing_m: f32,
+    /// LANDING ASSIST: in LANDING mode with a touchdown ahead, the flight
+    /// computer holds the hull level over the ground on any axis the
+    /// pilot is not using.
+    pub landing_assist: bool,
+    /// The landing pad: a ring drawn on the ground at the predicted
+    /// touchdown, in LANDING mode.
+    pub landing_pad: bool,
     /// Rings drawn around each body on the map, 0..=6.
     pub map_rings: u32,
     /// The map's reference grid.
     pub map_grid: bool,
+    /// Helicopters parked on pads down on the planet.
+    pub helis: bool,
     /// The chase camera: the whole view from outside the ship (the dev
     /// third person the holo3PP is measured against).
     pub camera_chase: bool,
@@ -265,11 +338,20 @@ pub struct Settings {
     pub holo_view: bool,
     /// The hologram's size (its radius is this times half a metre).
     pub holo_size: f32,
+    /// How much space the hologram shows round the ship, 1 (the ship
+    /// fills it) .. 4 (four times the room, the ship a quarter the size).
+    pub holo_range: f32,
+    /// The CONTROLS card at every start (it always shows on the first
+    /// run, and F1 shows it any time).
+    pub controls_card: bool,
     /// The hologram's emitter: a glass anchor (canopy NDC) whose direction
     /// meets the dash at the socket.
     pub holo_anchor: [f32; 2],
     /// The wormhole drive's destination and safe distance.
     pub plan: Plan,
+    /// The jump sequence's length: a scale on the stock eight seconds,
+    /// 0.5 (four seconds) .. 2 (sixteen); 1 = stock.
+    pub warp_length: f32,
     /// The reactor's share for the arms, 0..1, and their light's strength
     /// (tracers, flashes, bursts), 0 (off) .. 2.
     pub arms_power: f32,
@@ -288,6 +370,13 @@ pub struct Settings {
     /// HOSTILITY: the share of those that shoot rather than hail, 0..1.
     pub mimics_chance: f32,
     pub mimics_hostility: f32,
+    /// MIMIC SIZE: a mimic hull over our own fighter, 0.5..3 (1 stock: the
+    /// same ship).
+    pub mimics_size: f32,
+    /// MINERS: how many miner ships work the ring about us, 0..8, and
+    /// MINER GROWTH: how fast they haul and so grow, 0.25..4 (1 stock).
+    pub miners_count: u32,
+    pub miners_growth: f32,
     /// HOLD GAIN: how hard the lock holds, 0.2..3; HOLD FACING: the nose
     /// kept on the target.
     pub hold_gain: f32,
@@ -301,6 +390,9 @@ pub struct Settings {
     /// the way to the slip, 0..2 of the stock. The warning stays; the
     /// violence is the pilot's to choose.
     pub drive_shake: f32,
+    /// The airframe the pilot's own ship wears: the fighter, or the
+    /// FARFALL helicopter (SPEC §6.5c). A parameter, never sim state.
+    pub craft: Craft,
     /// The ship's fit: what each hardpoint carries, by [`Hardpoint`] index.
     pub mounts: [Mount; 4],
     /// The bay's hologram: its hue 0..1 and saturation 0..1, scanlines
@@ -315,6 +407,8 @@ pub struct Settings {
     pub pointer_size: f32,
     /// Where the SHIP bay's panel sits (top-left, canopy NDC).
     pub bay_anchor: [f32; 2],
+    /// The stick: which raw axis and button is which control (stick.*).
+    pub stick: StickMap,
 }
 
 impl Settings {
@@ -333,10 +427,13 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            version: SETTINGS_VERSION,
+            ephemeral: false,
             msaa: 4,
             scale: 1.0,
             auto_scale: false,
             vsync: true,
+            resume: true,
             bindings: Bindings::default(),
             layout: Layout::default(),
             look_sensitivity: 1.0,
@@ -348,8 +445,12 @@ impl Default for Settings {
             cockpit_glow: 1.0,
             cockpit_hull: 0.92,
             cockpit_res: 0.5,
+            cockpit_stick: true,
             fps_floor: 60.0,
             sky: 1.0,
+            terrain_detail: 1.0,
+            clouds: 1.0,
+            city_lights: 1.0,
             nebula: 1.0,
             nebula_seed: 7,
             nebula_scale: 3.0,
@@ -359,21 +460,33 @@ impl Default for Settings {
             nebula_hue2: 0.55,
             nebula_spread: 1.5,
             flare: 1.0,
+            bloom: 1.0,
+            exposure: 1.0,
+            tonemap: Tonemap::Agx,
+            fringe: 1.0,
+            dust: 1.0,
+            wind: 1.0,
             fov: 70.0,
-            gauge_style: GaugeStyle::Tron,
+            gauge_style: GaugeStyle::Warthog,
             gauges_stay: true,
             guide: false,
             hull_sound: true,
             shield: 1.0,
             dials: [DialTweak::DEFAULT; Instrument::ALL.len()],
             landing_spacing_m: 250.0,
+            landing_assist: true,
+            landing_pad: true,
             map_rings: 4,
             map_grid: true,
+            helis: true,
             camera_chase: false,
-            holo_view: false,
-            holo_size: 0.30,
+            holo_view: true,
+            holo_size: 0.18,
+            holo_range: 1.0,
+            controls_card: false,
             holo_anchor: HOLO_ANCHOR_DEFAULT,
             plan: Plan::default(),
+            warp_length: 1.0,
             arms_power: 0.5,
             arms_glow: 1.0,
             arms_shards: 24,
@@ -383,11 +496,18 @@ impl Default for Settings {
             arms_ore: 1.0,
             mimics_chance: 1.0,
             mimics_hostility: 0.5,
+            mimics_size: 1.0,
+            miners_count: 4,
+            miners_growth: 1.0,
             hold_gain: 1.0,
             hold_face: true,
             arms_sight: 1.0,
             cam_shake: 1.0,
-            drive_shake: 0.4,
+            // A warning, not a beating: the gauges must stay readable to
+            // the slip. Turn it up on the CABIN page if you want the
+            // violence.
+            drive_shake: 0.0,
+            craft: Craft::default(),
             mounts: STOCK,
             bay_hue: BAY_HUE_DEFAULT,
             bay_saturation: 1.0,
@@ -396,18 +516,234 @@ impl Default for Settings {
             bay_spin: true,
             pointer_size: POINTER_SIZE_DEFAULT,
             bay_anchor: BAY_ANCHOR_DEFAULT,
+            stick: StickMap::default(),
         }
     }
 }
 
 pub const MSAA_CHOICES: [u32; 4] = [1, 2, 4, 8];
 
+/// Where `.farfall` lives: `$HOME`, or on a machine where only Windows
+/// sets it (this one, from WSL — `HOME` is unset, `USERPROFILE` is not)
+/// `$USERPROFILE`. Neither set: no config directory at all, and every
+/// load/save/store is a harmless no-op (see the callers).
+pub(crate) fn config_dir() -> Option<PathBuf> {
+    config_dir_from(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
+}
+
+fn config_dir_from(
+    home: Option<std::ffi::OsString>,
+    userprofile: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    home.or(userprofile)
+        .map(|h| PathBuf::from(h).join(".farfall"))
+}
+
+/// Every key the settings file may hold, by name or by pattern (a `*`
+/// stands for one segment: an action's key, a dial's key). The menu's
+/// coverage test walks this list: a key here with no menu row is a
+/// setting a pilot cannot find, save the panel anchors, which are set by
+/// dragging the panel itself.
+#[cfg(test)]
+pub const KEYS: &[&str] = &[
+    "graphics.msaa",
+    "graphics.scale",
+    "graphics.vsync",
+    "graphics.auto-scale",
+    "graphics.fov",
+    "graphics.fps-floor",
+    "graphics.sky",
+    "graphics.flare",
+    "graphics.bloom",
+    "graphics.exposure",
+    "graphics.tonemap",
+    "graphics.fringe",
+    "graphics.dust",
+    "graphics.wind",
+    "graphics.terrain-detail",
+    "graphics.clouds",
+    "graphics.city-lights",
+    "graphics.nebula",
+    "graphics.nebula-seed",
+    "graphics.nebula-scale",
+    "graphics.nebula-density",
+    "graphics.nebula-clouds",
+    "graphics.nebula-hue",
+    "graphics.nebula-hue2",
+    "graphics.nebula-spread",
+    "camera.chase",
+    "holo.view",
+    "holo.size",
+    "holo.range",
+    "cam.shake",
+    "cam.drive-shake",
+    "cockpit.frame",
+    "cockpit.glow",
+    "cockpit.hull",
+    "cockpit.res",
+    "cockpit.stick",
+    "ui.gauges",
+    "ui.gauge-style",
+    "ui.guide",
+    "ui.shield",
+    "ui.hoop-size",
+    "ui.landing-hoops",
+    "ui.safe-edge",
+    "ui.controls-card",
+    "ui.pointer-size",
+    "ui.*",
+    "ui.*.size",
+    "ui.*.style",
+    "ui.*.fade",
+    "ui.*.tilt",
+    "ui.*.lean",
+    "ui.*.rotate",
+    "map.rings",
+    "map.grid",
+    "world.helis",
+    "warp.destination",
+    "warp.safe-radii",
+    "warp.length",
+    "sound.hull",
+    "control.*",
+    "control.look-sens",
+    "stick.enabled",
+    "stick.pitch",
+    "stick.yaw",
+    "stick.roll",
+    "stick.throttle",
+    "stick.strafe",
+    "stick.lift",
+    "stick.deadzone",
+    "stick.curve",
+    "stick.throttle-zero",
+    "stick.throttle-brake",
+    "stick.throttle-jump",
+    "stick.layout",
+    "stick.fire",
+    "stick.shift",
+    "stick.back",
+    "stick.button.*",
+    "stick.shift-button.*",
+    "arms.power",
+    "arms.glow",
+    "arms.sight",
+    "arms.shards",
+    "arms.shard-life",
+    "arms.scar-size",
+    "arms.scar-cool",
+    "arms.ore",
+    "mimics.chance",
+    "mimics.hostility",
+    "hold.gain",
+    "hold.face",
+    "ship.craft",
+    "ship.hardpoint.*",
+    "ship.holo-hue",
+    "ship.holo-saturation",
+    "ship.holo-scanlines",
+    "ship.holo-size",
+    "ship.holo-spin",
+    "mimics.size",
+    "miners.count",
+    "miners.growth",
+    "landing.assist",
+    "landing.pad",
+    "game.resume",
+];
+
+/// Keys the file carries for itself, with no menu row to reach them.
+#[cfg(test)]
+pub const FILE_ONLY_KEYS: &[&str] = &["settings.version"];
+
+/// The anchors: set by dragging a panel, never by a row.
+#[cfg(test)]
+pub const DRAGGED_KEYS: &[&str] = &[
+    "ui.panel-menu",
+    "ui.panel-map",
+    "ui.panel-readout",
+    "ui.panel-holo",
+    "ui.panel-bay-card",
+];
+
+/// Does a key match a listed name or pattern?
+#[cfg(test)]
+pub fn key_matches(pattern: &str, key: &str) -> bool {
+    let (mut p, mut k) = (pattern.split('.'), key.split('.'));
+    loop {
+        match (p.next(), k.next()) {
+            (None, None) => return true,
+            (Some(ps), Some(ks)) if ps == "*" || ps == ks => {}
+            _ => return false,
+        }
+    }
+}
+
+/// The settings file's format version, written as `settings.version`.
+/// A file without the line predates the DRIVE SHAKE stock change (40% →
+/// 12%): parse adopts the new stock for exactly the old stock value, and
+/// keeps anything else — an explicit choice survives, an old default
+/// does not.
+pub const SETTINGS_VERSION: u32 = 2;
+/// What `cam.drive-shake` used to default to, before the polish pass.
+const OLD_DRIVE_SHAKE_STOCK: f32 = 0.40;
+
+/// The pilot's home: `HOME` where a shell sets it, else Windows'
+/// `USERPROFILE`. A plain Windows launch (Explorer, a shortcut) has no
+/// HOME at all — without the fallback nothing was ever saved there.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
 impl Settings {
     pub fn path() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".farfall").join("settings.cfg"))
+        config_dir().map(|d| d.join("settings.cfg"))
     }
 
-    /// Read the file, or defaults if there is none.
+    /// Is there a settings file (or saved web settings) at all? Its
+    /// absence is the first run: the CONTROLS card shows itself.
+    pub fn file_exists() -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            return crate::web::storage_get("farfall.settings").is_some();
+        }
+        #[allow(unreachable_code)]
+        Self::path().is_some_and(|p| p.is_file())
+    }
+
+    /// FARFALL_BENCH=1 (the same forms `Config::from_env` accepts): the
+    /// bench must be hermetic. The pilot's lived-in file once coloured a
+    /// whole devlog sweep with a 3-dial layout, and his plugged stick's
+    /// full-rail lever slam-fired the chaos drive mid-bench — a capture
+    /// has to look the same on any machine.
+    fn bench_mode() -> bool {
+        matches!(
+            std::env::var("FARFALL_BENCH").as_deref(),
+            Ok("1" | "on" | "true")
+        )
+    }
+
+    /// What this run starts from: the pilot's file — or, on a bench,
+    /// stock, whatever the file says. FARFALL_HUD and the FARFALL_BENCH_*
+    /// knobs still stage a look deliberately, on top of stock. The bench's
+    /// settings are ephemeral: nothing this run does is written back.
+    fn adopt(file: Option<&str>, bench: bool) -> Self {
+        if bench {
+            return Self {
+                ephemeral: true,
+                ..Self::default()
+            };
+        }
+        match file {
+            Some(text) => Self::parse(text),
+            None => Self::default(),
+        }
+    }
+
+    /// Read the file, or defaults if there is none. A bench run starts
+    /// from stock instead — the file is not even read.
     pub fn load() -> Self {
         #[cfg(target_arch = "wasm32")]
         {
@@ -417,22 +753,52 @@ impl Settings {
             };
         }
         #[allow(unreachable_code)]
+        if Self::bench_mode() {
+            log::info!(
+                "settings: bench run - stock settings; the file is neither read nor written"
+            );
+            return Self::with_env_hud(Self::adopt(None, true));
+        }
         let Some(path) = Self::path() else {
-            return Self::default();
+            return Self::with_env_hud(Self::default());
         };
-        match std::fs::read_to_string(&path) {
+        let s = match std::fs::read_to_string(&path) {
             Ok(text) => {
-                let s = Self::parse(&text);
+                let s = Self::adopt(Some(&text), false);
                 log::info!("settings: loaded {}", path.display());
                 s
             }
             Err(_) => Self::default(),
+        };
+        Self::with_env_hud(s)
+    }
+
+    /// FARFALL_HUD=path: wear a HUD layout file (.fhud) for this run —
+    /// the bench's way to stage a cockpit, and a way to try a shared one.
+    /// (On the web there is no environment: var() errs, this is a no-op.)
+    fn with_env_hud(s: Self) -> Self {
+        let Ok(p) = std::env::var("FARFALL_HUD") else {
+            return s;
+        };
+        match std::fs::read_to_string(&p) {
+            Ok(text) => {
+                log::info!("hud: wearing {p}");
+                crate::hud_file::apply(&s, &text)
+            }
+            Err(e) => {
+                log::warn!("hud: could not read {p}: {e}");
+                s
+            }
         }
     }
 
     /// Write the file. Failure is logged, never fatal: a read-only home
-    /// must not stop the game.
+    /// must not stop the game. An ephemeral run (the bench) never
+    /// writes: whatever a staged menu or knob changed dies with it.
     pub fn save(&self) {
+        if self.ephemeral {
+            return;
+        }
         #[cfg(target_arch = "wasm32")]
         {
             crate::web::storage_set("farfall.settings", &self.render());
@@ -452,6 +818,7 @@ impl Settings {
 
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
+        let mut saw_version = false;
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -462,6 +829,12 @@ impl Settings {
             };
             let (k, v) = (k.trim(), v.trim());
             match k {
+                "settings.version" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        s.version = n.max(1);
+                        saw_version = true;
+                    }
+                }
                 "graphics.msaa" => {
                     if let Ok(n) = v.parse::<u32>() {
                         if MSAA_CHOICES.contains(&n) {
@@ -478,6 +851,7 @@ impl Settings {
                 }
                 "graphics.vsync" => s.vsync = matches!(v, "on" | "true" | "1"),
                 "graphics.auto-scale" => s.auto_scale = matches!(v, "on" | "true" | "1"),
+                "game.resume" => s.resume = matches!(v, "on" | "true" | "1"),
                 "ui.safe-edge" => {
                     if let Ok(f) = v.trim_end_matches('%').parse::<f32>() {
                         s.layout.set_safe_edge(f / 100.0);
@@ -493,12 +867,22 @@ impl Settings {
                         s.plan.set_safe(f);
                     }
                 }
+                "warp.length" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.warp_length = f.clamp(LENGTH_MIN, LENGTH_MAX);
+                        }
+                    }
+                }
                 "control.look-sens" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.look_sensitivity = f.clamp(0.1, 5.0);
                         }
                     }
+                }
+                k if k.starts_with("stick.") => {
+                    s.stick.parse_key(k, v);
                 }
                 "ui.panel-menu" => {
                     if let Some(a) = parse_pair(v) {
@@ -663,6 +1047,25 @@ impl Settings {
                         }
                     }
                 }
+                "mimics.size" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.mimics_size = f.clamp(0.5, 3.0);
+                        }
+                    }
+                }
+                "miners.count" => {
+                    if let Ok(n) = v.parse::<u32>() {
+                        s.miners_count = n.min(crate::miner::MAX_MINERS as u32);
+                    }
+                }
+                "miners.growth" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.miners_growth = f.clamp(0.25, 4.0);
+                        }
+                    }
+                }
                 "hold.gain" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
@@ -709,6 +1112,18 @@ impl Settings {
                         }
                     }
                 }
+                "holo.range" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.holo_range = f.clamp(HOLO_RANGE_MIN, HOLO_RANGE_MAX);
+                        }
+                    }
+                }
+                "ui.controls-card" => match v {
+                    "on" => s.controls_card = true,
+                    "off" => s.controls_card = false,
+                    _ => {}
+                },
                 "sound.hull" => match v {
                     "on" => s.hull_sound = true,
                     "off" => s.hull_sound = false,
@@ -726,10 +1141,71 @@ impl Settings {
                         }
                     }
                 }
+                "graphics.bloom" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.bloom = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.exposure" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.exposure = f.clamp(EXPOSURE_MIN, EXPOSURE_MAX);
+                        }
+                    }
+                }
+                "graphics.tonemap" => {
+                    if let Some(t) = Tonemap::from_key(v) {
+                        s.tonemap = t;
+                    }
+                }
+                "graphics.fringe" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.fringe = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.dust" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.dust = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.wind" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.wind = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
                 "graphics.sky" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if f.is_finite() {
                             s.sky = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.terrain-detail" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.terrain_detail = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.clouds" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.clouds = f.clamp(0.0, 2.0);
+                        }
+                    }
+                }
+                "graphics.city-lights" => {
+                    if let Ok(f) = v.parse::<f32>() {
+                        if f.is_finite() {
+                            s.city_lights = f.clamp(0.0, 2.0);
                         }
                     }
                 }
@@ -792,6 +1268,7 @@ impl Settings {
                         }
                     }
                 }
+                "cockpit.stick" => s.cockpit_stick = matches!(v, "on" | "true" | "1"),
                 "cockpit.res" => {
                     if let Ok(f) = v.parse::<f32>() {
                         if COCKPIT_RES_CHOICES.contains(&f) {
@@ -813,11 +1290,14 @@ impl Settings {
                         }
                     }
                 }
+                "landing.assist" => s.landing_assist = matches!(v, "on" | "true" | "1"),
+                "landing.pad" => s.landing_pad = matches!(v, "on" | "true" | "1"),
                 "map.rings" => {
                     if let Ok(n) = v.parse::<u32>() {
                         s.map_rings = n.min(crate::map::RINGS_MAX);
                     }
                 }
+                "world.helis" => s.helis = matches!(v, "on" | "true" | "1"),
                 "map.grid" => match v {
                     "on" => s.map_grid = true,
                     "off" => s.map_grid = false,
@@ -842,6 +1322,11 @@ impl Settings {
                         .unwrap();
                     if let Some(key) = key_from_name(v) {
                         s.bindings.bind_named(n, key);
+                    }
+                }
+                "ship.craft" => {
+                    if let Some(c) = Craft::from_key(v) {
+                        s.craft = c;
                     }
                 }
                 k if k.starts_with("ship.hardpoint.") => {
@@ -890,6 +1375,20 @@ impl Settings {
                                         }
                                     }
                                 }
+                                "lean" => {
+                                    if let Ok(f) = v.parse::<f32>() {
+                                        if f.is_finite() {
+                                            d.lean_deg = f.clamp(TILT_MIN, TILT_MAX);
+                                        }
+                                    }
+                                }
+                                "rotate" => {
+                                    if let Ok(f) = v.parse::<f32>() {
+                                        if f.is_finite() {
+                                            d.rotate_deg = f.clamp(ROTATE_MIN, ROTATE_MAX);
+                                        }
+                                    }
+                                }
                                 "fade" => {
                                     d.stay = match v {
                                         "auto" => None,
@@ -927,11 +1426,21 @@ impl Settings {
                 }
             }
         }
+        // A file from before `settings.version` carrying exactly the old
+        // DRIVE SHAKE stock is an old default, not a choice: it adopts
+        // the new stock. Any other value in an old file is kept.
+        if !saw_version {
+            if (s.drive_shake - OLD_DRIVE_SHAKE_STOCK).abs() < 1e-3 {
+                s.drive_shake = Self::default().drive_shake;
+            }
+            s.version = SETTINGS_VERSION;
+        }
         s
     }
 
     pub fn render(&self) -> String {
         let mut out = String::from("# FARFALL settings — edited by the in-game menu (Esc)\n");
+        out.push_str(&format!("settings.version = {}\n", self.version));
         out.push_str(&format!("graphics.msaa = {}\n", self.msaa));
         out.push_str(&format!("graphics.scale = {:.2}\n", self.scale));
         out.push_str(&format!(
@@ -941,6 +1450,10 @@ impl Settings {
         out.push_str(&format!(
             "graphics.auto-scale = {}\n",
             if self.auto_scale { "on" } else { "off" }
+        ));
+        out.push_str(&format!(
+            "game.resume = {}\n",
+            if self.resume { "on" } else { "off" }
         ));
         for a in Action::ALL {
             out.push_str(&format!(
@@ -960,6 +1473,7 @@ impl Settings {
             "control.look-sens = {:.2}\n",
             self.look_sensitivity
         ));
+        self.stick.render(&mut out);
         out.push_str(&format!("ui.hoop-size = {:.2}\n", self.hoop_size));
         out.push_str(&format!(
             "ui.panel-menu = {:.3},{:.3}\n",
@@ -980,9 +1494,25 @@ impl Settings {
         out.push_str(&format!("cockpit.glow = {:.2}\n", self.cockpit_glow));
         out.push_str(&format!("cockpit.hull = {:.2}\n", self.cockpit_hull));
         out.push_str(&format!("cockpit.res = {:.2}\n", self.cockpit_res));
+        out.push_str(&format!(
+            "cockpit.stick = {}\n",
+            if self.cockpit_stick { "on" } else { "off" }
+        ));
         out.push_str(&format!("graphics.fps-floor = {:.0}\n", self.fps_floor));
         out.push_str(&format!("graphics.sky = {:.2}\n", self.sky));
+        out.push_str(&format!(
+            "graphics.terrain-detail = {:.2}\n",
+            self.terrain_detail
+        ));
+        out.push_str(&format!("graphics.clouds = {:.2}\n", self.clouds));
+        out.push_str(&format!("graphics.city-lights = {:.2}\n", self.city_lights));
         out.push_str(&format!("graphics.flare = {:.2}\n", self.flare));
+        out.push_str(&format!("graphics.bloom = {:.2}\n", self.bloom));
+        out.push_str(&format!("graphics.exposure = {:.3}\n", self.exposure));
+        out.push_str(&format!("graphics.tonemap = {}\n", self.tonemap.key()));
+        out.push_str(&format!("graphics.fringe = {:.2}\n", self.fringe));
+        out.push_str(&format!("graphics.dust = {:.2}\n", self.dust));
+        out.push_str(&format!("graphics.wind = {:.2}\n", self.wind));
         out.push_str(&format!("graphics.nebula = {:.2}\n", self.nebula));
         out.push_str(&format!("graphics.nebula-seed = {}\n", self.nebula_seed));
         out.push_str(&format!(
@@ -1026,6 +1556,9 @@ impl Settings {
             "mimics.hostility = {:.2}\n",
             self.mimics_hostility
         ));
+        out.push_str(&format!("mimics.size = {:.2}\n", self.mimics_size));
+        out.push_str(&format!("miners.count = {}\n", self.miners_count));
+        out.push_str(&format!("miners.growth = {:.2}\n", self.miners_growth));
         out.push_str(&format!("hold.gain = {:.2}\n", self.hold_gain));
         out.push_str(&format!(
             "hold.face = {}\n",
@@ -1043,10 +1576,16 @@ impl Settings {
             if self.holo_view { "on" } else { "off" }
         ));
         out.push_str(&format!("holo.size = {:.2}\n", self.holo_size));
+        out.push_str(&format!("holo.range = {:.1}\n", self.holo_range));
+        out.push_str(&format!(
+            "ui.controls-card = {}\n",
+            if self.controls_card { "on" } else { "off" }
+        ));
         out.push_str(&format!(
             "ui.panel-holo = {:.3},{:.3}\n",
             self.holo_anchor[0], self.holo_anchor[1]
         ));
+        out.push_str(&format!("ship.craft = {}\n", self.craft.key()));
         for (n, m) in self.mounts.iter().enumerate() {
             out.push_str(&format!("ship.hardpoint.{n} = {}\n", m.key()));
         }
@@ -1077,13 +1616,27 @@ impl Settings {
             "ui.landing-hoops = {:.0}\n",
             self.landing_spacing_m
         ));
+        out.push_str(&format!(
+            "landing.assist = {}\n",
+            if self.landing_assist { "on" } else { "off" }
+        ));
+        out.push_str(&format!(
+            "landing.pad = {}\n",
+            if self.landing_pad { "on" } else { "off" }
+        ));
         out.push_str(&format!("map.rings = {}\n", self.map_rings));
         out.push_str(&format!(
             "map.grid = {}\n",
             if self.map_grid { "on" } else { "off" }
         ));
+        out.push_str(&format!(
+            "world.helis = {}\n",
+            if self.helis { "on" } else { "off" }
+        ));
+
         out.push_str(&format!("warp.destination = {}\n", self.plan.dest.key()));
         out.push_str(&format!("warp.safe-radii = {:.3}\n", self.plan.safe_radii));
+        out.push_str(&format!("warp.length = {:.2}\n", self.warp_length));
         for i in Instrument::ALL {
             match self.layout.free(i) {
                 Some([x, y]) => out.push_str(&format!(
@@ -1115,6 +1668,8 @@ impl Settings {
                     }
                 ));
                 out.push_str(&format!("ui.{}.tilt = {:.0}\n", i.key(), d.tilt_deg));
+                out.push_str(&format!("ui.{}.lean = {:.0}\n", i.key(), d.lean_deg));
+                out.push_str(&format!("ui.{}.rotate = {:.0}\n", i.key(), d.rotate_deg));
             }
         }
         out.push_str(&format!(
@@ -1137,6 +1692,65 @@ mod tests {
     }
 
     #[test]
+    fn the_craft_choice_survives_the_file() {
+        // The pilot's own airframe rides the settings like the fit does
+        // (SPEC §6.5c): chosen, saved, worn again next run.
+        let mut s = Settings::default();
+        assert_eq!(s.craft, Craft::Fighter, "the fighter is stock");
+        s.craft = Craft::Helicopter;
+        let back = Settings::parse(&s.render());
+        assert_eq!(back.craft, Craft::Helicopter);
+        // A file that never heard of the craft flies the fighter.
+        assert_eq!(Settings::parse("graphics.msaa = 4\n").craft, Craft::Fighter);
+        // A garbled value falls back rather than guessing.
+        assert_eq!(
+            Settings::parse("ship.craft = gyrocopter\n").craft,
+            Craft::Fighter
+        );
+    }
+
+    /// The incident this answers: since settings persist, every bench run
+    /// wore the pilot's lived-in cockpit (his 3-dial layout, his angles),
+    /// so a devlog sweep's captures were his, not the game's. A bench
+    /// starts from stock whatever the file says; the pilot's own run
+    /// still reads it.
+    #[test]
+    fn a_bench_run_with_a_lived_in_settings_file_wears_the_stock_cockpit() {
+        let lived_in =
+            "graphics.msaa = 8\nui.speed.tilt = 30\nui.fuel = off\ncam.drive-shake = 0.33\n";
+        let bench = Settings::adopt(Some(lived_in), true);
+        assert_eq!(
+            bench,
+            Settings {
+                ephemeral: true,
+                ..Settings::default()
+            }
+        );
+        let plain = Settings::adopt(Some(lived_in), false);
+        assert_eq!(plain.msaa, 8, "the pilot's run reads the file as ever");
+        assert!(!plain.ephemeral, "and saves as ever");
+        assert_ne!(plain, Settings::default());
+        assert!(
+            !Settings::default().ephemeral,
+            "stock itself is not ephemeral: only the bench's copy is"
+        );
+    }
+
+    /// ...and nothing a bench run does is ever written back: an
+    /// ephemeral Settings' save is a no-op, so the pilot's file reads
+    /// the same before and after — staged menu, knobs and all.
+    #[test]
+    fn an_ephemeral_settings_never_writes_the_file() {
+        let read = || Settings::path().and_then(|p| std::fs::read_to_string(p).ok());
+        let before = read();
+        let mut s = Settings::adopt(None, true);
+        s.msaa = 8;
+        s.controls_card = !s.controls_card;
+        s.save();
+        assert_eq!(before, read(), "the bench wrote the pilot's file");
+    }
+
+    #[test]
     fn nebula_keys_clamp_and_wrap() {
         let s = Settings::parse(
             "graphics.nebula = 9\ngraphics.nebula-seed = 123456\ngraphics.nebula-scale = 0\n\
@@ -1155,12 +1769,30 @@ mod tests {
     }
 
     #[test]
+    fn the_ground_keys_clamp_and_default_to_stock() {
+        let s = Settings::parse(
+            "graphics.terrain-detail = 7\ngraphics.clouds = -2\ngraphics.city-lights = 1.5\n",
+        );
+        assert_eq!(s.terrain_detail, 2.0);
+        assert_eq!(s.clouds, 0.0);
+        assert_eq!(s.city_lights, 1.5);
+        let d = Settings::parse("");
+        assert_eq!((d.terrain_detail, d.clouds, d.city_lights), (1.0, 1.0, 1.0));
+        assert_eq!(Settings::parse("graphics.clouds = nan").clouds, 1.0);
+    }
+
+    #[test]
     fn edits_round_trip() {
         let mut s = Settings {
             msaa: 2,
             scale: 0.75,
             auto_scale: true,
+            helis: false,
             vsync: false,
+            terrain_detail: 1.5,
+            clouds: 0.5,
+            city_lights: 2.0,
+            resume: false,
             ..Default::default()
         };
         s.bindings.bind(Action::PitchUp, KeyCode::KeyI);
@@ -1181,21 +1813,42 @@ mod tests {
         s.arms_ore = 1.5;
         s.mimics_chance = 0.25;
         s.mimics_hostility = 0.75;
+        s.mimics_size = 1.75;
+        s.miners_count = 7;
+        s.miners_growth = 2.5;
         s.hold_gain = 1.75;
         s.hold_face = false;
+        s.stick.enabled = false;
+        s.stick.deadzone = 0.14;
+        s.stick.curve = 2.25;
+        s.stick.throttle_zero = crate::stick::ThrottleZero::Bottom;
+        s.stick.bind_axis(
+            crate::stick::Flight::Lift,
+            crate::stick::AxisMap::parse("3-").unwrap(),
+        );
+        s.stick.bind_fire(Some(2));
         s.arms_sight = 0.5;
         s.cam_shake = 1.75;
         s.drive_shake = 0.8;
         s.hoop_size = 2.5;
         s.map_rings = 2;
         s.landing_spacing_m = 500.0;
+        s.landing_assist = false;
+        s.landing_pad = false;
         s.cockpit_frame = false;
         s.cockpit_glow = 1.5;
         s.cockpit_hull = 0.25;
         s.cockpit_res = 1.0;
+        s.cockpit_stick = false;
         s.fps_floor = 90.0;
         s.sky = 1.5;
         s.flare = 0.5;
+        s.bloom = 1.5;
+        s.exposure = 0.5;
+        s.tonemap = Tonemap::Soft;
+        s.fringe = 0.0;
+        s.dust = 1.75;
+        s.wind = 0.25;
         s.nebula = 2.0;
         s.nebula_seed = 42;
         s.nebula_scale = 5.0;
@@ -1213,6 +1866,8 @@ mod tests {
             style: Some(GaugeStyle::Dial),
             stay: Some(true),
             tilt_deg: 45.0,
+            lean_deg: -20.0,
+            rotate_deg: 90.0,
         };
         s.dials[Instrument::Gyro as usize].stay = Some(false);
         s.menu_anchor = [-0.25, 0.5];
@@ -1230,10 +1885,86 @@ mod tests {
         s.camera_chase = true;
         s.holo_view = true;
         s.holo_size = 0.40;
+        s.holo_range = 2.5;
+        s.controls_card = true;
         s.holo_anchor = [-0.375, 0.25];
         s.plan.dest = Destination::Moon;
         s.plan.set_safe(3.5);
+        s.warp_length = 1.5;
         assert_eq!(Settings::parse(&s.render()), s);
+    }
+
+    /// A new player's dash is the Warthog's: steam gauges on the metal.
+    /// The GAUGES page still cycles the other three, and a file that
+    /// names another style keeps it.
+    #[test]
+    fn warthog_is_the_default_and_the_menu_still_cycles_every_style() {
+        let s = Settings::default();
+        assert_eq!(s.gauge_style, GaugeStyle::Warthog);
+        assert!(s.render().contains("ui.gauge-style = warthog\n"));
+        let mut seen = vec![s.gauge_style];
+        let mut cur = s.gauge_style;
+        for _ in 0..GaugeStyle::ALL.len() - 1 {
+            cur = cur.next(true);
+            seen.push(cur);
+        }
+        seen.sort_by_key(|g| g.index());
+        assert_eq!(seen, GaugeStyle::ALL.to_vec());
+        assert_eq!(cur.next(true), GaugeStyle::Warthog, "and round");
+        assert_eq!(
+            Settings::parse("ui.gauge-style = tron\n").gauge_style,
+            GaugeStyle::Tron
+        );
+        assert_eq!(Settings::parse("").gauge_style, GaugeStyle::Warthog);
+    }
+
+    /// The KEYS list is the ledger of the file: every line the file writes
+    /// is on it (or is a dragged anchor), and every fixed name on it is a
+    /// line the file writes. A key written but unlisted would slip past
+    /// the menu's coverage test.
+    #[test]
+    fn the_key_list_is_the_file() {
+        let mut s = Settings::default();
+        s.dials[Instrument::Speed as usize].size = 1.5;
+        let written: Vec<String> = s
+            .render()
+            .lines()
+            .filter_map(|l| l.split_once('=').map(|(k, _)| k.trim().to_string()))
+            .collect();
+        for k in &written {
+            assert!(
+                KEYS.iter()
+                    .chain(DRAGGED_KEYS)
+                    .chain(FILE_ONLY_KEYS)
+                    .any(|p| key_matches(p, k)),
+                "{k} is written but not listed"
+            );
+        }
+        for p in KEYS {
+            if !p.contains('*') {
+                assert!(
+                    written.iter().any(|k| k == p),
+                    "{p} is listed but never written"
+                );
+            }
+        }
+        assert!(key_matches("ui.*.size", "ui.speed.size"));
+        assert!(!key_matches("ui.*", "ui.speed.size"));
+        assert!(!key_matches("control.*", "ui.speed"));
+    }
+
+    #[test]
+    fn the_hologram_range_and_the_card_are_kept() {
+        let s = Settings::parse("holo.range = 9\nui.controls-card = on\n");
+        assert_eq!(s.holo_range, HOLO_RANGE_MAX);
+        assert!(s.controls_card);
+        let d = Settings::default();
+        assert!(d.holo_view, "the holo3PP is a stock gauge");
+        assert!(
+            !d.controls_card,
+            "the card shows itself on the first run only"
+        );
+        assert_eq!(d.holo_range, 1.0);
     }
 
     #[test]
@@ -1275,12 +2006,84 @@ mod tests {
         assert!(s.render().contains("ui.gyro.tilt = -12\n"));
     }
 
+    /// The other two orientation axes: a sideways lean held to the tilt's
+    /// reach, a rotation to the half turn either way, garbage refused.
+    #[test]
+    fn a_lean_and_a_rotation_are_held_within_reach() {
+        let s = Settings::parse(
+            "ui.speed.lean = 95\nui.gyro.lean = -25\nui.speed.rotate = 260\n\
+             ui.gyro.rotate = -45\nui.g-meter.rotate = nan\n",
+        );
+        assert_eq!(s.dials[Instrument::Speed as usize].lean_deg, TILT_MAX);
+        assert_eq!(s.dials[Instrument::Gyro as usize].lean_deg, -25.0);
+        assert_eq!(s.dials[Instrument::Speed as usize].rotate_deg, ROTATE_MAX);
+        assert_eq!(s.dials[Instrument::Gyro as usize].rotate_deg, -45.0);
+        assert_eq!(s.dials[Instrument::GForce as usize].rotate_deg, 0.0);
+        assert!(s.render().contains("ui.gyro.lean = -25\n"));
+        assert!(s.render().contains("ui.gyro.rotate = -45\n"));
+    }
+
+    /// A settings file from before `settings.version` that still carries
+    /// the old DRIVE SHAKE stock (40%) adopts the new stock; an explicit
+    /// choice — any other value — is kept, and a versioned file is
+    /// believed as written. Saving stamps the current version.
+    #[test]
+    fn an_old_files_stock_drive_shake_adopts_the_new_stock() {
+        let old_stock = Settings::parse("cam.drive-shake = 0.40\n");
+        assert_eq!(old_stock.drive_shake, Settings::default().drive_shake);
+        assert_eq!(old_stock.version, SETTINGS_VERSION);
+        let old_choice = Settings::parse("cam.drive-shake = 0.80\n");
+        assert_eq!(old_choice.drive_shake, 0.80);
+        let versioned = Settings::parse("settings.version = 2\ncam.drive-shake = 0.40\n");
+        assert_eq!(versioned.drive_shake, 0.40, "a versioned file is a choice");
+        assert!(Settings::default()
+            .render()
+            .contains(&format!("settings.version = {SETTINGS_VERSION}\n")));
+    }
+
     #[test]
     fn garbage_falls_back_to_defaults() {
         let s = Settings::parse(
             "graphics.msaa = 3\ngraphics.scale = nope\nui.gyro = on\nnonsense\ncontrol.pitch-up = ESCAPE\n",
         );
         assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn the_home_directory_falls_back_to_userprofile() {
+        use std::ffi::OsString;
+        assert_eq!(
+            config_dir_from(None, None),
+            None,
+            "neither set: no config at all"
+        );
+        assert_eq!(
+            config_dir_from(Some(OsString::from("/home/pilot")), None),
+            Some(PathBuf::from("/home/pilot/.farfall")),
+        );
+        assert_eq!(
+            config_dir_from(None, Some(OsString::from("C:\\Users\\pilot"))),
+            Some(PathBuf::from("C:\\Users\\pilot/.farfall")),
+            "HOME unset (this machine, from WSL): USERPROFILE is the fallback"
+        );
+        assert_eq!(
+            config_dir_from(
+                Some(OsString::from("/home/pilot")),
+                Some(OsString::from("C:\\Users\\pilot"))
+            ),
+            Some(PathBuf::from("/home/pilot/.farfall")),
+            "HOME wins when both are set"
+        );
+    }
+
+    #[test]
+    fn resume_defaults_on() {
+        assert!(
+            Settings::default().resume,
+            "the world persists unless told not to"
+        );
+        let s = Settings::parse("game.resume = off\n");
+        assert!(!s.resume);
     }
 
     #[test]
@@ -1295,5 +2098,58 @@ mod tests {
         assert_eq!(b.action_for(KeyCode::KeyW), Some(Action::PitchUp));
         // Reserved keys are refused.
         assert!(!b.bind(Action::YawLeft, KeyCode::Escape));
+    }
+
+    /// The stock hologram floats where nothing else is drawn: its disc on
+    /// the glass is outside every dial on the dash, under the mini map with
+    /// room to spare, out of the forward view, and inside the glass — at
+    /// the narrow screen (4:3) and the wide (16:9).
+    #[test]
+    fn the_stock_hologram_sits_clear_of_the_dials_and_the_mini_map() {
+        use crate::map::{MINI_ANCHOR, MINI_HALF_H};
+        use farfall_render::holo::{holo_centre, HOLO_RADIUS_M};
+        let s = Settings::default();
+        assert!(s.holo_view, "the hologram is a stock gauge");
+        let tan_half = (s.fov.to_radians() * 0.5).tan();
+        for aspect in [4.0 / 3.0, 16.0 / 9.0] {
+            let radius_m = s.holo_size * HOLO_RADIUS_M;
+            let c = holo_centre(s.holo_anchor, tan_half, aspect, radius_m);
+            assert!(c.z < 0.0, "in front of the pilot: {c}");
+            // Its disc on the glass, NDC.
+            let cx = c.x / -c.z / (tan_half * aspect);
+            let cy = c.y / -c.z / tan_half;
+            let ry = radius_m / c.length() / tan_half;
+            let rx = ry / aspect;
+            assert!(
+                cx + rx < 0.98 && cy + ry < 0.98,
+                "inside the glass: {cx} {cy}"
+            );
+            // Under the mini map, with a gap.
+            let map_bottom = s.layout.inset(MINI_ANCHOR)[1] - MINI_HALF_H;
+            assert!(
+                cy + ry < map_bottom - 0.05,
+                "under the mini map: {} vs {map_bottom}",
+                cy + ry
+            );
+            // Outside every dial on the dash: a stock dial is about 0.28 of
+            // the half height tall on the glass.
+            let dial_ry = 0.28;
+            for i in Instrument::ALL {
+                if !i.slotted() {
+                    continue;
+                }
+                let Some(a) = s.layout.anchor(i) else {
+                    continue;
+                };
+                let dx = (a[0] - cx).abs() - (dial_ry / aspect + rx);
+                let dy = (a[1] - cy).abs() - (dial_ry + ry);
+                assert!(
+                    dx > 0.0 || dy > 0.0,
+                    "{i:?} at {a:?} is under the hologram at {cx},{cy}"
+                );
+            }
+            // Out of the forward view: the middle of the glass is for the world.
+            assert!(cx - rx > 0.6, "right of the forward view: {}", cx - rx);
+        }
     }
 }

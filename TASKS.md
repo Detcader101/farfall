@@ -95,5 +95,5 @@ alongside FTL or a near body. Sequence accordingly.
 ## Backlog seeds (M2+, unordered — do not start)
 Atmosphere LUT bake (Lane B compute + Lane A fragment fallback) · cube-sphere terrain
 chunking · entry-fx pass · graphics.toml + tiers UI · wasm entry + canvas glue ·
-save format (postcard? verify license) · audio bed (kira? verify license) ·
+~~save format~~ (done: the world file, SPEC §7.6 — plain text, no format crate) · audio bed (kira? verify license) ·
 OpenXR spike plan (M4) · golden-image infra hardening

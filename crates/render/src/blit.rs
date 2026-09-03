@@ -1,57 +1,13 @@
-//! Scene-target upscale pass (SPEC §6.3), and the wormhole's picture
-//! effects, which are done to the upscale (`shaders/blit.wgsl`).
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct PostUniforms {
-    /// x: fisheye, y: invert, z: flow (the liquid field), w: charge — all 0..1
-    fx: [f32; 4],
-    /// x: aspect, y: time s, z: speed 0..1
-    misc: [f32; 4],
-}
-
-impl PostUniforms {
-    pub fn new(
-        fisheye: f32,
-        invert: f32,
-        particles: f32,
-        charge: f32,
-        aspect: f32,
-        time_s: f32,
-    ) -> Self {
-        let c = |v: f32| {
-            if v.is_finite() {
-                v.clamp(0.0, 1.0)
-            } else {
-                0.0
-            }
-        };
-        Self {
-            fx: [c(fisheye), c(invert), c(particles), c(charge)],
-            misc: [aspect.max(0.1), time_s, 0.0, 0.0],
-        }
-    }
-
-    /// How fast the ship is going, for the streaks and the cool rim, 0..1.
-    pub fn with_speed(mut self, speed: f32) -> Self {
-        self.misc[2] = if speed.is_finite() {
-            speed.clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        self
-    }
-
-    pub fn idle(aspect: f32, time_s: f32) -> Self {
-        Self::new(0.0, 0.0, 0.0, 0.0, aspect, time_s)
-    }
-}
+//! Scene-target upscale pass (SPEC §6.3): the finished scene — the world
+//! through the post pass, the ship over it — stretched to the swapchain
+//! (`shaders/blit.wgsl`). The wormhole's picture effects that used to live
+//! here are the post pass's now (`crate::post`), so they land on the world
+//! and not on the dash.
 
 pub struct BlitPass {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    uniforms: wgpu::Buffer,
     bind_group: Option<wgpu::BindGroup>,
 }
 
@@ -80,23 +36,7 @@ impl BlitPass {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
             ],
-        });
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("post uniforms"),
-            size: std::mem::size_of::<PostUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
         // Linear, because a nearest upscale of a reduced-resolution scene is
         // just visible pixellation; the scene is already antialiased.
@@ -138,13 +78,8 @@ impl BlitPass {
             pipeline,
             layout,
             sampler,
-            uniforms,
             bind_group: None,
         }
-    }
-
-    pub fn update(&self, queue: &wgpu::Queue, post: &PostUniforms) {
-        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(post));
     }
 
     /// Point the pass at a new scene texture. Must be called whenever the scene
@@ -161,10 +96,6 @@ impl BlitPass {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.uniforms.as_entire_binding(),
                 },
             ],
         }));

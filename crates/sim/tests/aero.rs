@@ -5,7 +5,10 @@
 //! of pressure against centre of gravity — sets the torque. These tests pin
 //! each of them separately, and pin that vacuum is still vacuum.
 
-use farfall_sim::{aero_forces, atmo_density, presets, step, Controls, WorldParams, WorldState};
+use farfall_sim::{
+    aero_forces, aero_forces_wind, atmo_density, presets, step, wind_mps, Controls, WorldParams,
+    WorldState,
+};
 use glam::{DQuat, DVec3};
 
 fn run(params: &WorldParams, mut state: WorldState, steps: u64, controls: Controls) -> WorldState {
@@ -241,6 +244,8 @@ fn thrust_is_felt_as_thrust() {
 }
 
 /// Hands off in thick air, the pilot feels the drag — and only the drag.
+/// The drag is taken against the moving air (v − wind), the same way the
+/// integrator takes it.
 #[test]
 fn drag_is_felt_in_air() {
     let p = presets::earth_compact();
@@ -248,7 +253,8 @@ fn drag_is_felt_in_air() {
     let s1 = step(&p, &s0, Controls::default());
     let felt = farfall_sim::felt_acceleration(&p, s0.time_s, &s0.ship, &s1.ship);
     let rho = atmo_density(&p.planet, s0.ship.pos_m.length());
-    let aero = aero_forces(&p.ship, rho, &s0.ship).accel_world;
+    let wind = wind_mps(&p, s0.ship.pos_m, s0.time_s);
+    let aero = aero_forces_wind(&p.ship, rho, &s0.ship, wind).accel_world;
     assert!((felt - aero).length() < 1e-6 * aero.length().max(1.0));
     assert!(felt.length() > 0.5);
 }

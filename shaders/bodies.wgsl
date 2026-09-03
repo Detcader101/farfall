@@ -45,6 +45,14 @@ const BELT_CELL_M: f32 = 1400.0;
 const BELT_HALF_M: f32 = 900.0;
 const RING_INNER: f32 = 1.62;
 const RING_OUTER: f32 = 1.98;
+// The dust haze about the ring plane: half-thickness (the rocks reach ±900 m,
+// the dust a little past them) and the run through it that costs one
+// optical depth — mirrored by bodies.rs::ring_run_m and its tests. Seen
+// edge-on from inside the belt the run along the plane is the whole chord
+// of the annulus, several hundred kilometres: at 250 km it saturated into a
+// hard-edged white column down the sky, at 700 km it is a soft band.
+const RING_HAZE_M: f32 = 1500.0;
+const RING_HAZE_FREE_M: f32 = 700000.0;
 
 fn belt_hash(x: i32, y: i32, z: i32, k: u32) -> u32 {
     var h = (u32(x) * 0x8da6b343u) ^ (u32(y) * 0xd8163841u) ^ (u32(z) * 0xcb1ab31fu) ^ (k * 0x9e3779b9u);
@@ -380,32 +388,74 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         alpha = max(alpha, ur.cover);
     }
     // The rings: a flat annulus in the plane normal to the spin axis, from
-    // 1.6 to 2.0 radii, dark and narrow — a thread, as Uranus' are.
+    // 1.6 to 2.0 radii, dark and narrow — a thread, as Uranus' are. Not a
+    // sheet of no thickness, though: a SLAB the belt's own height (rocks
+    // to ±900 m, a haze of dust a little past them), and every ray is
+    // charged for the length it runs inside the slab and the annulus. One
+    // rule from anywhere: from afar a face-on crossing is one thickness;
+    // from inside the belt a ray to the zenith is out of the haze in a
+    // kilometre while a ray along the plane runs tens of kilometres — so
+    // the belt is a band of sun-lit dust on its own horizon, brightest
+    // where the sight line grazes and toward the Sun. The old model hit
+    // the mid-plane and applied the far sheet at the hit: from inside
+    // the belt that hit was the camera itself for every ray on one side
+    // of the plane and nothing on the other, which drew the plane's
+    // great circle across the sky as a hard edge with a grey wash on one
+    // side (the "nebula seam" of the 2026-08-31 baseline).
     {
         let c = bd.uranus.xyz;
         let rr = bd.uranus.w;
         let axis = normalize(vec3<f32>(0.97, 0.14, 0.2));
         let denom = dot(ray, axis);
-        if (rr > 0.0 && abs(denom) > 1e-5) {
-            let t = dot(c, axis) / denom;
-            if (t > 0.0) {
-                let hit = ray * t - c;
-                let rad = length(hit) / rr;
-                let in_ring = smoothstep(1.62, 1.66, rad) * (1.0 - smoothstep(1.96, 2.0, rad));
-                // Hidden behind the planet itself.
-                let behind = ur.cover > 0.5 && t > length(c);
-                if (in_ring > 0.001 && !behind) {
+        // The ring centre's height along the axis, relative to the camera:
+        // the camera sits at -ch above the ring plane.
+        let ch = dot(c, axis);
+        let h_cam = abs(ch);
+        if (rr > 0.0) {
+            // The slab face this ray is heading for: rays up leave through
+            // the top, rays down through the bottom. From outside, a ray
+            // heading away never reaches it (t < 0); from inside both
+            // directions do, and a grazing ray runs until the annulus ends.
+            let dn_mag = max(abs(denom), 1e-5);
+            let dn = select(dn_mag, -dn_mag, denom < 0.0);
+            let eta = select(-RING_HAZE_M, RING_HAZE_M, denom > 0.0);
+            let t_face = (eta + ch) / dn;
+            // The other face: where a ray from outside enters the slab.
+            let t_in = (-eta + ch) / dn;
+            // In-plane geometry for the annulus: the camera's offset from
+            // the axis and the ray's in-plane part.
+            let o_f = -(c - axis * ch);
+            let d_f = ray - axis * denom;
+            let a = max(dot(d_f, d_f), 1e-8);
+            let b = 2.0 * dot(o_f, d_f);
+            let oo = dot(o_f, o_f);
+            let r_out = rr * RING_OUTER;
+            let r_in = rr * RING_INNER;
+            let disc_o = b * b - 4.0 * a * (oo - r_out * r_out);
+            if (t_face > 0.0 && disc_o > 0.0) {
+                let so = sqrt(disc_o);
+                var lo = max(max((-b - so) / (2.0 * a), 0.0), min(t_in, t_face));
+                var hi = min((-b + so) / (2.0 * a), t_face);
+                let disc_i = b * b - 4.0 * a * (oo - r_in * r_in);
+                if (disc_i > 0.0) {
+                    let si = sqrt(disc_i);
+                    let u1 = (-b - si) / (2.0 * a);
+                    let u2 = (-b + si) / (2.0 * a);
+                    if (u1 > lo) {
+                        // The run ends at the hole's near wall; the far
+                        // side of the ring beyond it is left out.
+                        hi = min(hi, u1);
+                    } else if (u2 > lo) {
+                        // Starting in the hole: the run begins past it.
+                        lo = max(lo, u2);
+                    }
+                }
+                let run = max(hi - lo, 0.0);
+                if (run > 0.5) {
                     let lit = max(abs(dot(axis, sun)), 0.15);
-                    // From inside the ring (the belt, up close) the sheet
-                    // is not a wall: a faint haze of dust, the rocks are
-                    // what there is to see. The camera's height above the
-                    // plane, against the ring's thickness, says how far in.
-                    let h = abs(dot(c, axis));
-                    let inside = 1.0 - smoothstep(0.0, 0.006 * rr, h);
-                    // Not a sheet either: the dust clumps with the rocks,
-                    // so the veil is a coarse grain of the belt's own hash
-                    // (one grain per twenty cells) — from afar the ring
-                    // looks made of something.
+                    // Where the ray leaves the slab, in the ring's
+                    // co-rotating frame — for the grain and the far rocks.
+                    let hit = ray * t_face - c;
                     let e1 = normalize(cross(axis, vec3<f32>(0.0, 1.0, 0.0)));
                     let e2 = normalize(cross(axis, e1));
                     let flat = hit - axis * dot(hit, axis);
@@ -414,6 +464,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                     let tau_f = 6.2831853;
                     let along = (theta - tau_f * floor(theta / tau_f)) * (rr * 1.8);
                     let r_off = rf - rr * RING_INNER;
+                    // The dust clumps with the rocks, so the veil is a
+                    // coarse grain of the belt's own hash (one grain per
+                    // twenty cells) — from afar the ring looks made of
+                    // something.
                     let grain_m = BELT_CELL_M * 20.0;
                     let ga = along / grain_m;
                     let gr = r_off / grain_m;
@@ -424,12 +478,32 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                     let gf = vec2<f32>(fract(ga), fract(gr));
                     let gs = gf * gf * (3.0 - 2.0 * gf);
                     let grain = mix(mix(g00, g10, gs.x), mix(g01, g11, gs.x), gs.y);
-                    let veil = in_ring * mix(0.16, 0.04, inside) * (0.45 + 1.1 * grain);
-                    rgb = mix(rgb, vec3<f32>(0.42, 0.43, 0.45) * lit * 1.1, veil);
-                    // Dim, but not see-through: a belt's worth of rock and
-                    // dust hides the stars behind it — otherwise they read
-                    // as bright rocks. From inside, the sky shows again.
-                    alpha = max(alpha, in_ring * mix(0.92, 0.15, inside));
+                    let dust = vec3<f32>(0.42, 0.43, 0.45) * lit * 1.1;
+                    // From afar: dim, but not see-through — a belt's worth
+                    // of rock and dust hides the stars behind it, otherwise
+                    // they read as bright rocks. Only once the camera is
+                    // well clear of the plane, and never behind the planet.
+                    let rad = rf / rr;
+                    let in_ring = smoothstep(1.62, 1.66, rad) * (1.0 - smoothstep(1.96, 2.0, rad));
+                    let behind = ur.cover > 0.5 && t_face > length(c);
+                    let clear = smoothstep(RING_HAZE_M, 4.0 * RING_HAZE_M, h_cam);
+                    if (!behind) {
+                        let far_k = in_ring * clear;
+                        rgb = mix(rgb, dust, far_k * 0.16 * (0.45 + 1.1 * grain));
+                        alpha = max(alpha, far_k * 0.92);
+                    }
+                    // From inside: the run through the haze as an optical
+                    // depth. Sun-lit dust forward-scatters, so the band
+                    // brightens toward the Sun; radiance past 1 is the
+                    // bloom's to spread.
+                    let od = run / RING_HAZE_FREE_M;
+                    let near_a = (1.0 - exp(-od)) * (1.0 - clear);
+                    if (near_a > 0.001) {
+                        let fwd = max(dot(ray, sun), 0.0);
+                        let haze = dust * (0.55 + 0.35 * grain) * (1.0 + 3.0 * pow(fwd, 8.0));
+                        rgb = mix(rgb, haze, near_a);
+                        alpha = max(alpha, near_a);
+                    }
                     // The rocks themselves, from here to the horizon of the
                     // ring: the belt's own population in the ring's
                     // co-rotating frame. Out to where they are under a
@@ -437,18 +511,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                     // A pixel's footprint on the plane: the hit's distance
                     // over the screen's height in pixels, stretched by the
                     // grazing angle.
-                    let px_m = t * 2.0 * bd.params.x / bd.params.y / max(abs(denom), 0.05);
+                    let px_m = t_face * 2.0 * bd.params.x / bd.params.y / max(dn_mag, 0.05);
                     let tangent = normalize(cross(axis, flat / max(rf, 1.0)));
                     let radial = flat / max(rf, 1.0);
-                    let near = smoothstep(2500.0, 6000.0, t);
-                    if (px_m < 400.0 && near > 0.001) {
+                    let near = smoothstep(2500.0, 6000.0, t_face);
+                    if (px_m < 400.0 && near > 0.001 && !behind) {
                         let sp = belt_specks(along, r_off, px_m, tangent, radial, axis);
                         if (sp.cover > 0.001) {
                             let light = max(dot(sp.n, sun), 0.0);
                             // Rock, not star: dull grey-brown, and where a
                             // rock is well under a pixel it melts into the
-                            // grain rather than staying a bright point.
-                            let rock = vec3<f32>(0.26, 0.24, 0.21) * (light * 1.1 + 0.08);
+                            // grain rather than staying a bright point. A
+                            // Sun-lit facet glints as the rock turns: a
+                            // twinkle, brief and sharp, on the specks.
+                            let half = normalize(sun - ray);
+                            let facet = pow(max(dot(sp.n, half), 0.0), 24.0);
+                            let turn = pow(0.5 + 0.5 * sin(bd.params.z * (0.7 + 2.0 * fract(along * 0.013)) + r_off * 0.0071), 8.0);
+                            let glint = facet * turn * 2.5 * light;
+                            let rock = vec3<f32>(0.26, 0.24, 0.21) * (light * 1.1 + 0.08) + vec3<f32>(1.0, 0.95, 0.85) * glint;
                             let far = 1.0 - smoothstep(120.0, 400.0, px_m);
                             let k = sp.cover * near * far * in_ring;
                             rgb = mix(rgb, rock, k);
@@ -497,7 +577,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (alpha < 0.002 && dot(rgb, rgb) < 1e-6) {
         discard;
     }
-    let out = tonemap(rgb, exposure);
+    let out = radiance(rgb, exposure);
     // Premultiplied: the glare adds over the stars, the discs replace them.
     return vec4<f32>(out + dither_px(in.pos.xy) * alpha, alpha);
 }

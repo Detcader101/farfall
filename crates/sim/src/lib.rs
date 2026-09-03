@@ -33,6 +33,11 @@ pub struct WorldParams {
     pub moon: MoonParams,
     pub sun: SunParams,
     pub uranus: PlanetAfarParams,
+    /// How hard the planet's wind blows, 0 (a still atmosphere) .. 2
+    /// (a wild one); 1 is stock. A world parameter, not a setting: every
+    /// machine in a shared world must integrate the same air, so it lives
+    /// beside the planet it belongs to and defaults the same everywhere.
+    pub wind_strength: f64,
 }
 
 /// Another planet of the system: fixed in the planet's frame, placed
@@ -259,7 +264,52 @@ pub struct ShipState {
     pub orient: DQuat,
     /// Angular velocity, body frame, rad/s.
     pub ang_vel_radps: DVec3,
+    /// Flying, down on a body, or landed on it (see [`Ground`]).
+    pub ground: Ground,
 }
+
+/// The ship's relationship with the ground.
+///
+/// Contact alone is restitution and friction: a ship that hits the ground
+/// skids. A LANDING is more than contact — it is the ship settling onto its
+/// gear and staying put, which the integrator will not do on its own (a
+/// resting body is kicked into the ground by gravity and pushed back out
+/// every tick, and rounding turns that into a slow drift). So it is a state:
+/// judged at the moment of touchdown, entered once the ship is slow enough,
+/// and held exactly until the pilot throttles up.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Ground {
+    /// Clear of every body.
+    Flight,
+    /// In contact with body `body` (index into [`WorldParams::bodies`]).
+    /// `clean` is the verdict on the touchdown that put it there — descent
+    /// under [`TOUCHDOWN_INTO_MPS`], upright within [`UPRIGHT_COS`] — and it
+    /// is fixed until the ship lifts off: a clean touchdown may settle once
+    /// it slows, a hard or tilted one skids and never does. (The crash that
+    /// a hard touchdown ought to be is deferred, not faked into a landing.)
+    Down { body: usize, clean: bool },
+    /// Parked on its gear on body `body`: `up` is the surface normal under
+    /// it, kept so the resting position is *recomputed* from the body's
+    /// centre each tick rather than integrated — exact, forever.
+    Landed { body: usize, up: DVec3 },
+}
+
+/// Height of the ship's reference point above the ground when it is on its
+/// gear, metres: the hull's belly and the legs. Contact happens here, on
+/// every body, so the pilot's eye is never at ground level and settling
+/// onto the gear moves nothing.
+pub const GEAR_HEIGHT_M: f64 = 2.5;
+/// The fastest descent the gear takes, m/s. Any harder is a hard touchdown:
+/// the ship is down, but it did not land.
+pub const TOUCHDOWN_INTO_MPS: f64 = 12.0;
+/// Sliding slower than this over the ground, a clean touchdown settles, m/s.
+pub const TOUCHDOWN_ALONG_MPS: f64 = 2.0;
+/// cos 15°: how far off the surface normal the ship's own up may be at
+/// touchdown and still land. The gear levels the rest.
+pub const UPRIGHT_COS: f64 = 0.965_925_826_289_068_3;
+/// Thrust demand (any axis, either sign) that releases a landed ship;
+/// below it the throttle is at idle and the ship stays parked.
+pub const RELEASE_THRUST: f64 = 0.05;
 
 /// Player/agent intent for one tick. Components are clamped to [-1, 1] on use,
 /// so out-of-range input cannot break determinism or physics.
@@ -362,6 +412,7 @@ pub mod presets {
                 mu: 8.69 * 253_620.0 * 253_620.0,
                 from_sun: DVec3::new(0.55, 0.10, -0.83).normalize() * 28_706_000_000.0,
             },
+            wind_strength: 1.0,
             ship: ShipParams {
                 mass_kg: 12_000.0,
                 // Heavy on the stick, quick off the line: rotation stays
@@ -424,6 +475,7 @@ pub mod presets {
                 vel_mps: DVec3::new(0.0, 0.0, -speed),
                 orient: DQuat::IDENTITY,
                 ang_vel_radps: DVec3::ZERO,
+                ground: Ground::Flight,
             },
         }
     }
@@ -438,6 +490,112 @@ pub fn atmo_density(planet: &PlanetParams, r_m: f64) -> f64 {
         return 0.0;
     }
     planet.atmo_rho0 * libm::exp(-h / planet.atmo_scale_height_m)
+}
+
+/// The planet's wind at a point and a moment, m/s in the world frame.
+///
+/// A deterministic function of position and sim time — no state, no
+/// randomness, `libm` transcendentals only — so every machine computes the
+/// identical air. Layered like a real atmosphere and scale-free like every
+/// other model here (SPEC §7.5): every speed is a multiple of √(g·H), the
+/// gravity-wave speed the planet's own numbers set (~140 m/s on compact
+/// Earth), so scaling lengths by s and μ by s³ scales the wind by s too.
+///
+/// The layers:
+/// - **Zonal bands**: trade easterlies about the equator, westerlies at
+///   mid-latitudes, alternating with `sin 3λ` — the surface flow, dying
+///   off over a couple of scale heights.
+/// - **The jet band**: a fast eastward stream at mid-latitudes, peaked a
+///   little over half way up the atmosphere, up to ~60 m/s at stock.
+/// - **Travelling cells**: three planet-sized eddies drifting slowly
+///   around, adding a cross-band component so the wind is never a bare
+///   compass constant.
+/// - **Gusts**: two slow incommensurate sines beating against each other
+///   — low-order noise in time, never per-tick randomness — swinging the
+///   surface wind between roughly 5 and 25 m/s.
+///
+/// Exactly `DVec3::ZERO` at or above `atmo_top_m`, at `wind_strength <= 0`,
+/// and at the poles (where "east" stops meaning anything); horizontal
+/// everywhere (tangent to the sphere — the air flows round the planet, not
+/// out of it).
+pub fn wind_mps(params: &WorldParams, pos_m: DVec3, t_s: f64) -> DVec3 {
+    let planet = &params.planet;
+    let strength = params.wind_strength.clamp(0.0, 2.0);
+    let r = pos_m.length();
+    let h = r - planet.radius_m;
+    // r <= 0 or NaN: no compass to hang a wind on.
+    if strength <= 0.0 || h >= planet.atmo_top_m || r <= 0.0 || r.is_nan() {
+        return DVec3::ZERO;
+    }
+    // The local compass: up out of the ground, east round the spin axis
+    // (+Y), north toward the pole. At the poles east degenerates and the
+    // wind with it.
+    let up = pos_m / r;
+    let east_raw = DVec3::new(up.z, 0.0, -up.x); // cross(Y, up)
+    let horiz2 = east_raw.length_squared();
+    if horiz2 < 1e-12 {
+        return DVec3::ZERO;
+    }
+    let east = east_raw / libm::sqrt(horiz2);
+    let north = up.cross(east);
+    let lat = libm::asin(up.y.clamp(-1.0, 1.0));
+    let lon = libm::atan2(up.z, up.x);
+
+    // Scale-free measures of place: altitude as a share of the air's
+    // depth, altitude in scale heights, and the reference speed √(g·H).
+    let x_top = h / planet.atmo_top_m;
+    let h_scale = h / planet.atmo_scale_height_m;
+    let g = planet.mu / (planet.radius_m * planet.radius_m);
+    let v_ref = libm::sqrt(g * planet.atmo_scale_height_m);
+
+    // Gusts: two slow sines beating, 0.6 .. 1.4 about the mean. Periods of
+    // ~47 s and ~13 s — long against the 1/120 s tick, so the field is
+    // smooth by construction.
+    let gust_a = libm::sin(t_s * 0.1337 + lon * 2.0 + lat * 3.0 + 1.7);
+    let gust_b = libm::sin(t_s * 0.4831 + lon * 5.0 - lat * 2.0 + 0.4);
+    let gust = 1.0 + 0.4 * gust_a * gust_b;
+
+    // The surface flow: banded zonal wind, gone within a few scale heights.
+    let band = libm::sin(3.0 * lat) * libm::cos(lat) - 0.3 * libm::cos(lat);
+    let surface = 0.09 * v_ref * band * libm::exp(-h_scale / 1.6);
+
+    // The jet band: eastward, mid-latitude, peaked at 55% of the air's
+    // depth, and steadier than the surface (gusts barely reach it).
+    let jet_lat = {
+        let d = (libm::fabs(lat) - 0.7) / 0.35;
+        libm::exp(-d * d)
+    };
+    let jet_alt = {
+        let d = (x_top - 0.55) / 0.18;
+        libm::exp(-d * d)
+    };
+    let jet = 0.42 * v_ref * jet_lat * jet_alt * (0.85 + 0.15 * gust);
+
+    // Three travelling cells: planet-sized eddies drifting round, each a
+    // rotated pair of components so the flow curls rather than pulses.
+    let mut cell_e = 0.0;
+    let mut cell_n = 0.0;
+    let harmonics: [(f64, f64, f64, f64); 3] = [
+        (2.0, 1.0, 0.011, 0.9),
+        (3.0, 2.0, -0.017, 3.1),
+        (1.0, 3.0, 0.007, 5.3),
+    ];
+    for (m, n, w, p) in harmonics {
+        let phi = m * lon + n * lat + w * t_s + p;
+        cell_e += libm::cos(phi);
+        cell_n += libm::sin(phi * 0.7 + p);
+    }
+    let cell_amp = 0.02 * v_ref * libm::exp(-h_scale / 6.0);
+
+    // Fade the whole field to nothing through the top fifth of the air, so
+    // the wind dies smoothly where the density (and the drag to carry it)
+    // already has.
+    let cut = ((1.0 - x_top) / 0.2).clamp(0.0, 1.0);
+    let cut = cut * cut * (3.0 - 2.0 * cut);
+
+    let zonal = (surface * gust + jet) * strength * cut;
+    let cell = cell_amp * gust * strength * cut;
+    east * (zonal + cell * cell_e) + north * (cell * cell_n)
 }
 
 /// What the air does to the ship this instant: a translational
@@ -466,8 +624,21 @@ pub struct Aero {
 ///
 /// Exactly zero in vacuum: ρ = 0 zeroes every term, so orbits above the air
 /// keep their contract (and the golden hash's vacuum regime) bit for bit.
+///
+/// Still air: [`aero_forces_wind`] with no wind. Subtracting an exact zero
+/// changes no bit of the velocity, so this is the pre-wind aero to the bit.
 pub fn aero_forces(ship_p: &ShipParams, rho: f64, ship: &ShipState) -> Aero {
-    let speed = ship.vel_mps.length();
+    aero_forces_wind(ship_p, rho, ship, DVec3::ZERO)
+}
+
+/// [`aero_forces`] in moving air: every aerodynamic term — drag, lift, the
+/// weathervane torque, the spin damping — acts on the velocity *relative to
+/// the air*, `v − wind`. This is the one door wind enters the physics by:
+/// a tailwind is free ground speed, a headwind is drag the engine pays for,
+/// a crosswind weathervanes the nose and shoves a slow ship sideways.
+pub fn aero_forces_wind(ship_p: &ShipParams, rho: f64, ship: &ShipState, wind_mps: DVec3) -> Aero {
+    let v_air = ship.vel_mps - wind_mps;
+    let speed = v_air.length();
     if rho <= 0.0 || speed <= 0.0 {
         return Aero {
             accel_world: DVec3::ZERO,
@@ -479,7 +650,7 @@ pub fn aero_forces(ship_p: &ShipParams, rho: f64, ship: &ShipState) -> Aero {
     let q = 0.5 * rho * speed * speed;
 
     // Airflow in the body frame, and the angle it makes with the nose.
-    let v_body = ship.orient.conjugate() * ship.vel_mps;
+    let v_body = ship.orient.conjugate() * v_air;
     let v_hat = v_body / speed;
     let nose = DVec3::NEG_Z;
     let cos_a = v_hat.dot(nose).clamp(-1.0, 1.0);
@@ -610,14 +781,45 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     let ship = &state.ship;
     let planet = &params.planet;
 
+    // LANDED: parked on the gear. Nothing is integrated — the ship sits at
+    // its spot over the body's centre, which is recomputed from the body's
+    // own motion each tick so it cannot drift by so much as a bit, with the
+    // body's velocity as its own (the same one-step difference the contact
+    // code uses, so it agrees with where the body actually goes). The
+    // throttle releases it: from then on it is a ship again, integrated
+    // from rest on the ground like any other.
+    if let Ground::Landed { body, up } = ship.ground {
+        if !releases(&c) {
+            let b = params.bodies(state.time_s + DT)[body];
+            return WorldState {
+                time_s: state.time_s + DT,
+                ship: ShipState {
+                    pos_m: b.centre + up * (b.radius_m + GEAR_HEIGHT_M),
+                    vel_mps: params.body_velocities(state.time_s)[body],
+                    orient: ship.orient,
+                    ang_vel_radps: DVec3::ZERO,
+                    ground: ship.ground,
+                },
+            };
+        }
+    }
+
     let r = ship.pos_m.length();
 
     let a_gravity = gravity_all(params, state.time_s, ship.pos_m);
 
     // The air: drag and lift from the hull's shape, and the torque they
-    // exert about the centre of gravity. `a_drag` keeps its name — it is the
-    // translational half, drag and lift together.
-    let aero = aero_forces(&params.ship, atmo_density(planet, r), ship);
+    // exert about the centre of gravity — taken against the moving air,
+    // v − wind, which is how the wind costs (or gives) delta-v. `a_drag`
+    // keeps its name — it is the translational half, drag and lift
+    // together. In vacuum or at wind_strength 0 the wind is an exact zero
+    // and the subtraction changes nothing, to the bit.
+    let aero = aero_forces_wind(
+        &params.ship,
+        atmo_density(planet, r),
+        ship,
+        wind_mps(params, ship.pos_m, state.time_s),
+    );
     let a_drag = aero.accel_world;
 
     // Thrust: body-frame demand rotated into world frame. Rotating the demand
@@ -692,13 +894,22 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     // that body's own frame — the Moon is moving, and a ship set down on it
     // must come to rest on *it*, carried along, not scrubbed to a stop in
     // the planet's frame while the ground slides away underneath.
+    // Contact is at the gear's height, not the surface: the hull has a
+    // belly, and the ship's reference point never reaches the ground.
+    //
+    // A touchdown is judged on the tick it happens — descent and attitude
+    // against what the gear takes — and that verdict is kept for as long as
+    // the ship stays down. A clean one settles into LANDED once the ground
+    // speed is nearly gone; the rest is contact as before.
     let mut pos = pos;
     let mut vel = vel;
+    let mut ground = Ground::Flight;
     let body_vel = params.body_velocities(state.time_s);
     for (i, b) in params.bodies(state.time_s + DT).iter().enumerate() {
         let rel = pos - b.centre;
         let r = rel.length();
-        if r < b.radius_m && r > 0.0 {
+        let stance = b.radius_m + GEAR_HEIGHT_M;
+        if r < stance && r > 0.0 {
             let up = rel / r;
             let v_rel = vel - body_vel[i];
             let into = v_rel.dot(up);
@@ -709,8 +920,27 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
                 up * into
             };
             let friction = libm::pow(params.ship.ground_friction, DT);
-            pos = b.centre + up * b.radius_m;
+            pos = b.centre + up * stance;
             vel = body_vel[i] + tangential * friction + bounced;
+
+            let upright = (ship.orient * DVec3::Y).dot(up) >= UPRIGHT_COS;
+            let clean = match ship.ground {
+                Ground::Flight => -into <= TOUCHDOWN_INTO_MPS && upright,
+                Ground::Down { clean, .. } => clean,
+                Ground::Landed { .. } => true,
+            };
+            let slow = (tangential * friction).length() <= TOUCHDOWN_ALONG_MPS
+                && bounced.length() <= TOUCHDOWN_ALONG_MPS;
+            // Throttle up and it does not settle, however slow: the ship
+            // is rolling off, not parking (else the main engine would be
+            // re-parked every tick before it could ever get going).
+            ground = if clean && upright && slow && !releases(&c) {
+                // Settled: at rest on the ground, exactly.
+                vel = body_vel[i];
+                Ground::Landed { body: i, up }
+            } else {
+                Ground::Down { body: i, clean }
+            };
         }
     }
 
@@ -760,6 +990,12 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
     )
     .normalize();
 
+    // Settling: the gear takes the last of the tilt and all of the spin.
+    let (orient, ang_vel) = match ground {
+        Ground::Landed { up, .. } => (levelled(ship.orient, up), DVec3::ZERO),
+        _ => (orient, ang_vel),
+    };
+
     WorldState {
         time_s: state.time_s + DT,
         ship: ShipState {
@@ -767,8 +1003,36 @@ pub fn step(params: &WorldParams, state: &WorldState, controls: Controls) -> Wor
             vel_mps: vel,
             orient,
             ang_vel_radps: ang_vel,
+            ground,
         },
     }
+}
+
+/// Does this demand take a landed ship off the ground: any thrust past
+/// idle, the overdrive, or the hyper field. The stick does not — torque on
+/// the gear is the gear's to absorb.
+fn releases(c: &Controls) -> bool {
+    c.thrust_body.abs().max_element() > RELEASE_THRUST || c.boost || c.hyper
+}
+
+/// `orient` with the smallest rotation applied that puts the ship's own up
+/// (+Y) along `up`: the gear levelling the hull. IEEE ops only (a cross, a
+/// dot, a normalise), so it is as deterministic as the rest.
+fn levelled(orient: DQuat, up: DVec3) -> DQuat {
+    let from = orient * DVec3::Y;
+    let dot = from.dot(up);
+    if dot >= 1.0 - 1e-12 {
+        return orient;
+    }
+    if dot <= -1.0 + 1e-12 {
+        // Upside down cannot land (UPRIGHT_COS refuses it long before), so
+        // this is unreachable in practice; leave the attitude alone rather
+        // than pick an arbitrary axis.
+        return orient;
+    }
+    let c = from.cross(up);
+    let arc = DQuat::from_xyzw(c.x, c.y, c.z, 1.0 + dot).normalize();
+    (arc * orient).normalize()
 }
 
 /// Specific orbital energy (per unit mass): v²/2 − μ/r. Conserved on drag-free
@@ -800,5 +1064,23 @@ pub fn state_hash(state: &WorldState) -> u64 {
     eat(s.orient.y);
     eat(s.orient.z);
     eat(s.orient.w);
+    // The ground state. A ship in flight eats nothing here, so every hash
+    // of a ship that never touches the ground — the golden one included —
+    // is exactly what it was before there was a ground state.
+    match s.ground {
+        Ground::Flight => {}
+        Ground::Down { body, clean } => {
+            eat(1.0);
+            eat(body as f64);
+            eat(if clean { 1.0 } else { 0.0 });
+        }
+        Ground::Landed { body, up } => {
+            eat(2.0);
+            eat(body as f64);
+            eat(up.x);
+            eat(up.y);
+            eat(up.z);
+        }
+    }
     h
 }

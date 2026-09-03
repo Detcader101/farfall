@@ -181,6 +181,33 @@ pub struct Belt {
 }
 
 impl Belt {
+    /// How deep in the ring a point is, 0..1: 1 anywhere inside its radii
+    /// and thickness, falling off to 0 over a margin outside — the dust
+    /// thickens as the ship flies in rather than switching on.
+    pub fn ring_density(uranus: &Body, p: DVec3) -> f64 {
+        let rel = p - uranus.centre;
+        let axis = RING_AXIS.normalize();
+        let height = rel.dot(axis).abs();
+        let r = (rel - axis * rel.dot(axis)).length();
+        let margin = LIVE_M;
+        let inside = |x: f64, lo: f64, hi: f64| -> f64 {
+            if x < lo {
+                1.0 - ((lo - x) / margin).min(1.0)
+            } else if x > hi {
+                1.0 - ((x - hi) / margin).min(1.0)
+            } else {
+                1.0
+            }
+        };
+        let radial = inside(
+            r,
+            uranus.radius_m * RING_INNER,
+            uranus.radius_m * RING_OUTER,
+        );
+        let flat = inside(height, 0.0, RING_HALF_M);
+        radial * flat
+    }
+
     /// Is the ship anywhere near the ring at all? Everything else is skipped
     /// when it is not — the belt costs nothing at Earth.
     pub fn near(uranus: &Body, p: DVec3) -> bool {
@@ -582,6 +609,30 @@ mod tests {
         for r in &belt.rocks {
             assert!((r.pos - pos).length() < DROP_M);
         }
+    }
+
+    #[test]
+    fn the_dust_thickens_into_the_ring_and_is_nothing_at_earth() {
+        let p = presets::earth_compact();
+        let uranus = p.bodies(0.0)[3];
+        let (e1, _, axis) = ring_frame();
+        let mid = uranus.centre + e1 * uranus.radius_m * crate::warp::RING_MID;
+        assert_eq!(Belt::ring_density(&uranus, mid), 1.0);
+        assert_eq!(
+            Belt::ring_density(&uranus, DVec3::ZERO),
+            0.0,
+            "Earth is not in the ring"
+        );
+        // Above the ring: full inside its thickness, half a margin out is
+        // half, gone past the margin.
+        let above = |h: f64| Belt::ring_density(&uranus, mid + axis * h);
+        assert_eq!(above(RING_HALF_M * 0.5), 1.0);
+        let half = above(RING_HALF_M + LIVE_M * 0.5);
+        assert!((half - 0.5).abs() < 1e-9, "{half}");
+        assert_eq!(above(RING_HALF_M + LIVE_M * 2.0), 0.0);
+        // Inside the inner edge it thins the same way.
+        let inner = uranus.centre + e1 * (uranus.radius_m * RING_INNER - LIVE_M * 0.25);
+        assert!((Belt::ring_density(&uranus, inner) - 0.75).abs() < 1e-9);
     }
 
     #[test]

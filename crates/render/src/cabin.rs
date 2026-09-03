@@ -1,6 +1,7 @@
 //! The wireframe cabin (`shaders/cockpit.wgsl`): a canopy dome, a sill, a
 //! dash and a bulkhead drawn around the pilot's head in the ship's frame.
 
+use crate::hologram::MountView;
 use crate::instrument::InstrumentPass;
 use crate::CameraFrame;
 use glam::{Quat, Vec3};
@@ -16,6 +17,14 @@ pub struct CabinUniforms {
     pads: [[f32; 4]; 6],
     /// xyz: the eye's seat, metres from the head origin (ship frame).
     eye: [f32; 4],
+    /// xyz: each hardpoint, ship frame (m) — the one transform table
+    /// (bay.rs Hardpoint::pos via fit_views); w: its mount's kind
+    /// (0 empty, 1 cannon, 2 rail). The glass shows the bay's fit.
+    hp: [[f32; 4]; 4],
+    /// The pilot's demand mirrored by the cabin's own stick and lever:
+    /// x pitch, y roll, z yaw, w throttle, each in [-1, 1], quantised so
+    /// a settling ramp does not re-march the cabin every frame.
+    stick: [f32; 4],
 }
 
 /// What the composite needs each frame: the head's basis for the thruster
@@ -42,15 +51,21 @@ pub struct Socket {
     /// Tilted toward the pilot (positive) about its own horizontal axis,
     /// radians.
     pub tilt: f32,
+    /// Leaned sideways about its own upright, radians: the housing under
+    /// the plate follows the face's whole orientation.
+    pub lean: f32,
 }
 
 /// The most a dial may tilt, radians (±60°).
 pub const TILT_MAX: f32 = std::f32::consts::FRAC_PI_3;
 
-/// The socket's tilt packed as whole degrees from 0 (−60°) to 120 (+60°).
-pub fn tilt_code(tilt: f32) -> f32 {
-    let t = if tilt.is_finite() { tilt } else { 0.0 };
-    (t.clamp(-TILT_MAX, TILT_MAX).to_degrees() + 60.0).round()
+/// A tilt or lean packed as 5° steps: 0 (−60°) to 24 (+60°). Coarse on
+/// purpose — the pack's lanes must stay exact f32 integers with both
+/// angles aboard, and a 5° step on the housing is below what the eye
+/// separates; the face itself is drawn at the exact angle.
+pub fn orient_code5(rad: f32) -> f32 {
+    let t = if rad.is_finite() { rad } else { 0.0 };
+    ((t.clamp(-TILT_MAX, TILT_MAX).to_degrees() + 60.0) / 5.0).round()
 }
 
 /// The cabin as the pilot has it set.
@@ -75,27 +90,34 @@ impl CabinUniforms {
     /// the cabin is fixed to the ship, so the rays are turned by it.
     /// `sun_ship`: the Sun's direction in the ship's frame. `sockets`: the
     /// directions (ship frame) of the holograms that get a socket on the
-    /// dash — the shown dials, up to four.
+    /// dash — the shown dials, up to six (the shader has six pads).
     pub fn new(
         cam: &CameraFrame,
         head: Quat,
         sun_ship: Vec3,
         look: CabinLook,
         sockets: &[Socket],
+        fit: &[MountView; 4],
     ) -> Self {
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
+        let mut hp = [[0.0; 4]; 4];
+        for (slot, m) in hp.iter_mut().zip(fit.iter()) {
+            *slot = [m.at.x, m.at.y, m.at.z, m.kind as f32];
+        }
         let mut pads = [[0.0; 4]; 6];
         for (slot, sk) in pads.iter_mut().zip(sockets.iter()) {
             let d = sk.dir.normalize_or_zero();
-            // w packs "in use", the style, the size and the tilt as exact
-            // integers: (style + 1) + 10 × round(size × 100) + 10000 × tilt
-            // code (whole degrees from −60).
+            // w packs "in use", the style, the size, the tilt and the
+            // lean as exact integers: (style + 1) + 10 × round(size ×
+            // 100) + 10000 × tilt code + 250000 × lean code (5° steps
+            // from −60; ≤ ~6.25e6, inside f32's exact-integer range).
             let w = if d == Vec3::ZERO {
                 0.0
             } else {
                 (sk.style.min(3) + 1) as f32
                     + 10.0 * (sk.size.clamp(0.25, 4.0) * 100.0).round()
-                    + 10000.0 * tilt_code(sk.tilt)
+                    + 10_000.0 * orient_code5(sk.tilt)
+                    + 250_000.0 * orient_code5(sk.lean)
             };
             *slot = [d.x, d.y, d.z, w];
         }
@@ -115,7 +137,7 @@ impl CabinUniforms {
                 cam.aspect,
                 look.style.min(3) as f32,
                 if look.on { 1.0 } else { 0.0 },
-                sockets.len().min(4) as f32,
+                sockets.len().min(6) as f32,
             ],
             // The Sun's direction quantised to about a degree: the cabin is
             // re-marched only when its inputs change, and a ship turning
@@ -123,12 +145,35 @@ impl CabinUniforms {
             sun: v4(quantise(sun_ship.normalize_or_zero(), 0.02), cam.exposure),
             pads,
             eye: [0.0; 4],
+            hp,
+            stick: [0.0; 4],
         }
+    }
+
+    /// The control column's mirror: the live pitch/roll/yaw/throttle
+    /// demand, quantised to steps no eye will miss (the cabin re-marches
+    /// only when its inputs change).
+    pub fn with_stick(mut self, demand: [f32; 4]) -> Self {
+        for (dst, v) in self.stick.iter_mut().zip(demand) {
+            *dst = if v.is_finite() {
+                (v.clamp(-1.0, 1.0) / 0.05).round() * 0.05
+            } else {
+                0.0
+            };
+        }
+        self
     }
 
     /// Seat the eye off the head's origin: a headset's left and right.
     pub fn with_eye(mut self, eye: Vec3) -> Self {
-        self.eye = [eye.x, eye.y, eye.z, 0.0];
+        self.eye[..3].copy_from_slice(&[eye.x, eye.y, eye.z]);
+        self
+    }
+
+    /// The craft the hull round the pilot belongs to: 0 the fighter, 1
+    /// the helicopter (common.wgsl sd_craft_hull — SPEC §6.5c).
+    pub fn with_craft(mut self, craft: f32) -> Self {
+        self.eye[3] = craft;
         self
     }
 
@@ -155,6 +200,16 @@ impl CabinUniforms {
     }
 }
 
+impl BlitUniforms {
+    /// The clock, for the plumes' ripples: the composite runs every
+    /// frame, so time may live here where the cabin's own block keeps
+    /// none.
+    pub fn with_time(mut self, time_s: f32) -> Self {
+        self.misc[2] = time_s.rem_euclid(1000.0);
+        self
+    }
+}
+
 fn quantise(v: Vec3, step: f32) -> Vec3 {
     (v / step).round() * step
 }
@@ -163,10 +218,20 @@ fn quantise(v: Vec3, step: f32) -> Vec3 {
 /// DASH_N in cockpit.wgsl and DIAL_DASH_* in common.wgsl.
 pub const DASH_C: Vec3 = Vec3::new(0.0, -0.50, -1.05);
 pub const DASH_N: Vec3 = Vec3::new(0.0, 0.9563, 0.2924);
+/// The dash's metal surface stands this far above the DASH_C plane (the
+/// slab's rounding); instruments are seated on the surface — DASH_SURFACE
+/// in cockpit.wgsl.
+pub const DASH_SURFACE_M: f32 = 0.04;
 /// The gyro ball's radius (metres at stock size) and how far under the
-/// dash its centre sits — the JET bowl's own centre (cockpit.wgsl).
+/// dash its centre sits — shallow, so most of the sphere stands proud of
+/// the metal: a ball on the dash, not in a bowl (BALL_* in cockpit.wgsl).
 pub const BALL_RADIUS_M: f32 = 0.17;
-pub const BALL_DEPTH_M: f32 = 0.10;
+pub const BALL_DEPTH_M: f32 = 0.04;
+/// A DIAL's face plate on the dash (metres at stock size): its radius and
+/// how far its top stands proud of the surface — DIAL_PLATE_* in
+/// cockpit.wgsl. Nothing is hollowed for it; the plate sits on the metal.
+pub const DIAL_PLATE_R_M: f32 = 0.226;
+pub const DIAL_PLATE_TOP_M: f32 = 0.008;
 
 /// Metres of dash per drawing unit of a dial: a dial's drawing radius is
 /// 0.155 units; at this scale that is a 20 cm instrument.
@@ -174,7 +239,7 @@ pub const DIAL_SCALE_M: f32 = 1.3;
 /// Where the holograms float (the cockpit's HOLO_M).
 pub const HOLO_M: f32 = 1.05;
 
-/// Where a hologram's direction meets the dash (the socket, the well), or
+/// Where a hologram's direction meets the dash (the instrument's seat), or
 /// a point just under the hologram if it misses the dash — the mirror of
 /// socket_centre() in cockpit.wgsl.
 pub fn socket_centre(dir: Vec3) -> Vec3 {
@@ -201,9 +266,23 @@ pub fn on_dash(dir: Vec3) -> bool {
     t > 0.3 && t < 2.2 && p.x.abs() < 1.0
 }
 
-/// A DIAL's placement in the dash, for the instrument shaders: the head's
-/// basis in the ship's frame and the dial's centre, a hair under the dash
-/// surface so the face sits in its well.
+/// The furniture a socket actually gets: an instrument whose direction
+/// misses the dash has no metal to be set into — its face stays a glass
+/// hologram, so only the beam-lit bare dash (TRON, 0) fits under it,
+/// whatever style was asked for. Seating a plate, ball or ring at
+/// socket_centre's off-dash fallback would hang bare metal in mid-air
+/// with no face on it.
+pub fn seated_style(style: u32, dir: Vec3) -> u32 {
+    if on_dash(dir) {
+        style
+    } else {
+        0
+    }
+}
+
+/// A DIAL's placement on the dash, for the instrument shaders: the head's
+/// basis in the ship's frame and the dial's centre — the top of its face
+/// plate, a few millimetres proud of the dash surface.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Placement {
@@ -241,19 +320,21 @@ impl Placement {
         self
     }
 
-    /// The gyro's ball: a sphere of this radius (metres, centre.w) at the
-    /// bowl's centre under the hologram's direction, or None off the dash.
+    /// The gyro's ball: a sphere of this radius (metres, centre.w) set a
+    /// little under the dash beneath the hologram's direction, standing
+    /// proud of it, or None off the dash.
     pub fn ball(head: Quat, tan_half_fov: f32, dir: Vec3, size: f32) -> Option<Placement> {
         if !on_dash(dir) {
             return None;
         }
+        let size = size.clamp(0.25, 4.0);
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
-        let centre = socket_centre(dir) - DASH_N * BALL_DEPTH_M;
+        let centre = socket_centre(dir) + DASH_N * (DASH_SURFACE_M - BALL_DEPTH_M * size);
         Some(Placement {
             right: v4(head * Vec3::X, 1.0),
             up: v4(head * Vec3::Y, 0.0),
             fwd: v4(head * Vec3::NEG_Z, tan_half_fov),
-            centre: v4(centre, BALL_RADIUS_M * size.clamp(0.25, 4.0)),
+            centre: v4(centre, BALL_RADIUS_M * size),
         })
     }
 
@@ -263,30 +344,56 @@ impl Placement {
         (DASH_N * c + Vec3::X.cross(DASH_N) * s).normalize()
     }
 
-    /// In the dash under the hologram's direction `dir` (ship frame), for
-    /// a head turned by `head` and a camera of this tan(fov/2).
+    /// The dash normal tilted, then leaned sideways by `lean` about the
+    /// dial's own upright. The tilted normal has no x component, so the
+    /// lean lands wholly on +X — dial_oriented_normal in common.wgsl is
+    /// the mirror of this.
+    pub fn oriented_normal(tilt: f32, lean: f32) -> Vec3 {
+        let n1 = Self::tilted_normal(tilt);
+        let (s, c) = lean.sin_cos();
+        (n1 * c + Vec3::X * s).normalize()
+    }
+
+    /// On the dash under the hologram's direction `dir` (ship frame), for
+    /// a head turned by `head` and a camera of this tan(fov/2): the top
+    /// of the face plate. A tilted dial is lifted along the dash normal so
+    /// its low edge clears the surface — the cabin's housing rises to
+    /// carry it — the same lift the marcher applies (cockpit.wgsl).
     pub fn in_dash(
         head: Quat,
         tan_half_fov: f32,
         dir: Vec3,
         size: f32,
         tilt: f32,
+        lean: f32,
     ) -> Option<Placement> {
         if !on_dash(dir) {
             return None;
         }
-        let tilt = if tilt.is_finite() {
-            tilt.clamp(-TILT_MAX, TILT_MAX)
-        } else {
-            0.0
+        let clamp_a = |a: f32| {
+            if a.is_finite() {
+                a.clamp(-TILT_MAX, TILT_MAX)
+            } else {
+                0.0
+            }
         };
+        let tilt = clamp_a(tilt);
+        let lean = clamp_a(lean);
+        let size = size.clamp(0.25, 4.0);
         let v4 = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
-        let centre = socket_centre(dir) - Placement::tilted_normal(tilt) * 0.012;
+        // Leaned either way the low corner must still clear the metal:
+        // the lift follows both angles, capped at the plate's radius.
+        let lift = DASH_N
+            * (DASH_SURFACE_M
+                + DIAL_PLATE_R_M * (tilt.sin().abs() + lean.sin().abs()).min(1.0) * size);
+        let centre = socket_centre(dir)
+            + lift
+            + Placement::oriented_normal(tilt, lean) * (DIAL_PLATE_TOP_M * size);
         Some(Placement {
             right: v4(head * Vec3::X, 1.0),
             up: v4(head * Vec3::Y, tilt),
             fwd: v4(head * Vec3::NEG_Z, tan_half_fov),
-            centre: v4(centre, DIAL_SCALE_M * size.clamp(0.25, 4.0)),
+            centre: v4(centre, DIAL_SCALE_M * size),
         })
     }
 }
@@ -767,6 +874,61 @@ pub enum CabinWork {
 mod tests {
     use super::*;
 
+    /// The stock fit at the true hardpoint places (bay.rs Hardpoint::pos):
+    /// rail on the nose, a cannon on each wing, the belly bare.
+    fn stock_fit() -> [MountView; 4] {
+        [
+            MountView {
+                at: Vec3::new(0.0, -0.45, -4.2),
+                kind: 2,
+            },
+            MountView {
+                at: Vec3::new(-2.6, -1.0, 0.9),
+                kind: 1,
+            },
+            MountView {
+                at: Vec3::new(2.6, -1.0, 0.9),
+                kind: 1,
+            },
+            MountView {
+                at: Vec3::new(0.0, -1.95, 1.4),
+                kind: 0,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_bay_fit_reaches_the_glass_and_redraws_in_place() {
+        let cam = CameraFrame {
+            orient: Quat::IDENTITY,
+            fov_y: 1.0,
+            aspect: 1.5,
+            time_s: 2.0,
+            exposure: 1.0,
+        };
+        let look = CabinLook {
+            glow: 1.0,
+            metal: 0.8,
+            on: true,
+            thrust: [0.0; 4],
+            style: 0,
+        };
+        let fit = stock_fit();
+        let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &[], &fit);
+        // Each hardpoint rides its lane: the place and the kind.
+        assert_eq!(still.hp[1], [-2.6, -1.0, 0.9, 1.0], "cannon on WING L");
+        assert_eq!(still.hp[0][3], 2.0, "the rail on the nose");
+        assert_eq!(still.hp[3][3], 0.0, "the belly's bare pylon");
+        // Refit in the bay: the uniforms change (a re-march at once), but
+        // the view has not moved — the sharp cabin is redrawn in place,
+        // never blurred by the moving-size path.
+        let mut refit = fit;
+        refit[1].kind = 2;
+        let changed = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &[], &refit);
+        assert_ne!(still, changed);
+        assert!(!still.view_moved(&changed));
+    }
+
     #[test]
     fn the_governor_trades_moving_detail_for_the_floor_and_gives_it_back() {
         let mut g = Governor::new();
@@ -803,6 +965,56 @@ mod tests {
         assert_eq!(g.scale, MOVING_SCALE);
     }
 
+    /// An instrument dragged up the glass misses the dash: its face stays
+    /// a hologram, so no plate, ball or ring may be seated in mid-air
+    /// under it — only the beam-lit bare dash (TRON) furniture remains.
+    #[test]
+    fn a_dial_off_the_dash_seats_no_plate() {
+        let down = anchor_direction([0.0, -0.76], 0.7, 1.5);
+        assert!(on_dash(down));
+        // Jay Jay's mid-glass g-vector anchor: well above the dash.
+        let up = anchor_direction([0.285, -0.086], 0.7, 1.5);
+        assert!(!on_dash(up), "a mid-glass anchor must miss the dash");
+        for style in 0..4u32 {
+            assert_eq!(
+                seated_style(style, down),
+                style,
+                "on the dash every style stands"
+            );
+            assert_eq!(
+                seated_style(style, up),
+                0,
+                "off it only the bare dash remains"
+            );
+        }
+    }
+
+    /// The gyro's ball is a sphere ON the dash: its centre a little under
+    /// the surface, so most of it stands proud, seen without any bowl —
+    /// and the point nearest the pilot (where the wings are painted) is
+    /// well above the metal at every size.
+    #[test]
+    fn the_ball_stands_proud_of_the_dash_with_no_bowl() {
+        let down = anchor_direction([0.0, -0.76], 0.7, 1.5);
+        for size in [0.5, 1.0, 2.0] {
+            let ball = Placement::ball(Quat::IDENTITY, 0.7, down, size).unwrap();
+            let centre = Vec3::new(ball.centre[0], ball.centre[1], ball.centre[2]);
+            let radius = ball.centre[3];
+            let depth = DASH_SURFACE_M - (centre - DASH_C).dot(DASH_N);
+            assert!(
+                (depth - BALL_DEPTH_M * size).abs() < 1e-4,
+                "size {size}: depth {depth}"
+            );
+            assert!(radius - depth > radius * 0.7, "most of the ball shows");
+            let to_head = -centre.normalize();
+            let nearest = centre + to_head * radius;
+            assert!(
+                (nearest - DASH_C).dot(DASH_N) - DASH_SURFACE_M > radius * 0.3,
+                "the wings sit clear of the dash: {nearest:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_head_turns_the_rays_not_the_cabin() {
         let cam = CameraFrame {
@@ -825,26 +1037,29 @@ mod tests {
                 style: 1,
                 size: 1.0,
                 tilt: 0.0,
+                lean: 0.0,
             },
             Socket {
                 dir: Vec3::ZERO,
                 style: 0,
                 size: 1.0,
                 tilt: 0.0,
+                lean: 0.0,
             },
         ];
-        let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
+        let fit = stock_fit();
+        let still = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets, &fit);
         assert_eq!(&still.fwd[..3], &[0.0, 0.0, -1.0]);
         assert_eq!(still.misc[3], 2.0);
         assert_eq!(
             still.pads[0][3],
-            1002.0 + 600_000.0,
-            "a placed dial gets a socket: (JET + 1) + 10 × 100 + 10000 × (0° + 60)"
+            1002.0 + 120_000.0 + 3_000_000.0,
+            "a placed dial gets a socket: (JET + 1) + 10 × 100 + 10000 × tilt5(0°) + 250000 × lean5(0°)"
         );
-        assert_eq!(tilt_code(0.0), 60.0);
-        assert_eq!(tilt_code(30f32.to_radians()), 90.0);
-        assert_eq!(tilt_code(-5.0), 0.0, "tilt is clamped to ±60°");
-        assert_eq!(tilt_code(f32::NAN), 60.0);
+        assert_eq!(orient_code5(0.0), 12.0);
+        assert_eq!(orient_code5(30f32.to_radians()), 18.0);
+        assert_eq!(orient_code5(-5.0), 0.0, "the angle is clamped to ±60°");
+        assert_eq!(orient_code5(f32::NAN), 12.0);
         assert_eq!(still.pads[1][3], 0.0, "an empty slot does not");
         assert!(still.pads[0][0] > 0.0 && still.pads[0][1] < 0.0 && still.pads[0][2] < 0.0);
         // Looking right: the forward ray swings toward +X in the ship's
@@ -857,7 +1072,8 @@ mod tests {
             thrust: [9.0, 0.0, 0.0, 0.0],
             style: 2,
         };
-        let turned = CabinUniforms::new(&cam, Quat::from_rotation_y(-0.5), Vec3::Y, loud, &[]);
+        let turned =
+            CabinUniforms::new(&cam, Quat::from_rotation_y(-0.5), Vec3::Y, loud, &[], &fit);
         assert!(turned.fwd[0] > 0.4, "{:?}", turned.fwd);
         assert_eq!(turned.right[3], 3.0);
         assert_eq!(turned.up[3], 0.0);
@@ -868,26 +1084,60 @@ mod tests {
         // A dial straight down-ahead sits in the dash; one up and away does not.
         let down = anchor_direction([0.0, -0.6], 0.55, 1.5);
         assert!(on_dash(down));
-        let place = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0).unwrap();
+        let place = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.0).unwrap();
         assert!(
-            place.centre[1] < -0.4 && place.centre[2] < -0.6,
+            place.centre[1] < -0.3 && place.centre[2] < -0.6,
             "{:?}",
             place.centre
         );
         assert_eq!(place.centre[3], DIAL_SCALE_M);
         assert_eq!(
-            Placement::in_dash(Quat::IDENTITY, 0.55, down, 2.0, 0.0)
+            Placement::in_dash(Quat::IDENTITY, 0.55, down, 2.0, 0.0, 0.0)
                 .unwrap()
                 .centre[3],
             DIAL_SCALE_M * 2.0
         );
-        assert!(
-            Placement::in_dash(Quat::IDENTITY, 0.55, Vec3::new(0.0, 0.8, -0.6), 1.0, 0.0).is_none()
-        );
+        assert!(Placement::in_dash(
+            Quat::IDENTITY,
+            0.55,
+            Vec3::new(0.0, 0.8, -0.6),
+            1.0,
+            0.0,
+            0.0
+        )
+        .is_none());
         // Tilted toward the pilot: the face normal leans aft (+Z) and the
         // placement carries the angle for the shader.
-        let leaned = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.5).unwrap();
+        let leaned = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.5, 0.0).unwrap();
         assert_eq!(leaned.up[3], 0.5);
+        // Leaned sideways: the face normal gains an x component the way
+        // of the lean, stays unit, and the lift clears the low corner.
+        let side = Placement::in_dash(Quat::IDENTITY, 0.55, down, 1.0, 0.0, 0.4).unwrap();
+        let n = Placement::oriented_normal(0.0, 0.4);
+        assert!(n.x > 0.3, "{n:?}");
+        assert!((n.length() - 1.0).abs() < 1e-5);
+        assert!((Placement::oriented_normal(0.0, 0.0) - DASH_N).length() < 1e-4);
+        let centre = Vec3::new(side.centre[0], side.centre[1], side.centre[2]);
+        let lift = (centre - socket_centre(down)).dot(DASH_N);
+        assert!(
+            lift > DASH_SURFACE_M + DIAL_PLATE_R_M * 0.3,
+            "a sideways lean lifts the plate too: {lift}"
+        );
+        // Nothing is hollowed for it: the face's centre is proud of the
+        // dash, and a leaned face is lifted so its low edge clears the
+        // surface too.
+        let height =
+            |c: [f32; 4]| (Vec3::new(c[0], c[1], c[2]) - DASH_C).dot(DASH_N) - DASH_SURFACE_M;
+        assert!(
+            (height(place.centre) - DIAL_PLATE_TOP_M).abs() < 1e-4,
+            "the flat face sits on the dash's surface: {}",
+            height(place.centre)
+        );
+        let low_edge = height(leaned.centre) - DIAL_PLATE_R_M * 0.5f32.sin();
+        assert!(
+            low_edge > 0.0,
+            "a leaned face's low edge clears the dash: {low_edge}"
+        );
         let n = Placement::tilted_normal(0.5);
         assert!(n.z > DASH_N.z && n.y < DASH_N.y, "{n:?}");
         assert!((n.length() - 1.0).abs() < 1e-5);
@@ -895,10 +1145,10 @@ mod tests {
         assert_eq!(Placement::glass_sized(1.5).right[3], 1.5);
         assert_eq!(Placement::glass_sized(1.0).tilted(0.5).up[3], 0.5);
         assert_eq!(Placement::glass_sized(1.0).tilted(9.0).up[3], TILT_MAX);
-        assert_eq!(UNIFORM_BYTES, 12 * 16); // the eye vec4 joined the pads
+        assert_eq!(UNIFORM_BYTES, 17 * 16); // eye, the four hardpoints, then the stick vec4
                                             // Unchanged inputs compare equal (no clock inside), a turned head
                                             // is a moved view, a changed socket is not.
-        let again = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets);
+        let again = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &sockets, &fit);
         assert_eq!(still, again);
         assert!(still.view_moved(&turned));
         let other_sockets = [Socket {
@@ -906,8 +1156,10 @@ mod tests {
             style: 1,
             size: 1.0,
             tilt: 0.0,
+            lean: 0.0,
         }];
-        let resocketed = CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &other_sockets);
+        let resocketed =
+            CabinUniforms::new(&cam, Quat::IDENTITY, Vec3::Y, look, &other_sockets, &fit);
         assert!(!still.view_moved(&resocketed));
         assert_ne!(still, resocketed);
         // A slow drift of the Sun below a degree is no change at all.
@@ -917,6 +1169,7 @@ mod tests {
             Vec3::new(0.004, 1.0, 0.0),
             look,
             &sockets,
+            &fit,
         );
         assert_eq!(still, sun_drift);
     }

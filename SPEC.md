@@ -166,6 +166,89 @@ city-lights emissive on night side), `hud` (crisp 2D). M2: `atmosphere` (Bruneto
 transmittance + single-scattering LUTs, aerial perspective), `terrain` (cube-sphere
 chunked LOD heightfield, analytic noise + small authored landmark masks), `entry-fx`.
 
+### 6.5.1 Instruments on the dash
+
+The cockpit instruments are passes of their own (`gauge`, `gvec`, `gyro`, `horizon`,
+`trajectory`), each SDF-drawn with constant-width strokes and one pixel of anti-aliasing.
+Four styles, WARTHOG the default: WARTHOG (A-10 steam gauges — black plate, white
+markings, red warning arc, the gyro a real ball), TRON (holograms on the glass), JET
+(holograms over thin rings, the ball gyro), DIAL (period instruments on the dash).
+**Nothing is ever hollowed into the dash for an instrument** — no wells, bowls, recesses
+or lit sockets: a face plate sits proud of the metal in a thin bezel, the ball stands out
+of it, and the instrument itself is what shows. The dash's real surface is 4 cm above
+its nominal plane (the slab's rounding); every seat is measured from the surface.
+
+### 6.5a Other ships (app-side, never sim-side)
+
+Mimics and miners (WEAPONS.md, "Other ships") live in `crates/app`: derived
+from rock hashes plus app state, stepped after the belt each fixed step, drawn
+by the `mimic` pass from the shared fighter SDF at each hull's own pose and
+size. They shove and shoot the ship through impulses after `sim::step`, like a
+strike; the golden hash does not know they exist. A miner is the same ship
+class as ours that grows through tiers as it mines the ring.
+
+### 6.5b The walker (EVA, app-side, never sim-side)
+
+DISEMBARK, landed, leaves the seat: a first-person walker standing beside the
+ship, and the keyboard and mouse — reserved for the on-foot controller since
+the stick took the whole cockpit — are its controls. The rocks' rule holds
+here too: the walker is the app's, not the sim's. Its feet, velocity and gaze
+live in `crates/app` as state hung off the game, stepped after `sim::step`
+each fixed step, and the golden hash does not know anyone stepped out. The
+sim keeps flying the ship, which is LANDED and stays put; while someone is on
+foot the ship's controls are zeroed, so nothing can lift it off from under
+them.
+
+The ground is the ground the gear stands on: the body's analytic sphere at
+`radius_m` (§6.7 — the planet is computed, not stored; there is no terrain
+mesh to query, and the shader's visual relief has no CPU twin yet). The
+walker works in the body's own frame — feet measured from the body's centre,
+velocity over its ground — so a moving body carries its walker exactly as it
+carries its landed ship. The translation binds walk the tangent, BOOST's key
+runs, BRAKE's key jumps, gravity is the body's own μ/r², and the sphere-exact
+ground resolution puts the feet back on the surface and takes the inward
+velocity. The mouse look is always engaged on foot — no held button — yawing
+about local up and pitching short of the poles. ESC still menus.
+
+The camera is a view pose like the cockpit's and the chase rig's: the eye at
+the feet plus eye height, expressed in the ship's frame — exact while the
+ship is LANDED and still, which on foot it always is; the assumption is
+revisited the day the ship can move with nobody aboard. An eye off the ship
+already shows the hull (the jet pass), so the parked fighter stands there to
+walk around; the cabin, the dash and the glass stay in the cockpit. The
+readout swaps to the suit's lines — the ship's distance, and the DISEMBARK
+key reading as BOARD within boarding range at the hull. The same key that
+walked out walks back in.
+### 6.5c The pilot's own craft: FIGHTER or HELICOPTER
+
+The SHIP page's first row is **CRAFT**: the airframe the pilot's own ship
+wears — FIGHTER (stock) or HELICOPTER — persisted as `ship.craft` in the
+settings file, like the fit. It is a *parameter choice, never sim state*:
+the app hands the sim the chosen `ShipParams` and silhouette exactly the
+way the pad helicopters do (§6.5a's rule — the golden hash belongs to
+`WorldState` and does not know the craft exists), and the world file is
+untouched: the craft rides the settings, the orbit rides the save.
+
+The HELICOPTER is FARFALL-native, not one of the cold-war practice hulls
+on the pads: our own silhouette (`sd_heli_exterior`, in the shader
+prelude beside `sd_fighter_exterior`, defined once) with a main-rotor
+disc, ring tail, stub wings carrying the same four hardpoints, and the
+same carved cabin the fighter has — the dash, dials, consoles and
+column are shared, never forked. Every lane that draws the pilot's own
+ship selects the silhouette by one craft flag in its uniforms: the
+cabin (hull round the pilot), the chase/jet view, the SHIP bay's
+hologram, the holo3PP miniature and the map's dart. Mimics, miners and
+the ghost stay fighters; the pad helicopters stay cold-war hulls.
+
+Flight model: the collective/cyclic/anti-torque routing the pad
+helicopters proved (`heli::route_controls`), with one difference — this
+is *your* ship, so the drives come with it: the hyper field and the
+wormhole drive work, boost does not (a rotor has no afterburner). The
+forward axis (W/S, the stick's throttle) is the collective, up the mast
+only; the REFORGER HELI stick profile flies it as-is. The console's
+throttle lever and the readout both show the collective while a
+helicopter is flown.
+
 ### 6.6 The city, eventually (direction, not commitment)
 
 The end-state city (M5+) is the ultimate test of P1+P2: dense, alive, and readable.
@@ -274,6 +357,38 @@ atmosphere scale height exaggerated (H = 2 km) for visual depth. Low orbit ≈ 7
 period ≈ 8.5 min — an orbit is a gameplay beat, not an afternoon. The *numbers* are
 presets; the *models* are scale-free, and the scale-invariance test proves it.
 
+### 7.6 Persistence — the world file
+
+The sim state is plain data and hashable (§7.1, §7.4); persistence is the
+cheapest consequence of that and the M3 slice's "save exists" line item. The
+game writes **`~/.farfall/world.cfg`** (the browser: localStorage `farfall.world`)
+on quit, on window close, on the page being hidden, and every 30 s of sim time;
+on launch it restores it, so you wake where you left off — in the belt, on the
+Moon, mid-decaying-orbit.
+
+- **Format**: `key = value` text like the settings file, no format crate.
+  Floats are written in the shortest form that parses back to the same bits, so
+  `parse(render(w)) == w` bit for bit — proven by the state hash.
+- **Sealed by the hash**: the file carries `sim::state_hash` of the world it
+  holds. A file whose hash does not match its contents — hand-edited, truncated,
+  from a different build of the physics — is refused *whole*, never half-applied;
+  the stock orbit stands and the log says why.
+- **What it holds**: the whole `WorldState` (which alone regenerates the belt,
+  the ring's phase, every body's position and which rocks are ships), plus the
+  app-side ledgers that are not a function of it: the flight computer, the
+  atmosphere, the chaos drive's entropy *and its hidden slip threshold*, the
+  guns' ammo/heat/jams, the HAUL, hull integrity, the dead and wounded rocks,
+  revealed mimics and the live ships, the game's one PRNG seed, the odometer.
+- **What it never holds**: anything wall-clock (fades, shake, after-images), a
+  warp in flight, a HOLD lock, a touchdown prediction, the settings (their own
+  file). Those reconverge or re-acquire within a second of resuming.
+- **Determinism**: a world resumed from its file runs on bit for bit as the
+  uninterrupted one would have — the invariant test for this feature.
+- **Never during a bench**: `FARFALL_BENCH*` runs neither read nor write it, so
+  scene captures and golden images stay reproducible. `RESUME` (menu, `game.resume`)
+  off or `FARFALL_RESUME=0` does the same for a session. `NEW GAME` (menu)
+  forgets the file and stands the ship at the stock orbit.
+
 ## 8. Testing doctrine (P6)
 
 | Layer | What | Where it runs |
@@ -310,7 +425,10 @@ Each milestone ends with a demonstrable artifact and its acceptance tests green.
   Quest browser) against the frozen `ViewProvider` seam; go/no-go per target with
   measured frame times. Accept: written verdict + at minimum the native path
   rendering the M2 scene in stereo at 90 Hz on Index-class hardware.
-- **M5+ — Vision lane**: landing + touchdown; the shader city; background simulation
+- **M5+ — Vision lane**: landing + touchdown (the sim's LANDED state, the
+  DISEMBARK bind and the walk-out itself exist now — the ship settles on its gear
+  and stays, and DISEMBARK leaves the seat for the surface on foot, §6.5b; what
+  remains here is somewhere worth walking to); the shader city; background simulation
   (Elite-style faction states) + narrative layer (Yarn Spinner rust port, verified
   MIT OR Apache-2.0) — the "choices matter" layer from the original research, which
   remains the destination.
@@ -333,6 +451,8 @@ Each milestone ends with a demonstrable artifact and its acceptance tests green.
 
 ## 11. Open questions (each with the experiment that settles it)
 
+- **Multiplayer (direction, not commitment):** peer-to-peer sessions on the deterministic sim (the golden hash IS the anti-desync contract), with a rendezvous/relay node per region — the family's ShedNet estate can host the Europe relay. Experiment that settles it: two clients lock-stepping the sim over a relay for 10 minutes with identical hashes. Shareable HUD files (see ui.* export) double as the first player-to-player artefact.
+
 1. **Octahedral star-cell distortion** — visible star-size variation near seams?
    → M0 ship it, judge by eye; fallback is 3-plane cube hashing. (cheap)
 2. **Golden hash across compilers** — does a rustc upgrade change hashes? → pin
@@ -345,6 +465,11 @@ Each milestone ends with a demonstrable artifact and its acceptance tests green.
    scale as a debug slider; it's one parameter. (free)
 6. **WebXR/WebGPU binding timeline** — revisit the spec's Editor's-Draft status at
    M4; if Quest Browser ships it stable, `WebXrView` may skip the WebGL2 lane.
+7. **Multiplayer, by artefacts first** — the shareable HUD file (`.fhud`,
+   `crates/app/src/hud_file.rs`) is the first player-to-player artefact: layouts
+   travel between players today, by hand. The direction is more artefacts
+   (ship fits, flight recordings) before live netcode; question 4 picks the
+   transport when the spike comes.
 
 ## 12. Deltas from the 2026-08-19 research doc (docs/RESEARCH-2026-08.md)
 

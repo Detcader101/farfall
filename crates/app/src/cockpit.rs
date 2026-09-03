@@ -28,10 +28,12 @@ pub enum Instrument {
     Ladder,
     /// Finder rings around the Moon and the Sun.
     BodyTags,
+    /// The system map in miniature, a small pane on the glass.
+    Map,
 }
 
 impl Instrument {
-    pub const ALL: [Instrument; 12] = [
+    pub const ALL: [Instrument; 13] = [
         Instrument::Speed,
         Instrument::Altitude,
         Instrument::Gyro,
@@ -44,6 +46,7 @@ impl Instrument {
         Instrument::HoopSound,
         Instrument::BodyTags,
         Instrument::Readout,
+        Instrument::Map,
     ];
 
     pub fn name(self) -> &'static str {
@@ -60,6 +63,7 @@ impl Instrument {
             Instrument::HoopSound => "HOOP SOUND",
             Instrument::Ladder => "PITCH LADDER",
             Instrument::BodyTags => "BODY TAGS",
+            Instrument::Map => "MINI MAP",
         }
     }
 
@@ -78,6 +82,7 @@ impl Instrument {
             Instrument::HoopSound => "hoop-sound",
             Instrument::Ladder => "ladder",
             Instrument::BodyTags => "body-tags",
+            Instrument::Map => "map",
         }
     }
 
@@ -92,6 +97,12 @@ impl Instrument {
                 | Instrument::GForce
                 | Instrument::GVector
         )
+    }
+
+    /// What a free anchor may be set on: the dials, and the mini map —
+    /// an overlay that nonetheless has a place of its own on the glass.
+    pub fn placeable(self) -> bool {
+        self.slotted() || self == Instrument::Map
     }
 }
 
@@ -218,6 +229,7 @@ impl Default for Layout {
         l.set(Instrument::HoopSound, Slot::On);
         l.set(Instrument::Ladder, Slot::On);
         l.set(Instrument::BodyTags, Slot::On);
+        l.set(Instrument::Map, Slot::On);
         l
     }
 }
@@ -238,7 +250,7 @@ impl Layout {
     /// safe edge), clamped to the glass. Only a shown dial can be placed;
     /// its slot is kept underneath for the menu to cycle from.
     pub fn set_free(&mut self, i: Instrument, anchor: [f32; 2]) {
-        if !i.slotted() || !self.shown(i) || !anchor[0].is_finite() || !anchor[1].is_finite() {
+        if !i.placeable() || !self.shown(i) || !anchor[0].is_finite() || !anchor[1].is_finite() {
             return;
         }
         self.free[i as usize] = Some([
@@ -332,6 +344,13 @@ mod tests {
         assert_eq!(l.free(Instrument::Speed), Some([FREE_LIMIT, -FREE_LIMIT]));
         l.set_free(Instrument::Horizon, [0.1, 0.1]);
         assert_eq!(l.free(Instrument::Horizon), None);
+        // The mini map is an overlay with a place of its own: a free
+        // anchor sticks, and cycling it off-and-on lets go.
+        l.set_free(Instrument::Map, [0.5, 0.5]);
+        assert_eq!(l.free(Instrument::Map), Some([0.5, 0.5]));
+        assert_eq!(l.anchor(Instrument::Map), Some([0.45, 0.45]));
+        l.set(Instrument::Map, Slot::On);
+        assert_eq!(l.free(Instrument::Map), None);
         l.set(Instrument::Gyro, Slot::Off);
         l.set_free(Instrument::Gyro, [0.1, 0.1]);
         assert_eq!(l.free(Instrument::Gyro), None);
@@ -351,6 +370,7 @@ mod tests {
         assert!(l.anchor(Instrument::Altitude).is_some());
         assert!(l.shown(Instrument::Horizon));
         assert!(l.shown(Instrument::Trajectory));
+        assert!(l.shown(Instrument::Map), "the mini map is a stock gauge");
     }
 
     #[test]

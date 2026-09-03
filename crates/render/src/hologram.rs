@@ -114,6 +114,9 @@ pub struct HologramScene {
     pub fullscreen: bool,
     /// One per hardpoint; None draws no leader line.
     pub callouts: [Option<Callout>; HARDPOINTS],
+    /// The craft on the turntable: 0 the fighter, 1 the helicopter
+    /// (common.wgsl sd_craft_exterior — SPEC §6.5c).
+    pub craft: f32,
 }
 
 #[repr(C)]
@@ -159,7 +162,7 @@ impl HologramUniforms {
                 scene.time_s.rem_euclid(1000.0),
                 scene.height_px,
                 if scene.fullscreen { 1.0 } else { 0.0 },
-                0.0,
+                scene.craft,
             ],
             pts,
             rows: scene.callouts.map(|c| match c {
@@ -198,7 +201,7 @@ mod tests {
             kind: 0,
         }; HARDPOINTS];
         mounts[1] = MountView {
-            at: Vec3::new(-2.6, -0.35, -0.6),
+            at: Vec3::new(-2.6, -1.0, 0.9),
             kind: 1,
         };
         HologramScene {
@@ -215,6 +218,7 @@ mod tests {
             time_s: 2.0,
             height_px: 1200.0,
             fullscreen: true,
+            craft: 1.0,
             callouts: [
                 Some(Callout {
                     at: [0.6, 0.5],
@@ -255,7 +259,7 @@ mod tests {
         assert_eq!(u.fwd[3], 0.45, "tan half fov rides fwd.w");
         assert_eq!(u.pane, [0.1, -0.2, 0.3, 1.6]);
         assert_eq!(u.look, [0.52, 1.0, 120.0, 1.0]);
-        assert_eq!(u.pts[1], [-2.6, -0.35, -0.6, 1.0]);
+        assert_eq!(u.pts[1], [-2.6, -1.0, 0.9, 1.0]);
         assert_eq!(u.pts[0][3], 0.0);
         let mut s = scene();
         s.selected = None;

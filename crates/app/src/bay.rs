@@ -5,6 +5,58 @@
 
 use crate::arms::Weapon;
 
+/// The airframe the pilot's own ship wears (SPEC §6.5c): a parameter and
+/// a silhouette, never sim state — the golden hash does not know it
+/// exists. The pads' cold-war hulls are not this; they stay their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Craft {
+    #[default]
+    Fighter,
+    Helicopter,
+}
+
+impl Craft {
+    pub const ALL: [Craft; 2] = [Craft::Fighter, Craft::Helicopter];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Craft::Fighter => "FIGHTER",
+            Craft::Helicopter => "HELICOPTER",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Craft::Fighter => "fighter",
+            Craft::Helicopter => "helicopter",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Craft> {
+        Craft::ALL.iter().copied().find(|c| c.key() == k)
+    }
+
+    /// The craft flag every drawing lane's uniforms carry: 0 the fighter,
+    /// 1 the helicopter (common.wgsl sd_craft_exterior).
+    pub fn kind(self) -> f32 {
+        match self {
+            Craft::Fighter => 0.0,
+            Craft::Helicopter => 1.0,
+        }
+    }
+
+    /// The next craft round, for the menu.
+    pub fn next(self, forward: bool) -> Craft {
+        let i = Craft::ALL.iter().position(|&c| c == self).unwrap_or(0);
+        let n = Craft::ALL.len();
+        Craft::ALL[if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        }]
+    }
+}
+
 /// Where things can be mounted, ship frame (x right, y up, -z the nose).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hardpoint {
@@ -31,12 +83,15 @@ impl Hardpoint {
         }
     }
 
-    /// The muzzle's place, ship frame, metres.
+    /// The muzzle's place, ship frame, metres. The wing points sit at
+    /// the nose of the outrigger booms under the wings
+    /// (common.wgsl sd_fighter_exterior draws the boom), so a wing gun
+    /// is carried on the airframe instead of floating at its muzzle.
     pub fn pos(self) -> glam::DVec3 {
         match self {
             Hardpoint::Nose => glam::DVec3::new(0.0, -0.45, -4.2),
-            Hardpoint::WingL => glam::DVec3::new(-2.6, -0.35, -0.6),
-            Hardpoint::WingR => glam::DVec3::new(2.6, -0.35, -0.6),
+            Hardpoint::WingL => glam::DVec3::new(-2.6, -1.0, 0.9),
+            Hardpoint::WingR => glam::DVec3::new(2.6, -1.0, 0.9),
             Hardpoint::Belly => glam::DVec3::new(0.0, -1.95, 1.4),
         }
     }
@@ -106,6 +161,24 @@ impl Mount {
 /// The stock fit: a rail on the nose, a cannon on each wing.
 pub const STOCK: [Mount; 4] = [Mount::Rail, Mount::Cannon, Mount::Cannon, Mount::Empty];
 
+/// The fit as every pass draws it: each hardpoint's place from the one
+/// table ([`Hardpoint::pos`]) with what the bay mounted there. The SHIP
+/// bay's hologram, the cockpit's own airframe and the chase view all
+/// read this — one source, so the glass and the bay cannot disagree.
+pub fn fit_views(mounts: &[Mount; 4]) -> [farfall_render::hologram::MountView; 4] {
+    let mut v = [farfall_render::hologram::MountView {
+        at: glam::Vec3::ZERO,
+        kind: 0,
+    }; 4];
+    for ((slot, h), m) in v.iter_mut().zip(Hardpoint::ALL.iter()).zip(mounts.iter()) {
+        *slot = farfall_render::hologram::MountView {
+            at: h.pos().as_vec3(),
+            kind: m.kind(),
+        };
+    }
+    v
+}
+
 /// The orbit camera's reach, ship metres from the hull's middle.
 pub const DIST_MIN: f32 = 22.0;
 pub const DIST_MAX: f32 = 110.0;
@@ -164,6 +237,35 @@ impl BayView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_pass_reads_the_same_fit_table() {
+        // The glass, the bay and the chase view all draw from this one
+        // mapping: each hardpoint's true place with its mounted kind.
+        let fit = fit_views(&[Mount::Rail, Mount::Cannon, Mount::Empty, Mount::Cannon]);
+        for (i, h) in Hardpoint::ALL.iter().enumerate() {
+            assert_eq!(fit[i].at, h.pos().as_vec3(), "{}", h.name());
+        }
+        assert_eq!(
+            [fit[0].kind, fit[1].kind, fit[2].kind, fit[3].kind],
+            [2, 1, 0, 1],
+            "kinds ride with their hardpoints"
+        );
+    }
+
+    #[test]
+    fn the_craft_cycles_and_names_its_keys() {
+        assert_eq!(Craft::default(), Craft::Fighter, "the fighter is stock");
+        assert_eq!(Craft::Fighter.next(true), Craft::Helicopter);
+        assert_eq!(Craft::Helicopter.next(true), Craft::Fighter);
+        assert_eq!(Craft::Fighter.next(false), Craft::Helicopter);
+        for c in Craft::ALL {
+            assert_eq!(Craft::from_key(c.key()), Some(c));
+        }
+        assert_eq!(Craft::from_key("huey"), None);
+        assert_eq!(Craft::Fighter.kind(), 0.0);
+        assert_eq!(Craft::Helicopter.kind(), 1.0);
+    }
 
     #[test]
     fn mounts_cycle_and_name_their_keys() {

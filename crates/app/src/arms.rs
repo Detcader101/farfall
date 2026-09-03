@@ -44,6 +44,16 @@ impl Weapon {
             Weapon::Rail => "RAIL",
         }
     }
+    /// The settings/world-file key.
+    pub fn key(self) -> &'static str {
+        match self {
+            Weapon::Cannon => "cannon",
+            Weapon::Rail => "rail",
+        }
+    }
+    pub fn from_key(k: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|w| w.key() == k)
+    }
     /// Rounds a second at full power (the rail's is its charge, see
     /// [`RAIL_CHARGE_S`]).
     pub fn rate_hz(self) -> f64 {
@@ -98,8 +108,8 @@ impl Weapon {
 
 /// Where the stock guns are, ship frame (x right, y up, -z the nose),
 /// metres — the hardpoints' places, see [`crate::bay::Hardpoint`].
-pub const WING_L: DVec3 = DVec3::new(-2.6, -0.35, -0.6);
-pub const WING_R: DVec3 = DVec3::new(2.6, -0.35, -0.6);
+pub const WING_L: DVec3 = DVec3::new(-2.6, -1.0, 0.9);
+pub const WING_R: DVec3 = DVec3::new(2.6, -1.0, 0.9);
 pub const NOSE: DVec3 = DVec3::new(0.0, -0.45, -4.2);
 
 /// A slug in the air, world frame.

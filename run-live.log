@@ -1,0 +1,755 @@
+[INFO  wgpu_hal::vulkan::adapter] Found 6 cooperative matrix configurations supported by wgpu
+[INFO  farfall_app] renderer: 4x MSAA, vsync on, gpu_sync false, Bgra8UnormSrgb
+[INFO  farfall_audio] audio: 48000 Hz, 2 ch, live synthesis
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.4 fps avg | 1% low 191.0 fps | frame avg 2.79ms worst 8.71ms best 0.37ms | 1781 frames
+[INFO  farfall_app] perf split: cpu 0.350ms avg (worst 2.325) | swapchain wait 2.32ms avg (worst 7.31) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.8 fps avg | 1% low 275.7 fps | frame avg 2.78ms worst 4.55ms best 0.39ms | 1799 frames
+[INFO  farfall_app] perf split: cpu 0.329ms avg (worst 0.515) | swapchain wait 2.34ms avg (worst 4.09) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 353.6 fps avg | 1% low 270.0 fps | frame avg 2.83ms worst 3.96ms best 2.39ms | 1769 frames
+[INFO  farfall_app] perf split: cpu 0.354ms avg (worst 0.801) | swapchain wait 2.34ms avg (worst 3.26) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.8 fps avg | 1% low 250.6 fps | frame avg 2.79ms worst 8.26ms best 2.38ms | 1794 frames
+[INFO  farfall_app] perf split: cpu 0.345ms avg (worst 0.833) | swapchain wait 2.33ms avg (worst 7.61) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 318.9 fps | frame avg 2.78ms worst 3.51ms best 2.35ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.348ms avg (worst 0.810) | swapchain wait 2.32ms avg (worst 2.65) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 325.3 fps | frame avg 2.78ms worst 3.17ms best 2.34ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.325ms avg (worst 0.503) | swapchain wait 2.35ms avg (worst 2.67) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.8 fps avg | 1% low 306.0 fps | frame avg 2.78ms worst 5.74ms best 2.37ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.332ms avg (worst 0.660) | swapchain wait 2.34ms avg (worst 5.22) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 352.3 fps avg | 1% low 238.5 fps | frame avg 2.84ms worst 8.29ms best 0.62ms | 1762 frames
+[INFO  farfall_app] perf split: cpu 0.382ms avg (worst 0.909) | swapchain wait 2.30ms avg (worst 7.54) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 351.7 fps avg | 1% low 254.2 fps | frame avg 2.84ms worst 4.22ms best 2.32ms | 1759 frames
+[INFO  farfall_app] perf split: cpu 0.362ms avg (worst 0.673) | swapchain wait 2.34ms avg (worst 3.62) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 353.0 fps avg | 1% low 278.9 fps | frame avg 2.83ms worst 3.89ms best 2.36ms | 1766 frames
+[INFO  farfall_app] perf split: cpu 0.359ms avg (worst 0.692) | swapchain wait 2.33ms avg (worst 3.15) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 314.3 fps | frame avg 2.78ms worst 3.59ms best 2.33ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.347ms avg (worst 0.967) | swapchain wait 2.32ms avg (worst 2.78) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 325.9 fps | frame avg 2.78ms worst 3.13ms best 2.33ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.329ms avg (worst 0.519) | swapchain wait 2.35ms avg (worst 2.69) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 315.9 fps | frame avg 2.78ms worst 3.36ms best 2.33ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.344ms avg (worst 0.907) | swapchain wait 2.32ms avg (worst 2.72) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.6 fps avg | 1% low 255.9 fps | frame avg 2.79ms worst 8.30ms best 2.35ms | 1794 frames
+[INFO  farfall_app] perf split: cpu 0.340ms avg (worst 0.854) | swapchain wait 2.33ms avg (worst 7.64) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 351.2 fps avg | 1% low 262.7 fps | frame avg 2.85ms worst 5.32ms best 2.32ms | 1757 frames
+[INFO  farfall_app] perf split: cpu 0.332ms avg (worst 0.709) | swapchain wait 2.39ms avg (worst 4.75) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 357.4 fps avg | 1% low 217.4 fps | frame avg 2.80ms worst 22.05ms best 2.31ms | 1787 frames
+[INFO  farfall_app] perf split: cpu 0.326ms avg (worst 0.837) | swapchain wait 2.37ms avg (worst 21.40) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.6 fps avg | 1% low 267.6 fps | frame avg 2.79ms worst 10.13ms best 2.33ms | 1794 frames
+[INFO  farfall_app] perf split: cpu 0.314ms avg (worst 0.636) | swapchain wait 2.33ms avg (worst 8.89) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 322.8 fps | frame avg 2.78ms worst 3.22ms best 2.47ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.314ms avg (worst 0.691) | swapchain wait 2.34ms avg (worst 2.67) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 329.6 fps | frame avg 2.78ms worst 3.21ms best 2.47ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.327ms avg (worst 0.693) | swapchain wait 2.30ms avg (worst 2.48) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 325.8 fps | frame avg 2.78ms worst 3.25ms best 2.43ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.317ms avg (worst 0.882) | swapchain wait 2.31ms avg (worst 2.49) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 330.0 fps | frame avg 2.78ms worst 3.14ms best 2.50ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.283ms avg (worst 0.501) | swapchain wait 2.35ms avg (worst 2.50) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 329.7 fps | frame avg 2.78ms worst 3.16ms best 2.51ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.287ms avg (worst 0.537) | swapchain wait 2.35ms avg (worst 2.51) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 357.8 fps avg | 1% low 194.7 fps | frame avg 2.79ms worst 7.18ms best 1.85ms | 1790 frames
+[INFO  farfall_app] perf split: cpu 0.286ms avg (worst 0.660) | swapchain wait 2.36ms avg (worst 6.23) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.8 fps avg | 1% low 239.5 fps | frame avg 2.79ms worst 6.44ms best 1.93ms | 1794 frames
+[INFO  farfall_app] perf split: cpu 0.302ms avg (worst 0.615) | swapchain wait 2.34ms avg (worst 5.57) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 324.8 fps | frame avg 2.78ms worst 3.34ms best 2.44ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.322ms avg (worst 0.981) | swapchain wait 2.32ms avg (worst 2.53) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 331.3 fps | frame avg 2.78ms worst 3.09ms best 2.55ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.303ms avg (worst 0.522) | swapchain wait 2.35ms avg (worst 2.50) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 326.0 fps | frame avg 2.78ms worst 3.18ms best 2.32ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.329ms avg (worst 0.781) | swapchain wait 2.34ms avg (worst 2.51) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] warp: engaged to URANUS at 20.00 radii
+[INFO  farfall_app] warp: arrived at URANUS ÔÇö 457 km out, 1107 m/s
+[INFO  farfall_app] belt: a 558 m rock at 1 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 355.8 fps avg | 1% low 248.0 fps | frame avg 2.81ms worst 5.47ms best 0.41ms | 1779 frames
+[INFO  farfall_app] perf split: cpu 0.336ms avg (worst 0.686) | swapchain wait 2.36ms avg (worst 4.87) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] belt: a 558 m rock at 0 m/s
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 352.2 fps avg | 1% low 202.4 fps | frame avg 2.84ms worst 5.53ms best 0.35ms | 1762 frames
+[INFO  farfall_app] perf split: cpu 0.345ms avg (worst 1.059) | swapchain wait 2.39ms avg (worst 5.06) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] hold: locked on a ROCK at 1006 m
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 352.5 fps avg | 1% low 191.8 fps | frame avg 2.84ms worst 6.07ms best 0.36ms | 1763 frames
+[INFO  farfall_app] perf split: cpu 0.342ms avg (worst 0.777) | swapchain wait 2.36ms avg (worst 5.63) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] hold: the target is gone
+[INFO  farfall_app] hold: locked on a SHIP at 830 m
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 310.2 fps avg | 1% low 132.0 fps | frame avg 3.22ms worst 8.64ms best 0.35ms | 1551 frames
+[INFO  farfall_app] perf split: cpu 0.369ms avg (worst 0.760) | swapchain wait 2.74ms avg (worst 8.14) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] atmosphere: VENUSIAN (density 1.60, cloud cover 92%, deck 5000 m)
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 317.7 fps avg | 1% low 140.7 fps | frame avg 3.15ms worst 8.61ms best 0.35ms | 1589 frames
+[INFO  farfall_app] perf split: cpu 0.367ms avg (worst 0.903) | swapchain wait 2.67ms avg (worst 8.08) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 321.5 fps avg | 1% low 166.1 fps | frame avg 3.11ms worst 8.39ms best 0.35ms | 1608 frames
+[INFO  farfall_app] perf split: cpu 0.342ms avg (worst 0.561) | swapchain wait 2.66ms avg (worst 7.94) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 344.5 fps avg | 1% low 169.6 fps | frame avg 2.90ms worst 8.59ms best 0.35ms | 1723 frames
+[INFO  farfall_app] perf split: cpu 0.345ms avg (worst 0.652) | swapchain wait 2.45ms avg (worst 7.96) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 322.3 fps avg | 1% low 154.9 fps | frame avg 3.10ms worst 8.46ms best 0.35ms | 1612 frames
+[INFO  farfall_app] perf split: cpu 0.349ms avg (worst 0.551) | swapchain wait 2.65ms avg (worst 8.00) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 326.9 fps avg | 1% low 163.2 fps | frame avg 3.06ms worst 8.44ms best 0.35ms | 1635 frames
+[INFO  farfall_app] perf split: cpu 0.366ms avg (worst 0.757) | swapchain wait 2.58ms avg (worst 7.93) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 2.170e5 m/s, entropy 0%
+[INFO  farfall_app] hold: the target is gone
+[INFO  farfall_app] warp stop: 2.170e5 m/s and 0.00 rad/s taken out
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 328.3 fps avg | 1% low 142.5 fps | frame avg 3.05ms worst 8.64ms best 0.34ms | 1642 frames
+[INFO  farfall_app] perf split: cpu 0.323ms avg (worst 0.541) | swapchain wait 2.63ms avg (worst 8.06) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 324.3 fps | frame avg 2.78ms worst 3.55ms best 2.31ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.326ms avg (worst 0.859) | swapchain wait 2.34ms avg (worst 2.61) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 331.2 fps | frame avg 2.78ms worst 3.09ms best 2.55ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.309ms avg (worst 0.482) | swapchain wait 2.37ms avg (worst 2.51) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 325.5 fps | frame avg 2.78ms worst 3.15ms best 2.43ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.317ms avg (worst 0.589) | swapchain wait 2.35ms avg (worst 2.53) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] warp: engaged to URANUS at 20.00 radii
+[INFO  farfall_app] design mode on
+[INFO  farfall_app] warp: arrived at URANUS ÔÇö 457 km out, 1107 m/s
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 328.1 fps | frame avg 2.78ms worst 3.17ms best 2.48ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.318ms avg (worst 0.597) | swapchain wait 2.34ms avg (worst 2.53) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] drag: picked up G METER
+[INFO  farfall_app] drag: dropped G METER
+[INFO  farfall_app] drag: picked up GYRO
+[INFO  farfall_app] drag: dropped GYRO
+[INFO  farfall_app] drag: picked up ALTITUDE
+[INFO  farfall_app] drag: dropped ALTITUDE
+[INFO  farfall_app] drag: picked up SPEED
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 325.4 fps | frame avg 2.78ms worst 3.35ms best 2.30ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.363ms avg (worst 0.848) | swapchain wait 2.21ms avg (worst 2.48) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] drag: dropped SPEED
+[INFO  farfall_app] drag: picked up ALTITUDE
+[INFO  farfall_app] drag: dropped ALTITUDE
+[INFO  farfall_app] drag: picked up SPEED
+[INFO  farfall_app] drag: dropped SPEED
+[INFO  farfall_app] drag: picked up ALTITUDE
+[INFO  farfall_app] drag: dropped ALTITUDE
+[INFO  farfall_app] drag: picked up SPEED
+[INFO  farfall_app] drag: dropped SPEED
+[INFO  farfall_app] drag: picked up G VECTOR
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 325.8 fps | frame avg 2.78ms worst 3.22ms best 2.52ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.335ms avg (worst 0.694) | swapchain wait 2.27ms avg (worst 2.51) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 328.1 fps | frame avg 2.78ms worst 3.18ms best 2.47ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.332ms avg (worst 0.545) | swapchain wait 2.28ms avg (worst 2.59) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] drag: dropped G VECTOR
+[INFO  farfall_app] drag: picked up G METER
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 330.5 fps | frame avg 2.78ms worst 3.10ms best 2.50ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.318ms avg (worst 0.507) | swapchain wait 2.31ms avg (worst 2.52) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] drag: dropped G METER
+[INFO  farfall_app] drag: picked up G VECTOR
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 327.3 fps | frame avg 2.78ms worst 3.13ms best 2.48ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.317ms avg (worst 0.717) | swapchain wait 2.33ms avg (worst 2.50) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] drag: dropped G VECTOR
+[INFO  farfall_app] drag: picked up G METER
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 329.4 fps | frame avg 2.78ms worst 3.12ms best 2.51ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.322ms avg (worst 0.559) | swapchain wait 2.32ms avg (worst 2.49) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] drag: dropped G METER
+[INFO  farfall_app] drag: picked up SPEED
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 328.4 fps | frame avg 2.78ms worst 3.12ms best 2.52ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.316ms avg (worst 0.535) | swapchain wait 2.34ms avg (worst 2.50) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 328.7 fps | frame avg 2.78ms worst 3.15ms best 2.41ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.339ms avg (worst 0.670) | swapchain wait 2.30ms avg (worst 2.52) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] drag: dropped SPEED
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 357.6 fps avg | 1% low 245.0 fps | frame avg 2.80ms worst 11.03ms best 2.13ms | 1789 frames
+[INFO  farfall_app] perf split: cpu 0.339ms avg (worst 0.697) | swapchain wait 2.32ms avg (worst 9.87) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.0 fps avg | 1% low 259.4 fps | frame avg 2.79ms worst 10.85ms best 1.98ms | 1796 frames
+[INFO  farfall_app] perf split: cpu 0.313ms avg (worst 0.823) | swapchain wait 2.36ms avg (worst 10.35) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 325.5 fps | frame avg 2.78ms worst 3.22ms best 2.53ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.304ms avg (worst 0.536) | swapchain wait 2.36ms avg (worst 2.64) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.0 fps avg | 1% low 264.7 fps | frame avg 2.79ms worst 10.90ms best 2.44ms | 1795 frames
+[INFO  farfall_app] perf split: cpu 0.304ms avg (worst 0.611) | swapchain wait 2.37ms avg (worst 10.39) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.0 fps avg | 1% low 256.8 fps | frame avg 2.79ms worst 11.18ms best 2.42ms | 1796 frames
+[INFO  farfall_app] perf split: cpu 0.304ms avg (worst 0.569) | swapchain wait 2.37ms avg (worst 10.57) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 322.4 fps | frame avg 2.78ms worst 3.82ms best 2.27ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.312ms avg (worst 0.857) | swapchain wait 2.35ms avg (worst 2.83) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 328.1 fps | frame avg 2.78ms worst 3.29ms best 2.54ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.306ms avg (worst 0.626) | swapchain wait 2.36ms avg (worst 2.58) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 320.0 fps | frame avg 2.78ms worst 3.95ms best 2.01ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.678) | swapchain wait 2.35ms avg (worst 3.49) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 327.2 fps | frame avg 2.78ms worst 3.13ms best 2.53ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.300ms avg (worst 0.516) | swapchain wait 2.37ms avg (worst 2.54) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 329.2 fps | frame avg 2.78ms worst 3.10ms best 2.47ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.309ms avg (worst 0.500) | swapchain wait 2.36ms avg (worst 2.53) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 325.9 fps | frame avg 2.78ms worst 3.13ms best 2.54ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.305ms avg (worst 0.636) | swapchain wait 2.36ms avg (worst 2.59) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 323.8 fps | frame avg 2.78ms worst 3.75ms best 2.43ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.317ms avg (worst 0.861) | swapchain wait 2.35ms avg (worst 2.71) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 328.4 fps | frame avg 2.78ms worst 3.21ms best 2.48ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.302ms avg (worst 0.568) | swapchain wait 2.37ms avg (worst 2.55) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] design mode off
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.8 fps avg | 1% low 250.7 fps | frame avg 2.79ms worst 13.10ms best 2.29ms | 1795 frames
+[INFO  farfall_app] perf split: cpu 0.329ms avg (worst 0.869) | swapchain wait 2.33ms avg (worst 11.74) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] warp: engaged to URANUS at 20.00 radii
+[INFO  farfall_app] warp: arrived at URANUS ÔÇö 457 km out, 1107 m/s
+[INFO  farfall_app] atmosphere: THIN (density 0.08, cloud cover 10%, deck 1200 m)
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.8 fps avg | 1% low 306.4 fps | frame avg 2.78ms worst 3.34ms best 2.51ms | 1799 frames
+[INFO  farfall_app] perf split: cpu 0.338ms avg (worst 0.596) | swapchain wait 2.34ms avg (worst 2.85) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 8.953e5 m/s, entropy 0%
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 353.6 fps avg | 1% low 182.4 fps | frame avg 2.83ms worst 5.89ms best 0.35ms | 1768 frames
+[INFO  farfall_app] perf split: cpu 0.336ms avg (worst 0.597) | swapchain wait 2.38ms avg (worst 5.34) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 6.627e6 m/s, entropy 3%
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 339.0 fps avg | 1% low 175.0 fps | frame avg 2.95ms worst 8.60ms best 0.35ms | 1696 frames
+[INFO  farfall_app] perf split: cpu 0.329ms avg (worst 0.613) | swapchain wait 2.50ms avg (worst 7.47) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 334.5 fps avg | 1% low 159.4 fps | frame avg 2.99ms worst 9.60ms best 0.35ms | 1673 frames
+[INFO  farfall_app] perf split: cpu 0.336ms avg (worst 0.681) | swapchain wait 2.55ms avg (worst 8.95) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 333.9 fps avg | 1% low 148.4 fps | frame avg 2.99ms worst 8.78ms best 0.35ms | 1670 frames
+[INFO  farfall_app] perf split: cpu 0.331ms avg (worst 0.948) | swapchain wait 2.56ms avg (worst 8.17) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 327.6 fps avg | 1% low 169.6 fps | frame avg 3.05ms worst 6.12ms best 0.35ms | 1639 frames
+[INFO  farfall_app] perf split: cpu 0.452ms avg (worst 0.823) | swapchain wait 2.46ms avg (worst 5.45) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 317.6 fps avg | 1% low 158.9 fps | frame avg 3.15ms worst 8.48ms best 0.40ms | 1588 frames
+[INFO  farfall_app] perf split: cpu 0.485ms avg (worst 0.898) | swapchain wait 2.45ms avg (worst 7.33) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] design mode on
+[INFO  farfall_app] design mode off
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 332.8 fps avg | 1% low 164.4 fps | frame avg 3.00ms worst 8.38ms best 0.39ms | 1664 frames
+[INFO  farfall_app] perf split: cpu 0.451ms avg (worst 1.109) | swapchain wait 2.31ms avg (worst 7.73) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.8 fps avg | 1% low 255.4 fps | frame avg 2.79ms worst 10.93ms best 2.40ms | 1794 frames
+[INFO  farfall_app] perf split: cpu 0.399ms avg (worst 0.790) | swapchain wait 2.21ms avg (worst 10.17) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 311.8 fps | frame avg 2.78ms worst 3.63ms best 2.35ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.367ms avg (worst 0.804) | swapchain wait 2.24ms avg (worst 3.11) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.2 fps avg | 1% low 270.7 fps | frame avg 2.78ms worst 7.70ms best 2.36ms | 1797 frames
+[INFO  farfall_app] perf split: cpu 0.323ms avg (worst 0.521) | swapchain wait 2.30ms avg (worst 6.65) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] design mode on
+[INFO  farfall_app] design mode off
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 345.3 fps avg | 1% low 176.4 fps | frame avg 2.90ms worst 5.81ms best 0.37ms | 1727 frames
+[INFO  farfall_app] perf split: cpu 0.348ms avg (worst 0.682) | swapchain wait 2.37ms avg (worst 5.22) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 343.3 fps avg | 1% low 166.7 fps | frame avg 2.91ms worst 8.90ms best 0.35ms | 1717 frames
+[INFO  farfall_app] perf split: cpu 0.333ms avg (worst 0.705) | swapchain wait 2.43ms avg (worst 8.33) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 312.4 fps | frame avg 2.78ms worst 3.43ms best 2.41ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.334ms avg (worst 0.861) | swapchain wait 2.29ms avg (worst 2.72) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 309.6 fps | frame avg 2.78ms worst 3.43ms best 2.37ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.347ms avg (worst 0.902) | swapchain wait 2.27ms avg (worst 3.00) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 318.8 fps | frame avg 2.78ms worst 3.22ms best 2.42ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.331ms avg (worst 0.754) | swapchain wait 2.26ms avg (worst 2.64) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.4 fps avg | 1% low 280.9 fps | frame avg 2.78ms worst 7.30ms best 2.42ms | 1798 frames
+[INFO  farfall_app] perf split: cpu 0.314ms avg (worst 0.559) | swapchain wait 2.32ms avg (worst 5.62) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.4 fps avg | 1% low 293.1 fps | frame avg 2.78ms worst 4.70ms best 0.49ms | 1797 frames
+[INFO  farfall_app] perf split: cpu 0.321ms avg (worst 0.650) | swapchain wait 2.34ms avg (worst 4.19) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] warp: engaged to PLANET at 8.19 radii
+[INFO  farfall_app] warp: arrived at PLANET ÔÇö 586 km out, 261 m/s
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.0 fps avg | 1% low 240.8 fps | frame avg 2.79ms worst 5.85ms best 0.37ms | 1790 frames
+[INFO  farfall_app] perf split: cpu 0.344ms avg (worst 0.716) | swapchain wait 2.33ms avg (worst 5.21) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 312.9 fps | frame avg 2.78ms worst 3.32ms best 2.29ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.487ms avg (worst 0.923) | swapchain wait 2.14ms avg (worst 2.49) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 350.4 fps avg | 1% low 171.6 fps | frame avg 2.85ms worst 6.11ms best 0.41ms | 1753 frames
+[INFO  farfall_app] perf split: cpu 0.507ms avg (worst 0.916) | swapchain wait 2.14ms avg (worst 5.43) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 329.2 fps avg | 1% low 163.0 fps | frame avg 3.04ms worst 8.65ms best 0.37ms | 1646 frames
+[INFO  farfall_app] perf split: cpu 0.454ms avg (worst 1.077) | swapchain wait 2.44ms avg (worst 7.96) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 332.7 fps avg | 1% low 164.5 fps | frame avg 3.01ms worst 8.71ms best 0.36ms | 1664 frames
+[INFO  farfall_app] perf split: cpu 0.425ms avg (worst 1.231) | swapchain wait 2.44ms avg (worst 8.09) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 329.9 fps avg | 1% low 169.0 fps | frame avg 3.03ms worst 6.11ms best 0.38ms | 1650 frames
+[INFO  farfall_app] perf split: cpu 0.439ms avg (worst 0.931) | swapchain wait 2.46ms avg (worst 5.43) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 326.9 fps avg | 1% low 153.9 fps | frame avg 3.06ms worst 8.59ms best 0.37ms | 1635 frames
+[INFO  farfall_app] perf split: cpu 0.413ms avg (worst 1.226) | swapchain wait 2.51ms avg (worst 7.98) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 312.3 fps avg | 1% low 156.6 fps | frame avg 3.20ms worst 8.54ms best 0.39ms | 1562 frames
+[INFO  farfall_app] perf split: cpu 0.366ms avg (worst 0.652) | swapchain wait 2.72ms avg (worst 7.98) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 326.2 fps avg | 1% low 132.5 fps | frame avg 3.07ms worst 13.85ms best 0.36ms | 1632 frames
+[INFO  farfall_app] perf split: cpu 0.385ms avg (worst 0.988) | swapchain wait 2.55ms avg (worst 13.18) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 335.9 fps avg | 1% low 162.0 fps | frame avg 2.98ms worst 8.46ms best 0.35ms | 1680 frames
+[INFO  farfall_app] perf split: cpu 0.358ms avg (worst 0.974) | swapchain wait 2.49ms avg (worst 7.92) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 301.8 fps avg | 1% low 156.9 fps | frame avg 3.31ms worst 8.57ms best 0.38ms | 1510 frames
+[INFO  farfall_app] perf split: cpu 0.393ms avg (worst 0.931) | swapchain wait 2.79ms avg (worst 8.02) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] warp stop: 1.834e4 m/s and 1.00 rad/s taken out
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 326.5 fps avg | 1% low 150.8 fps | frame avg 3.06ms worst 13.00ms best 0.38ms | 1633 frames
+[INFO  farfall_app] perf split: cpu 0.412ms avg (worst 1.044) | swapchain wait 2.50ms avg (worst 12.36) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 334.2 fps avg | 1% low 174.5 fps | frame avg 2.99ms worst 6.15ms best 0.40ms | 1671 frames
+[INFO  farfall_app] perf split: cpu 0.389ms avg (worst 0.919) | swapchain wait 2.47ms avg (worst 5.63) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 356.8 fps avg | 1% low 248.1 fps | frame avg 2.80ms worst 5.55ms best 0.39ms | 1784 frames
+[INFO  farfall_app] perf split: cpu 0.340ms avg (worst 0.853) | swapchain wait 2.35ms avg (worst 5.10) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 355.4 fps avg | 1% low 233.9 fps | frame avg 2.81ms worst 5.80ms best 0.36ms | 1778 frames
+[INFO  farfall_app] perf split: cpu 0.323ms avg (worst 0.842) | swapchain wait 2.39ms avg (worst 5.21) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] landing mode on
+[INFO  farfall_app] landing mode off
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.6 fps avg | 1% low 301.2 fps | frame avg 2.78ms worst 3.50ms best 2.52ms | 1798 frames
+[INFO  farfall_app] perf split: cpu 0.324ms avg (worst 0.591) | swapchain wait 2.35ms avg (worst 2.97) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 309.5 fps | frame avg 2.78ms worst 3.40ms best 2.49ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.333ms avg (worst 0.678) | swapchain wait 2.34ms avg (worst 2.76) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 324.6 fps avg | 1% low 157.6 fps | frame avg 3.08ms worst 8.77ms best 0.35ms | 1624 frames
+[INFO  farfall_app] perf split: cpu 0.338ms avg (worst 0.770) | swapchain wait 2.62ms avg (worst 8.19) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] warp stop: 1.680e3 m/s and 0.02 rad/s taken out
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 350.2 fps avg | 1% low 182.5 fps | frame avg 2.86ms worst 5.81ms best 0.35ms | 1751 frames
+[INFO  farfall_app] perf split: cpu 0.317ms avg (worst 0.595) | swapchain wait 2.44ms avg (worst 5.30) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 341.6 fps avg | 1% low 168.7 fps | frame avg 2.93ms worst 8.81ms best 0.35ms | 1709 frames
+[INFO  farfall_app] perf split: cpu 0.320ms avg (worst 0.812) | swapchain wait 2.51ms avg (worst 8.19) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] warp stop: 1.841e2 m/s and 0.01 rad/s taken out
+[INFO  farfall_app] landing mode on
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.1 fps avg | 1% low 309.5 fps | frame avg 2.79ms worst 3.56ms best 2.60ms | 1796 frames
+[INFO  farfall_app] perf split: cpu 0.314ms avg (worst 0.606) | swapchain wait 2.37ms avg (worst 3.06) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] touchdown: FIRM on PLANET ÔÇö 10.9 m/s down, 3.7 m/s along
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 317.5 fps | frame avg 2.78ms worst 3.35ms best 2.57ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.316ms avg (worst 0.778) | swapchain wait 2.36ms avg (worst 2.74) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] disembark: DISEMBARK  NOT YET
+[INFO  farfall_app] disembark: DISEMBARK  NOT YET
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 316.1 fps | frame avg 2.78ms worst 3.32ms best 2.58ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.318ms avg (worst 0.685) | swapchain wait 2.36ms avg (worst 2.71) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 320.3 fps | frame avg 2.78ms worst 3.35ms best 2.58ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.310ms avg (worst 0.518) | swapchain wait 2.33ms avg (worst 2.84) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] disembark: DISEMBARK  NOT YET
+[INFO  farfall_app] disembark: DISEMBARK  NOT YET
+[INFO  farfall_app] disembark: DISEMBARK  NOT YET
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.9 fps avg | 1% low 287.0 fps | frame avg 2.79ms worst 5.79ms best 0.49ms | 1795 frames
+[INFO  farfall_app] perf split: cpu 0.353ms avg (worst 0.660) | swapchain wait 2.28ms avg (worst 5.13) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 350.3 fps avg | 1% low 177.1 fps | frame avg 2.85ms worst 5.82ms best 0.35ms | 1752 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.499) | swapchain wait 2.43ms avg (worst 5.30) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 315.7 fps | frame avg 2.78ms worst 3.53ms best 2.55ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.316ms avg (worst 0.822) | swapchain wait 2.36ms avg (worst 2.84) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] landing mode off
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 355.2 fps avg | 1% low 223.3 fps | frame avg 2.82ms worst 5.79ms best 0.46ms | 1776 frames
+[INFO  farfall_app] perf split: cpu 0.399ms avg (worst 0.638) | swapchain wait 2.31ms avg (worst 5.04) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.4 fps avg | 1% low 302.9 fps | frame avg 2.78ms worst 4.53ms best 0.44ms | 1798 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.646) | swapchain wait 2.37ms avg (worst 3.99) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 343.3 fps avg | 1% low 175.5 fps | frame avg 2.91ms worst 5.96ms best 0.35ms | 1717 frames
+[INFO  farfall_app] perf split: cpu 0.316ms avg (worst 0.531) | swapchain wait 2.50ms avg (worst 5.35) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 320.1 fps avg | 1% low 145.7 fps | frame avg 3.12ms worst 8.43ms best 0.34ms | 1601 frames
+[INFO  farfall_app] perf split: cpu 0.324ms avg (worst 0.576) | swapchain wait 2.70ms avg (worst 7.97) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 344.2 fps avg | 1% low 174.0 fps | frame avg 2.91ms worst 6.40ms best 0.35ms | 1722 frames
+[INFO  farfall_app] perf split: cpu 0.309ms avg (worst 0.516) | swapchain wait 2.50ms avg (worst 5.85) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 351.3 fps avg | 1% low 180.6 fps | frame avg 2.85ms worst 5.87ms best 0.33ms | 1757 frames
+[INFO  farfall_app] perf split: cpu 0.309ms avg (worst 0.588) | swapchain wait 2.43ms avg (worst 5.36) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 352.2 fps avg | 1% low 178.9 fps | frame avg 2.84ms worst 5.91ms best 0.34ms | 1761 frames
+[INFO  farfall_app] perf split: cpu 0.307ms avg (worst 0.813) | swapchain wait 2.43ms avg (worst 5.31) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 2.476e7 m/s, entropy 16%
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 339.6 fps avg | 1% low 174.8 fps | frame avg 2.94ms worst 5.98ms best 0.35ms | 1699 frames
+[INFO  farfall_app] perf split: cpu 0.326ms avg (worst 0.683) | swapchain wait 2.51ms avg (worst 5.33) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 351.8 fps avg | 1% low 249.3 fps | frame avg 2.84ms worst 4.24ms best 2.30ms | 1759 frames
+[INFO  farfall_app] perf split: cpu 0.313ms avg (worst 0.549) | swapchain wait 2.38ms avg (worst 3.68) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.8 fps avg | 1% low 255.1 fps | frame avg 2.79ms worst 13.23ms best 2.32ms | 1794 frames
+[INFO  farfall_app] perf split: cpu 0.310ms avg (worst 0.644) | swapchain wait 2.33ms avg (worst 12.59) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 321.5 fps | frame avg 2.78ms worst 3.97ms best 2.35ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.309ms avg (worst 1.457) | swapchain wait 2.32ms avg (worst 2.56) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 316.4 fps | frame avg 2.78ms worst 4.21ms best 2.32ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.569) | swapchain wait 2.32ms avg (worst 3.52) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 326.2 fps | frame avg 2.78ms worst 3.25ms best 2.34ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.308ms avg (worst 0.634) | swapchain wait 2.33ms avg (worst 2.59) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 326.7 fps | frame avg 2.78ms worst 3.14ms best 2.30ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.307ms avg (worst 0.526) | swapchain wait 2.33ms avg (worst 2.57) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 326.4 fps | frame avg 2.78ms worst 3.32ms best 2.39ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.774) | swapchain wait 2.32ms avg (worst 2.50) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 327.6 fps | frame avg 2.78ms worst 3.17ms best 2.32ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.305ms avg (worst 0.504) | swapchain wait 2.33ms avg (worst 2.57) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 328.4 fps | frame avg 2.78ms worst 3.16ms best 2.38ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.314ms avg (worst 0.535) | swapchain wait 2.32ms avg (worst 2.54) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 323.6 fps | frame avg 2.78ms worst 3.21ms best 2.34ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.303ms avg (worst 0.566) | swapchain wait 2.33ms avg (worst 2.60) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 357.2 fps avg | 1% low 244.1 fps | frame avg 2.80ms worst 8.70ms best 0.38ms | 1786 frames
+[INFO  farfall_app] perf split: cpu 0.325ms avg (worst 0.911) | swapchain wait 2.31ms avg (worst 7.00) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 342.6 fps avg | 1% low 174.0 fps | frame avg 2.92ms worst 5.98ms best 0.34ms | 1713 frames
+[INFO  farfall_app] perf split: cpu 0.321ms avg (worst 0.535) | swapchain wait 2.48ms avg (worst 5.42) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 343.8 fps avg | 1% low 171.4 fps | frame avg 2.91ms worst 8.01ms best 0.34ms | 1720 frames
+[INFO  farfall_app] perf split: cpu 0.319ms avg (worst 0.690) | swapchain wait 2.48ms avg (worst 7.51) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 1.955e7 m/s, entropy 11%
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 345.8 fps avg | 1% low 176.3 fps | frame avg 2.89ms worst 6.07ms best 0.34ms | 1730 frames
+[INFO  farfall_app] perf split: cpu 0.320ms avg (worst 0.734) | swapchain wait 2.43ms avg (worst 5.58) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 357.4 fps avg | 1% low 228.5 fps | frame avg 2.80ms worst 8.79ms best 0.72ms | 1788 frames
+[INFO  farfall_app] perf split: cpu 0.335ms avg (worst 0.907) | swapchain wait 2.32ms avg (worst 8.07) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 319.9 fps | frame avg 2.78ms worst 3.32ms best 2.42ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.320ms avg (worst 0.694) | swapchain wait 2.33ms avg (worst 2.69) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] landing mode on
+[INFO  farfall_app] chaos drive: released at 1.953e7 m/s, entropy 0%
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 355.3 fps avg | 1% low 186.3 fps | frame avg 2.81ms worst 8.92ms best 0.36ms | 1777 frames
+[INFO  farfall_app] perf split: cpu 0.335ms avg (worst 0.912) | swapchain wait 2.34ms avg (worst 7.30) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 1.897e7 m/s, entropy 0%
+[INFO  farfall_app] landing mode off
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 352.6 fps avg | 1% low 183.8 fps | frame avg 2.84ms worst 5.81ms best 0.35ms | 1763 frames
+[INFO  farfall_app] perf split: cpu 0.313ms avg (worst 0.531) | swapchain wait 2.42ms avg (worst 5.28) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 354.2 fps avg | 1% low 186.4 fps | frame avg 2.82ms worst 5.77ms best 0.34ms | 1772 frames
+[INFO  farfall_app] perf split: cpu 0.312ms avg (worst 0.607) | swapchain wait 2.41ms avg (worst 5.20) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.5 fps avg | 1% low 284.3 fps | frame avg 2.78ms worst 4.58ms best 0.42ms | 1798 frames
+[INFO  farfall_app] perf split: cpu 0.315ms avg (worst 0.794) | swapchain wait 2.36ms avg (worst 4.05) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.0 fps avg | 1% low 290.4 fps | frame avg 2.79ms worst 4.76ms best 0.64ms | 1795 frames
+[INFO  farfall_app] perf split: cpu 0.310ms avg (worst 0.666) | swapchain wait 2.37ms avg (worst 4.12) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.0 fps avg | 1% low 287.3 fps | frame avg 2.79ms worst 5.65ms best 0.42ms | 1795 frames
+[INFO  farfall_app] perf split: cpu 0.306ms avg (worst 0.877) | swapchain wait 2.38ms avg (worst 5.08) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.2 fps avg | 1% low 253.1 fps | frame avg 2.79ms worst 5.79ms best 0.35ms | 1792 frames
+[INFO  farfall_app] perf split: cpu 0.309ms avg (worst 0.587) | swapchain wait 2.38ms avg (worst 5.28) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 5.270e7 m/s, entropy 39%
+[INFO  farfall_app] warp stop: 5.270e7 m/s and 0.00 rad/s taken out
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 356.8 fps avg | 1% low 204.7 fps | frame avg 2.80ms worst 5.78ms best 0.34ms | 1785 frames
+[INFO  farfall_app] perf split: cpu 0.306ms avg (worst 0.505) | swapchain wait 2.40ms avg (worst 5.16) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 352.4 fps avg | 1% low 164.3 fps | frame avg 2.84ms worst 13.77ms best 0.35ms | 1763 frames
+[INFO  farfall_app] perf split: cpu 0.327ms avg (worst 0.729) | swapchain wait 2.40ms avg (worst 13.18) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.4 fps avg | 1% low 284.2 fps | frame avg 2.78ms worst 7.88ms best 2.23ms | 1798 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.544) | swapchain wait 2.36ms avg (worst 6.36) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 4.708e5 m/s, entropy 7%
+[INFO  farfall_app] chaos drive: released at 9.712e6 m/s, entropy 9%
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 348.4 fps avg | 1% low 176.6 fps | frame avg 2.87ms worst 5.92ms best 0.35ms | 1742 frames
+[INFO  farfall_app] perf split: cpu 0.314ms avg (worst 0.565) | swapchain wait 2.45ms avg (worst 5.33) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] warp stop: 9.711e6 m/s and 0.54 rad/s taken out
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 352.7 fps avg | 1% low 181.7 fps | frame avg 2.84ms worst 5.76ms best 0.35ms | 1764 frames
+[INFO  farfall_app] perf split: cpu 0.309ms avg (worst 0.500) | swapchain wait 2.43ms avg (worst 5.28) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 3.513e6 m/s, entropy 2%
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 346.7 fps avg | 1% low 176.3 fps | frame avg 2.88ms worst 5.79ms best 0.34ms | 1734 frames
+[INFO  farfall_app] perf split: cpu 0.315ms avg (worst 0.607) | swapchain wait 2.47ms avg (worst 5.33) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] warp stop: 3.514e6 m/s and 1.22 rad/s taken out
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 348.0 fps avg | 1% low 173.0 fps | frame avg 2.87ms worst 6.35ms best 0.34ms | 1740 frames
+[INFO  farfall_app] perf split: cpu 0.313ms avg (worst 0.531) | swapchain wait 2.46ms avg (worst 5.82) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 329.9 fps | frame avg 2.78ms worst 3.12ms best 2.54ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.539) | swapchain wait 2.37ms avg (worst 2.52) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] landing mode on
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 329.4 fps | frame avg 2.78ms worst 3.15ms best 2.50ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.366ms avg (worst 0.575) | swapchain wait 2.31ms avg (worst 2.52) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 349.1 fps avg | 1% low 178.6 fps | frame avg 2.86ms worst 5.89ms best 0.43ms | 1746 frames
+[INFO  farfall_app] perf split: cpu 0.388ms avg (worst 0.659) | swapchain wait 2.37ms avg (worst 5.21) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] landing mode off
+[INFO  farfall_app] chaos drive: released at 2.014e4 m/s, entropy 0%
+[INFO  farfall_app] landing mode on
+[INFO  farfall_app] landing mode off
+[INFO  farfall_app] warp stop: 2.025e4 m/s and 0.00 rad/s taken out
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 337.9 fps avg | 1% low 171.2 fps | frame avg 2.96ms worst 6.33ms best 0.34ms | 1690 frames
+[INFO  farfall_app] perf split: cpu 0.341ms avg (worst 0.927) | swapchain wait 2.52ms avg (worst 5.79) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 1.670e6 m/s, entropy 1%
+[INFO  farfall_app] touchdown: HARD on SUN ÔÇö 1362947.4 m/s down, 965391.9 m/s along
+[INFO  farfall_app] warp stop: 9.580e5 m/s and 0.00 rad/s taken out
+[INFO  farfall_app] touchdown: HARD on SUN ÔÇö 519.4 m/s down, 44.4 m/s along
+[INFO  farfall_app] landing mode on
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 350.2 fps avg | 1% low 178.3 fps | frame avg 2.86ms worst 6.07ms best 0.34ms | 1751 frames
+[INFO  farfall_app] perf split: cpu 0.313ms avg (worst 0.886) | swapchain wait 2.44ms avg (worst 5.55) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 331.6 fps | frame avg 2.78ms worst 3.10ms best 2.55ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.304ms avg (worst 0.490) | swapchain wait 2.38ms avg (worst 2.51) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 328.8 fps | frame avg 2.78ms worst 3.15ms best 2.53ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.629) | swapchain wait 2.37ms avg (worst 2.52) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] landing mode off
+[INFO  farfall_app] landing mode on
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 329.0 fps | frame avg 2.78ms worst 3.16ms best 2.52ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.309ms avg (worst 0.508) | swapchain wait 2.37ms avg (worst 2.53) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] landing mode off
+[INFO  farfall_app] landing mode on
+[INFO  farfall_app] touchdown: HARD on SUN ÔÇö 69.5 m/s down, 663.0 m/s along
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 331.1 fps | frame avg 2.78ms worst 3.08ms best 2.55ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.517) | swapchain wait 2.37ms avg (worst 2.53) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 328.8 fps | frame avg 2.78ms worst 3.13ms best 2.53ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.515) | swapchain wait 2.37ms avg (worst 2.53) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 330.1 fps | frame avg 2.78ms worst 3.09ms best 2.51ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.312ms avg (worst 0.515) | swapchain wait 2.36ms avg (worst 2.52) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 330.4 fps | frame avg 2.78ms worst 3.08ms best 2.56ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.312ms avg (worst 0.515) | swapchain wait 2.37ms avg (worst 2.51) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] landing mode off
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 356.4 fps avg | 1% low 182.5 fps | frame avg 2.81ms worst 5.94ms best 0.36ms | 1782 frames
+[INFO  farfall_app] perf split: cpu 0.312ms avg (worst 0.552) | swapchain wait 2.40ms avg (worst 5.30) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 335.3 fps avg | 1% low 169.8 fps | frame avg 2.98ms worst 6.56ms best 0.34ms | 1678 frames
+[INFO  farfall_app] perf split: cpu 0.313ms avg (worst 0.604) | swapchain wait 2.57ms avg (worst 5.97) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 1.227e6 m/s, entropy 0%
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 333.0 fps avg | 1% low 162.8 fps | frame avg 3.00ms worst 8.31ms best 0.34ms | 1665 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.513) | swapchain wait 2.59ms avg (worst 7.89) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 354.0 fps avg | 1% low 178.7 fps | frame avg 2.82ms worst 6.02ms best 0.34ms | 1770 frames
+[INFO  farfall_app] perf split: cpu 0.310ms avg (worst 0.817) | swapchain wait 2.41ms avg (worst 5.39) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.6 fps avg | 1% low 251.4 fps | frame avg 2.79ms worst 5.60ms best 0.35ms | 1793 frames
+[INFO  farfall_app] perf split: cpu 0.299ms avg (worst 0.637) | swapchain wait 2.38ms avg (worst 5.11) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] landing mode on
+[INFO  farfall_app] landing mode off
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 347.8 fps avg | 1% low 175.3 fps | frame avg 2.88ms worst 8.21ms best 0.35ms | 1740 frames
+[INFO  farfall_app] perf split: cpu 0.326ms avg (worst 0.892) | swapchain wait 2.39ms avg (worst 7.67) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] chaos drive: released at 2.394e7 m/s, entropy 15%
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 357.0 fps avg | 1% low 195.9 fps | frame avg 2.80ms worst 7.97ms best 0.39ms | 1786 frames
+[INFO  farfall_app] perf split: cpu 0.308ms avg (worst 0.693) | swapchain wait 2.34ms avg (worst 6.73) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.2 fps avg | 1% low 223.1 fps | frame avg 2.79ms worst 21.72ms best 2.35ms | 1792 frames
+[INFO  farfall_app] perf split: cpu 0.316ms avg (worst 0.816) | swapchain wait 2.32ms avg (worst 21.07) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 346.6 fps avg | 1% low 160.5 fps | frame avg 2.89ms worst 9.93ms best 0.35ms | 1733 frames
+[INFO  farfall_app] perf split: cpu 0.321ms avg (worst 0.799) | swapchain wait 2.43ms avg (worst 8.97) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 341.0 fps avg | 1% low 175.6 fps | frame avg 2.93ms worst 6.17ms best 0.35ms | 1706 frames
+[INFO  farfall_app] perf split: cpu 0.322ms avg (worst 0.573) | swapchain wait 2.47ms avg (worst 5.63) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 348.0 fps avg | 1% low 176.1 fps | frame avg 2.87ms worst 5.95ms best 0.35ms | 1741 frames
+[INFO  farfall_app] perf split: cpu 0.321ms avg (worst 0.691) | swapchain wait 2.44ms avg (worst 5.43) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 357.0 fps avg | 1% low 212.2 fps | frame avg 2.80ms worst 5.98ms best 0.34ms | 1785 frames
+[INFO  farfall_app] perf split: cpu 0.314ms avg (worst 0.544) | swapchain wait 2.38ms avg (worst 5.42) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.2 fps avg | 1% low 284.5 fps | frame avg 2.78ms worst 5.61ms best 0.35ms | 1797 frames
+[INFO  farfall_app] perf split: cpu 0.318ms avg (worst 0.840) | swapchain wait 2.36ms avg (worst 5.17) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 357.8 fps avg | 1% low 226.5 fps | frame avg 2.79ms worst 5.59ms best 0.35ms | 1790 frames
+[INFO  farfall_app] perf split: cpu 0.318ms avg (worst 0.552) | swapchain wait 2.37ms avg (worst 5.13) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.4 fps avg | 1% low 286.2 fps | frame avg 2.78ms worst 5.05ms best 0.46ms | 1797 frames
+[INFO  farfall_app] perf split: cpu 0.315ms avg (worst 0.735) | swapchain wait 2.37ms avg (worst 4.30) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 302.1 fps | frame avg 2.78ms worst 4.63ms best 0.41ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.309ms avg (worst 0.686) | swapchain wait 2.37ms avg (worst 4.09) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 305.3 fps | frame avg 2.78ms worst 3.68ms best 2.53ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.304ms avg (worst 0.655) | swapchain wait 2.38ms avg (worst 3.08) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.4 fps avg | 1% low 289.0 fps | frame avg 2.78ms worst 4.88ms best 0.43ms | 1797 frames
+[INFO  farfall_app] perf split: cpu 0.318ms avg (worst 0.733) | swapchain wait 2.36ms avg (worst 4.29) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.6 fps avg | 1% low 285.0 fps | frame avg 2.78ms worst 5.79ms best 0.43ms | 1799 frames
+[INFO  farfall_app] perf split: cpu 0.312ms avg (worst 0.499) | swapchain wait 2.37ms avg (worst 5.17) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.6 fps avg | 1% low 291.0 fps | frame avg 2.78ms worst 5.57ms best 0.44ms | 1798 frames
+[INFO  farfall_app] perf split: cpu 0.310ms avg (worst 0.547) | swapchain wait 2.37ms avg (worst 5.04) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 313.5 fps | frame avg 2.78ms worst 3.75ms best 2.57ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.305ms avg (worst 0.519) | swapchain wait 2.37ms avg (worst 3.12) ÔÇö the wait is GPU and vsync, not CPU
+[WARN  farfall_app] hyper: the drive slipped
+[INFO  farfall_app] chaos drive: released at 1.087e8 m/s, entropy 0%
+[WARN  farfall_app] hyper: slipped to body 0 at 4.7 radii, 371 m/s (1.02 of circular)
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 356.4 fps avg | 1% low 203.6 fps | frame avg 2.81ms worst 5.77ms best 0.35ms | 1782 frames
+[INFO  farfall_app] perf split: cpu 0.313ms avg (worst 0.698) | swapchain wait 2.39ms avg (worst 5.29) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 356.0 fps avg | 1% low 165.6 fps | frame avg 2.81ms worst 11.91ms best 0.35ms | 1781 frames
+[INFO  farfall_app] perf split: cpu 0.310ms avg (worst 0.536) | swapchain wait 2.34ms avg (worst 11.20) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 358.8 fps avg | 1% low 252.1 fps | frame avg 2.79ms worst 13.84ms best 2.30ms | 1795 frames
+[INFO  farfall_app] perf split: cpu 0.307ms avg (worst 0.595) | swapchain wait 2.33ms avg (worst 13.27) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 328.3 fps | frame avg 2.78ms worst 3.14ms best 2.49ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.300ms avg (worst 0.490) | swapchain wait 2.34ms avg (worst 2.57) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 318.4 fps | frame avg 2.78ms worst 4.09ms best 2.04ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.306ms avg (worst 0.832) | swapchain wait 2.33ms avg (worst 3.45) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 327.6 fps | frame avg 2.78ms worst 3.14ms best 2.47ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.305ms avg (worst 0.519) | swapchain wait 2.33ms avg (worst 2.51) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 327.0 fps | frame avg 2.78ms worst 3.19ms best 2.48ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.309ms avg (worst 0.535) | swapchain wait 2.32ms avg (worst 2.54) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 327.5 fps | frame avg 2.78ms worst 3.28ms best 2.47ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.302ms avg (worst 0.558) | swapchain wait 2.33ms avg (worst 2.56) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 324.5 fps | frame avg 2.78ms worst 3.17ms best 2.47ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.306ms avg (worst 0.539) | swapchain wait 2.33ms avg (worst 2.55) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 327.0 fps | frame avg 2.78ms worst 3.15ms best 2.43ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.303ms avg (worst 0.489) | swapchain wait 2.33ms avg (worst 2.54) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 325.2 fps | frame avg 2.78ms worst 3.28ms best 2.51ms | 1800 frames
+[INFO  farfall_app] perf split: cpu 0.311ms avg (worst 0.633) | swapchain wait 2.31ms avg (worst 2.57) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.4 fps avg | 1% low 281.7 fps | frame avg 2.78ms worst 10.51ms best 1.91ms | 1798 frames
+[INFO  farfall_app] perf split: cpu 0.319ms avg (worst 0.880) | swapchain wait 2.34ms avg (worst 9.20) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 332.1 fps | frame avg 2.78ms worst 3.09ms best 2.45ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.314ms avg (worst 0.541) | swapchain wait 2.36ms avg (worst 2.52) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 325.4 fps | frame avg 2.78ms worst 3.17ms best 2.42ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.323ms avg (worst 0.528) | swapchain wait 2.30ms avg (worst 2.68) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 357.6 fps avg | 1% low 225.3 fps | frame avg 2.80ms worst 10.54ms best 2.15ms | 1788 frames
+[INFO  farfall_app] perf split: cpu 0.405ms avg (worst 0.948) | swapchain wait 2.18ms avg (worst 9.78) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 316.1 fps | frame avg 2.78ms worst 3.42ms best 2.32ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.456ms avg (worst 0.892) | swapchain wait 2.12ms avg (worst 2.48) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 360.0 fps avg | 1% low 309.2 fps | frame avg 2.78ms worst 3.85ms best 2.32ms | 1801 frames
+[INFO  farfall_app] perf split: cpu 0.493ms avg (worst 1.156) | swapchain wait 2.07ms avg (worst 3.09) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 359.0 fps avg | 1% low 262.5 fps | frame avg 2.79ms worst 10.98ms best 2.28ms | 1795 frames
+[INFO  farfall_app] perf split: cpu 0.395ms avg (worst 0.807) | swapchain wait 2.21ms avg (worst 10.29) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] perf 1920x1080 4xMSAA vsync=on gpu_sync=false: 345.1 fps avg | 1% low 182.7 fps | frame avg 2.90ms worst 14.01ms best 0.57ms | 1726 frames
+[INFO  farfall_app] perf split: cpu 0.433ms avg (worst 1.173) | swapchain wait 2.22ms avg (worst 7.58) ÔÇö the wait is GPU and vsync, not CPU
+[INFO  farfall_app] exit (window closed): sim t=635.2s alt=231911m speed=1839m/s spin=0.000rad/s assist=on hash=0xb4dfcfb105dc21f9

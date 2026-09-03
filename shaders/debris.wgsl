@@ -155,7 +155,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // old, and the pattern by the seed picks which faces.
     let face = 0.5 + 0.5 * sin(dot(best_n, vec3<f32>(1.3, 2.1, 0.7)) * 4.0 + seed * 20.0);
     lit += ember2 * heat * (0.3 + 0.7 * face) * 2.6;
-    let colour = tonemap(lit, db.look.x);
+    let colour = radiance(lit, db.look.x);
     // Thinning out at the end of the shard's life: it is gone.
     let alpha = 1.0 - smoothstep(0.8, 1.0, age);
     return vec4<f32>(colour * alpha + vec3<f32>(dither_px(in.pos.xy)) * alpha, alpha);

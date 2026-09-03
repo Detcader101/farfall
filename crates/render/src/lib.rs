@@ -17,8 +17,10 @@ pub mod blit;
 pub mod bodies;
 pub mod cabin;
 pub mod debris;
+pub mod dust;
 pub mod gauge;
 pub mod ghost;
+pub mod heli;
 pub mod holo;
 pub mod hologram;
 pub mod hud;
@@ -28,6 +30,7 @@ pub mod mimic;
 pub mod nebula;
 pub mod planet;
 pub mod pointer;
+pub mod post;
 pub mod scar;
 pub mod shaders;
 pub mod shield;
@@ -37,6 +40,7 @@ pub mod text;
 pub mod thermal;
 pub mod tracer;
 pub mod trajectory;
+pub mod wind;
 
 /// Everything a pass needs to know about "where we're looking" this frame.
 /// No translation: the camera is the origin by construction (SPEC P3).
@@ -197,13 +201,24 @@ impl MsaaTarget {
     }
 }
 
-/// Offscreen target the scene renders into, at a fraction of the swapchain's
+/// Offscreen targets the scene renders into, at a fraction of the swapchain's
 /// resolution (SPEC §6.3, P4).
 ///
 /// Shading cost here is dominated by per-pixel noise, so pixel count is the
 /// single biggest quality/performance lever available — far bigger than any
 /// individual effect. Keeping the HUD out of this target means the readout and
 /// instruments stay sharp however far the scene is scaled down.
+///
+/// Two layers, both at the same scale and sample count:
+///
+/// - the **world** — everything outside the glass — into a float HDR target
+///   ([`SceneTarget::WORLD_FORMAT`]): emitters write real radiance, the Sun
+///   at sixty, a faint star at a hundredth, nothing clips;
+/// - the **ship** — the cabin, the dials, the holo3PP — into an 8-bit target
+///   in the swapchain's format, over the world once the post pass
+///   ([`post::PostPass`]) has bloomed, exposed and tonemapped it and done the
+///   drive's distortion to it. That order is the point: the drive warps the
+///   view *through* the glass, and the dash and its gauges stay crisp.
 pub struct SceneTarget {
     sample_count: u32,
     format: wgpu::TextureFormat,
@@ -211,10 +226,17 @@ pub struct SceneTarget {
     msaa_view: Option<wgpu::TextureView>,
     colour: Option<wgpu::Texture>,
     colour_view: Option<wgpu::TextureView>,
+    world_msaa_view: Option<wgpu::TextureView>,
+    world_view: Option<wgpu::TextureView>,
     size: (u32, u32),
 }
 
 impl SceneTarget {
+    /// The world's format: half floats, so radiance above white survives to
+    /// the post pass. Renderable, blendable and multisampled on every lane,
+    /// WebGPU included.
+    pub const WORLD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
     pub fn new(sample_count: u32, format: wgpu::TextureFormat, scale: f32) -> Self {
         Self {
             sample_count,
@@ -223,8 +245,19 @@ impl SceneTarget {
             msaa_view: None,
             colour: None,
             colour_view: None,
+            world_msaa_view: None,
+            world_view: None,
             size: (0, 0),
         }
+    }
+
+    pub fn sample_count(&self) -> u32 {
+        self.sample_count
+    }
+
+    /// The resolved HDR world, for the post pass to sample.
+    pub fn world_view(&self) -> Option<&wgpu::TextureView> {
+        self.world_view.as_ref()
     }
 
     pub fn scale(&self) -> f32 {
@@ -265,7 +298,7 @@ impl SceneTarget {
             return false;
         }
 
-        let make = |label, samples, extra_usage| {
+        let make = |label, samples, format, extra_usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
@@ -276,7 +309,7 @@ impl SceneTarget {
                 mip_level_count: 1,
                 sample_count: samples,
                 dimension: wgpu::TextureDimension::D2,
-                format: self.format,
+                format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | extra_usage,
                 view_formats: &[],
             })
@@ -289,29 +322,58 @@ impl SceneTarget {
         let colour = make(
             "scene colour",
             1,
+            self.format,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
         );
-        self.colour_view = Some(colour.create_view(&wgpu::TextureViewDescriptor::default()));
+        let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+        self.colour_view = Some(view(&colour));
         self.colour = Some(colour);
-        self.msaa_view = if self.sample_count > 1 {
-            Some(
-                make(
-                    "scene msaa",
-                    self.sample_count,
-                    wgpu::TextureUsages::empty(),
-                )
-                .create_view(&wgpu::TextureViewDescriptor::default()),
-            )
+        self.world_view = Some(view(&make(
+            "scene world hdr",
+            1,
+            Self::WORLD_FORMAT,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+        )));
+        if self.sample_count > 1 {
+            self.msaa_view = Some(view(&make(
+                "scene msaa",
+                self.sample_count,
+                self.format,
+                wgpu::TextureUsages::empty(),
+            )));
+            self.world_msaa_view = Some(view(&make(
+                "scene world msaa",
+                self.sample_count,
+                Self::WORLD_FORMAT,
+                wgpu::TextureUsages::empty(),
+            )));
         } else {
-            None
-        };
+            self.msaa_view = None;
+            self.world_msaa_view = None;
+        }
         self.size = (w, h);
         true
     }
 
+    /// The world's attachment: cleared, drawn at the sample count, resolved
+    /// into the HDR texture the post pass reads.
+    pub fn world_attachment(&self) -> wgpu::RenderPassColorAttachment<'_> {
+        let world = self.world_view.as_ref().expect("ensure() before use");
+        Self::attachment(self.world_msaa_view.as_ref(), world)
+    }
+
+    /// The ship's attachment: the post pass paints the finished world over
+    /// every pixel first, then the cabin and the dials go on over it.
     pub fn colour_attachment(&self) -> wgpu::RenderPassColorAttachment<'_> {
         let colour = self.colour_view.as_ref().expect("ensure() before use");
-        match &self.msaa_view {
+        Self::attachment(self.msaa_view.as_ref(), colour)
+    }
+
+    fn attachment<'a>(
+        msaa_view: Option<&'a wgpu::TextureView>,
+        colour: &'a wgpu::TextureView,
+    ) -> wgpu::RenderPassColorAttachment<'a> {
+        match msaa_view {
             Some(msaa) => wgpu::RenderPassColorAttachment {
                 view: msaa,
                 depth_slice: None,

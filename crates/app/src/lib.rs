@@ -1,4 +1,4 @@
-//! farfall-app — native shell (SPEC §5.1).
+//! farfall-ap — native shell (SPEC §5.1).
 //!
 //! Owns the window, the fixed-timestep accumulator (SPEC §7.2), and the
 //! sim → render translation. The sim is authoritative (SPEC §5.2): this loop
@@ -12,16 +12,26 @@ mod arms;
 mod bay;
 mod belt;
 mod capture;
+mod card;
 mod cockpit;
+mod eva;
+mod heli;
 mod hold;
+mod hud_file;
 mod input;
 mod landing;
 mod look;
 mod map;
 mod menu;
 mod mimic;
+mod miner;
+mod panel;
+mod readout;
+mod reforger;
+mod save;
 mod settings;
 mod shake;
+mod stick;
 mod warp;
 
 use cockpit::Instrument;
@@ -40,12 +50,15 @@ use web_time::{Duration, Instant};
 use capture::Capture;
 use farfall_audio::Audio;
 use farfall_render::debris::{debris_pass, DebrisPass, DebrisScene, DebrisUniforms, ShardView};
+use farfall_render::dust::{DustPass, DustScene, DustUniforms};
+use farfall_render::heli::{heli_pass, HeliPass, HeliUniforms, HeliView};
 use farfall_render::mimic::{mimic_pass, MimicPass, MimicUniforms, MimicView};
 use farfall_render::scar::{scar_heat, scar_pass, ScarPass, ScarScene, ScarUniforms, ScarView};
 use farfall_render::sight::{sight_pass, SightPass, SightScene, SightUniforms};
 use farfall_render::tracer::{
     tracer_pass, BurstView, Occluder, SlugView, TracerPass, TracerScene, TracerUniforms,
 };
+use farfall_render::wind::{WindPass, WindScene, WindUniforms};
 use farfall_render::{
     attitude::{
         guide_pass, gyro_pass, horizon_pass, Attitude, GuideUniforms, GyroUniforms, HorizonFade,
@@ -53,7 +66,7 @@ use farfall_render::{
     },
     bake::BakedMaps,
     belt::{belt_pass, BeltPass, BeltUniforms, RockView},
-    blit::{BlitPass, PostUniforms},
+    blit::BlitPass,
     bodies::{BodiesPass, BodiesUniforms},
     gauge::{
         gauge_pass, gvec_pass, AltitudeFade, GForceFade, GaugeFade, GaugePass, GaugeUniforms,
@@ -63,17 +76,17 @@ use farfall_render::{
     holo::{holo_centre, holo_pass, HoloPass, HoloScene, HoloUniforms, HOLO_RADIUS_M},
     hologram::{
         hologram_pass, Callout, HologramCamera, HologramPass, HologramScene, HologramUniforms,
-        MountView,
     },
-    hud::HudPass,
+    hud::{HudBlock, HudPass},
     instrument::InstrumentPass,
     jet::{jet_pass, JetPass, JetUniforms},
     nebula::{NebulaBake, NebulaKnobs, NebulaParams},
     planet::{PlanetAppearance, PlanetPass, PlanetUniforms},
     pointer::{pointer_pass, PointerPass, PointerUniforms},
+    post::{PostPass, PostUniforms},
     shield::{shield_pass, Impact, ShieldPass, ShieldUniforms},
     starfield::StarfieldPass,
-    text::TextBitmap,
+    text::{TextBitmap, LINE, MENU_COLS, PANEL_COLS},
     thermal::{PlasmaPass, PlasmaUniforms, ThermalInputs, ThermalPass},
     trajectory::{TrajectoryPass, TrajectoryUniforms, TrajectoryWorld, MARK_SPACING_M},
     CameraFrame, FrameUniforms, SceneTarget,
@@ -98,6 +111,8 @@ const STAR_DENSITY: f64 = 1.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum BayRow {
     Header,
+    /// The airframe row: FIGHTER or HELICOPTER (SPEC §6.5c).
+    Craft,
     Slot(usize),
     Option(usize, bay::Mount),
     Footer,
@@ -141,6 +156,25 @@ fn apply_menu_event(
             gpu.nebula
                 .bake(&gpu.device, &gpu.queue, nebula_params(&game.settings));
         }
+        MenuEvent::SaveHud => match hud_file::save(&game.settings, game.hud_loaded) {
+            Some((n, path)) => {
+                game.hud_loaded = Some(n);
+                log::info!("hud: saved {}", path.display());
+            }
+            None => log::warn!("hud: nowhere to save (no home directory)"),
+        },
+        MenuEvent::LoadHud(pick) => {
+            if pick == 0 {
+                game.settings = hud_file::apply(&game.settings, "");
+                game.hud_loaded = None;
+                log::info!("hud: the stock cockpit");
+            } else if let Some((n, s)) = hud_file::load(&game.settings, pick) {
+                game.settings = s;
+                game.hud_loaded = Some(n);
+                log::info!("hud: wearing hud-{n}");
+            }
+            game.settings.save();
+        }
         MenuEvent::Quit => {
             game.log_exit("menu quit");
             event_loop.exit();
@@ -149,6 +183,18 @@ fn apply_menu_event(
             game.settings.save();
             game.engage_warp();
         }
+        // The wizard sits over the open menu: same pause, same panel.
+        MenuEvent::StickWizard => game.wizard = Some(stick::Wizard::new()),
+        MenuEvent::NewGame => {
+            save::forget();
+            game.reset_world();
+            game.mimics.line = Some(("NEW GAME".to_string(), game.state.time_s + 3.0));
+            log::info!("world: new game, forgot the save");
+        }
+        MenuEvent::ExportReforger => match reforger::save() {
+            Some(path) => log::info!("reforger: wrote {}", path.display()),
+            None => log::warn!("reforger: nowhere to write (no home directory)"),
+        },
         MenuEvent::Closed | MenuEvent::Nothing => {}
     }
 }
@@ -224,6 +270,88 @@ fn slot_of(
 const HYPER_STRAIN_S: f32 = 40.0;
 const HYPER_EASE_S: f32 = 90.0;
 
+/// How often the world is autosaved, in sim seconds (never wall-clock: a
+/// paused/frozen session should not burn through them).
+const AUTOSAVE_INTERVAL_S: f64 = 30.0;
+
+/// Whether this run may touch the world file at all — shared by the load
+/// in `App::init_gpu`, the autosave in `tick`, and the store in
+/// `log_exit`. Pure, so it is trivial to test exhaustively: `frozen` or a
+/// bench spawn override (`FARFALL_BENCH_POS`/`ALT`/`VEL`/`LOOK`/`ROLL`)
+/// always refuses, `env_resume` of "0"/"off"/"false" always refuses, and
+/// otherwise it is exactly the RESUME setting. There is no environment
+/// value that forces it on over a pilot's RESUME OFF.
+fn resume_allowed(
+    settings_resume: bool,
+    frozen: bool,
+    env_resume: Option<&str>,
+    bench_env_present: bool,
+) -> bool {
+    if frozen || bench_env_present {
+        return false;
+    }
+    if matches!(env_resume, Some("0" | "off" | "false")) {
+        return false;
+    }
+    settings_resume
+}
+
+/// The benchmark-only spawn overrides that make a run's start unlike a
+/// real one — `FARFALL_BENCH` itself is `Game::frozen`, tracked
+/// separately.
+fn bench_spawn_env_present() -> bool {
+    [
+        "FARFALL_BENCH_POS",
+        "FARFALL_BENCH_ALT",
+        "FARFALL_BENCH_VEL",
+        "FARFALL_BENCH_LOOK",
+        "FARFALL_BENCH_ROLL",
+    ]
+    .iter()
+    .any(|k| std::env::var_os(k).is_some())
+}
+
+/// `FARFALL_RESUME`, read fresh each time so a profiler's override always
+/// wins without a restart.
+fn env_resume() -> Option<String> {
+    std::env::var("FARFALL_RESUME").ok()
+}
+
+/// Whether `FARFALL_BENCH_SAVE`/`FARFALL_BENCH_RESUME` may act at all:
+/// only ever during a bench, and only when a path was actually given.
+/// Pure, tested exhaustively the same way as [`resume_allowed`] — the
+/// real read of the env var happens at the (untested) call site, this is
+/// just the decision.
+fn bench_path_action_allowed(bench: bool, path_env: Option<&std::ffi::OsStr>) -> bool {
+    bench && path_env.is_some()
+}
+
+/// `FARFALL_BENCH_SAVE=<path>`: bench-only, for e2e verification — write
+/// the world file to this EXACT path (never `~/.farfall`) at the bench's
+/// own exit, so a scripted run produces a real sealed save of a real
+/// parked world with no interactive window. Called from both of
+/// `redraw`'s bench-exit sites (the headless/occluded capture path and
+/// the normal end-of-frame path).
+fn bench_save_world(game: &Game, bench: bool) {
+    let path_env = std::env::var_os("FARFALL_BENCH_SAVE");
+    if !bench_path_action_allowed(bench, path_env.as_deref()) {
+        return;
+    }
+    game.snapshot()
+        .store_to(std::path::Path::new(&path_env.unwrap()));
+}
+
+/// `T+HH:MM:SS` from a sim time in seconds, for the RESUMED readout.
+fn format_hms(total_s: f64) -> String {
+    let total = total_s.max(0.0) as u64;
+    format!(
+        "{:02}:{:02}:{:02}",
+        total / 3600,
+        (total % 3600) / 60,
+        total % 60
+    )
+}
+
 /// How unstable the flight is at this much of the way to the slip: calm
 /// to halfway, then shaking harder and harder.
 fn chaos_level(entropy: f32, slip_at: f32) -> f32 {
@@ -269,11 +397,6 @@ fn strike_size_from(u: f32) -> f32 {
 /// How far ahead the path predictor looks, seconds. A little over one
 /// orbit at the spawn altitude (~8.5 min), so a closed orbit draws closed.
 const TRAJECTORY_HORIZON_S: f32 = 560.0;
-/// The text block's full width on the glass, NDC, for one font pixel of
-/// `px_canopy`: the bitmap is 128 font pixels across.
-fn text_width_ndc(px_canopy: f32) -> f32 {
-    128.0 * px_canopy
-}
 
 /// The field of view the glass is laid out in, as tan(fov/2): fixed, so
 /// the FOV setting changes the view and never the cockpit.
@@ -287,6 +410,10 @@ struct DialEffective {
     stay: bool,
     /// Leaned toward the pilot, radians.
     tilt: f32,
+    /// Leaned sideways about its own upright, radians.
+    lean: f32,
+    /// The face turned in its own plane, radians.
+    rotate: f32,
 }
 
 /// The ship as it was at a WARP STOP: where the after-image comes from.
@@ -307,6 +434,8 @@ enum Dragged {
     Readout,
     /// The map pane with its DRIVE panel.
     MapPanel,
+    /// The mini map, a gauge on the glass.
+    MiniMap,
     /// The holo3PP panel.
     HoloPanel,
     /// The SHIP bay's hologram pane with its card.
@@ -320,10 +449,24 @@ impl Dragged {
             Dragged::MenuPanel => "SETTINGS PANEL",
             Dragged::Readout => "READOUT",
             Dragged::MapPanel => "MAP",
+            Dragged::MiniMap => "MINI MAP",
             Dragged::HoloPanel => "HOLO3PP",
             Dragged::BayPanel => "SHIP BAY",
         }
     }
+}
+
+/// Something DESIGN mode can select: a dial, or one of the other glass
+/// elements — each with its own card and keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesignEl {
+    Dial(Instrument),
+    /// The holo3PP: the ship's hologram over the dash.
+    Holo,
+    /// The mini map pane.
+    MiniMap,
+    /// The text readout's block.
+    Readout,
 }
 
 /// What the text readout shows this frame.
@@ -337,7 +480,13 @@ struct Readout {
     speed_mps: f64,
     assist: bool,
     show: bool,
-    /// The LANDING line, in landing mode.
+    /// The wind over the hull: speed (m/s) and its nose-relative arrow.
+    wind: Option<(f32, &'static str)>,
+    /// The collective's position 0..1 while a helicopter is flown.
+    collective: Option<f64>,
+    /// The LANDING lines (the approach in landing mode; DOWN or LANDED
+    /// whenever the ship is on the ground), newline-separated — or the
+    /// next system's line when the ground has nothing to say.
     landing: Option<String>,
 }
 
@@ -362,11 +511,22 @@ const MACH1_MPS: f64 = 340.0;
 ///                           two perf runs are not comparable. Forces a window
 ///                           rather than fullscreen and exits by itself, so a
 ///                           benchmark can never be left sitting on screen
-///                           being mistaken for a game with broken controls.)
+///                           being mistaken for a game with broken controls.
+///                           HERMETIC: starts from stock settings — the pilot's
+///                           settings.cfg is neither read nor ever written —
+///                           and never polls a real stick, so a plugged HOTAS
+///                           or a lived-in cockpit cannot colour a capture;
+///                           FARFALL_HUD and the knobs below stage looks and
+///                           demands deliberately.)
 ///   FARFALL_BENCH_SECONDS  (how long a benchmark runs before quitting; 20)
 ///   FARFALL_BENCH_ALT      (frozen altitude in metres; low values are the
 ///                           worst case, a screen filled edge to edge with
-///                           ground, which is where this renderer hurts)
+///                           ground, which is where this renderer hurts.
+///                           Under 8 km the ship flies at 250 m/s over a
+///                           coast instead of orbiting — orbital speed in
+///                           thick air lights the entry plasma and fogs the
+///                           glass; FARFALL_BENCH_ALT_AT=lat,lon picks the
+///                           spot in degrees)
 ///   FARFALL_BENCH_POS=x,y,z (benchmark only: park the ship at this world
 ///                           position, nose on the planet — e.g. behind the
 ///                           Moon, to check what hides what); with
@@ -374,18 +534,48 @@ const MACH1_MPS: f64 = 340.0;
 ///                           (else at rest) and FARFALL_BENCH_LOOK=x,y,z
 ///   FARFALL_BENCH_ROLL=rad (benchmark only: rolled about the look axis)
 ///                           for where the nose points (else the planet)
+///   FARFALL_BENCH_CRAFT=heli (benchmark only: the pilot's own craft is the
+///                           FARFALL helicopter, as the SHIP page's CRAFT
+///                           row would choose — SPEC §6.5c)
 ///   FARFALL_BENCH_SHIP=1   (benchmark only: open the SHIP bay for a capture)
+///   FARFALL_BENCH_FIT=n,l,r,b (benchmark only: the four hardpoints' mounts by
+///                           key — empty, cannon, rail — in hardpoint order
+///                           nose, wing L, wing R, belly; the cockpit, the
+///                           bay and the chase view all show it)
 ///   FARFALL_BENCH_STYLE=k  (benchmark only: the cockpit's gauge style by key — tron, jet, dial, warthog)
 ///   FARFALL_BENCH_MAP=1    (benchmark only: open the MAP page at once)
 ///   FARFALL_BENCH_HEAD=y,p (benchmark only: turn the head yaw,pitch degrees)
 ///   FARFALL_BENCH_LAND=1   (benchmark only: LANDING mode on)
+///   FARFALL_BENCH_LANDED=1 (benchmark only: parked on the ground, LANDED,
+///                           on its gear with the Sun up the sky)
+///   FARFALL_BENCH_HELI=1   (benchmark only: parked LANDED beside the coast
+///                           pad's helicopter, the boarding offer up;
+///                           =fly: boarded instead, hovering over the pad)
+///   FARFALL_BENCH_DISEMBARK=1 (benchmark only: DISEMBARK pressed at once,
+///                           for its answer on the readout)
+///   FARFALL_BENCH_EVA=1    (benchmark only: parked LANDED and already on
+///                           foot — walked out a dozen metres, looking back
+///                           at the ship, the suit's readout up)
 ///   FARFALL_BENCH_DESIGN=1 (benchmark only: DESIGN mode on)
-///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times)
+///   FARFALL_BENCH_MENU=n   (benchmark only: the settings menu open, paged n times,
+///                           0..8; 2 is the STICK page)
+///   FARFALL_BENCH_STICK=n  (benchmark only: the stick wizard open at step n
+///                           (0-based), with a stand-in detection on it)
+///   FARFALL_BENCH_PROFILE=reforger (benchmark only: the stick wears the
+///                           Reforger helicopter-pilot profile for the run,
+///                           for the PROFILE row's worn value)
+///   FARFALL_BENCH_DEMAND=p,r,y,t (benchmark only: a parked pitch/roll/yaw/
+///                           throttle demand, for the console stick's mirror)
+///   FARFALL_BENCH_CARD=1   (benchmark only: the CONTROLS card up, as on the first run)
 ///   FARFALL_BENCH_HYPER=1  (benchmark only: the hyper drive's field fully up)
 ///   FARFALL_BENCH_NEBULA=1|off (benchmark only: a full sky of nebula at
 ///                           twice the stock glow, or off for a baseline)
+///   FARFALL_BENCH_DUST=k   (benchmark only: the DUST setting for this run,
+///                           0..2 — the motes and space dust on their own)
 ///   FARFALL_BENCH_GHOST=age (benchmark only: a WARP STOP after-image this
-///                           many seconds old, ahead and a little banked)
+///                           many seconds old AT THE CAPTURE — halfway
+///                           through the bench — ahead and a little banked;
+///                           0.5 is a good look, it lives 1.8 s)
 ///   FARFALL_BENCH_ARMS=nosight (benchmark only: the sight off, for a baseline)
 ///   FARFALL_BENCH_ARMS=sight (benchmark only: the cannon hot, as if firing:
 ///                           pair with FARFALL_BENCH_HEAD past the gimbal to
@@ -397,7 +587,22 @@ const MACH1_MPS: f64 = 340.0;
 ///   FARFALL_BENCH_ARMS=1   (benchmark only: tracers from both guns, a muzzle
 ///                           flash and every kind of burst ahead)
 ///   FARFALL_BENCH_STRIKES=n (benchmark only: n strikes on the shield at
-///                           staggered ages, for its ripples)
+///                           staggered ages at the capture, for its ripples)
+///   FARFALL_BENCH_CLOUDS=k (benchmark only: the CLOUDS setting for this run,
+///                           0 clears the deck — to see the air and the
+///                           ground on their own)
+///   FARFALL_BENCH_WIND=mps[,deg] (benchmark only: force the wind the
+///                           ribbons and the WIND readout show to this
+///                           speed, blowing FROM deg degrees off the nose
+///                           — 0 a headwind, 90 from the right; 90 if
+///                           omitted. Visuals only: a bench's sim is
+///                           frozen and never feels it)
+///   FARFALL_BENCH_MIMIC=reveal|hail|attack|wreck (benchmark only: a ship
+///                           out of a rock ahead-left in that state)
+///   FARFALL_BENCH_MINERS=tier[,mine|fight] (benchmark only: a miner of
+///                           tier 0..3 ahead-left, its beam on a planted
+///                           rock, or come about with its fire in the air;
+///                           a second one far off as a speck)
 ///   FARFALL_BENCH_SHAKE=y,p,r (benchmark only: the helmet camera parked at
 ///                           this yaw, pitch, roll in degrees)
 ///   FARFALL_BENCH_G=x,y,z  (benchmark only: a felt load in g — right, up,
@@ -406,6 +611,9 @@ const MACH1_MPS: f64 = 340.0;
 ///                           pitch/yaw/roll demands -1..1, for the plumes)
 ///   FARFALL_BENCH_FULL=1   (benchmark only: borderless fullscreen, the real
 ///                           pixel count)
+///   FARFALL_BENCH_SIZE=w,h (benchmark only: a window of exactly this many
+///                           pixels, bigger than the display if need be — the
+///                           2880x1800 floor measured on a 1080p desk)
 ///   FARFALL_BENCH_SPIN=n   (benchmark only: the head turns a full circle over
 ///                           the bench and n frames are captured on the way —
 ///                           a look round the whole cabin)
@@ -413,12 +621,34 @@ const MACH1_MPS: f64 = 340.0;
 ///                           post pass, the map and the text, instead of the
 ///                           scene target)
 ///   FARFALL_SCALE=0.25..1  (scene render scale; the HUD stays native)
+///   FARFALL_FOV=50..110    (vertical field of view in degrees for this run,
+///                           over the settings file's graphics.fov)
+///   FARFALL_HUD=path       (wear a saved HUD layout file (.fhud) for this
+///                           run — see crates/app/src/hud_file.rs)
 ///   FARFALL_MUTE=1         (no audio stream at all)
 ///   FARFALL_BENCH_WARP=s   (benchmark only: engage the wormhole drive s
 ///                           seconds in, so the sequence can be captured)
+///   FARFALL_BENCH_SAVE=path (benchmark only: write the world file to this
+///                           EXACT path, never ~/.farfall, at the bench's
+///                           own exit — a real sealed save of a real
+///                           parked world, for scripted e2e verification)
+///   FARFALL_BENCH_RESUME=path (benchmark only: load and restore a world
+///                           file from this EXACT path, never ~/.farfall,
+///                           through the same seal check as a real
+///                           resume; a tampered file is refused and
+///                           logged, and the bench stays at the stock
+///                           orbit, same as any other refusal. The bench
+///                           stays frozen either way.)
+///   FARFALL_RESUME=0|off|false (turn RESUME off for this run only, whatever
+///                           the setting says: the world file is neither
+///                           read nor written. There is no value that
+///                           forces it ON over the setting. Unrelated to
+///                           FARFALL_BENCH_SAVE/RESUME above, which never
+///                           touch ~/.farfall regardless of this.)
 ///   FARFALL_SKIP=a,b       (profiling only: leave out passes by name —
 ///                           starfield, bodies, planet, plasma, trajectory, cockpit, gauge,
-///                           hud, blit —
+///                           post (the picture: one plain fetch instead), bloom (the chain),
+///                           hud, blit, dust, wind —
 ///                           so each one's cost can be measured by its absence)
 struct Config {
     msaa: u32,
@@ -430,6 +660,8 @@ struct Config {
     scale: f32,
     skip: Vec<String>,
     bench_warp_at: Option<f64>,
+    /// FARFALL_BENCH_SIZE=w,h: the bench window's size in pixels.
+    bench_size: Option<(u32, u32)>,
     /// FARFALL_BENCH_SPIN=n: the head turns a full circle over the bench
     /// and n frames are captured on the way round.
     bench_spin: u32,
@@ -480,6 +712,19 @@ impl Config {
             // that matters.
             windowed = true;
         }
+        // A window of a given size, which may be bigger than the display:
+        // the 2880×1800 floor measured on a 1080p desk.
+        let bench_size = std::env::var("FARFALL_BENCH_SIZE")
+            .ok()
+            .filter(|_| bench)
+            .and_then(|v| {
+                let (w, h) = v.split_once(',')?;
+                Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?))
+            })
+            .filter(|&(w, h)| w >= 64 && h >= 64);
+        if bench_size.is_some() {
+            windowed = true;
+        }
         let bench_seconds = std::env::var("FARFALL_BENCH_SECONDS")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
@@ -508,6 +753,7 @@ impl Config {
                 .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default(),
             scale,
+            bench_size,
         }
     }
 }
@@ -575,12 +821,18 @@ struct Passes {
     tracer: TracerPass,
     /// The arms' debris: shards off the rocks.
     debris: DebrisPass,
+    /// Space dust and the cabin's motes.
+    dust: DustPass,
+    /// The planet's wind made visible: ribbons of moving air.
+    wind: WindPass,
     /// The arms' scars: craters glowing on the rocks.
     scar: ScarPass,
     /// The gun sight on the glass.
     sight: SightPass,
     /// The mimics: ships out of the rocks.
     mimic: MimicPass,
+    /// The helicopters on their pads down on the planet.
+    heli: HeliPass,
 }
 
 impl Passes {
@@ -592,12 +844,16 @@ impl Passes {
         nebula: &wgpu::TextureView,
         cabin_res: f32,
     ) -> Self {
+        // Two targets, one sample count: everything outside the glass
+        // writes radiance into the HDR world; the cabin, the dials and the
+        // holo3PP draw after the post pass into the 8-bit ship target.
+        let world = SceneTarget::WORLD_FORMAT;
         let thermal = ThermalPass::new(device);
-        let plasma = PlasmaPass::new(device, format, msaa, &thermal, baked);
+        let plasma = PlasmaPass::new(device, world, msaa, &thermal, baked);
         Self {
-            starfield: StarfieldPass::new(device, format, msaa, STAR_DENSITY, baked, nebula),
-            bodies: BodiesPass::new(device, format, msaa),
-            planet: PlanetPass::new(device, format, msaa, baked),
+            starfield: StarfieldPass::new(device, world, msaa, STAR_DENSITY, baked, nebula),
+            bodies: BodiesPass::new(device, world, msaa),
+            planet: PlanetPass::new(device, world, msaa, baked),
             gauge: gauge_pass(device, format, msaa),
             alt_gauge: gauge_pass(device, format, msaa),
             g_gauge: gauge_pass(device, format, msaa),
@@ -608,22 +864,56 @@ impl Passes {
             cabin: farfall_render::cabin::CabinPass::new(device, format, msaa, cabin_res),
             thermal,
             plasma,
-            trajectory: TrajectoryPass::new(device, format, msaa),
-            shield: shield_pass(device, format, msaa),
-            ghost: ghost_pass(device, format, msaa),
-            belt: belt_pass(device, format, msaa),
-            jet: jet_pass(device, format, msaa),
+            trajectory: TrajectoryPass::new(device, world, msaa),
+            shield: shield_pass(device, world, msaa),
+            ghost: ghost_pass(device, world, msaa),
+            belt: belt_pass(device, world, msaa),
+            jet: jet_pass(device, world, msaa),
             holo: holo_pass(device, format, msaa),
-            tracer: tracer_pass(device, format, msaa),
-            debris: debris_pass(device, format, msaa),
-            scar: scar_pass(device, format, msaa),
+            tracer: tracer_pass(device, world, msaa),
+            debris: debris_pass(device, world, msaa),
+            dust: DustPass::new(device, world, format, msaa),
+            wind: WindPass::new(device, world, msaa),
+            scar: scar_pass(device, world, msaa),
             sight: sight_pass(device, format, msaa),
-            mimic: mimic_pass(device, format, msaa),
+            mimic: mimic_pass(device, world, msaa),
+            heli: heli_pass(device, world, msaa),
         }
     }
 }
 
 impl Gpu {
+    /// The scene textures were recreated: point the post pass at the new
+    /// world and the blit at the new ship target, or they sample a
+    /// destroyed view.
+    fn rebind_scene(&mut self) {
+        self.post.rebind(&self.device, &self.scene);
+        if let Some(view) = self.scene.colour_view() {
+            self.blit.rebind(&self.device, view);
+        }
+    }
+
+    /// The post pass's uniforms for this frame: the drive's look on the
+    /// world, the picture settings, the exposure's drift.
+    fn update_post(&self, game: &mut Game, aspect: f32, time_s: f32) {
+        let l = game.warp_look();
+        let s = &game.settings;
+        let look = farfall_render::post::Look {
+            bloom: s.bloom,
+            exposure: s.exposure,
+            tonemap: s.tonemap,
+            fringe: s.fringe,
+        };
+        self.post.update(
+            &self.queue,
+            &PostUniforms::new(l.fisheye, l.invert, l.particles, l.charge, aspect, time_s)
+                .with_speed(game.speed_look())
+                .with_drive(l.stretch, l.pull, l.reform)
+                .with_look(&look)
+                .with_adapt_blend(self.post.adapt_blend(game.frame_dt))
+                .with_bypass(!self.cfg.draws("post")),
+        );
+    }
     /// The holo3PP's frame: the miniature's scene in the ship's frame,
     /// seen from the pilot's head.
     fn update_holo(&self, game: &Game, aspect: f32) {
@@ -641,6 +931,9 @@ struct Gpu {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     scene: SceneTarget,
+    /// The picture: bloom, exposure, tonemap and the drive's distortion,
+    /// done to the world before the ship is drawn over it.
+    post: PostPass,
     blit: BlitPass,
     passes: Passes,
     /// Owns the baked textures the passes sample.
@@ -702,9 +995,9 @@ impl Gpu {
             ) {
                 let a = layout.anchor(i)?;
                 let dir = farfall_render::cabin::anchor_direction(a, ref_tan, cam.aspect);
-                if let Some(p) =
-                    farfall_render::cabin::Placement::in_dash(head, t, dir, tw.size, tw.tilt)
-                {
+                if let Some(p) = farfall_render::cabin::Placement::in_dash(
+                    head, t, dir, tw.size, tw.tilt, tw.lean,
+                ) {
                     return Some(p);
                 }
             }
@@ -726,7 +1019,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::Speed))
             .warthog(warthog(Instrument::Speed))
-            .placed(placed(Instrument::Speed)),
+            .placed(placed(Instrument::Speed))
+            .oriented(
+                tweak(Instrument::Speed).lean,
+                tweak(Instrument::Speed).rotate,
+            ),
         );
         let (alt_anchor, alt_on) = slot_of(layout, look, cam, ref_tan, Instrument::Altitude);
         self.passes.alt_gauge.update(
@@ -742,7 +1039,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::Altitude))
             .warthog(warthog(Instrument::Altitude))
-            .placed(placed(Instrument::Altitude)),
+            .placed(placed(Instrument::Altitude))
+            .oriented(
+                tweak(Instrument::Altitude).lean,
+                tweak(Instrument::Altitude).rotate,
+            ),
         );
         let (g_anchor, g_on) = slot_of(layout, look, cam, ref_tan, Instrument::GForce);
         self.passes.g_gauge.update(
@@ -758,7 +1059,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::GForce))
             .warthog(warthog(Instrument::GForce))
-            .placed(placed(Instrument::GForce)),
+            .placed(placed(Instrument::GForce))
+            .oriented(
+                tweak(Instrument::GForce).lean,
+                tweak(Instrument::GForce).rotate,
+            ),
         );
         let (gv_anchor, gv_on) = slot_of(layout, look, cam, ref_tan, Instrument::GVector);
         self.passes.gvec.update(
@@ -774,7 +1079,11 @@ impl Gpu {
             )
             .jet(jet(Instrument::GVector))
             .warthog(warthog(Instrument::GVector))
-            .placed(placed(Instrument::GVector)),
+            .placed(placed(Instrument::GVector))
+            .oriented(
+                tweak(Instrument::GVector).lean,
+                tweak(Instrument::GVector).rotate,
+            ),
         );
         let (gyro_anchor, gyro_on) = slot_of(layout, look, cam, ref_tan, Instrument::Gyro);
         // Each dial's patch of the target: a full-screen pass that discards
@@ -804,6 +1113,7 @@ impl Gpu {
             .jet(jet(Instrument::Gyro))
             .warthog(warthog(Instrument::Gyro))
             .placed(placed(Instrument::Gyro))
+            .oriented(tweak(Instrument::Gyro).lean, tweak(Instrument::Gyro).rotate)
             .ball_if(game.gyro_ball(cam, tweak(Instrument::Gyro))),
         );
         // The design guide: the glass ruled, every shown dial's anchor and
@@ -815,13 +1125,27 @@ impl Gpu {
             } else {
                 look.gaze(ref_tan, cam.aspect)
             };
-            let anchors: Vec<[f32; 2]> = Instrument::ALL
+            let mut anchors: Vec<[f32; 2]> = Instrument::ALL
                 .iter()
                 .copied()
                 .filter(|i| i.slotted())
                 .filter_map(|i| layout.anchor(i))
+                .collect();
+            // The other glass elements DESIGN mode can take are marked
+            // on the guide too: holo3PP, mini map, readout.
+            if game.holo_active() {
+                anchors.push(game.settings.holo_anchor);
+            }
+            if game.mini_map_shown() {
+                anchors.push(layout.inset(game.mini_map_anchor()));
+            }
+            if layout.shown(Instrument::Readout) {
+                anchors.push(game.settings.readout_anchor);
+            }
+            let anchors: Vec<[f32; 2]> = anchors
+                .into_iter()
                 .map(|a| on_glass(look, cam, ref_tan, a))
-                .take(6)
+                .take(8)
                 .collect();
             self.passes.guide.update(
                 &self.queue,
@@ -880,6 +1204,11 @@ impl Gpu {
     /// measures head movement rather than walking off the window.
     fn set_look_cursor(&self, looking: bool) {
         use winit::window::CursorGrabMode;
+        // A benchmark never takes the mouse: it is a measurement window on
+        // someone's second screen, not a game.
+        if self.cfg.bench {
+            return;
+        }
         self.window.set_cursor_visible(!looking);
         let mode = if looking {
             CursorGrabMode::Locked
@@ -917,6 +1246,7 @@ impl Gpu {
         if self.cfg.msaa != settings.msaa {
             self.cfg.msaa = settings.msaa;
             self.scene = SceneTarget::new(settings.msaa, self.config.format, self.scene.scale());
+            self.post = PostPass::new(&self.device, self.config.format, settings.msaa);
             self.passes = Passes::new(
                 &self.device,
                 self.config.format,
@@ -1000,6 +1330,8 @@ impl Gpu {
             speed_mps,
             assist,
             show: show_readout,
+            wind,
+            collective,
             landing,
         } = readout;
         let (altitude_m, speed_mps, assist, show_readout) =
@@ -1025,58 +1357,31 @@ impl Gpu {
             if !show_readout {
                 return;
             }
-            self.text.draw(0, 0, &format!("{fps:.0} FPS"));
-            self.text.draw(0, 6, &format!("1% LOW {low:.0}"));
-
             // CPU against total, side by side, because "the CPU feels busy" is
             // a hypothesis and this is the measurement that settles it.
             let frame_ms = if fps > 0.0 { 1000.0 / fps } else { 0.0 };
             let cpu_fps = self.perf.cpu.smoothed_fps();
             let cpu_ms = if cpu_fps > 0.0 { 1000.0 / cpu_fps } else { 0.0 };
-            self.text.draw(0, 12, &format!("CPU {cpu_ms:.1}MS"));
-            self.text.draw(
-                0,
-                18,
-                &format!("REST {:.1}MS", (frame_ms - cpu_ms).max(0.0)),
-            );
             let (sw, sh) = self.scene.size();
-            self.text.draw(
-                0,
-                24,
-                &format!(
-                    "{}X MSAA  {:.0}%",
-                    self.cfg.msaa,
-                    self.scene.scale() * 100.0
-                ),
+            readout::render(
+                &mut self.text,
+                &readout::Readout {
+                    fps,
+                    low_fps: low,
+                    cpu_ms,
+                    rest_ms: (frame_ms - cpu_ms).max(0.0),
+                    msaa: self.cfg.msaa,
+                    scale_pct: self.scene.scale() * 100.0,
+                    size: (sw, sh),
+                    altitude_m,
+                    speed_mps,
+                    assist,
+                    bench: self.cfg.bench,
+                    wind: *wind,
+                    collective: collective.map(|c| c as f32),
+                    status: landing.clone(),
+                },
             );
-            self.text.draw(0, 30, &format!("{sw}X{sh}"));
-            self.text.draw(
-                0,
-                36,
-                &format!(
-                    "ALT {}",
-                    farfall_render::gauge::length_text(altitude_m as f32)
-                ),
-            );
-            self.text.draw(
-                0,
-                42,
-                &format!(
-                    "VEL {}",
-                    farfall_render::gauge::speed_text(speed_mps as f32)
-                ),
-            );
-            // The flight computer's state lives on the HUD because the log is
-            // invisible in fullscreen — X seemed broken when it was merely
-            // silent.
-            self.text
-                .draw(0, 48, if assist { "FC ON" } else { "FC OFF" });
-            if self.cfg.bench {
-                self.text.draw(0, 54, "BENCH SIM FROZEN");
-            }
-            if let Some(line) = landing {
-                self.text.draw(0, 60, line);
-            }
         }
 
         if now.duration_since(self.perf.last_log) >= PERF_LOG_EVERY {
@@ -1144,6 +1449,10 @@ struct Game {
     /// The camera on the pilot's head, and the bench's parked pose.
     shake: shake::Shake,
     bench_shake: Option<[f32; 3]>,
+    /// FARFALL_BENCH_WIND: a forced wind (m/s, degrees off the nose it
+    /// blows FROM) for the ribbons and the readout in captures. Visuals
+    /// only — a bench's sim is frozen and never feels it.
+    bench_wind: Option<(f64, f64)>,
     /// The sound-barrier flash, fired by the same edge as the sonic boom.
     mach_alert: MachAlert,
     /// Last wall-clock frame time, clamped, for presentation-side integrators.
@@ -1180,10 +1489,24 @@ struct Game {
     /// locked, the dial under the gaze selected and its own settings on a
     /// card beside it.
     design: bool,
+    /// The HUD file worn or saved last (its hud-<n> number), so SAVE HUD
+    /// overwrites it rather than piling up copies.
+    hud_loaded: Option<u32>,
+    /// The CONTROLS card is up: any key puts it away.
+    card_open: bool,
     /// LANDING mode (G): the hoops close up and judge the touchdown.
     landing: bool,
     /// The predicted touchdown, refreshed each frame in landing mode.
     touchdown: Option<landing::Touchdown>,
+    /// How the last touchdown went, from the tick the ground was met.
+    touchdown_record: Option<landing::Record>,
+    /// DISEMBARK's answer, and when it was given (it shows for a moment).
+    disembark_notice: Option<(&'static str, Instant)>,
+    /// On foot (SPEC §6.5b): the EVA walker, when someone has stepped out.
+    /// App state, like the mimics — never the sim's, never in the hash.
+    eva: Option<eva::Walker>,
+    /// The movement keys as held, for the walker's step.
+    eva_keys: eva::Keys,
     /// Mouse: last cursor position and whether the left button is down,
     /// for dragging the map round; the window's size, to read it.
     cursor: Option<(f32, f32)>,
@@ -1200,9 +1523,28 @@ struct Game {
     /// The arms, and the trigger.
     arms: arms::Arms,
     fire_held: bool,
+    /// The trigger on the stick.
+    stick_fire: bool,
+    /// What key each stick button pressed, so its release releases the
+    /// same key even if SHIFT or the surface changed in between.
+    stick_sent: [Option<KeyCode>; stick::MAX_BUTTONS as usize],
+    /// The stick (a HOTAS through winmm / the Gamepad API), the wizard
+    /// that maps it while it is up, and a frame count between the
+    /// flight-log lines it writes.
+    stick: stick::Reader,
+    wizard: Option<stick::Wizard>,
+    stick_log: u32,
+    /// The throttle gestures: lever hard back brakes, a slam bursts.
+    stick_gestures: stick::Gestures,
     /// The mimics — ships in the rocks — and what the guns bring in.
     mimics: mimic::Mimics,
     haul: mimic::Haul,
+    /// The helicopters: the pads, who is flying what, the waiting fighter.
+    helis: heli::Helis,
+    /// The fighter's own sim parameters, restored on re-boarding.
+    fighter_ship: sim::ShipParams,
+    /// The miners working the ring.
+    miners: miner::Miners,
     /// HOLD: the smart lock on the flight controls.
     hold: hold::Hold,
     /// Was the field up last frame (to feel its collapse).
@@ -1236,17 +1578,22 @@ struct Game {
     /// is a real settings panel.
     appearance: PlanetAppearance,
     appearance_index: usize,
+    /// Sim time of the next autosave (see [`AUTOSAVE_INTERVAL_S`]).
+    next_save_s: f64,
 }
 
 impl Game {
     fn new() -> Self {
-        let params = sim::presets::earth_compact();
+        let mut params = sim::presets::earth_compact();
         let altitude = std::env::var("FARFALL_BENCH_ALT")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(SPAWN_ALTITUDE_M);
         let mut state = sim::presets::circular_orbit(&params, altitude);
         state.ship.orient = spawn_attitude();
+        if std::env::var("FARFALL_BENCH_ALT").is_ok() && altitude < LOW_BENCH_CEILING_M {
+            low_bench_flight(&mut state);
+        }
         if let Some(pos) = std::env::var("FARFALL_BENCH_POS")
             .ok()
             .and_then(|v| parse_vec3(&v))
@@ -1271,7 +1618,66 @@ impl Game {
                 state.ship.orient *= DQuat::from_rotation_z(roll);
             }
         }
+        // FARFALL_SPAWN=belt|uranus|moon|sun: start where the wormhole
+        // drive would land you — the belt (Uranus' ring) is where the
+        // mimics live. Nose prograde, the body below.
+        if let Some(dest) = std::env::var("FARFALL_SPAWN").ok().and_then(|v| {
+            let k = v.trim().to_ascii_lowercase();
+            warp::Destination::from_key(if k == "belt" { "uranus" } else { &k })
+        }) {
+            let plan = warp::Plan {
+                dest,
+                ..warp::Plan::default()
+            };
+            let t = state.time_s;
+            let (pos, vel) = plan.arrival(&params, &state.ship, t);
+            state.ship.pos_m = pos;
+            state.ship.vel_mps = vel;
+            let up = (pos - dest.centre(&params, t)).normalize();
+            state.ship.orient = look_at(vel - dest.velocity(&params, t), up);
+            log::info!("spawn: {} at {:.0} m/s", dest.name(), vel.length());
+        }
+        // FARFALL_BENCH_LANDED=1: parked on the ground, LANDED, for the
+        // capture of the settled state and its readout.
+        // FARFALL_BENCH_EVA=1 parks the same way — the walk-out itself is
+        // staged once the game exists, beside the other bench triggers.
+        let mut helis = heli::Helis::default();
+        let bench_landed = std::env::var("FARFALL_BENCH_LANDED").is_ok();
+        if bench_landed || std::env::var("FARFALL_BENCH_EVA").is_ok() {
+            state.ship = landing::parked(&params, 0);
+        }
+        // FARFALL_BENCH_HELI=1: parked beside the coast pad's helicopter,
+        // LANDED, the pad and the boarding offer in frame.
+        let bench_heli = std::env::var("FARFALL_BENCH_HELI").unwrap_or_default();
+        if !bench_heli.is_empty() {
+            let heli_at = heli::parked(&params, 0);
+            let mut pos = heli_at.pos_m + heli_at.orient * DVec3::new(26.0, 0.0, -4.0);
+            let up = pos.normalize();
+            pos = up * (params.planet.radius_m + sim::GEAR_HEIGHT_M);
+            // Face the helicopter from beside its pad.
+            let aim = (heli_at.pos_m - pos).normalize();
+            let nose = (aim - up * aim.dot(up)).normalize();
+            let right = nose.cross(up).normalize();
+            state.ship = sim::ShipState {
+                pos_m: pos,
+                vel_mps: DVec3::ZERO,
+                orient: DQuat::from_mat3(&glam::DMat3::from_cols(right, up, -nose)),
+                ang_vel_radps: DVec3::ZERO,
+                ground: sim::Ground::Landed { body: 0, up },
+            };
+            if bench_heli == "fly" {
+                // =fly: boarded and hovering over the pad, for the
+                // capture of the helicopter as the pilot's own ship.
+                let mut h = helis.board(&params, 0, state.ship);
+                h.pos_m += heli::pad_up(0) * 16.0;
+                h.vel_mps = DVec3::ZERO;
+                h.ground = sim::Ground::Flight;
+                state.ship = h;
+                params.ship = heli::heli_params();
+            }
+        }
         let now = Instant::now();
+        let spawn_time_s = state.time_s;
         Self {
             vr: None,
             vr_eye: 0,
@@ -1289,6 +1695,14 @@ impl Game {
             holo_sway: HoloSway::new(),
             shake: shake::Shake::new(1.0),
             bench_shake: None,
+            bench_wind: std::env::var("FARFALL_BENCH_WIND").ok().and_then(|v| {
+                let xs: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                match xs.as_slice() {
+                    [mps] => Some((*mps, 90.0)),
+                    [mps, deg] => Some((*mps, *deg)),
+                    _ => None,
+                }
+            }),
             mach_alert: MachAlert::new(),
             frame_dt: 0.0,
             trajectory_vis: 1.0,
@@ -1309,8 +1723,14 @@ impl Game {
                 (xs.len() == 4).then(|| [xs[0], xs[1], xs[2], xs[3]])
             }),
             design: false,
+            hud_loaded: None,
+            card_open: false,
             landing: false,
             touchdown: None,
+            touchdown_record: bench_landed.then(landing::Record::sample),
+            disembark_notice: None,
+            eva: None,
+            eva_keys: eva::Keys::default(),
             cursor: None,
             window_size: (1.0, 1.0),
             left_down: false,
@@ -1320,8 +1740,17 @@ impl Game {
             belt: belt::Belt::default(),
             arms: arms::Arms::default(),
             fire_held: false,
+            stick_fire: false,
+            stick_sent: [None; stick::MAX_BUTTONS as usize],
+            stick: stick::Reader::default(),
+            wizard: None,
+            stick_log: 0,
+            stick_gestures: stick::Gestures::default(),
             mimics: mimic::Mimics::default(),
             haul: mimic::Haul::default(),
+            helis,
+            fighter_ship: params.ship,
+            miners: miner::Miners::default(),
             hold: hold::Hold::default(),
             hyper_was: false,
             bench_hyper: false,
@@ -1339,6 +1768,15 @@ impl Game {
             strike_rng: 0x9E37_79B9,
             appearance: PlanetAppearance::EARTHLIKE,
             appearance_index: 0,
+            next_save_s: spawn_time_s + AUTOSAVE_INTERVAL_S,
+        }
+    }
+
+    /// The settings panel's text: the wizard while it is up, else the menu.
+    fn render_menu(&self, text: &mut TextBitmap) {
+        match &self.wizard {
+            Some(w) => w.render(text, &self.settings.stick, self.stick.device.as_ref()),
+            None => self.menu.render(text, &self.settings),
         }
     }
 
@@ -1350,6 +1788,188 @@ impl Game {
         self.look.sensitivity = settings.look_sensitivity;
         // The guns fire from whatever the bay mounted.
         self.arms.mounts = settings.mounts;
+        // These used to be pushed only when the bay's dropdown changed a
+        // mount (`bay_click`), so a non-default value loaded straight
+        // from the settings file had no effect until the bay was opened.
+        self.mimics.chance = settings.mimics_chance;
+        self.mimics.hostility = settings.mimics_hostility;
+        self.haul.yield_ = settings.arms_ore;
+    }
+
+    /// Every field the world file keeps, as of right now.
+    fn snapshot(&self) -> save::Save {
+        save::Save {
+            time_s: self.state.time_s,
+            ship_pos: self.state.ship.pos_m,
+            ship_vel: self.state.ship.vel_mps,
+            ship_orient: self.state.ship.orient,
+            ship_spin: self.state.ship.ang_vel_radps,
+            assist: self.assist,
+            landing: self.landing,
+            appearance_index: self.appearance_index,
+            hyper_strain: self.hyper_strain,
+            slip_at: self.slip_at,
+            jumps: self.jumps,
+            arms_selected: self.arms.selected,
+            arms_ammo: self.arms.ammo,
+            arms_jammed: self.arms.jammed,
+            arms_heat: self.arms.heat,
+            arms_charge: self.arms.charge,
+            haul_tonnes: self.haul.tonnes,
+            hull: self.mimics.hull,
+            strikes: self.strikes,
+            strike_rng: self.strike_rng,
+            odometer_m: self.odometer_m,
+            hoops_passed: self.hoops_passed,
+            belt_dead: self.belt.dead.clone(),
+            belt_wounds: self.belt.wounds.clone(),
+            mimics_revealed: self.mimics.revealed.clone(),
+            mimics: self
+                .mimics
+                .ships
+                .iter()
+                .copied()
+                .map(mimic::Mimic::to_save)
+                .collect(),
+        }
+    }
+
+    /// Take on a save: the sim state, and every app-side field a save
+    /// keeps. Everything NOT in that list — the accumulator, the warp
+    /// sequence, a ghost, an open hold lock, every fade/shake integrator,
+    /// the settings themselves — is reset instead, exactly as a fresh
+    /// [`Game::new`] would leave it, because none of it is a fact about
+    /// the world: it is mid-frame or mid-gesture presentation state that
+    /// means nothing once the session that produced it is gone.
+    fn restore(&mut self, save: &save::Save) {
+        self.state = sim::WorldState {
+            time_s: save.time_s,
+            ship: sim::ShipState {
+                pos_m: save.ship_pos,
+                vel_mps: save.ship_vel,
+                orient: save.ship_orient,
+                ang_vel_radps: save.ship_spin,
+                // The file predates ground state and the hash ignores it:
+                // a ship saved parked wakes in Flight at rest on its pad
+                // and settles clean within the first ticks.
+                ground: sim::Ground::Flight,
+            },
+        };
+        self.assist = save.assist;
+        self.landing = save.landing;
+        self.appearance_index = save
+            .appearance_index
+            .min(PlanetAppearance::PRESETS.len() - 1);
+        self.appearance = PlanetAppearance::PRESETS[self.appearance_index];
+        self.hyper_strain = save.hyper_strain;
+        self.slip_at = save.slip_at;
+        self.jumps = save.jumps;
+        self.arms.selected = save.arms_selected;
+        self.arms.ammo = save.arms_ammo;
+        self.arms.jammed = save.arms_jammed;
+        self.arms.heat = save.arms_heat;
+        self.arms.charge = save.arms_charge;
+        self.haul.tonnes = save.haul_tonnes;
+        self.haul.last = None;
+        self.mimics.hull = save.hull;
+        self.strikes = save.strikes;
+        self.strike_size = 0.0;
+        self.strike_rng = save.strike_rng;
+        self.odometer_m = save.odometer_m;
+        self.hoops_passed = save.hoops_passed;
+        self.belt.rocks.clear();
+        self.belt.hits.clear();
+        self.belt.dead = save.belt_dead.clone();
+        self.belt.wounds = save.belt_wounds.clone();
+        self.mimics.revealed = save.mimics_revealed.clone();
+        self.mimics.ships = save
+            .mimics
+            .iter()
+            .map(|m| mimic::Mimic::from_save(m, save.time_s))
+            .collect();
+        self.mimics.slugs.clear();
+        self.mimics.own_hits.clear();
+
+        // Reset: mid-frame and mid-gesture presentation state, none of it
+        // a fact about the world.
+        let now = Instant::now();
+        self.started = now;
+        self.last_frame = now;
+        self.accumulator = 0.0;
+        self.warp = Warp::new();
+        self.hyper = 0.0;
+        self.hyper_was = false;
+        self.bench_hyper = false;
+        self.pending_slip = false;
+        self.ghost = None;
+        self.impacts.clear();
+        self.touchdown = None;
+        self.hold.release();
+        self.frozen = false;
+        self.gauge_fade = GaugeFade::new();
+        self.alt_fade = AltitudeFade::new();
+        self.holo_sway = HoloSway::new();
+        self.shake = shake::Shake::new(1.0);
+        self.mach_alert = MachAlert::new();
+        self.horizon_fade = HorizonFade::new();
+        self.g_fade = GForceFade::new();
+        self.felt_g = 0.0;
+        self.felt_g_body = [0.0; 3];
+        self.next_save_s = save.time_s + AUTOSAVE_INTERVAL_S;
+
+        self.mimics.line = Some((
+            format!("RESUMED  T+{}", format_hms(save.time_s)),
+            save.time_s + 4.0,
+        ));
+        log::info!(
+            "world: resumed t={:.1}s hash={:016x}",
+            self.state.time_s,
+            save.seal()
+        );
+    }
+
+    /// NEW GAME and the world's first spawn share this: everything about
+    /// the sim and the gameplay state goes back to a fresh start.
+    /// `settings`, `look`, the menus (and where they are open to) and the
+    /// mouse/window bookkeeping are kept — only the world itself is new.
+    fn reset_world(&mut self) {
+        let settings = self.settings;
+        let look = self.look;
+        let menu = self.menu;
+        let map_panel = self.map_panel;
+        let bay_panel = self.bay_panel;
+        let window_size = self.window_size;
+        let cursor = self.cursor;
+        let left_down = self.left_down;
+        let vr = self.vr;
+        let vr_eye = self.vr_eye;
+
+        *self = Game::new();
+        self.apply_settings(settings);
+        self.look = look;
+        self.menu = menu;
+        self.map_panel = map_panel;
+        self.bay_panel = bay_panel;
+        self.window_size = window_size;
+        self.cursor = cursor;
+        self.left_down = left_down;
+        self.vr = vr;
+        self.vr_eye = vr_eye;
+    }
+
+    /// Write the world file, if RESUME allows it right now. Shared by the
+    /// autosave (`tick`), every real exit (`log_exit`), and the web
+    /// build's `pagehide`/hidden-`visibilitychange` listeners — a tab can
+    /// vanish with no exit event at all.
+    fn maybe_store_world(&self) {
+        if resume_allowed(
+            self.settings.resume,
+            self.frozen,
+            env_resume().as_deref(),
+            bench_spawn_env_present(),
+        ) {
+            self.snapshot().store();
+        }
     }
 
     /// The Sun and the Moon as the camera sees them: where the sim has them
@@ -1397,23 +2017,51 @@ impl Game {
             dest_centre: dest.centre(&self.params, self.state.time_s),
             dest_arrival_m: dest.radius_m(&self.params) + self.settings.plan.safe_m(&self.params),
         };
+        // The full map on M; else the mini map, a gauge on the glass at
+        // its anchor, re-projected like a dial, with no dim round it.
+        let mini = !self.map_open() && self.mini_map_shown();
         let look = map::MapLook {
             view: self.map_view,
             rings: self.settings.map_rings,
             grid: self.settings.map_grid,
-            visibility: if self.map_open() { 1.0 } else { 0.0 },
+            craft: self.settings.craft.kind(),
+            visibility: if self.map_open() || mini { 1.0 } else { 0.0 },
             aspect,
             time_s,
-            centre: self.settings.map_anchor,
+            centre: if mini {
+                let cam = self.camera(aspect);
+                let a = self.settings.layout.inset(self.mini_map_anchor());
+                let c = on_glass(&self.look, &cam, self.ref_tan(), a);
+                // An instrument, not scenery: a far-turned head must
+                // not swing the pane off the screen's edge.
+                map::mini_centre_on_screen(aspect, c, self.mini_map_half_h())
+            } else {
+                self.settings.map_anchor
+            },
+            half_h: if mini {
+                self.mini_map_half_h()
+            } else {
+                map::PANE_HALF_H
+            },
+            dim: !mini,
         };
         map::MapUniforms::new(&world, &look)
     }
 
     /// The path's world-fixed marks, from the odometer and the settings.
-    fn marks(&self) -> farfall_render::trajectory::Marks {
+    /// In LANDING mode with a touchdown ahead the grid is phased onto the
+    /// touchdown instead, so the hoops converge on the pad drawn there
+    /// (`eye_m` is the camera, for the pad's camera-relative position).
+    fn marks(&self, eye_m: DVec3) -> farfall_render::trajectory::Marks {
         let spacing = self.mark_spacing_m();
+        let approach = self
+            .touchdown
+            .filter(|_| self.landing && self.state.ship.ground == sim::Ground::Flight);
         farfall_render::trajectory::Marks {
-            odometer_m: (self.odometer_m % 1.0e6) as f32,
+            odometer_m: match approach {
+                Some(t) => landing::hoop_phase(t.path_m, spacing),
+                None => (self.odometer_m % 1.0e6) as f32,
+            },
             hoops: self.settings.layout.shown(Instrument::Hoops),
             // Landing hoops are big: a gate to fly through, not a bead.
             hoop_scale: self.settings.hoop_size * if self.landing { 2.5 } else { 1.0 },
@@ -1423,6 +2071,12 @@ impl Game {
             } else {
                 None
             },
+            pad: approach.filter(|_| self.settings.landing_pad).map(|t| {
+                farfall_render::trajectory::Pad {
+                    rel: (t.pos - eye_m).as_vec3(),
+                    up: t.up.as_vec3(),
+                }
+            }),
         }
     }
 
@@ -1441,6 +2095,33 @@ impl Game {
         self.map_panel.open
     }
 
+    /// The mini map is a stock gauge: shown on the glass while no pane or
+    /// card covers it and the view is the cockpit's. DESIGN mode keeps it
+    /// up — it is one of the things being laid out.
+    fn mini_map_shown(&self) -> bool {
+        let covered =
+            self.menu.open || self.map_panel.open || self.bay_panel.open || self.card_open;
+        self.settings.layout.shown(Instrument::Map) && !covered && !self.exterior_view()
+    }
+
+    /// Where the mini map's centre sits before the safe-edge inset: the
+    /// stock corner, or wherever the pilot dragged it (kept on ui.map).
+    fn mini_map_anchor(&self) -> [f32; 2] {
+        self.settings
+            .layout
+            .free(Instrument::Map)
+            .unwrap_or(map::MINI_ANCHOR)
+    }
+
+    /// The mini map's half height: the stock pane times its own SIZE
+    /// (ui.map.size) — a gauge, sized like any dial.
+    fn mini_map_half_h(&self) -> f32 {
+        map::MINI_HALF_H
+            * self.settings.dials[Instrument::Map as usize]
+                .size
+                .clamp(settings::DIAL_SIZE_MIN, settings::DIAL_SIZE_MAX)
+    }
+
     /// The SHIP bay (and its card) is up.
     fn bay_open(&self) -> bool {
         self.bay_panel.open
@@ -1453,7 +2134,11 @@ impl Game {
 
     /// Any panel is up: the world waits and the keys go to it.
     fn panel_open(&self) -> bool {
-        self.menu.open || self.map_panel.open || self.bay_panel.open || self.design
+        self.menu.open
+            || self.map_panel.open
+            || self.bay_panel.open
+            || self.design
+            || self.card_open
     }
 
     /// M: the map up or down. One panel at a time.
@@ -1476,6 +2161,34 @@ impl Game {
         self.input.release_all();
     }
 
+    /// F1 (and the first run): the CONTROLS card up, over everything.
+    fn open_card(&mut self) {
+        self.card_open = true;
+        self.menu.open = false;
+        self.map_panel.open = false;
+        self.bay_panel.open = false;
+        self.input.release_all();
+    }
+
+    /// Any key: the card away. The settings are written so the file
+    /// exists and the card does not show itself again unasked.
+    fn close_card(&mut self) {
+        self.card_open = false;
+        self.settings.save();
+    }
+
+    /// HOLO RANGE by a notch: the hologram shows more space (positive)
+    /// or less, and the setting is kept.
+    fn zoom_holo(&mut self, notches: f32) {
+        let before = self.settings.holo_range;
+        self.settings.holo_range = (before + notches * settings::HOLO_RANGE_STEP)
+            .clamp(settings::HOLO_RANGE_MIN, settings::HOLO_RANGE_MAX);
+        if (self.settings.holo_range - before).abs() > 1e-6 {
+            self.settings.save();
+            log::info!("holo range {:.1}x", self.settings.holo_range);
+        }
+    }
+
     /// Esc: the settings menu up or down. One panel at a time.
     fn toggle_menu(&mut self) {
         self.menu.toggle();
@@ -1484,6 +2197,7 @@ impl Game {
             self.bay_panel.open = false;
         }
         self.input.release_all();
+        self.eva_keys = eva::Keys::default();
     }
 
     /// The bay takes the whole screen: the hologram's centre sits left of
@@ -1508,7 +2222,7 @@ impl Game {
     /// The card's rows, top to bottom: the header, a row per hardpoint
     /// (its dropdown's options under the open one), the footer.
     fn bay_rows(&self) -> Vec<BayRow> {
-        let mut rows = vec![BayRow::Header];
+        let mut rows = vec![BayRow::Header, BayRow::Craft];
         for i in 0..bay::Hardpoint::ALL.len() {
             rows.push(BayRow::Slot(i));
             if self.bay_dropdown == Some(i) {
@@ -1529,10 +2243,22 @@ impl Game {
         for (row, r) in self.bay_rows().iter().enumerate() {
             let line = match *r {
                 BayRow::Header => "SHIP BAY                    FIT".to_string(),
+                BayRow::Craft => {
+                    let cur = if self.bay_panel.bay_on_craft() {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    format!(
+                        "{cur}{:<9}{:>18} \u{2194}",
+                        "CRAFT",
+                        self.settings.craft.name()
+                    )
+                }
                 BayRow::Slot(i) => {
                     let h = bay::Hardpoint::ALL[i];
                     let open = self.bay_dropdown == Some(i);
-                    let mark = if open { "^" } else { "v" };
+                    let mark = if open { "\u{2191}" } else { "\u{2193}" };
                     let cur = if selected == Some(i) { ">" } else { " " };
                     format!(
                         "{cur}{:<9}{:>18} {mark}",
@@ -1546,7 +2272,7 @@ impl Game {
                 }
                 BayRow::Footer => "CLICK A SLOT  DRAG TURN  B CLOSE".to_string(),
             };
-            text.draw(0, row * 6, &line);
+            text.draw_line(0, row, &line);
         }
     }
 
@@ -1556,7 +2282,7 @@ impl Game {
         self.bay_rows()
             .iter()
             .position(|r| *r == BayRow::Slot(sel))
-            .map(|row| ((row * 6) as f32, 6.0))
+            .map(|row| ((row * LINE) as f32, LINE as f32))
     }
 
     /// A click in the bay, at `at` (NDC): a card row (a slot opens or
@@ -1568,10 +2294,17 @@ impl Game {
         let w = text_w / aspect;
         let on_card = at[0] >= anchor[0] - 0.01 && at[0] <= anchor[0] + w + 0.01;
         if on_card && at[1] <= anchor[1] {
-            let row = ((anchor[1] - at[1]) / (6.0 * px)).floor() as usize;
+            let row = ((anchor[1] - at[1]) / (LINE as f32 * px)).floor() as usize;
             match rows.get(row).copied() {
+                Some(BayRow::Craft) => {
+                    self.bay_panel.set_cursor(0);
+                    self.settings.craft = self.settings.craft.next(true);
+                    self.settings.save();
+                    self.bay_dropdown = None;
+                    return true;
+                }
                 Some(BayRow::Slot(i)) => {
-                    self.bay_panel.set_cursor(i);
+                    self.bay_panel.select_mount(i);
                     self.bay_dropdown = if self.bay_dropdown == Some(i) {
                         None
                     } else {
@@ -1607,7 +2340,7 @@ impl Game {
             }
         }
         if let Some((i, _)) = best {
-            self.bay_panel.set_cursor(i);
+            self.bay_panel.select_mount(i);
             self.bay_dropdown = Some(i);
             return true;
         }
@@ -1638,20 +2371,9 @@ impl Game {
             }
         }
         let v = &self.bay_view;
-        let mut mounts = [MountView {
-            at: Vec3::ZERO,
-            kind: 0,
-        }; farfall_render::hologram::HARDPOINTS];
-        for ((m, h), fit) in mounts
-            .iter_mut()
-            .zip(bay::Hardpoint::ALL.iter())
-            .zip(self.settings.mounts.iter())
-        {
-            *m = MountView {
-                at: h.pos().as_vec3(),
-                kind: fit.kind(),
-            };
-        }
+        // One source: the same table the cockpit's glass and the chase
+        // view read (bay::fit_views).
+        let mounts = bay::fit_views(&self.settings.mounts);
         HologramUniforms::new(&HologramScene {
             camera: HologramCamera::orbit(v.yaw, v.pitch, v.dist, BAY_TAN_HALF_FOV),
             pane_centre: [cx, cy],
@@ -1667,6 +2389,7 @@ impl Game {
             height_px,
             fullscreen: true,
             callouts,
+            craft: self.settings.craft.kind(),
         })
     }
 
@@ -1695,18 +2418,51 @@ impl Game {
     /// top-left, `text_w` (NDC) to its left.
     fn drive_text_anchor(&self, aspect: f32, text_w: f32) -> [f32; 2] {
         let [cx, cy, hw] = self.map_pane(aspect);
-        [cx - hw - text_w - 0.03, cy + hw * aspect]
+        [cx - hw - text_w / aspect - 0.03, cy + hw * aspect]
     }
 
-    /// Where the text block's top-left sits this frame: the DRIVE panel
-    /// beside the map, the settings panel at its anchor, else the readout.
-    fn text_anchor(&self, aspect: f32, text_w: f32) -> [f32; 2] {
+    /// The current text block's width in characters: the settings card and
+    /// the CONTROLS card are wide; a panel beside a picture, and the
+    /// readout, are narrow.
+    fn text_cols(&self) -> usize {
+        if self.card_open || self.menu.open {
+            MENU_COLS
+        } else {
+            PANEL_COLS
+        }
+    }
+
+    /// The current text block's width in canopy units.
+    fn text_w(&self, px: f32) -> f32 {
+        panel::block_ndc(self.text_cols(), px)
+    }
+
+    /// A card kept by its centre: its top-left on the screen, for a card
+    /// `extent` font px big at `px` a font pixel.
+    fn centred_card(centre: [f32; 2], extent: (usize, usize), px: f32, aspect: f32) -> [f32; 2] {
+        [
+            centre[0] - extent.0 as f32 * px / aspect * 0.5,
+            centre[1] + extent.1 as f32 * px * 0.5,
+        ]
+    }
+
+    /// Where the text block's top-left sits this frame: the CONTROLS card
+    /// centred, the DRIVE panel beside the map, the settings card about
+    /// its anchor, else the readout.
+    fn text_anchor(&self, aspect: f32, px: f32) -> [f32; 2] {
+        let text_w = self.text_w(px);
+        if self.card_open {
+            return Self::centred_card([0.0, 0.05], card::extent(), px, aspect);
+        }
         if self.design {
-            // Beside the selected dial, or where the readout lives.
-            return match self
-                .design_target(aspect)
-                .and_then(|i| self.settings.layout.anchor(i))
-            {
+            // Beside the selected element, or where the readout lives.
+            let anchor = self.design_target(aspect).and_then(|el| match el {
+                DesignEl::Dial(i) => self.settings.layout.anchor(i),
+                DesignEl::Holo => Some(self.settings.holo_anchor),
+                DesignEl::MiniMap => Some(self.settings.layout.inset(self.mini_map_anchor())),
+                DesignEl::Readout => Some(self.settings.readout_anchor),
+            });
+            return match anchor {
                 Some(a) => [a[0] + 0.2, a[1] + 0.12],
                 None => self.settings.readout_anchor,
             };
@@ -1716,7 +2472,7 @@ impl Game {
         } else if self.bay_open() {
             self.bay_text_anchor(aspect, text_w)
         } else if self.menu.open {
-            self.settings.menu_anchor
+            Self::centred_card(self.settings.menu_anchor, self.menu.extent(), px, aspect)
         } else {
             self.settings.readout_anchor
         }
@@ -1742,19 +2498,29 @@ impl Game {
             .filter_map(|i| self.settings.layout.anchor(i).map(|a| (i, a)))
             .map(|(i, a)| {
                 let tw = self.dial_tweak(i);
+                let dir = anchor_direction(a, ref_tan, cam.aspect);
                 farfall_render::cabin::Socket {
-                    dir: anchor_direction(a, ref_tan, cam.aspect),
-                    // The gyro's JET is the ball itself.
-                    style: if i == Instrument::Gyro && tw.style == settings::GaugeStyle::Jet {
-                        3
-                    } else if tw.style == settings::GaugeStyle::Warthog {
-                        // The Warthog's face sits in the DIAL's housing.
-                        2
-                    } else {
-                        tw.style.index()
-                    },
+                    dir,
+                    // The gyro's JET and WARTHOG are the ball itself.
+                    style: farfall_render::cabin::seated_style(
+                        if i == Instrument::Gyro
+                            && matches!(
+                                tw.style,
+                                settings::GaugeStyle::Jet | settings::GaugeStyle::Warthog
+                            )
+                        {
+                            3
+                        } else if tw.style == settings::GaugeStyle::Warthog {
+                            // The Warthog's face sits on the DIAL's plate.
+                            2
+                        } else {
+                            tw.style.index()
+                        },
+                        dir,
+                    ),
                     size: tw.size,
                     tilt: tw.tilt,
+                    lean: tw.lean,
                 }
             })
             .take(6)
@@ -1764,19 +2530,73 @@ impl Game {
             metal: self.settings.cockpit_hull,
             on: self.settings.cockpit_frame,
             style: self.settings.gauge_style.index(),
-            thrust: self.bench_thrust.unwrap_or_else(|| {
-                let c = self.input.controls(self.assist);
-                [
-                    self.effort,
-                    c.torque_body.x as f32,
-                    c.torque_body.y as f32,
-                    c.torque_body.z as f32,
-                ]
-            }),
+            thrust: self.thrust_look(),
         };
-        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets);
-        let bu = cu.blit(look);
+        let fit = bay::fit_views(&self.settings.mounts);
+        // The console's control column mirrors the live demand (HOTAS
+        // or keys): pitch, roll, yaw, throttle in the pilot's sense — in
+        // a helicopter the lever is the collective, so it rides the
+        // routed demand (0 flat, full forward all the way up).
+        let cu = CabinUniforms::new(cam, self.head(), sun_ship, look, &sockets, &fit)
+            .with_craft(self.settings.craft.kind())
+            .with_stick(if self.settings.cockpit_stick {
+                let c = self.input.controls(self.assist);
+                let lever = if self.flying_heli() {
+                    heli::route_controls(c).thrust_body.y * 2.0 - 1.0
+                } else {
+                    -c.thrust_body.z
+                };
+                [
+                    c.torque_body.x as f32,
+                    -c.torque_body.z as f32,
+                    -c.torque_body.y as f32,
+                    lever as f32,
+                ]
+            } else {
+                [0.0; 4]
+            });
+        let bu = cu.blit(look).with_time(cam.time_s);
         (cu, bu)
+    }
+
+    /// What the engines and the RCS are doing, for the plumes and puffs:
+    /// main thrust 0..1 and the pitch / yaw / roll demands -1..1 — the
+    /// bench's forced numbers when it has them, so the cabin's plumes and
+    /// the chase view's agree.
+    fn thrust_look(&self) -> [f32; 4] {
+        self.bench_thrust.unwrap_or_else(|| {
+            let c = self.input.controls(self.assist);
+            [
+                self.effort,
+                c.torque_body.x as f32,
+                c.torque_body.y as f32,
+                c.torque_body.z as f32,
+            ]
+        })
+    }
+
+    /// The nearest body by altitude, as the altimeter picks it: its
+    /// direction in the ship's frame and the sine of its angular radius
+    /// (0 far away, 1 filling half the sky) — the light it throws on the
+    /// hull and the dust.
+    fn nearest_body_ship(&self) -> (Vec3, f32) {
+        let ship_inv = self.state.ship.orient.inverse();
+        let t = self.state.time_s;
+        let mut near: Option<(f64, DVec3, f64)> = None;
+        for b in self.params.bodies(t) {
+            let rel = b.centre - self.state.ship.pos_m;
+            let alt = rel.length() - b.radius_m;
+            if near.is_none_or(|n| alt < n.0) {
+                near = Some((alt, rel, b.radius_m));
+            }
+        }
+        match near {
+            Some((_, rel, r)) => (
+                (ship_inv * rel).normalize_or_zero().as_vec3(),
+                (r / rel.length().max(1.0)).clamp(0.0, 1.0) as f32,
+            ),
+            None => (Vec3::ZERO, 0.0),
+        }
     }
 
     /// tan(fov/2) of the reference projection the glass is laid out in.
@@ -1825,21 +2645,57 @@ impl Game {
     }
 
     /// Where the text block goes on the SCREEN this frame: the pause
-    /// panels sit on the screen and follow the head; the readout and the
-    /// design card are on the glass, re-projected like a dial.
-    fn text_screen_anchor(&self, cam: &CameraFrame, text_w: f32) -> [f32; 2] {
-        let a = self.text_anchor(cam.aspect, text_w);
-        if self.menu.open || self.pane_open() {
+    /// panels sit on the screen and follow the head; the design card is
+    /// on the glass, re-projected like a dial, beside the element it
+    /// describes. The readout is the pilot's diagnostics, not glassware:
+    /// it keeps its screen place however the head is turned (glass-fixed
+    /// it drifted mid-sky through a spinning bench capture) — projected
+    /// with a centred head, so its saved anchor still means the same
+    /// spot and it still breathes with the field of view.
+    fn text_screen_anchor(&self, cam: &CameraFrame, px: f32) -> [f32; 2] {
+        let a = self.text_anchor(cam.aspect, px);
+        if self.menu.open || self.pane_open() || self.card_open {
             a
-        } else {
+        } else if self.design {
             on_glass(&self.look, cam, self.ref_tan(), a)
+        } else {
+            on_glass(&Look::new(), cam, self.ref_tan(), a)
         }
+    }
+
+    /// This frame's text block for the HUD pass: where it sits, whether
+    /// it is a flat card, and the card's furniture (band, rules, bar).
+    fn hud_block(&self, cam: &CameraFrame, px: f32, height_px: f32) -> HudBlock {
+        let mut b = HudBlock::glass(self.text_screen_anchor(cam, px), px, cam.aspect, height_px);
+        b.sway = self.holo_sway.sway();
+        b.flat = self.menu.open || self.pane_open() || self.card_open;
+        b.highlight = self.highlight_row();
+        if self.card_open {
+            b.extent = Some(card::extent());
+            b.rules = card::rules(&self.settings.bindings);
+        } else if self.menu.open {
+            b.extent = Some(self.menu.extent());
+            b.scrollbar = self.menu.scrollbar();
+            b.rules = self.menu.rules();
+        } else if self.map_open() {
+            b.extent = Some(self.map_panel.extent());
+            b.rules = self.map_panel.rules();
+        } else if self.bay_open() {
+            let rows = self.bay_rows().len();
+            b.rules = [
+                Some(LINE as f32 - 1.5),
+                Some(((rows - 1) * LINE) as f32 - 1.5),
+            ];
+        }
+        b
     }
 
     /// The pause panel's chosen row, for the card's band: (top, height)
     /// in font pixels.
     fn highlight_row(&self) -> Option<(f32, f32)> {
-        if self.menu.open {
+        if self.wizard.is_some() {
+            None
+        } else if self.menu.open {
             Some(self.menu.cursor_row_px())
         } else if self.map_panel.open {
             Some(self.map_panel.cursor_row_px())
@@ -1850,9 +2706,9 @@ impl Game {
         }
     }
 
-    /// The gyro as a geometric ball: when it is JET and sits in the dash,
-    /// its sphere's placement and the world's up and east in the ship's
-    /// frame, for the gyro pass to paint.
+    /// The gyro as a geometric ball: when it is JET or WARTHOG and sits
+    /// on the dash, its sphere's placement and the world's up and east in
+    /// the ship's frame, for the gyro pass to paint.
     fn gyro_ball(
         &self,
         cam: &CameraFrame,
@@ -1860,10 +2716,22 @@ impl Game {
     ) -> Option<(farfall_render::cabin::Placement, glam::Vec3, glam::Vec3)> {
         use farfall_render::cabin::anchor_direction;
         use glam::Vec3;
-        if tw.style != settings::GaugeStyle::Jet {
+        if !matches!(
+            tw.style,
+            settings::GaugeStyle::Jet | settings::GaugeStyle::Warthog
+        ) {
             return None;
         }
         let a = self.settings.layout.anchor(Instrument::Gyro)?;
+        // The ball is a real sphere cast in the dash, and near the rim of
+        // a far-turned view its projection blows out: a corner scissor
+        // patch fills with magnified globe (a beige plate poking into
+        // frame). Once its glass anchor has left the screen there is no
+        // honest picture of it left to draw — cull it.
+        let live = on_glass(&self.look, cam, self.ref_tan(), a);
+        if live[0].abs() > 1.2 || live[1].abs() > 1.2 {
+            return None;
+        }
         let dir = anchor_direction(a, self.ref_tan(), cam.aspect);
         let t = (cam.fov_y * 0.5).tan();
         let place = farfall_render::cabin::Placement::ball(self.head(), t, dir, tw.size)?;
@@ -1885,20 +2753,32 @@ impl Game {
     /// opens), so it never grows across the screen. The pause panels are
     /// on the screen and keep their size.
     fn text_fov_scale(&self, cam: &CameraFrame) -> f32 {
-        if self.menu.open || self.map_open() {
+        if self.menu.open || self.map_open() || self.card_open {
             return 1.0;
         }
         let t = (cam.fov_y * 0.5).tan().max(1e-4);
-        (self.ref_tan() / t).clamp(0.4, 1.25)
+        let base = (self.ref_tan() / t).clamp(0.4, 1.25);
+        // In flight the block is the readout — a glass element with its
+        // own SIZE (ui.readout.size), scaled like any dial.
+        if self.panel_open() {
+            base
+        } else {
+            base * self.settings.dials[Instrument::Readout as usize]
+                .size
+                .clamp(settings::DIAL_SIZE_MIN, settings::DIAL_SIZE_MAX)
+        }
     }
 
     /// How fast it looks, 0..1, for the picture's streaks and cool rim:
-    /// the Chaos Drive's field first, else the speed against the wall.
+    /// the Chaos Drive's field first, else the speed against the wall —
+    /// or the wormhole sequence's own stretch, space drawing into threads.
     fn speed_look(&self) -> f32 {
         // Only real speed shows: from a third of the way to the wall.
         let wall = (self.state.ship.vel_mps.length() / sim::RELATIVITY_FROM_MPS) as f32;
         let fast = ((wall - 0.3) / 0.7).clamp(0.0, 1.0) * 0.5;
-        (self.hyper * (0.5 + 0.5 * self.hyper_level() as f32)).max(fast)
+        (self.hyper * (0.5 + 0.5 * self.hyper_level() as f32))
+            .max(fast)
+            .max(self.warp.look().stretch)
     }
 
     /// The drive's look this frame: the wormhole sequence, with the hyper
@@ -1918,6 +2798,8 @@ impl Game {
             style: settings::style_for(tw.style.unwrap_or(self.settings.gauge_style), i),
             stay: tw.stay.unwrap_or(self.settings.gauges_stay),
             tilt: tw.tilt_deg.to_radians(),
+            lean: tw.lean_deg.to_radians(),
+            rotate: tw.rotate_deg.to_radians(),
         }
     }
 
@@ -1936,18 +2818,53 @@ impl Game {
         log::info!("design mode {}", if self.design { "on" } else { "off" });
     }
 
-    /// The dial under the pointer (within reach), in design mode.
-    fn design_target(&self, aspect: f32) -> Option<Instrument> {
+    /// The element under the pointer (within reach), in design mode: the
+    /// nearest of the dials, the holo3PP, the mini map and the readout.
+    fn design_target(&self, aspect: f32) -> Option<DesignEl> {
         let gaze = self.design_pointer(aspect)?;
-        let mut best: Option<(Instrument, f32)> = None;
+        let dist = |a: [f32; 2]| {
+            let dx = (a[0] - gaze[0]) * aspect;
+            let dy = a[1] - gaze[1];
+            (dx * dx + dy * dy).sqrt()
+        };
+        let mut best: Option<(DesignEl, f32)> = None;
+        let mut offer = |el: DesignEl, d: f32| {
+            if best.is_none_or(|b| d < b.1) {
+                best = Some((el, d));
+            }
+        };
         for i in Instrument::ALL.iter().copied().filter(|i| i.slotted()) {
             if let Some(a) = self.settings.layout.anchor(i) {
-                let dx = (a[0] - gaze[0]) * aspect;
-                let dy = a[1] - gaze[1];
-                let d = (dx * dx + dy * dy).sqrt();
-                if d < DRAG_REACH && best.is_none_or(|b| d < b.1) {
-                    best = Some((i, d));
+                let d = dist(a);
+                if d < DRAG_REACH {
+                    offer(DesignEl::Dial(i), d);
                 }
+            }
+        }
+        if self.holo_active() {
+            let a = self.settings.holo_anchor;
+            let r = self.settings.holo_size * 0.9;
+            if (gaze[0] - a[0]).abs() <= r + 0.02 && (gaze[1] - a[1]).abs() <= r + 0.02 {
+                offer(DesignEl::Holo, dist(a));
+            }
+        }
+        if self.mini_map_shown() {
+            let a = self.settings.layout.inset(self.mini_map_anchor());
+            let [cx, cy, hw] = map::pane_rect_sized(aspect, a, self.mini_map_half_h());
+            let hh = hw * aspect;
+            if (gaze[0] - cx).abs() <= hw + 0.02 && (gaze[1] - cy).abs() <= hh + 0.02 {
+                offer(DesignEl::MiniMap, dist([cx, cy]));
+            }
+        }
+        if self.settings.layout.shown(Instrument::Readout) {
+            // The block hangs down-right of its top-left anchor.
+            let a = self.settings.readout_anchor;
+            if gaze[0] >= a[0] - 0.02
+                && gaze[0] <= a[0] + 0.6
+                && gaze[1] <= a[1] + 0.02
+                && gaze[1] >= a[1] - 0.45
+            {
+                offer(DesignEl::Readout, dist([a[0] + 0.25, a[1] - 0.2]));
             }
         }
         best.map(|b| b.0)
@@ -1960,43 +2877,134 @@ impl Game {
         self.cursor_on_glass(&cam)
     }
 
-    /// A key in design mode: the selected dial's own settings.
+    /// A key in design mode: the selected element's own settings.
     fn design_key(&mut self, code: KeyCode, aspect: f32) {
-        let Some(i) = self.design_target(aspect) else {
+        let Some(el) = self.design_target(aspect) else {
             return;
         };
-        let d = &mut self.settings.dials[i as usize];
-        match code {
-            KeyCode::Equal | KeyCode::NumpadAdd => {
-                d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+        match el {
+            DesignEl::Dial(i) => {
+                let d = &mut self.settings.dials[i as usize];
+                match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => {
+                        d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+                    }
+                    KeyCode::Minus | KeyCode::NumpadSubtract => {
+                        d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+                    }
+                    KeyCode::Tab => d.style = settings::next_dial_style(d.style, i, true),
+                    KeyCode::Comma => {
+                        d.tilt_deg = (d.tilt_deg - 5.0).max(settings::TILT_MIN);
+                    }
+                    KeyCode::Period => {
+                        d.tilt_deg = (d.tilt_deg + 5.0).min(settings::TILT_MAX);
+                    }
+                    KeyCode::Semicolon => {
+                        d.lean_deg = (d.lean_deg - 5.0).max(settings::TILT_MIN);
+                    }
+                    KeyCode::Quote => {
+                        d.lean_deg = (d.lean_deg + 5.0).min(settings::TILT_MAX);
+                    }
+                    KeyCode::Digit9 => {
+                        d.rotate_deg = (d.rotate_deg - 15.0).max(settings::ROTATE_MIN);
+                    }
+                    KeyCode::Digit0 => {
+                        d.rotate_deg = (d.rotate_deg + 15.0).min(settings::ROTATE_MAX);
+                    }
+                    KeyCode::KeyF => {
+                        d.stay = match d.stay {
+                            None => Some(true),
+                            Some(true) => Some(false),
+                            Some(false) => None,
+                        };
+                    }
+                    KeyCode::Backspace => *d = settings::DialTweak::DEFAULT,
+                    _ => {}
+                }
             }
-            KeyCode::Minus | KeyCode::NumpadSubtract => {
-                d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+            DesignEl::Holo => match code {
+                KeyCode::Equal | KeyCode::NumpadAdd => {
+                    self.settings.holo_size =
+                        (self.settings.holo_size + 0.04).min(settings::HOLO_SIZE_MAX);
+                }
+                KeyCode::Minus | KeyCode::NumpadSubtract => {
+                    self.settings.holo_size =
+                        (self.settings.holo_size - 0.04).max(settings::HOLO_SIZE_MIN);
+                }
+                KeyCode::Backspace => {
+                    self.settings.holo_size = Settings::default().holo_size;
+                    self.settings.holo_anchor = settings::HOLO_ANCHOR_DEFAULT;
+                }
+                _ => {}
+            },
+            DesignEl::MiniMap => {
+                let d = &mut self.settings.dials[Instrument::Map as usize];
+                match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => {
+                        d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+                    }
+                    KeyCode::Minus | KeyCode::NumpadSubtract => {
+                        d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+                    }
+                    KeyCode::Backspace => {
+                        *d = settings::DialTweak::DEFAULT;
+                        // On, at the stock corner: the slot lets go of
+                        // any dragged anchor.
+                        self.settings.layout.set(Instrument::Map, cockpit::Slot::On);
+                    }
+                    _ => {}
+                }
             }
-            KeyCode::Tab => d.style = settings::next_dial_style(d.style, i, true),
-            KeyCode::Comma => {
-                d.tilt_deg = (d.tilt_deg - 5.0).max(settings::TILT_MIN);
+            DesignEl::Readout => {
+                let d = &mut self.settings.dials[Instrument::Readout as usize];
+                match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => {
+                        d.size = (d.size + 0.125).min(settings::DIAL_SIZE_MAX);
+                    }
+                    KeyCode::Minus | KeyCode::NumpadSubtract => {
+                        d.size = (d.size - 0.125).max(settings::DIAL_SIZE_MIN);
+                    }
+                    KeyCode::Backspace => {
+                        *d = settings::DialTweak::DEFAULT;
+                        self.settings.readout_anchor = settings::READOUT_ANCHOR_DEFAULT;
+                    }
+                    _ => {}
+                }
             }
-            KeyCode::Period => {
-                d.tilt_deg = (d.tilt_deg + 5.0).min(settings::TILT_MAX);
-            }
-            KeyCode::KeyF => {
-                d.stay = match d.stay {
-                    None => Some(true),
-                    Some(true) => Some(false),
-                    Some(false) => None,
-                };
-            }
-            KeyCode::Backspace => *d = settings::DialTweak::DEFAULT,
-            _ => {}
         }
     }
 
     /// The design card: the selected dial's settings, a few short lines,
     /// and the keys.
     fn design_text(&self, aspect: f32) -> Vec<String> {
+        let sized_card = |name: &str, size: String| {
+            vec![
+                format!("[{name}]"),
+                size,
+                "- = SIZE  DRAG MOVE".to_string(),
+                "BKSP RESET  K DONE".to_string(),
+            ]
+        };
         match self.design_target(aspect) {
-            Some(i) => {
+            Some(DesignEl::Holo) => sized_card(
+                "HOLO3PP",
+                format!("SIZE {:.0}%", self.settings.holo_size * 100.0),
+            ),
+            Some(DesignEl::MiniMap) => sized_card(
+                "MINI MAP",
+                format!(
+                    "SIZE {:.2}X",
+                    self.settings.dials[Instrument::Map as usize].size
+                ),
+            ),
+            Some(DesignEl::Readout) => sized_card(
+                "READOUT",
+                format!(
+                    "SIZE {:.2}X",
+                    self.settings.dials[Instrument::Readout as usize].size
+                ),
+            ),
+            Some(DesignEl::Dial(i)) => {
                 let d = self.settings.dials[i as usize];
                 let eff = self.dial_tweak(i);
                 vec![
@@ -2013,15 +3021,17 @@ impl Game {
                         if d.stay.is_none() { " (AUTO)" } else { "" },
                         d.tilt_deg
                     ),
+                    format!("LEAN {:+.0}  ROT {:+.0}", d.lean_deg, d.rotate_deg),
                     "- = SIZE  TAB STYLE  F FADE".to_string(),
-                    ", . TILT  BKSP RESET  K DONE".to_string(),
+                    ", . TILT  ; ' LEAN  9 0 ROT".to_string(),
+                    "BKSP RESET  K DONE".to_string(),
                 ]
             }
             None => vec![
                 "[DESIGN]".to_string(),
-                "LOOK AT A DIAL".to_string(),
-                "CLICK DRAG TO MOVE".to_string(),
-                "K DONE".to_string(),
+                "POINT AT ANY GLASS PIECE:".to_string(),
+                "DIALS  MAP  HOLO  READOUT".to_string(),
+                "CLICK DRAG TO MOVE  K DONE".to_string(),
             ],
         }
     }
@@ -2035,27 +3045,239 @@ impl Game {
         log::info!("landing mode {}", if self.landing { "on" } else { "off" });
     }
 
-    /// The landing readout line, if there is one.
-    fn landing_text(&self) -> Option<String> {
-        if !self.landing {
+    /// On the ground — down or landed — as the sim says.
+    fn on_ground(&self) -> bool {
+        self.state.ship.ground != sim::Ground::Flight
+    }
+
+    /// The ground's speed under the ship: over the body it is on, or the
+    /// nearest one.
+    fn ground_speed(&self) -> f64 {
+        let body = match self.state.ship.ground {
+            sim::Ground::Down { body, .. } | sim::Ground::Landed { body, .. } => body,
+            sim::Ground::Flight => 0,
+        };
+        let v = self.params.body_velocities(self.state.time_s)[body];
+        let rel = self.state.ship.vel_mps - v;
+        let up = self.up_world();
+        (rel - up * rel.dot(up)).length()
+    }
+
+    /// The pilot's own ship parameters, by the SHIP page's CRAFT row
+    /// (SPEC §6.5c): the fighter's set, or the FARFALL helicopter's.
+    fn own_ship_params(&self) -> sim::ShipParams {
+        match self.settings.craft {
+            bay::Craft::Fighter => self.fighter_ship,
+            bay::Craft::Helicopter => heli::farfall_heli_params(),
+        }
+    }
+
+    /// Is the sim's ship a helicopter right now — a pad's, or the
+    /// pilot's own craft?
+    fn flying_heli(&self) -> bool {
+        self.helis.in_heli || self.settings.craft == bay::Craft::Helicopter
+    }
+
+    /// DISEMBARK (I): leave the ship. LANDED, it walks out — the EVA
+    /// walker (SPEC §6.5b) — unless a pad's helicopter is closer business;
+    /// anywhere else the readout says why not.
+    fn disembark(&mut self) {
+        let landed = matches!(self.state.ship.ground, sim::Ground::Landed { .. });
+        if self.helis.in_heli {
+            // Set down beside the fighter, the same key swaps back.
+            if landed {
+                if let Some(f) = self.helis.fighter {
+                    if (f.pos_m - self.state.ship.pos_m).length() <= heli::BOARD_RANGE_M {
+                        let heli_state = self.state.ship;
+                        if let Some(fighter) = self.helis.disembark(heli_state) {
+                            self.state.ship = fighter;
+                            self.params.ship = self.own_ship_params();
+                            self.input.release_all();
+                            self.disembark_notice = Some(("BOARDED SHIP", Instant::now()));
+                            log::info!("heli: back in the fighter");
+                            return;
+                        }
+                    }
+                }
+                self.disembark_notice = Some(("LAND BY YOUR SHIP TO SWAP", Instant::now()));
+                return;
+            }
+            self.disembark_notice = Some(("DISEMBARK  NOT LANDED", Instant::now()));
+            return;
+        }
+        // Landed beside a pad's helicopter, the key boards it: the sim's
+        // ship becomes the helicopter - parameters and all - and the
+        // fighter waits exactly where it stands.
+        if landed && self.settings.helis {
+            if let Some((i, _)) = self.helis.nearest_heli(&self.params, self.state.ship.pos_m) {
+                let fighter = self.state.ship;
+                self.state.ship = self.helis.board(&self.params, i, fighter);
+                self.params.ship = heli::heli_params();
+                self.input.release_all();
+                self.disembark_notice = Some(("BOARDED HELI", Instant::now()));
+                log::info!("heli: boarded pad {i}'s helicopter");
+                return;
+            }
+        }
+        if landed {
+            self.enter_eva();
+            return;
+        }
+        let notice = landing::disembark_notice(self.state.ship.ground);
+        self.disembark_notice = Some((notice, Instant::now()));
+        log::info!("disembark: {notice}");
+    }
+
+    fn eva_active(&self) -> bool {
+        self.eva.is_some()
+    }
+
+    /// The walk-out: boots on the ground beside the ship, facing the
+    /// hull. The ship stays LANDED exactly where it is.
+    fn enter_eva(&mut self) {
+        let sim::Ground::Landed { body, .. } = self.state.ship.ground else {
+            return;
+        };
+        let b = self.params.bodies(self.state.time_s)[body];
+        self.eva = Some(eva::Walker::disembarked(
+            body,
+            self.state.ship.pos_m - b.centre,
+            self.state.ship.orient,
+            b.radius_m,
+            eva::EXIT_M,
+        ));
+        self.eva_keys = eva::Keys::default();
+        self.input.release_all();
+        log::info!("eva: on foot beside the ship");
+    }
+
+    /// How far the boots stand from the ship, metres.
+    fn eva_ship_m(&self) -> Option<f64> {
+        let w = self.eva.as_ref()?;
+        let b = self.params.bodies(self.state.time_s)[w.body];
+        Some((b.centre + w.feet_m - self.state.ship.pos_m).length())
+    }
+
+    /// The DISEMBARK key on foot: board the ship, if it is in reach.
+    fn try_board(&mut self) {
+        let Some(dist) = self.eva_ship_m() else {
+            return;
+        };
+        if dist <= eva::BOARD_RANGE_M {
+            self.eva = None;
+            self.eva_keys = eva::Keys::default();
+            self.input.release_all();
+            self.disembark_notice = Some(("BOARDED SHIP", Instant::now()));
+            log::info!("eva: back in the seat");
+        } else {
+            log::info!("eva: the ship is {dist:.0} m away — walk back to board");
+        }
+    }
+
+    /// A movement key on foot. The translation binds walk, BOOST's key
+    /// runs, BRAKE's key jumps — all through the pilot's own bindings.
+    fn eva_key(&mut self, code: KeyCode, pressed: bool) {
+        let b = &self.settings.bindings;
+        let k = &mut self.eva_keys;
+        match code {
+            c if c == b.key_for(input::Action::ThrustForward) => k.fwd = pressed,
+            c if c == b.key_for(input::Action::ThrustBack) => k.back = pressed,
+            c if c == b.key_for(input::Action::StrafeLeft) => k.left = pressed,
+            c if c == b.key_for(input::Action::StrafeRight) => k.right = pressed,
+            c if c == b.named(Named::Boost) => k.run = pressed,
+            c if c == b.named(Named::Brake) => k.jump = pressed,
+            _ => {}
+        }
+    }
+
+    /// One fixed step of the walker, after the sim's own. A panel up
+    /// means the keys are nobody's: the boots stand still.
+    fn step_eva(&mut self) {
+        let Some(body) = self.eva.as_ref().map(|w| w.body) else {
+            return;
+        };
+        let keys = if self.panel_open() {
+            eva::Keys::default()
+        } else {
+            self.eva_keys
+        };
+        let b = self.params.bodies(self.state.time_s)[body];
+        if let Some(w) = self.eva.as_mut() {
+            w.step(&keys, b.mu, b.radius_m, sim::DT);
+        }
+    }
+
+    /// The bench's walker: out at the bench's distance, looking back at
+    /// the hull with a little pitch up to take it in.
+    fn stage_eva_bench(&mut self) {
+        let Some(body) = self.eva.as_ref().map(|w| w.body) else {
+            return;
+        };
+        let b = self.params.bodies(self.state.time_s)[body];
+        let ship_local = self.state.ship.pos_m - b.centre;
+        let mut w = eva::Walker::disembarked(
+            body,
+            ship_local,
+            self.state.ship.orient,
+            b.radius_m,
+            eva::BENCH_OUT_M,
+        );
+        w.tilt(0.10);
+        self.eva = Some(w);
+    }
+
+    /// The suit's readout lines, on foot.
+    fn eva_text(&self) -> Option<String> {
+        let dist = self.eva_ship_m()?;
+        let key = input::key_name(self.bind(Named::Disembark));
+        Some(eva::lines(dist, key).join("\n"))
+    }
+
+    /// The boarding offer for the readout: landed beside a helicopter (or
+    /// back beside the fighter), the DISEMBARK key reads as BOARD.
+    fn board_offer(&self) -> Option<String> {
+        if !matches!(self.state.ship.ground, sim::Ground::Landed { .. }) {
             return None;
         }
-        let (_, vspeed) = self.altitude_vspeed();
-        Some(match self.touchdown {
-            Some(t) => format!(
-                "LAND {} IN {:.0}S  DOWN {:.0}  ALONG {:.0} M/S  VS {:+.0}",
-                t.verdict(),
-                t.in_s,
-                t.into_mps,
-                t.along_mps,
-                vspeed
-            ),
-            None => format!(
-                "LAND  NO TOUCHDOWN IN {:.0}S  VS {:+.0}",
-                landing::HORIZON_S,
-                vspeed
-            ),
-        })
+        let key = input::key_name(self.bind(Named::Disembark));
+        if self.helis.in_heli {
+            let f = self.helis.fighter?;
+            ((f.pos_m - self.state.ship.pos_m).length() <= heli::BOARD_RANGE_M)
+                .then(|| format!("{key} BOARD SHIP"))
+        } else if self.settings.helis {
+            self.helis
+                .nearest_heli(&self.params, self.state.ship.pos_m)
+                .map(|_| format!("{key} BOARD HELI"))
+        } else {
+            None
+        }
+    }
+
+    /// The landing readout lines, newline-joined, if there are any: the
+    /// approach in LANDING mode; DOWN or LANDED whenever the ship is on
+    /// the ground, mode or no mode.
+    fn landing_text(&self) -> Option<String> {
+        let (altitude_m, vspeed_mps) = self.altitude_vspeed();
+        let offer = self.board_offer();
+        let notice = self
+            .disembark_notice
+            .filter(|(_, at)| at.elapsed() < Duration::from_secs(4))
+            .map(|(n, _)| n)
+            .or(offer.as_deref());
+        let view = landing::View {
+            mode: self.landing,
+            ground: self.state.ship.ground,
+            touchdown: self.touchdown,
+            vspeed_mps,
+            altitude_m,
+            ground_speed_mps: self.ground_speed(),
+            tilt_deg: landing::tilt_deg(self.state.ship.orient, self.up_world()),
+            record: self.touchdown_record,
+            notice,
+            disembark_key: input::key_name(self.bind(Named::Disembark)),
+        };
+        let lines = landing::lines(&view);
+        (!lines.is_empty()).then(|| lines.join("\n"))
     }
 
     /// Gravity's up at the ship, world frame — whichever body is pulling.
@@ -2078,6 +3300,10 @@ impl Game {
 
     /// Fire the drive at the plan. Refused mid-sequence.
     fn engage_warp(&mut self) {
+        if self.helis.in_heli {
+            log::info!("warp: the helicopter has no drives");
+            return;
+        }
         if self.warp.engage() {
             self.input.release_all();
             log::info!(
@@ -2095,7 +3321,8 @@ impl Game {
     /// field collapses: whatever space was doing stops, and the ship is
     /// left at a crawl down its nose. Off, the strain eases.
     fn run_hyper_strain(&mut self, dt: f32) {
-        let held = self.input.controls(self.assist).hyper && !self.warp.active();
+        let held =
+            self.input.controls(self.assist).hyper && !self.warp.active() && !self.helis.in_heli;
         if self.hyper_was && !held {
             log::info!(
                 "chaos drive: released at {:.3e} m/s, entropy {:.0}%",
@@ -2162,9 +3389,33 @@ impl Game {
             self.belt.wounds.remove(&id);
             self.belt.dead.insert(id);
         }
-        let breaks = self
+        let mut breaks = self
             .mimics
             .take_fire(&mut self.arms, &mut self.haul, t, sim::DT);
+        // The miners: placed when the ring goes live, shot at like any
+        // ship, and stepped with the pilot's held rock kept off their list.
+        self.miners.populate(&own, &self.belt);
+        breaks.extend(self.miners.take_fire(
+            &mut self.arms,
+            &mut self.haul,
+            &mut self.mimics,
+            t,
+            sim::DT,
+        ));
+        let held = match self.hold.target {
+            Some((hold::Target::Rock(id), _)) => Some(id),
+            _ => None,
+        };
+        let chance = self.mimics.chance;
+        self.miners.step(
+            t,
+            sim::DT,
+            &own,
+            &mut self.belt,
+            held,
+            chance,
+            &mut self.mimics,
+        );
         for (at, vel, seed) in breaks {
             // A wreck comes apart like a rock does: shards off the break.
             let rock = belt::Rock {
@@ -2212,7 +3463,10 @@ impl Game {
             orient: self.state.ship.orient,
             aim: self.aim_world(),
         };
-        if self.hold.engage(&own, own.aim, &self.belt, &self.mimics) {
+        if self
+            .hold
+            .engage(&own, own.aim, &self.belt, &self.mimics, &self.miners)
+        {
             let (t, off) = self.hold.target.unwrap();
             log::info!("hold: locked on a {} at {:.0} m", t.name(), off.length());
         } else {
@@ -2242,6 +3496,20 @@ impl Game {
         self.haul.text(self.state.time_s, 6.0)
     }
 
+    /// Every other ship in the air, for anything that marks them (the
+    /// sight, the hologram): world position and kind — 0 hailing, 1
+    /// hostile, 2 wreck, 3 a miner, 4 a hostile miner — mimics out of
+    /// their shrouds first, then the miners.
+    fn contacts(&self, t: f64) -> Vec<(DVec3, u8)> {
+        self.mimics
+            .ships
+            .iter()
+            .filter(|m| !m.shrouded(t))
+            .map(|m| (m.pos, m.kind()))
+            .chain(self.miners.ships.iter().map(|m| (m.pos, m.kind())))
+            .collect()
+    }
+
     /// The mimics' line: what was said, what is happening, the hull.
     fn mimic_text(&self) -> Option<String> {
         self.mimics.text()
@@ -2252,7 +3520,10 @@ impl Game {
     fn mimic_uniforms(&self, pose: &ViewPose) -> MimicUniforms {
         let cam = &pose.cam;
         let head = pose.head;
-        if self.mimics.ships.is_empty() {
+        if self.mimics.ships.is_empty()
+            && self.miners.ships.is_empty()
+            && self.helis.fighter.is_none()
+        {
             return MimicUniforms::none(cam, head);
         }
         let ship_inv = self.state.ship.orient.inverse();
@@ -2266,15 +3537,59 @@ impl Game {
             .iter()
             .filter(|m| !m.shrouded(t) || m.reveal(t) > 0.0)
             .map(|m| MimicView {
-                at: to_ship(m.pos),
-                rot: (ship_inv * m.orient).as_quat(),
-                reveal: m.reveal(t),
-                effort: m.effort,
-                kind: m.kind(),
-                wound: m.wound(),
-                seed: m.seed,
+                size: self.mimics.size.clamp(0.5, 3.0),
+                ..MimicView::plain(
+                    to_ship(m.pos),
+                    (ship_inv * m.orient).as_quat(),
+                    m.reveal(t),
+                    m.effort,
+                    m.kind(),
+                    m.wound(),
+                    m.seed,
+                )
             })
+            .chain(self.miners.ships.iter().map(|m| {
+                // The beam ends on the claim's face, toward the miner.
+                let beam = m.mining().then(|| {
+                    self.belt
+                        .rocks
+                        .iter()
+                        .find(|r| Some(r.id) == m.claim)
+                        .map(|r| {
+                            let toward = (m.pos - r.pos).normalize_or_zero();
+                            to_ship(r.pos + toward * r.radius_m * 0.98)
+                        })
+                });
+                MimicView {
+                    size: m.size() as f32,
+                    tier: m.tier() as u8,
+                    shield: m.sheen,
+                    beam: beam.flatten(),
+                    ..MimicView::plain(
+                        to_ship(m.pos),
+                        (ship_inv * m.orient).as_quat(),
+                        1.0,
+                        m.effort,
+                        m.kind(),
+                        m.wound(),
+                        m.seed,
+                    )
+                }
+            }))
+            .chain(self.helis.fighter.iter().map(|f| {
+                // The fighter waiting where it was left, its beacon on.
+                MimicView::plain(
+                    to_ship(f.pos_m),
+                    (ship_inv * f.orient).as_quat(),
+                    1.0,
+                    0.0,
+                    0,
+                    0.0,
+                    0.31,
+                )
+            }))
             .collect();
+
         let rocks: Vec<Occluder> = self
             .belt
             .rocks
@@ -2409,8 +3724,17 @@ impl Game {
     /// The gun sight this frame: off with a panel up or in design.
     fn sight_uniforms(&self, pose: &ViewPose) -> SightUniforms {
         let cam = &pose.cam;
-        if self.panel_open() || self.settings.arms_sight <= 0.0 {
+        if self.panel_open() {
             return SightUniforms::none(cam);
+        }
+        // The mimics' markers ride this pass whatever the sight setting:
+        // strength 0 hides the gun's reticle, never the way to a ship.
+        let t = self.state.time_s;
+        let ship_inv = self.state.ship.orient.inverse();
+        let eye = self.eye_m(pose);
+        let mut marks = [None; farfall_render::sight::MARKS];
+        for (slot, (pos, kind)) in marks.iter_mut().zip(self.contacts(t)) {
+            *slot = Some(((ship_inv * (pos - eye)).as_vec3(), kind));
         }
         let (aim, clamped) = self.aim_ship();
         let w = self.arms.selected;
@@ -2441,6 +3765,7 @@ impl Game {
                 jammed: self.arms.jammed_of(w),
                 empty: self.arms.ammo_of(w) == 0,
                 strength: self.settings.arms_sight,
+                marks,
             },
         )
     }
@@ -2580,6 +3905,131 @@ impl Game {
 
     /// The shards this frame, in the ship's frame, with the rocks that
     /// can hide them.
+    /// The dust about the eye this frame: where the eye is on the world
+    /// lattice, how thick the dust is here (the belt, a planet's air, a
+    /// floor in deep space), what it rests in (the local orbit about the
+    /// nearest body), what hides it (that body), and the cabin's light.
+    fn dust_uniforms(&self, pose: &ViewPose, target_height_px: f32) -> DustUniforms {
+        let t = self.state.time_s;
+        let ship = &self.state.ship;
+        let eye = self.eye_m(pose);
+        let bodies = self.params.bodies(t);
+        let vels = self.params.body_velocities(t);
+        let mut near = 0;
+        for (i, b) in bodies.iter().enumerate() {
+            let alt = (b.centre - ship.pos_m).length() - b.radius_m;
+            let best = (bodies[near].centre - ship.pos_m).length() - bodies[near].radius_m;
+            if alt < best {
+                near = i;
+            }
+        }
+        let body = bodies[near];
+        let rel = body.centre - ship.pos_m;
+        let uranus = warp::Destination::Uranus.body(&self.params, t);
+        let belt = belt::Belt::ring_density(&uranus, eye) as f32;
+        let air = (sim::atmo_density(&self.params.planet, ship.pos_m.length())
+            / self.params.planet.atmo_rho0.max(1e-12)) as f32;
+        let density = farfall_render::dust::density(belt, air, self.hyper, self.settings.dust);
+        let cabin = (pose.eye_ship == DVec3::ZERO && self.settings.cockpit_frame)
+            .then_some((pose.head, self.settings.cockpit_glow));
+        DustUniforms::new(
+            &pose.cam,
+            &DustScene {
+                eye_m: eye,
+                drift_mps: farfall_render::dust::drift(
+                    rel,
+                    body.mu,
+                    vels[near],
+                    ship.vel_mps,
+                    self.air_ratio(),
+                ),
+                sun_dir: self.params.sun.dir.as_vec3(),
+                density,
+                setting: self.settings.dust,
+                occluder_rel: (body.centre - eye).as_vec3(),
+                occluder_radius_m: body.radius_m as f32,
+                cabin,
+                target_height_px,
+            },
+        )
+    }
+
+    /// The wind about the ship this frame: the sim's own field sampled at
+    /// the ship and a gap above it (one source of truth — the shader only
+    /// interpolates between the two samples), how visible the air is here,
+    /// and the WIND setting.
+    fn wind_uniforms(&self, pose: &ViewPose, target_height_px: f32) -> WindUniforms {
+        let ship = &self.state.ship;
+        let t = self.state.time_s;
+        let r = ship.pos_m.length();
+        let up = if r > 0.0 { ship.pos_m / r } else { DVec3::Y };
+        let low = self.wind_now();
+        let high = if self.bench_wind.is_some() {
+            low
+        } else {
+            sim::wind_mps(
+                &self.params,
+                ship.pos_m + up * farfall_render::wind::SAMPLE_GAP_M,
+                t,
+            )
+        };
+        // Visibility follows the air on a gentle curve, (rho/rho0)^0.22,
+        // so the ribbons still read in the thin fast air of the jet band
+        // and are exactly nothing above the atmosphere (rho = 0 there).
+        let rho = sim::atmo_density(&self.params.planet, r) / self.params.planet.atmo_rho0;
+        let air = (rho.max(0.0) as f32).powf(0.22);
+        WindUniforms::new(
+            &pose.cam,
+            &WindScene {
+                eye_m: self.eye_m(pose),
+                wind_low: low.as_vec3(),
+                wind_high: high.as_vec3(),
+                up: up.as_vec3(),
+                air,
+                setting: self.settings.wind,
+                target_height_px,
+            },
+        )
+    }
+
+    /// The wind at the ship: the sim's field, or the bench's forced one.
+    fn wind_now(&self) -> DVec3 {
+        if let Some((mps, from_deg)) = self.bench_wind {
+            let (nose_h, right_h, _) = self.horizontal_frame();
+            let a = from_deg.to_radians();
+            return -(nose_h * a.cos() + right_h * a.sin()) * mps;
+        }
+        sim::wind_mps(&self.params, self.state.ship.pos_m, self.state.time_s)
+    }
+
+    /// The pilot's compass on the ground plane: the nose and the right
+    /// hand projected into the local horizontal, and the up they share.
+    /// Nose-down, the ship's own up stands in so the frame never folds.
+    fn horizontal_frame(&self) -> (DVec3, DVec3, DVec3) {
+        let ship = &self.state.ship;
+        let up = ship.pos_m.normalize_or_zero();
+        let flat = |v: DVec3| v - up * v.dot(up);
+        let mut nose_h = flat(ship.orient * DVec3::NEG_Z);
+        if nose_h.length_squared() < 1e-12 {
+            nose_h = flat(ship.orient * DVec3::Y);
+        }
+        let nose_h = nose_h.normalize_or_zero();
+        (nose_h, nose_h.cross(up), up)
+    }
+
+    /// The WIND line: speed and the way the air goes, relative to the
+    /// nose. None in vacuum (the field is exactly zero there) or a calm.
+    fn wind_readout(&self) -> Option<(f32, &'static str)> {
+        let w = self.wind_now();
+        let speed = w.length();
+        if speed < 0.5 {
+            return None;
+        }
+        let (nose_h, right_h, _) = self.horizontal_frame();
+        let ang = w.dot(right_h).atan2(w.dot(nose_h));
+        Some((speed as f32, readout::arrow(ang as f32)))
+    }
+
     fn debris_uniforms(&self, pose: &ViewPose) -> DebrisUniforms {
         let cam = &pose.cam;
         let head = pose.head;
@@ -2653,15 +4103,23 @@ impl Game {
     fn jet_uniforms(&self, pose: &ViewPose) -> JetUniforms {
         let ship_inv = self.state.ship.orient.inverse();
         let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        let thrust = self.thrust_look();
+        let (body_dir, body_sin) = self.nearest_body_ship();
         let u = JetUniforms::new(
             &pose.cam,
             pose.head,
             pose.eye_ship.as_vec3(),
             sun_ship,
-            self.effort,
+            thrust[0],
             self.hyper,
-        );
-        if pose.eye_ship == DVec3::ZERO {
+        )
+        .with_rcs(thrust[1], thrust[2], thrust[3])
+        .with_body_fill(body_dir, body_sin * body_sin)
+        .with_fit(&bay::fit_views(&self.settings.mounts))
+        .with_craft(self.settings.craft.kind());
+        // In the cockpit there is nothing to draw; in a pad's helicopter
+        // the heli pass draws the flown hull, not this one.
+        if pose.eye_ship == DVec3::ZERO || self.helis.in_heli {
             u
         } else {
             u.shown()
@@ -2693,6 +4151,18 @@ impl Game {
             ),
             None => (Vec3::ZERO, 0.0, self.state.ship.vel_mps),
         };
+        // The revealed mimics, relative to the ship in its frame: a mark
+        // each at its true bearing.
+        let mut marks = [None; farfall_render::holo::MARKS];
+        for (slot, m) in marks
+            .iter_mut()
+            .zip(self.mimics.ships.iter().filter(|m| !m.shrouded(t)))
+        {
+            *slot = Some((
+                (ship_inv * (m.pos - self.state.ship.pos_m)).as_vec3(),
+                m.kind(),
+            ));
+        }
         let scene = HoloScene {
             vel_dir: (ship_inv * vel_rel).as_vec3(),
             speed_mps: vel_rel.length() as f32,
@@ -2701,6 +4171,9 @@ impl Game {
             sun_dir: (ship_inv * self.params.sun.dir).as_vec3(),
             effort: self.effort,
             hyper: self.hyper,
+            range: self.settings.holo_range,
+            marks,
+            craft: self.settings.craft.kind(),
         };
         let tan_half = (pose.cam.fov_y * 0.5).tan();
         let radius = self.settings.holo_size * HOLO_RADIUS_M;
@@ -2831,7 +4304,9 @@ impl Game {
         // The hyper field forms over a moment and collapses faster.
         {
             let want = if self.bench_hyper
-                || (self.input.controls(self.assist).hyper && !self.warp.active())
+                || (self.input.controls(self.assist).hyper
+                    && !self.warp.active()
+                    && !self.helis.in_heli)
             {
                 1.0
             } else {
@@ -2842,6 +4317,9 @@ impl Game {
             self.hyper += (want - self.hyper) * k;
         }
         self.look.update(frame_dt.min(0.25) as f32);
+        // The WARP LENGTH setting reaches the drive here; a running
+        // sequence keeps the length it started with.
+        self.warp.set_length(self.settings.warp_length);
         if self.warp.update(frame_dt.min(0.25) as f32) {
             if self.pending_slip {
                 self.pending_slip = false;
@@ -2871,6 +4349,9 @@ impl Game {
         // The camera on the head: pushed by the load, trembling under
         // thrust, settling — or parked, for a bench.
         self.shake.strength = self.settings.cam_shake;
+        // The chaos drive jostles the SHIP; the helmet camera is held
+        // while the field is up so the dash reads to the slip.
+        self.shake.hyper_damp(self.hyper);
         self.shake
             .step(self.frame_dt, self.felt_g_body, self.effort);
         if let Some([y, p, r]) = self.bench_shake {
@@ -2888,8 +4369,10 @@ impl Game {
         // send upstream (SPEC §5.2).
         // Advance the input ramp on wall time, before sampling it.
         self.input.update(frame_dt);
-        // Through a jump the stick is dead: the drive has the ship.
-        let mut controls = if self.warp.active() {
+        // Through a jump the stick is dead: the drive has the ship. On
+        // foot every control is dead: the ship stays LANDED where its
+        // pilot left it, and nothing can lift it off from under them.
+        let mut controls = if self.warp.active() || self.eva.is_some() {
             sim::Controls {
                 assist: self.assist,
                 ..Default::default()
@@ -2898,6 +4381,20 @@ impl Game {
             self.input.controls(self.assist)
         };
         controls.hyper_level = self.hyper_level();
+        // The CRAFT row is live: outside a pad's helicopter the sim flies
+        // whatever airframe the SHIP page chose (SPEC §6.5c).
+        if !self.helis.in_heli {
+            self.params.ship = self.own_ship_params();
+        }
+        // In the helicopter the stick is the helicopter's: collective,
+        // cyclic, pedals - and a pad hull's drives cannot come, while
+        // the pilot's own FARFALL helicopter keeps its hyper field.
+        if self.helis.in_heli {
+            controls = heli::route_controls(controls);
+        } else if self.settings.craft == bay::Craft::Helicopter {
+            controls = heli::route_controls_farfall(controls);
+        }
+
         // Fuelled by entropy: toward the slip the field shakes the ship —
         // the stick and the throttle jostled by the drive, a little, then
         // a lot, until it goes.
@@ -2941,10 +4438,24 @@ impl Game {
             // HOLD: the computer's thrust replaces the pilot's on the way
             // in, its torque adds; the lock drops when the target is gone.
             let mut step_controls = controls;
+            // LANDING ASSIST: on the way in, the flight computer holds the
+            // hull level over the ground on any axis the pilot leaves alone.
+            if self.landing
+                && self.settings.landing_assist
+                && self.touchdown.is_some()
+                && !self.on_ground()
+            {
+                landing::assist(
+                    &mut step_controls,
+                    self.state.ship.orient,
+                    self.state.ship.ang_vel_radps,
+                    self.up_world(),
+                );
+            }
             if self.hold.engaged() {
                 self.hold.gain = self.settings.hold_gain;
                 self.hold.face = self.settings.hold_face;
-                match self.hold.track(&self.belt, &self.mimics) {
+                match self.hold.track(&self.belt, &self.mimics, &self.miners) {
                     Some(tracked) => {
                         let own = arms::Ship {
                             pos: self.state.ship.pos_m,
@@ -2969,6 +4480,20 @@ impl Game {
                 }
             }
             self.state = sim::step(&self.params, &self.state, step_controls);
+            // The tick the ground is met is the one that says how the
+            // touchdown went; the record stands until the next one.
+            if let Some(record) =
+                landing::Record::judge(&self.params, before_t, &before, &self.state.ship)
+            {
+                self.touchdown_record = Some(record);
+                log::info!(
+                    "touchdown: {} on {} — {:.1} m/s down, {:.1} m/s along",
+                    record.verdict(),
+                    landing::BODY_NAMES[record.body],
+                    record.into_mps,
+                    record.along_mps
+                );
+            }
             // The belt: rocks move, knock each other, and knock the ship
             // — an impulse on its state, a bump on the shield, grit in
             // the sound.
@@ -2989,7 +4514,16 @@ impl Game {
             self.arms.scar_size = self.settings.arms_scar_size;
             self.arms.scar_cool_s = self.settings.arms_scar_cool;
             self.arms.mounts = self.settings.mounts;
-            let trigger = self.fire_held && !self.menu.open && !self.map_open() && !self.design;
+            self.mimics.chance = self.settings.mimics_chance;
+            self.mimics.hostility = self.settings.mimics_hostility;
+            self.mimics.size = self.settings.mimics_size;
+            self.haul.yield_ = self.settings.arms_ore;
+            self.miners.count = self.settings.miners_count;
+            self.miners.growth = self.settings.miners_growth;
+            let trigger = (self.fire_held || self.stick_fire)
+                && !self.menu.open
+                && !self.map_open()
+                && !self.design;
             let kick = self.arms.step(
                 self.state.time_s,
                 sim::DT,
@@ -3007,6 +4541,7 @@ impl Game {
                 self.state.ship.vel_mps += kick;
             }
             self.step_mimics();
+            self.step_eva();
             let hits: Vec<belt::Hit> = self.belt.hits.clone();
             for h in hits {
                 let ship_inv = self.state.ship.orient.inverse();
@@ -3052,6 +4587,15 @@ impl Game {
             .max(self.hold_effort()) as f32;
         let alpha = 1.0 - (-(frame_dt as f32) / FOV_RESPONSE_S).exp();
         self.effort += (target - self.effort) * alpha;
+
+        // Autosave: every 30 s of SIM time (not wall clock), so a crash
+        // costs at most that much. Never reached while a panel is open or
+        // the sim is frozen — both return earlier in this function, which
+        // is exactly when this should not run anyway.
+        if self.state.time_s >= self.next_save_s {
+            self.next_save_s = self.state.time_s + AUTOSAVE_INTERVAL_S;
+            self.maybe_store_world();
+        }
     }
 
     /// How much atmosphere surrounds the hull, 0 (vacuum) to 1 (thick air).
@@ -3120,6 +4664,11 @@ impl Game {
         )
         .with_occluders([rel(&moon), rel(&sun)])
         .with_sky(self.settings.sky)
+        .with_detail(
+            self.settings.terrain_detail,
+            self.settings.clouds,
+            self.settings.city_lights,
+        )
     }
 
     /// What the hull feels this frame: the wind in its own frame and the air
@@ -3307,6 +4856,7 @@ impl Game {
             if self.assist { "on" } else { "off" },
             sim::state_hash(&self.state),
         );
+        self.maybe_store_world();
     }
 
     /// Camera pose for this frame: ride the hull, look down the nose. The view
@@ -3314,12 +4864,17 @@ impl Game {
     /// sliding a detached camera around it.
     /// Left button while looking: pick up the dial under the gaze, if one
     /// is within reach. Returns whether something was picked up.
-    fn begin_drag(&mut self, cam: &CameraFrame, text_w: f32) -> bool {
+    fn begin_drag(&mut self, cam: &CameraFrame, px: f32) -> bool {
         // The glass is laid out in the reference projection; the pointer
         // is the cursor in design mode, the gaze while looking.
         let Some(gaze) = self.pointer(cam) else {
             return false;
         };
+        if self.card_open {
+            return false;
+        }
+        // The block on screen: a flat card's width is over the aspect.
+        let text_w = self.text_w(px) / cam.aspect;
         // A panel that is up is what the gaze can take: the map by its
         // pane, the settings by its text block.
         if self.map_open() {
@@ -3357,11 +4912,12 @@ impl Game {
             return false;
         }
         if self.menu.open {
-            let a = self.settings.menu_anchor;
+            let a = self.text_anchor(cam.aspect, px);
+            let h = self.menu.extent().1 as f32 * px;
             let on_text = gaze[0] >= a[0] - 0.02
                 && gaze[0] <= a[0] + text_w + 0.02
                 && gaze[1] <= a[1] + 0.02
-                && gaze[1] >= a[1] - 0.5;
+                && gaze[1] >= a[1] - h - 0.02;
             if on_text {
                 self.drag = Some((Dragged::MenuPanel, [a[0] - gaze[0], a[1] - gaze[1]]));
                 log::info!("drag: picked up the settings panel");
@@ -3381,10 +4937,24 @@ impl Game {
                 return true;
             }
         }
+        // The mini map is glassware too: taken by its pane, dropped
+        // anywhere on the glass, its anchor kept on ui.map.
+        if self.mini_map_shown() {
+            let a = self.settings.layout.inset(self.mini_map_anchor());
+            let [cx, cy, hw] = map::pane_rect_sized(cam.aspect, a, self.mini_map_half_h());
+            let hh = hw * cam.aspect;
+            let inside = (gaze[0] - cx).abs() <= hw + 0.02 && (gaze[1] - cy).abs() <= hh + 0.02;
+            if inside {
+                self.drag = Some((Dragged::MiniMap, [a[0] - gaze[0], a[1] - gaze[1]]));
+                log::info!("drag: picked up the mini map");
+                return true;
+            }
+        }
         // The readout's block is a glass element like a dial: the gaze
         // while looking, or the cursor in design mode, takes it too.
         {
             let a = self.settings.readout_anchor;
+            let text_w = panel::block_ndc(PANEL_COLS, px);
             let on_text = gaze[0] >= a[0] - 0.02
                 && gaze[0] <= a[0] + text_w + 0.02
                 && gaze[1] <= a[1] + 0.02
@@ -3447,6 +5017,10 @@ impl Game {
             Dragged::MenuPanel => self.settings.menu_anchor = clamp(at),
             Dragged::Readout => self.settings.readout_anchor = glass(at),
             Dragged::MapPanel => self.settings.map_anchor = clamp(at),
+            Dragged::MiniMap => {
+                let at = self.settings.layout.uninset(clamp(at));
+                self.settings.layout.set_free(Instrument::Map, at);
+            }
             Dragged::HoloPanel => self.settings.holo_anchor = clamp(at),
             Dragged::BayPanel => self.settings.bay_anchor = clamp(at),
         }
@@ -3464,9 +5038,13 @@ impl Game {
         self.pose(aspect).cam
     }
 
-    /// This frame's eye on the world: the cockpit's, or the chase rig's
-    /// when the CAMERA setting says so.
+    /// This frame's eye on the world: the walker's when someone is on
+    /// foot, else the cockpit's, or the chase rig's when the CAMERA
+    /// setting says so.
     fn pose(&self, aspect: f32) -> ViewPose {
+        if let Some(w) = &self.eva {
+            return self.eva_pose(aspect, w);
+        }
         if self.chase_active() {
             self.chase_pose(aspect)
         } else {
@@ -3498,6 +5076,21 @@ impl Game {
         }
     }
 
+    /// The walker's eye (SPEC §6.5b): feet plus eye height, gaze leaning
+    /// with the planet. Expressed in the ship's frame like every pose —
+    /// exact while the ship is LANDED and still, which on foot it always
+    /// is.
+    fn eva_pose(&self, aspect: f32, w: &eva::Walker) -> ViewPose {
+        let b = self.params.bodies(self.state.time_s)[w.body];
+        let inv = self.state.ship.orient.inverse();
+        let head = (inv * w.orientation()).as_quat();
+        ViewPose {
+            cam: self.cam_for(aspect, head),
+            head,
+            eye_ship: inv * (b.centre + w.eye_m() - self.state.ship.pos_m),
+        }
+    }
+
     /// The camera frame for a view turned `head` from the ship's own axes.
     /// The camera is the ship's orientation — both use the same
     /// right-handed frame with the nose at -Z, so no fix-up rotation is
@@ -3520,6 +5113,19 @@ impl Game {
         self.settings.camera_chase
     }
 
+    /// The eye is outside the ship — the chase rig's, or the walker's —
+    /// so the hull shows and the cabin, dash and glass stay home.
+    fn exterior_view(&self) -> bool {
+        self.chase_active() || self.eva.is_some()
+    }
+
+    /// The cursor is grabbed while a look is driving it: the cockpit's
+    /// freelook, or the walker's always-on gaze (freed while a panel is
+    /// up, so the menu can be clicked).
+    fn grabs_cursor(&self) -> bool {
+        (self.eva.is_some() && !self.panel_open()) || self.look.engaged()
+    }
+
     /// The key a named control answers to right now.
     fn bind(&self, n: Named) -> KeyCode {
         self.settings.bindings.named(n)
@@ -3528,12 +5134,77 @@ impl Game {
     /// The holo3PP renders only when its panel is up and the main view is
     /// still the cockpit — in chase the whole screen already is the rig.
     fn holo_active(&self) -> bool {
-        self.settings.holo_view && !self.chase_active()
+        self.settings.holo_view && !self.exterior_view()
     }
 
     /// Where a pose's eye sits in the world, metres.
     fn eye_m(&self, pose: &ViewPose) -> DVec3 {
         self.state.ship.pos_m + self.state.ship.orient * pose.eye_ship
+    }
+}
+
+impl Game {
+    /// The helicopters this frame: the pads within draw range (hulls
+    /// idling on their painted circles), any set down elsewhere, and -
+    /// seen from the chase rig - the one being flown, its rotor by the
+    /// collective.
+    fn heli_uniforms(&self, pose: &ViewPose) -> HeliUniforms {
+        let cam = &pose.cam;
+        let head = pose.head;
+        if !self.settings.helis {
+            return HeliUniforms::none(cam, head);
+        }
+        let ship_inv = self.state.ship.orient.inverse();
+        let eye = self.eye_m(pose);
+        let to_ship = |p: DVec3| (ship_inv * (p - eye)).as_vec3();
+        let now = self.started.elapsed().as_secs_f32();
+        let mut views: Vec<(f64, HeliView)> = Vec::new();
+        for i in 0..heli::PADS {
+            let Some(st) = self.helis.heli_state(&self.params, i) else {
+                continue;
+            };
+            let d = (st.pos_m - eye).length();
+            if d > heli::DRAW_M {
+                continue;
+            }
+            // A helicopter set down off its pad rests in a bare field.
+            let on_pad = self.helis.displaced.iter().all(|(p, _)| *p != i);
+            views.push((
+                d,
+                HeliView {
+                    at: to_ship(st.pos_m),
+                    rot: (ship_inv * st.orient).as_quat(),
+                    rotor: 0.12,
+                    seed: (i as f32 * 0.173).fract(),
+                    pad: on_pad,
+                },
+            ));
+        }
+        if self.helis.in_heli && pose.eye_ship != DVec3::ZERO {
+            views.push((
+                0.0,
+                HeliView {
+                    at: to_ship(self.state.ship.pos_m),
+                    rot: (ship_inv * self.state.ship.orient).as_quat(),
+                    rotor: (0.35 + 0.65 * self.effort).clamp(0.0, 1.0),
+                    seed: 0.5,
+                    pad: false,
+                },
+            ));
+        }
+        if views.is_empty() {
+            return HeliUniforms::none(cam, head);
+        }
+        views.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let views: Vec<HeliView> = views
+            .into_iter()
+            .map(|(_, v)| v)
+            .take(farfall_render::heli::HELIS)
+            .collect();
+        // The planet underfoot hides what is past its limb.
+        let occ = (to_ship(DVec3::ZERO), self.params.planet.radius_m as f32);
+        let sun_ship = (ship_inv * self.params.sun.dir).as_vec3();
+        HeliUniforms::new(cam, head, now, sun_ship, &views, occ)
     }
 }
 
@@ -3599,6 +5270,41 @@ const SPAWN_PITCH_DEG: f64 = 12.0;
 /// Also close enough to make an approach, and eventually a collision, short.
 const SPAWN_ALTITUDE_M: f64 = 12_000.0;
 
+/// Under this altitude a FARFALL_BENCH_ALT run flies, it does not orbit:
+/// the sim's circular orbit at 500 m is 787 m/s in sea-level air, which
+/// lights the entry plasma (as it should — see thermal.wgsl) and fogs the
+/// whole glass, so the ground and the air could never be looked at. The
+/// stock 12 km scene is above this and unchanged.
+const LOW_BENCH_CEILING_M: f64 = 8_000.0;
+/// The airspeed of a low bench run, m/s: a fast cruise, a warm hull, no
+/// sheath.
+const LOW_BENCH_AIRSPEED_MPS: f64 = 250.0;
+/// Where a low bench run is parked, latitude and longitude in degrees:
+/// over a coast, so a capture shows land, sea and the line between them
+/// (the orbit's own spot, 0°N 0°E, is open ocean to the horizon).
+/// FARFALL_BENCH_ALT_AT=lat,lon overrides it.
+const LOW_BENCH_LAT_LON_DEG: (f64, f64) = (10.0, 320.0);
+
+/// Move a bench spawn from the orbit's spot to the low-flight spot at the
+/// same altitude, keeping its attitude to the local horizon, at airspeed.
+fn low_bench_flight(state: &mut sim::WorldState) {
+    let (lat, lon) = std::env::var("FARFALL_BENCH_ALT_AT")
+        .ok()
+        .and_then(|v| {
+            let p: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            (p.len() == 2 && p[0].is_finite() && p[1].is_finite()).then(|| (p[0], p[1]))
+        })
+        .unwrap_or(LOW_BENCH_LAT_LON_DEG);
+    let (lat, lon) = (lat.clamp(-89.0, 89.0).to_radians(), lon.to_radians());
+    let up = DVec3::new(lat.cos() * lon.cos(), lat.sin(), lat.cos() * lon.sin());
+    // The orbit spawns with +X up; take everything round to the new up.
+    let rot = DQuat::from_rotation_arc(DVec3::X, up);
+    let ship = &mut state.ship;
+    ship.pos_m = rot * ship.pos_m;
+    ship.vel_mps = rot * ship.vel_mps.normalize_or_zero() * LOW_BENCH_AIRSPEED_MPS;
+    ship.orient = rot * ship.orient;
+}
+
 /// Base vertical field of view, degrees.
 /// How much the view opens up under full boost, degrees. The camera reads the
 /// ship's own thrust demand, so acceleration is *seen*, not just measured — the
@@ -3618,6 +5324,25 @@ const FOV_RESPONSE_S: f32 = 0.28;
 /// map, text and all — instead of the scene target.
 fn capture_final() -> bool {
     std::env::var("FARFALL_CAPTURE").as_deref() == Ok("final")
+}
+
+/// "x,y" as two integers, for FARFALL_WINDOW_POS.
+fn parse_vec2(s: &str) -> Option<(i32, i32)> {
+    let mut it = s.split(',').map(|p| p.trim().parse::<i32>().ok());
+    let x = it.next()??;
+    let y = it.next()??;
+    Some((x, y))
+}
+/// When a bench takes its capture, seconds on the frame clock: halfway
+/// through the run (see `Gpu::bench_capture_due`). The bench knobs that
+/// stage a moment — an after-image, strikes on the shield — are aged
+/// against this, so they show in the capture whatever the run's length.
+fn bench_capture_s() -> f32 {
+    std::env::var("FARFALL_BENCH_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(20.0)
+        * 0.5
 }
 
 /// "x,y,z" → vector, for the bench knobs.
@@ -3755,6 +5480,23 @@ impl App {
             "FARFALL"
         };
         let mut attrs = Window::default_attributes().with_title(title);
+        if let Some((w, h)) = cfg.bench_size {
+            attrs = attrs
+                .with_inner_size(winit::dpi::PhysicalSize::new(w, h))
+                .with_decorations(false);
+        }
+        if cfg.bench {
+            // A benchmark window is born unfocused and, if asked, on another
+            // screen (FARFALL_WINDOW_POS=x,y in desktop pixels): it must never
+            // take the keyboard or the mouse from whoever is working here.
+            attrs = attrs.with_active(false);
+            if let Some(pos) = std::env::var("FARFALL_WINDOW_POS")
+                .ok()
+                .and_then(|v| parse_vec2(&v))
+            {
+                attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(pos.0, pos.1));
+            }
+        }
         if !cfg.windowed && cfg!(not(target_arch = "wasm32")) {
             // Borderless fullscreen on the current monitor: no mode switch, so
             // alt-tab stays instant and the resolution is the desktop's.
@@ -3851,6 +5593,7 @@ impl App {
         );
         let scene = SceneTarget::new(cfg.msaa, config.format, cfg.scale);
         let blit = BlitPass::new(&device, config.format);
+        let post = PostPass::new(&device, config.format, cfg.msaa);
         // Bake the static world fields before the first frame. Everything the
         // planet pass reads per pixel is generated here, by shader, once.
         let baked = BakedMaps::bake(&device, &queue);
@@ -3902,6 +5645,7 @@ impl App {
             surface,
             config,
             scene,
+            post,
             blit,
             passes,
             baked,
@@ -3923,8 +5667,60 @@ impl App {
         let mut game = Game::new();
         let mut settings = settings;
         settings.msaa = msaa_in_use;
+        // FARFALL_FOV=deg: the field of view for this run, over the file's
+        // graphics.fov — a graphics knob like FARFALL_SCALE, not bench-only.
+        if let Some(f) = std::env::var("FARFALL_FOV")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|f| f.is_finite())
+        {
+            settings.fov = f.clamp(settings::FOV_MIN, settings::FOV_MAX);
+        }
         game.apply_settings(settings);
+        // RESUME: pick up the last quit's world, unless this is a bench
+        // (a scene capture must stay reproducible — it must never see a
+        // resumed world) or the pilot/profiler has turned it off.
+        if resume_allowed(
+            game.settings.resume,
+            game.frozen,
+            env_resume().as_deref(),
+            bench_spawn_env_present(),
+        ) {
+            if let Some(s) = save::load() {
+                game.restore(&s);
+            }
+        }
+        // FARFALL_BENCH_RESUME=<path>: bench-only, for e2e verification —
+        // load a save from an EXPLICIT path (never ~/.farfall) through
+        // the same parse/seal check as a real resume, then keep the bench
+        // frozen (restore itself always clears `frozen`, since a real
+        // resume can only ever happen when it was already false). A
+        // tampered or unreadable file is refused and logged; the bench
+        // simply stays at the stock orbit, same as any other refusal.
+        let bench_resume_path = std::env::var_os("FARFALL_BENCH_RESUME");
+        if bench_path_action_allowed(game.frozen, bench_resume_path.as_deref()) {
+            let bench_resume_path = std::path::PathBuf::from(bench_resume_path.unwrap());
+            match save::load_from(&bench_resume_path) {
+                Some(s) => {
+                    game.restore(&s);
+                    game.frozen = true;
+                    log::info!("bench: resumed from {}", bench_resume_path.display());
+                }
+                None => log::warn!(
+                    "bench: FARFALL_BENCH_RESUME {} refused (missing, unreadable, \
+                     or failed validation)",
+                    bench_resume_path.display()
+                ),
+            }
+        }
         game.menu.set_msaa_supported(&msaa_supported);
+        // The CONTROLS card: on the first run (no file yet), or at every
+        // start if asked; never in a bench unless a capture wants it.
+        if (!game.frozen && (!Settings::file_exists() || game.settings.controls_card))
+            || (game.frozen && std::env::var("FARFALL_BENCH_CARD").is_ok())
+        {
+            game.open_card();
+        }
         if game.frozen && std::env::var("FARFALL_BENCH_MAP").is_ok() {
             game.toggle_map();
         }
@@ -3937,6 +5733,16 @@ impl App {
             game.settings.gauge_style = style;
             for d in game.settings.dials.iter_mut() {
                 d.style = None;
+            }
+        }
+        if let Ok(v) = std::env::var("FARFALL_BENCH_FIT") {
+            if game.frozen {
+                for (slot, k) in game.settings.mounts.iter_mut().zip(v.split(',')) {
+                    if let Some(m) = bay::Mount::from_key(k.trim()) {
+                        *slot = m;
+                    }
+                }
+                game.arms.mounts = game.settings.mounts;
             }
         }
         if game.frozen && std::env::var("FARFALL_BENCH_SHIP").is_ok() {
@@ -3952,11 +5758,25 @@ impl App {
         if game.frozen && std::env::var("FARFALL_BENCH_DESIGN").is_ok() {
             game.toggle_design();
         }
+        if game.frozen && std::env::var("FARFALL_BENCH_CRAFT").is_ok_and(|v| v.trim() == "heli") {
+            game.settings.craft = bay::Craft::Helicopter;
+            game.params.ship = game.own_ship_params();
+        }
         if game.frozen && std::env::var("FARFALL_BENCH_CHASE").is_ok() {
             game.settings.camera_chase = true;
         }
         if game.frozen && std::env::var("FARFALL_BENCH_HOLO").is_ok() {
             game.settings.holo_view = true;
+        }
+        // The dust on its own: a bench row for the motes.
+        if let Ok(v) = std::env::var("FARFALL_BENCH_DUST") {
+            if game.frozen {
+                if let Ok(f) = v.trim().parse::<f32>() {
+                    if f.is_finite() {
+                        game.settings.dust = f.clamp(0.0, 2.0);
+                    }
+                }
+            }
         }
         // The nebula: "off" for a baseline, anything else a full sky of it —
         // the stock glow doubled, every cloud, spread wide — so a capture
@@ -3981,13 +5801,13 @@ impl App {
             .filter(|_| game.frozen)
             .and_then(|v| v.trim().parse::<f32>().ok())
         {
-            // The capture lands at t = 1 s of the bench clock: an image
-            // that old then, banked a little, gone down the nose.
+            // The capture lands halfway through the bench: an image that
+            // old then, banked a little, gone down the nose.
             let o = game.state.ship.orient;
             game.ghost = Some(Ghost {
                 orient: o * DQuat::from_rotation_z(0.35) * DQuat::from_rotation_x(-0.15),
                 dir_world: o * DVec3::new(0.15, 0.05, -1.0).normalize(),
-                at_s: 1.0 - age,
+                at_s: bench_capture_s() - age,
             });
         }
         let bench_arms = std::env::var("FARFALL_BENCH_ARMS").unwrap_or_default();
@@ -4044,6 +5864,107 @@ impl App {
                 _ => {}
             }
             game.mimics.ships.push(m);
+        }
+        // FARFALL_BENCH_MINERS=tier[,mine|fight]: a miner of that tier
+        // ahead-left, its beam on a rock planted ahead of it (mine, the
+        // default) or come about with its fire in the air (fight); and a
+        // far speck of a second one.
+        let bench_miners = std::env::var("FARFALL_BENCH_MINERS").unwrap_or_default();
+        if game.frozen && !bench_miners.is_empty() {
+            let mut parts = bench_miners.split(',');
+            let tier: usize = parts
+                .next()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+            let tier = tier.min(miner::TIERS - 1);
+            let stage = parts.next().unwrap_or("mine").trim().to_string();
+            let o = game.state.ship.orient;
+            let p = game.state.ship.pos_m;
+            let v = game.state.ship.vel_mps;
+            let t = game.state.time_s;
+            let haul_t = miner::TIER_T[tier] + 5.0;
+            let size = miner::TIER_SIZE[tier];
+            // Close enough to read at any tier: a tier-0 miner where the
+            // mimic bench puts its ship, the big ones a little further out
+            // but still filling the glass more than a fighter does.
+            let at = p + o * DVec3::new(-3.0 * size, 1.2 * size, -28.0 - 11.0 * size);
+            if stage == "fight" {
+                let orient = o * DQuat::from_rotation_y(2.6) * DQuat::from_rotation_x(0.08);
+                let mut m = miner::Miner::planted(
+                    at,
+                    v,
+                    orient,
+                    haul_t,
+                    miner::Phase::Attacking,
+                    miner::Temper::Hostile,
+                    0.61,
+                );
+                m.effort = 0.9;
+                m.sheen = if tier >= 2 { 0.8 } else { 0.0 };
+                m.wound_j = m.tough_j() * 0.3;
+                game.mimics.line = Some(("HULL 88%  UNDER FIRE".to_string(), t + 30.0));
+                for i in 0..5 {
+                    let dir =
+                        (p + o * DVec3::new(0.7 * i as f64 - 1.4, -0.3, 0.0) - at).normalize();
+                    let dist = 10.0 * size + 14.0 * i as f64;
+                    game.mimics.slugs.push(mimic::FoeSlug {
+                        pos: at + dir * dist,
+                        vel: v + dir * arms::Weapon::Cannon.muzzle_mps(),
+                        born_s: t - dist / arms::Weapon::Cannon.muzzle_mps(),
+                    });
+                }
+                game.impacts.insert(
+                    0,
+                    Impact {
+                        dir: Vec3::new(-0.3, 0.1, -1.0).normalize(),
+                        at_s: game.started.elapsed().as_secs_f32() - 0.4,
+                        size: 0.6,
+                    },
+                );
+                game.miners.ships.push(m);
+            } else {
+                // A rock ahead of the miner, the beam on its near face.
+                // The rock off to the miner's right, so the hull is seen
+                // side-on and the beam runs across the glass.
+                let rock_at = at + o * DVec3::new(18.0 + 14.0 * size, -3.0, -14.0 * size);
+                let radius = 12.0 + 5.0 * size;
+                let rock = belt::Rock {
+                    id: (0, 0, 0, 253),
+                    pos: rock_at,
+                    vel: v,
+                    radius_m: radius,
+                    seed: 0.62,
+                    spin: 0.0,
+                };
+                game.belt.rocks.insert(0, rock);
+                let mut m = miner::Miner::planted(
+                    at,
+                    v,
+                    mimic::look_at(rock_at - at, o * DVec3::Y),
+                    haul_t,
+                    miner::Phase::Mining,
+                    miner::Temper::Neutral,
+                    0.27,
+                );
+                m.claim = Some(rock.id);
+                m.effort = 0.25;
+                game.mimics.line = Some((miner::hail_text(0.27, tier).to_string(), t + 30.0));
+                game.miners.ships.push(m);
+            }
+            // A second miner a long way off: a speck with a marker.
+            let far = p + o * DVec3::new(900.0, 260.0, -2_600.0);
+            let mut m2 = miner::Miner::planted(
+                far,
+                v,
+                o,
+                miner::TIER_T[1] + 5.0,
+                miner::Phase::Transit,
+                miner::Temper::Neutral,
+                0.8,
+            );
+            m2.effort = 0.7;
+            game.miners.ships.push(m2);
+            game.miners.placed = true;
         }
         if game.frozen && bench_arms == "sight" {
             game.arms.heat[0] = 0.55;
@@ -4192,20 +6113,28 @@ impl App {
                 .push(burst(DVec3::new(25.0, -8.0, -380.0), 0.5, 2, 1.0, 0.9));
             game.arms.heat[0] = 0.4;
         }
+        if let Some(k) = std::env::var("FARFALL_BENCH_CLOUDS")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| v.trim().parse::<f32>().ok())
+        {
+            game.settings.clouds = k.clamp(0.0, 2.0);
+        }
         if let Some(n) = std::env::var("FARFALL_BENCH_STRIKES")
             .ok()
             .filter(|_| game.frozen)
             .and_then(|v| v.trim().parse::<usize>().ok())
         {
-            // Staggered over the last second and a half, spread round the
-            // nose: each ripple is at a different age in the capture. The
-            // capture lands at t = 1 s of the bench clock.
+            // Staggered over the last second, spread round the nose: each
+            // ripple is at a different age in the capture, which lands
+            // halfway through the bench.
+            let cap = bench_capture_s();
             for i in 0..n.min(farfall_render::shield::IMPACTS) {
                 let spread = random_unit(0.3 + 0.1 * i as f32, 0.13 * i as f32).as_vec3();
                 game.impacts.push(Impact {
                     dir: (glam::Vec3::NEG_Z + spread * 0.8).normalize(),
-                    at_s: 1.0 - 0.1 - 0.35 * i as f32,
-                    size: 0.2 + 0.25 * (i % 4) as f32,
+                    at_s: cap - 0.15 - 0.3 * i as f32,
+                    size: 0.3 + 0.25 * (i % 4) as f32,
                 });
             }
         }
@@ -4244,9 +6173,58 @@ impl App {
                 game.menu.key(KeyCode::Tab, &mut game.settings);
             }
         }
+        // FARFALL_BENCH_PROFILE=reforger: the stick wears the Reforger
+        // helicopter-pilot map, and an open menu walks its cursor to the
+        // PROFILE row so the worn value and its line show.
+        if std::env::var("FARFALL_BENCH_PROFILE").is_ok_and(|v| v.trim() == "reforger")
+            && game.frozen
+        {
+            game.settings.stick = stick::StickMap::reforger_heli();
+            if game.menu.open {
+                for _ in 0..3 {
+                    game.menu.key(KeyCode::ArrowDown, &mut game.settings);
+                }
+            }
+        }
+        if let Some(step) = std::env::var("FARFALL_BENCH_STICK")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| v.trim().parse::<usize>().ok())
+        {
+            if !game.menu.open {
+                game.menu.toggle();
+            }
+            let mut w = stick::Wizard::at_step(step);
+            w.bench_detect();
+            game.wizard = Some(w);
+        }
+        // FARFALL_BENCH_DEMAND=p,r,y,t: a parked control demand, for a
+        // capture of the console's stick and lever answering it.
+        if let Some([p, r, y, t]) = std::env::var("FARFALL_BENCH_DEMAND")
+            .ok()
+            .filter(|_| game.frozen)
+            .and_then(|v| {
+                let n: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                <[f64; 4]>::try_from(n).ok()
+            })
+        {
+            // The mirror's senses: +p pitch up (+x torque), +r roll right
+            // (-z), +y yaw right (-y), +t thrust ahead (-z). It stands for
+            // the whole run: the bench never polls a real stick.
+            game.input.set_stick([0.0, 0.0, -t, p, -y, -r]);
+        }
         if game.frozen && std::env::var("FARFALL_BENCH_LAND").is_ok() {
             game.toggle_landing();
             game.touchdown = landing::predict(&game.params, &game.state.ship, game.state.time_s);
+        }
+        if game.frozen && std::env::var("FARFALL_BENCH_DISEMBARK").is_ok() {
+            game.disembark();
+        }
+        if game.frozen && std::env::var("FARFALL_BENCH_EVA").is_ok() {
+            // On foot for the capture: walked out a dozen metres, turned
+            // to look back at the parked ship.
+            game.disembark();
+            game.stage_eva_bench();
         }
         if let Some(head) = std::env::var("FARFALL_BENCH_HEAD")
             .ok()
@@ -4320,9 +6298,7 @@ fn redraw(
                         .scene
                         .ensure(&gpu.device, gpu.config.width, gpu.config.height)
                     {
-                        if let Some(view) = gpu.scene.colour_view() {
-                            gpu.blit.rebind(&gpu.device, view);
-                        }
+                        gpu.rebind_scene();
                     }
                     let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                     let pose = game.pose(aspect);
@@ -4350,6 +6326,9 @@ fn redraw(
                         .mimic
                         .update(&gpu.queue, &game.mimic_uniforms(&pose));
                     gpu.passes
+                        .heli
+                        .update(&gpu.queue, &game.heli_uniforms(&pose));
+                    gpu.passes
                         .tracer
                         .update(&gpu.queue, &game.tracer_uniforms(&pose));
                     gpu.passes
@@ -4368,45 +6347,46 @@ fn redraw(
                     // single-sample (it draws in the present
                     // pass), so it can only join a 1x scene.
                     let capture_text = gpu.cfg.msaa == 1;
-                    if capture_text && game.menu.map_open() {
+                    if capture_text && (game.map_open() || game.mini_map_shown()) {
                         gpu.map
                             .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
                     }
                     if capture_text && game.design {
                         gpu.text.clear();
                         for (row, line) in game.design_text(aspect).iter().enumerate() {
-                            gpu.text.draw(0, row * 6, line);
+                            gpu.text.draw_line(0, row, line);
                         }
                     } else if capture_text && game.map_open() {
                         game.map_panel.render(&mut gpu.text, &game.settings);
                     } else if capture_text && game.bay_open() {
                         game.render_bay_card(&mut gpu.text);
                         let sh = gpu.scene.size().1 as f32;
-                        let px = (sh / 260.0).clamp(2.0, 8.0).floor() * 2.0 / sh
-                            * game.text_fov_scale(&cam);
-                        let anchor = game.bay_text_anchor(aspect, text_width_ndc(px));
+                        let px = panel::px_canopy(sh) * game.text_fov_scale(&cam);
+                        let anchor = game.bay_text_anchor(aspect, panel::block_ndc(PANEL_COLS, px));
                         gpu.hologram.update(
                             &gpu.queue,
                             &game.hologram_uniforms(aspect, cam.time_s, sh, (anchor, px)),
                         );
                         gpu.pointer
                             .update(&gpu.queue, &game.pointer_uniforms(aspect, cam.time_s));
+                    } else if capture_text && game.card_open {
+                        card::render(&mut gpu.text, &game.settings.bindings);
                     } else if capture_text && game.menu.open {
-                        game.menu.render(&mut gpu.text, &game.settings);
+                        game.render_menu(&mut gpu.text);
                     } else if capture_text {
                         gpu.text.clear();
                         gpu.text.draw(0, 0, "HEADLESS CAPTURE");
-                        gpu.text.draw(
+                        gpu.text.draw_line(
                             0,
-                            6,
+                            1,
                             &format!(
                                 "ALT {}",
                                 farfall_render::gauge::length_text(altitude_m as f32)
                             ),
                         );
-                        gpu.text.draw(
+                        gpu.text.draw_line(
                             0,
-                            12,
+                            2,
                             &format!("VEL {:.0}M/S", game.state.ship.vel_mps.length()),
                         );
                     }
@@ -4415,18 +6395,11 @@ fn redraw(
                         // the design card or the bench readout —
                         // goes to the GPU the same way.
                         let (_, sh) = gpu.scene.size();
-                        let hud_scale = (sh as f32 / 260.0).clamp(2.0, 8.0).floor();
-                        let px_canopy = hud_scale * 2.0 / sh as f32 * game.text_fov_scale(&cam);
+                        let px_canopy = panel::px_canopy(sh as f32) * game.text_fov_scale(&cam);
                         gpu.hud.update(
                             &gpu.queue,
                             &gpu.text,
-                            game.text_screen_anchor(&cam, text_width_ndc(px_canopy)),
-                            px_canopy,
-                            aspect,
-                            sh as f32,
-                            game.holo_sway.sway(),
-                            game.menu.open || game.pane_open(),
-                            game.highlight_row(),
+                            &game.hud_block(&cam, px_canopy, sh as f32),
                         );
                     }
                     gpu.update_holo(game, aspect);
@@ -4457,7 +6430,7 @@ fn redraw(
                             TRAJECTORY_HORIZON_S,
                             game.trajectory_vis,
                             gpu.scene.size().1 as f32,
-                            game.marks(),
+                            game.marks(game.eye_m(&pose)),
                         ),
                     );
                     gpu.passes
@@ -4467,10 +6440,15 @@ fn redraw(
                         .ghost
                         .update(&gpu.queue, &game.ghost_uniforms(&pose));
                     gpu.passes.jet.update(&gpu.queue, &game.jet_uniforms(&pose));
+                    gpu.update_post(game, aspect, cam.time_s);
+                    let du = game.dust_uniforms(&pose, gpu.scene.size().1 as f32);
+                    gpu.passes.dust.update(&gpu.queue, &du);
+                    let wu = game.wind_uniforms(&pose, gpu.scene.size().1 as f32);
+                    gpu.passes.wind.update(&gpu.queue, &wu);
                     {
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("scene headless"),
-                            color_attachments: &[Some(gpu.scene.colour_attachment())],
+                            color_attachments: &[Some(gpu.scene.world_attachment())],
                             depth_stencil_attachment: None,
                             timestamp_writes: None,
                             occlusion_query_set: None,
@@ -4484,16 +6462,25 @@ fn redraw(
                         gpu.passes.scar.draw(&mut pass);
                         gpu.passes.debris.draw(&mut pass);
                         gpu.passes.tracer.draw(&mut pass);
+                        gpu.passes.dust.draw_space(&mut pass, &du);
+                        gpu.passes.wind.draw(&mut pass, &wu);
                         gpu.passes.jet.draw(&mut pass);
-                        if !game.chase_active() {
+                        if !game.exterior_view() {
                             gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
                         }
                         gpu.passes.trajectory.draw(&mut pass);
                         gpu.passes.shield.draw(&mut pass);
                         gpu.passes.ghost.draw(&mut pass);
-                        if !game.chase_active() {
-                            gpu.passes.cabin.draw(&mut pass);
+                    }
+                    {
+                        // The picture, then the ship over it.
+                        let mut pass = gpu.post.begin_ship_pass(&mut encoder, &gpu.scene, true);
+                        if !game.exterior_view() {
+                            // The horizon and its ladder are at infinity:
+                            // the dash hides what falls below its sill.
                             gpu.passes.horizon.draw(&mut pass);
+                            gpu.passes.cabin.draw(&mut pass);
+                            gpu.passes.dust.draw_cabin(&mut pass, &du);
                             gpu.passes.gauge.draw_within(
                                 &mut pass,
                                 gpu.dial_rects.get()[0],
@@ -4524,7 +6511,7 @@ fn redraw(
                             gpu.passes.sight.draw(&mut pass);
                         }
                         gpu.passes.holo.draw(&mut pass);
-                        if capture_text && game.map_open() {
+                        if capture_text && (game.map_open() || game.mini_map_shown()) {
                             gpu.map.draw(&mut pass);
                         }
                         if capture_text && game.bay_open() {
@@ -4548,7 +6535,11 @@ fn redraw(
                         );
                         match capture.save(&gpu.device, bgra) {
                             Ok(path) => {
-                                log::info!("screenshot: {}", path.display())
+                                log::info!(
+                                    "screenshot: {} ({:.1} fps at capture)",
+                                    path.display(),
+                                    gpu.perf.stats.smoothed_fps()
+                                )
                             }
                             Err(e) => log::warn!("headless capture failed: {e}"),
                         }
@@ -4556,6 +6547,7 @@ fn redraw(
                 }
                 if t > gpu.cfg.bench_seconds {
                     if let Some(el) = event_loop {
+                        bench_save_world(game, gpu.cfg.bench);
                         el.exit();
                     }
                 }
@@ -4588,8 +6580,7 @@ fn redraw(
             // The scene textures were recreated; a bind group still
             // pointing at the old view would sample a destroyed
             // resource.
-            let view = gpu.scene.colour_view().expect("scene target");
-            gpu.blit.rebind(&gpu.device, view);
+            gpu.rebind_scene();
             gpu.perf.stats.skip_next_frame();
         }
 
@@ -4620,6 +6611,9 @@ fn redraw(
             .mimic
             .update(&gpu.queue, &game.mimic_uniforms(&pose));
         gpu.passes
+            .heli
+            .update(&gpu.queue, &game.heli_uniforms(&pose));
+        gpu.passes
             .tracer
             .update(&gpu.queue, &game.tracer_uniforms(&pose));
         gpu.passes
@@ -4644,7 +6638,7 @@ fn redraw(
                 TRAJECTORY_HORIZON_S,
                 game.trajectory_vis,
                 gpu.scene.size().1 as f32,
-                game.marks(),
+                game.marks(game.eye_m(&pose)),
             ),
         );
         gpu.passes
@@ -4654,28 +6648,19 @@ fn redraw(
             .ghost
             .update(&gpu.queue, &game.ghost_uniforms(&pose));
         gpu.passes.jet.update(&gpu.queue, &game.jet_uniforms(&pose));
+        let du = game.dust_uniforms(&pose, gpu.scene.size().1 as f32);
+        gpu.passes.dust.update(&gpu.queue, &du);
+        let wu = game.wind_uniforms(&pose, gpu.scene.size().1 as f32);
+        gpu.passes.wind.update(&gpu.queue, &wu);
         let (altitude_m, _) = game.altitude_vspeed();
         gpu.update_instruments(game, &cam, aspect, altitude_m as f32);
 
         // Scale the readout with the surface so it keeps the same
         // apparent size on a retina fullscreen and a small window;
         // the size is chosen in pixels and expressed in canopy units.
-        let hud_scale = (eh as f32 / 260.0).clamp(2.0, 8.0).floor();
-        let px_canopy = hud_scale * 2.0 / eh as f32 * game.text_fov_scale(&cam);
+        let px_canopy = panel::px_canopy(eh as f32) * game.text_fov_scale(&cam);
         {
-            let l = game.warp_look();
-            gpu.blit.update(
-                &gpu.queue,
-                &PostUniforms::new(
-                    l.fisheye,
-                    l.invert,
-                    l.particles,
-                    l.charge,
-                    aspect,
-                    cam.time_s,
-                )
-                .with_speed(game.speed_look()),
-            );
+            gpu.update_post(game, aspect, cam.time_s);
             gpu.map
                 .update(&gpu.queue, &game.map_uniforms(aspect, cam.time_s));
         }
@@ -4684,8 +6669,8 @@ fn redraw(
             // The bay turns by itself when the hand is off it.
             game.bay_view.tick(game.frame_dt, game.settings.bay_spin);
             let sh = eh as f32;
-            let px = (sh / 260.0).clamp(2.0, 8.0).floor() * 2.0 / sh * game.text_fov_scale(&cam);
-            let anchor = game.bay_text_anchor(aspect, text_width_ndc(px));
+            let px = panel::px_canopy(sh) * game.text_fov_scale(&cam);
+            let anchor = game.bay_text_anchor(aspect, panel::block_ndc(PANEL_COLS, px));
             gpu.hologram.update(
                 &gpu.queue,
                 &game.hologram_uniforms(aspect, cam.time_s, sh, (anchor, px)),
@@ -4696,13 +6681,7 @@ fn redraw(
         gpu.hud.update(
             &gpu.queue,
             &gpu.text,
-            game.text_screen_anchor(&cam, text_width_ndc(px_canopy)),
-            px_canopy,
-            aspect,
-            eh as f32,
-            game.holo_sway.sway(),
-            game.menu.open || game.pane_open(),
-            game.highlight_row(),
+            &game.hud_block(&cam, px_canopy, eh as f32),
         );
 
         gpu.update_holo(game, aspect);
@@ -4722,10 +6701,11 @@ fn redraw(
             gpu.passes.cabin.update(&gpu.queue, &mut encoder, &cu, &bu);
         }
         {
-            // Pass 1: the expensive world, at whatever scale is set.
+            // Pass 1: the expensive world, at whatever scale is set, in
+            // radiance.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
-                color_attachments: &[Some(gpu.scene.colour_attachment())],
+                color_attachments: &[Some(gpu.scene.world_attachment())],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -4746,6 +6726,9 @@ fn redraw(
             if gpu.cfg.draws("mimic") {
                 gpu.passes.mimic.draw(&mut pass);
             }
+            if gpu.cfg.draws("heli") {
+                gpu.passes.heli.draw(&mut pass);
+            }
             if gpu.cfg.draws("scar") {
                 gpu.passes.scar.draw(&mut pass);
             }
@@ -4755,10 +6738,16 @@ fn redraw(
             if gpu.cfg.draws("tracer") {
                 gpu.passes.tracer.draw(&mut pass);
             }
+            if gpu.cfg.draws("dust") {
+                gpu.passes.dust.draw_space(&mut pass, &du);
+            }
+            if gpu.cfg.draws("wind") {
+                gpu.passes.wind.draw(&mut pass, &wu);
+            }
             if gpu.cfg.draws("jet") {
                 gpu.passes.jet.draw(&mut pass);
             }
-            if gpu.cfg.draws("plasma") && !game.chase_active() {
+            if gpu.cfg.draws("plasma") && !game.exterior_view() {
                 gpu.passes.plasma.draw(&mut pass, &gpu.passes.thermal);
             }
             if gpu.cfg.draws("trajectory") {
@@ -4770,11 +6759,26 @@ fn redraw(
             if gpu.cfg.draws("ghost") {
                 gpu.passes.ghost.draw(&mut pass);
             }
-            if gpu.cfg.draws("cockpit") && !game.chase_active() {
-                gpu.passes.cabin.draw(&mut pass);
-            }
-            if gpu.cfg.draws("gauge") && !game.chase_active() {
+        }
+        {
+            // Pass 1b: the picture — bloom, exposure, tonemap and the
+            // drive's distortion, done to the world — then the ship drawn
+            // over it, so the dash and the dials never warp or bloom.
+            let mut pass =
+                gpu.post
+                    .begin_ship_pass(&mut encoder, &gpu.scene, gpu.cfg.draws("bloom"));
+            if gpu.cfg.draws("gauge") && !game.exterior_view() {
+                // At infinity, so under the dash: the cabin covers what
+                // falls below its sill. On the ship side, so it never blooms.
                 gpu.passes.horizon.draw(&mut pass);
+            }
+            if gpu.cfg.draws("cockpit") && !game.exterior_view() {
+                gpu.passes.cabin.draw(&mut pass);
+                if gpu.cfg.draws("dust") {
+                    gpu.passes.dust.draw_cabin(&mut pass, &du);
+                }
+            }
+            if gpu.cfg.draws("gauge") && !game.exterior_view() {
                 gpu.passes
                     .gauge
                     .draw_within(&mut pass, gpu.dial_rects.get()[0], gpu.scene.size());
@@ -4830,7 +6834,7 @@ fn redraw(
             if gpu.cfg.draws("blit") {
                 gpu.blit.draw(&mut pass);
             }
-            if game.map_open() {
+            if game.map_open() || game.mini_map_shown() {
                 gpu.map.draw(&mut pass);
             }
             if game.bay_open() {
@@ -4881,8 +6885,14 @@ fn redraw(
             gpu.scene.format(),
             wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
         );
+        // The rate at this moment (smoothed over the recent frames), not the
+        // run's average: a spin's eight captures each get their own number.
         match capture.save(&gpu.device, bgra) {
-            Ok(path) => log::info!("screenshot: {}", path.display()),
+            Ok(path) => log::info!(
+                "screenshot: {} ({:.1} fps at capture)",
+                path.display(),
+                gpu.perf.stats.smoothed_fps()
+            ),
             Err(e) => log::warn!("screenshot failed: {e}"),
         }
         // The readback blocks on the GPU; that frame's timing says
@@ -4907,6 +6917,7 @@ fn redraw(
         if t > gpu.cfg.bench_seconds {
             log::info!("benchmark complete, exiting");
             if let Some(el) = event_loop {
+                bench_save_world(game, gpu.cfg.bench);
                 el.exit();
             }
         }
@@ -4920,9 +6931,18 @@ fn redraw(
             altitude_m: game.altitude_vspeed().0,
             speed_mps: game.state.ship.vel_mps.length(),
             assist: game.assist,
-            show: game.settings.layout.shown(Instrument::Readout) || game.landing,
+            show: game.settings.layout.shown(Instrument::Readout)
+                || game.landing
+                || game.on_ground(),
+            wind: game.wind_readout(),
+            collective: game.flying_heli().then(|| {
+                heli::route_controls(game.input.controls(game.assist))
+                    .thrust_body
+                    .y
+            }),
             landing: game
-                .landing_text()
+                .eva_text()
+                .or_else(|| game.landing_text())
                 .or_else(|| game.hold_text())
                 .or_else(|| game.mimic_text())
                 .or_else(|| game.strain_text())
@@ -4934,18 +6954,394 @@ fn redraw(
         gpu.text.clear();
         let aspect = gpu.config.width as f32 / gpu.config.height as f32;
         for (row, line) in game.design_text(aspect).iter().enumerate() {
-            gpu.text.draw(0, row * 6, line);
+            gpu.text.draw_line(0, row, line);
         }
     } else if game.map_open() {
         gpu.text.clear();
         game.map_panel.render(&mut gpu.text, &game.settings);
     } else if game.bay_open() {
         game.render_bay_card(&mut gpu.text);
+    } else if game.card_open {
+        card::render(&mut gpu.text, &game.settings.bindings);
     } else if game.menu.open {
         gpu.text.clear();
-        game.menu.render(&mut gpu.text, &game.settings);
+        game.render_menu(&mut gpu.text);
     }
     gpu.window.request_redraw();
+}
+
+impl App {
+    /// The stick, once a frame: its axes into the input, its buttons
+    /// through [`stick::StickMap::pilot`] — their named binds in flight
+    /// (shifted while SHIFT is held), the arrows/ENTER/ESC of whatever
+    /// panel is up, the wizard's navigation while plain presses stay its
+    /// data, or a KEYS row's waiting bind. The stick is a complete
+    /// parallel path to the keyboard; stick.rs's module doc is the map.
+    fn poll_stick(&mut self, event_loop: &ActiveEventLoop) {
+        // The bench is hermetic: the pilot's plugged-in stick is not part
+        // of the scene — a full-rail throttle once slam-fired the chaos
+        // drive mid-bench and warp-streaked a whole sweep's captures. A
+        // parked FARFALL_BENCH_DEMAND (set once at staging) is the only
+        // stick a bench flies with, and this return leaves it standing.
+        if self.gpu.as_ref().is_some_and(|g| g.cfg.bench) {
+            return;
+        }
+        let Some(game) = self.game.as_mut() else {
+            return;
+        };
+        let Some(sample) = game.stick.poll() else {
+            game.menu.set_stick(None);
+            game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
+            game.stick_fire = false;
+            return;
+        };
+        game.menu
+            .set_stick(game.stick.device.as_ref().map(|d| (d.vid, d.pid)));
+        // The device names the raw indices: a HOTAS 4 says TRIGGER and
+        // ROCKER, anything else says B0 and AXIS 4.
+        if let Some(d) = game.stick.device.as_ref() {
+            let layout =
+                if stick::Device::known_name(d.vid, d.pid).is_some_and(|n| n.contains("HOTAS 4")) {
+                    stick::Layout::Hotas4
+                } else {
+                    stick::Layout::Generic
+                };
+            if game.settings.stick.layout != layout {
+                game.settings.stick.layout = layout;
+                game.settings.save();
+            }
+        }
+        let (pressed, released) = game.stick.edges(sample);
+        let map = game.settings.stick;
+        let shift_held = map.shift.is_some_and(|b| sample.button(b));
+        // What is up decides what a button means. The order is
+        // key_input's: the card over everything, then the wizard.
+        let surface = if game.card_open {
+            stick::Surface::Panel
+        } else if let Some(w) = game.wizard.as_mut() {
+            // The wizard reads the stick as data — except while SHIFT
+            // is held, which reserves everything for navigation.
+            if !shift_held {
+                w.feed(sample, &map);
+            }
+            stick::Surface::Wizard {
+                listening: w.listening(),
+            }
+        } else if game.design {
+            stick::Surface::Design
+        } else if game.menu.open || game.map_panel.open || game.bay_panel.open {
+            stick::Surface::Panel
+        } else {
+            stick::Surface::Flight
+        };
+        let wizard_up = matches!(surface, stick::Surface::Wizard { .. });
+        if wizard_up || !map.enabled {
+            game.input.set_stick([0.0; 6]);
+            game.input.set_stick_held(false, false);
+            game.stick_gestures.reset();
+            game.stick_fire = false;
+            // Disabled means ignored entirely; the wizard still reads
+            // and pilots below, so it can be set up with the map off.
+            if !wizard_up {
+                return;
+            }
+        } else {
+            let axes = map.body_axes(&sample);
+            game.input.set_stick(axes);
+            game.stick_fire = surface == stick::Surface::Flight
+                && !shift_held
+                && map.fire.is_some_and(|b| sample.button(b));
+            // The throttle's gestures: the lever hard back holds the air
+            // brake; a slam forward is two seconds of chaos drive.
+            let t = game.started.elapsed().as_secs_f64();
+            let (gesture_brake, gesture_hyper) = game.stick_gestures.step(&map, &sample, t);
+            game.input.set_stick_held(gesture_brake, gesture_hyper);
+            // A flight-log line while the stick is doing something, a
+            // second apart: the evidence that the map is the right way up.
+            if game.stick_log > 0 {
+                game.stick_log -= 1;
+            } else if axes.iter().any(|v| v.abs() > 0.3) || sample.buttons != 0 {
+                let f = map.flight(&sample);
+                log::info!(
+                    "stick: pitch {:+.2} yaw {:+.2} roll {:+.2} throttle {:+.2} strafe {:+.2} lift {:+.2} buttons {:#x} -> thrust [{:+.2} {:+.2} {:+.2}] torque [{:+.2} {:+.2} {:+.2}]",
+                    f[0], f[1], f[2], f[3], f[4], f[5], sample.buttons,
+                    axes[0], axes[1], axes[2], axes[3], axes[4], axes[5]
+                );
+                game.stick_log = 60;
+            }
+        }
+        // Button edges, outside the borrow: each press through the pilot
+        // table, each release as whatever key its press sent.
+        let mut edges: Vec<(u8, bool)> = Vec::new();
+        for b in 0..stick::MAX_BUTTONS {
+            let bit = 1u32 << b;
+            if pressed & bit != 0 {
+                edges.push((b, true));
+            } else if released & bit != 0 {
+                edges.push((b, false));
+            }
+        }
+        for (b, down) in edges {
+            let (Some(gpu), Some(game)) = (self.gpu.as_mut(), self.game.as_mut()) else {
+                return;
+            };
+            log::info!(
+                "stick: {} {}",
+                game.settings.stick.button_name(Some(b)),
+                if down { "down" } else { "up" }
+            );
+            if down && game.menu.open && game.menu.rebinding() {
+                let map = game.settings.stick;
+                if map.back == Some(b) {
+                    // BACK is ESC here too: the wait is cancelled.
+                    let ev = game.menu.key(KeyCode::Escape, &mut game.settings);
+                    apply_menu_event(game, gpu, event_loop, ev);
+                } else if map.shift != Some(b) {
+                    let ev = game.menu.stick_button(b, shift_held, &mut game.settings);
+                    apply_menu_event(game, gpu, event_loop, ev);
+                }
+                continue;
+            }
+            let code = if down {
+                let code = match game.settings.stick.pilot(b, shift_held, surface) {
+                    stick::Pilot::None => None,
+                    stick::Pilot::Key(c) => Some(c),
+                    stick::Pilot::Named(n) => Some(game.settings.bindings.named(n)),
+                };
+                game.stick_sent[b as usize] = code;
+                code
+            } else {
+                game.stick_sent[b as usize].take()
+            };
+            if let Some(code) = code {
+                self.key_input(event_loop, code, down, false);
+            }
+        }
+    }
+
+    /// A key, pressed or released — from the keyboard, or from a stick
+    /// button standing in for the key its control is bound to (so a
+    /// button bound to BOOST is exactly the BOOST key). The wizard, when
+    /// it is up, takes every key first.
+    fn key_input(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        code: KeyCode,
+        pressed: bool,
+        repeat: bool,
+    ) {
+        let (Some(gpu), Some(game)) = (self.gpu.as_mut(), self.game.as_mut()) else {
+            return;
+        };
+        // The CONTROLS card: any key puts it away; F1 brings it back.
+        if game.card_open {
+            if pressed && !repeat {
+                game.close_card();
+            }
+            return;
+        }
+        if pressed && !repeat && code == KeyCode::F1 && !game.design {
+            game.open_card();
+            return;
+        }
+        // The stick wizard, over the open menu: every key is its.
+        if let Some(w) = game.wizard.as_mut() {
+            if pressed && !repeat {
+                match w.key(code, &mut game.settings.stick) {
+                    stick::WizardEvent::Done => {
+                        game.wizard = None;
+                        game.settings.save();
+                    }
+                    stick::WizardEvent::Changed => game.settings.save(),
+                    stick::WizardEvent::Nothing => {}
+                }
+            }
+            return;
+        }
+        if game.design {
+            if pressed && !repeat {
+                let aspect = gpu.config.width as f32 / gpu.config.height as f32;
+                match code {
+                    KeyCode::KeyK | KeyCode::Escape => {
+                        game.toggle_design();
+                        gpu.set_look_cursor(game.look.engaged());
+                    }
+                    other => game.design_key(other, aspect),
+                }
+            }
+            return;
+        }
+        if game.panel_open() {
+            // M closes the map from anywhere in it; B the bay.
+            if pressed && !repeat && code == game.bind(Named::Map) {
+                game.toggle_map();
+                return;
+            }
+            if pressed && !repeat && code == game.bind(Named::Bay) {
+                game.toggle_bay();
+                return;
+            }
+            // Pane zoom from the keyboard, for a mouse with no wheel.
+            if pressed && game.pane_open() {
+                let notches = match code {
+                    KeyCode::Equal | KeyCode::NumpadAdd => 1.0,
+                    KeyCode::Minus | KeyCode::NumpadSubtract => -1.0,
+                    _ => 0.0,
+                };
+                if game.map_open() {
+                    game.map_view.zoom_by(notches);
+                } else {
+                    game.bay_view.zoom_by(notches);
+                }
+            }
+            if pressed && !repeat {
+                let panel = if game.map_open() {
+                    &mut game.map_panel
+                } else if game.bay_open() {
+                    &mut game.bay_panel
+                } else {
+                    &mut game.menu
+                };
+                let ev = panel.key(code, &mut game.settings);
+                apply_menu_event(game, gpu, event_loop, ev);
+                // Leaving the panel on foot, the walker's gaze takes the
+                // cursor back.
+                gpu.set_look_cursor(game.grabs_cursor());
+            }
+            return;
+        }
+        // On foot the keyboard is the walker's (SPEC §6.5b): the
+        // translation binds walk, BOOST runs, BRAKE jumps, DISEMBARK
+        // boards at the hull; ESC still menus, the capture key still
+        // captures. Everything of the ship's is out of reach.
+        if game.eva_active() {
+            match code {
+                KeyCode::Escape if pressed && !repeat => {
+                    game.toggle_menu();
+                    gpu.set_look_cursor(game.grabs_cursor());
+                }
+                c if pressed && !repeat && c == game.bind(Named::Disembark) => {
+                    game.try_board();
+                    gpu.set_look_cursor(game.grabs_cursor());
+                }
+                c if pressed
+                    && !repeat
+                    && (c == game.bind(Named::Capture) || c == KeyCode::F12) =>
+                {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        gpu.capture_requested = true;
+                    }
+                }
+                _ => game.eva_key(code, pressed),
+            }
+            return;
+        }
+        match code {
+            // Whatever was held is released when a panel opens: the
+            // world pauses, the keys must not carry a thrust demand
+            // across.
+            KeyCode::Escape if pressed && !repeat => game.toggle_menu(),
+            // Every named control below reads its binding — the
+            // KEYS page lists all of them, so what the menu shows
+            // is what the keyboard does. Edge-triggered, and
+            // `repeat` is filtered: holding a key must not strobe
+            // a toggle.
+            c if pressed && !repeat && c == game.bind(Named::Bay) => game.toggle_bay(),
+            c if pressed && !repeat && c == game.bind(Named::Hold) => game.toggle_hold(),
+            c if pressed && !repeat && c == game.bind(Named::Map) => game.toggle_map(),
+            c if pressed && !repeat && c == game.bind(Named::Appearance) => game.cycle_appearance(),
+            c if pressed && !repeat && (c == game.bind(Named::Capture) || c == KeyCode::F12) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    gpu.capture_requested = true;
+                }
+            }
+            c if pressed
+                && !repeat
+                && (c == game.bind(Named::ScaleDown) || c == game.bind(Named::ScaleUp)) =>
+            {
+                let step = if c == game.bind(Named::ScaleUp) {
+                    0.1
+                } else {
+                    -0.1
+                };
+                let next = gpu.scene.scale() + step;
+                gpu.scene.set_scale(next);
+                log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
+            }
+            c if pressed && !repeat && c == game.bind(Named::Engage) => game.engage_warp(),
+            c if pressed && !repeat && c == game.bind(Named::WarpStop) => game.warp_stop(),
+            c if pressed && !repeat && c == game.bind(Named::Landing) => game.toggle_landing(),
+            c if pressed && !repeat && c == game.bind(Named::Disembark) => {
+                game.disembark();
+                // Walked out: the gaze takes the cursor at once.
+                gpu.set_look_cursor(game.grabs_cursor());
+            }
+            c if pressed && !repeat && c == game.bind(Named::Design) => {
+                game.toggle_design();
+                gpu.set_look_cursor(game.look.engaged() && !game.design);
+            }
+            c if pressed && !repeat && c == game.bind(Named::LookLock) => {
+                game.look.toggle_lock();
+                gpu.set_look_cursor(game.look.engaged());
+            }
+            c if pressed && !repeat && c == game.bind(Named::Trajectory) => {
+                game.settings.layout.cycle(Instrument::Trajectory, true);
+                game.settings.save();
+                log::info!(
+                    "trajectory {}",
+                    game.settings.layout.get(Instrument::Trajectory).name()
+                );
+            }
+            c if pressed && !repeat && c == game.bind(Named::Chase) => {
+                game.settings.camera_chase = !game.settings.camera_chase;
+                game.settings.save();
+                log::info!(
+                    "camera {}",
+                    if game.settings.camera_chase {
+                        "CHASE"
+                    } else {
+                        "FIRST PERSON"
+                    }
+                );
+            }
+            c if pressed && !repeat && c == game.bind(Named::Holo) => {
+                game.settings.holo_view = !game.settings.holo_view;
+                game.settings.save();
+                log::info!(
+                    "holo3PP {}",
+                    if game.settings.holo_view { "ON" } else { "OFF" }
+                );
+            }
+            c if pressed && !repeat && c == game.bind(Named::Weapon1) => {
+                game.arms.select(arms::Weapon::Cannon);
+                log::info!("arms: {}", game.arms.selected.name());
+            }
+            c if pressed && !repeat && c == game.bind(Named::Weapon2) => {
+                game.arms.select(arms::Weapon::Rail);
+                log::info!("arms: {}", game.arms.selected.name());
+            }
+            c if pressed && !repeat && c == game.bind(Named::NextWeapon) => {
+                game.arms.next_weapon();
+                log::info!("arms: {}", game.arms.selected.name());
+            }
+            c if pressed && !repeat && c == game.bind(Named::Assist) => {
+                game.assist = !game.assist;
+                log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
+            }
+            c if pressed && (c == game.bind(Named::HoloOut) || c == game.bind(Named::HoloIn)) => {
+                game.zoom_holo(if c == game.bind(Named::HoloOut) {
+                    1.0
+                } else {
+                    -1.0
+                });
+            }
+            _ => game.input.set(code, pressed),
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -4956,11 +7352,25 @@ impl ApplicationHandler for App {
     }
 
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        if self.gpu.as_ref().is_some_and(|g| g.cfg.bench) {
+            return;
+        }
         // Raw motion, not cursor position: the cursor is grabbed while
         // looking, and raw counts keep coming at the screen edge.
         if let DeviceEvent::MouseMotion { delta } = event {
             if let Some(game) = self.game.as_mut() {
-                game.look.motion(delta.0 as f32, delta.1 as f32);
+                // On foot the mouse is the walker's gaze, always engaged —
+                // except under a panel, where it is the menu's again.
+                if game.eva_active() {
+                    if !game.panel_open() {
+                        let sens = f64::from(game.settings.look_sensitivity);
+                        if let Some(w) = game.eva.as_mut() {
+                            w.look(delta.0, delta.1, sens);
+                        }
+                    }
+                } else {
+                    game.look.motion(delta.0 as f32, delta.1 as f32);
+                }
             }
         }
     }
@@ -4981,167 +7391,21 @@ impl ApplicationHandler for App {
                 game.log_exit("window closed");
                 event_loop.exit();
             }
+            // A benchmark is deaf: no key, mouse or wheel reaches the game,
+            // so a stray keypress on the other screen never changes what is
+            // being measured or steals a freelook.
+            WindowEvent::KeyboardInput { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::Focused(_)
+                if gpu.cfg.bench => {}
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;
                 };
                 let pressed = event.state == ElementState::Pressed;
-                if game.design {
-                    if pressed && !event.repeat {
-                        let aspect = gpu.config.width as f32 / gpu.config.height as f32;
-                        match code {
-                            KeyCode::KeyK | KeyCode::Escape => {
-                                game.toggle_design();
-                                gpu.set_look_cursor(game.look.engaged());
-                            }
-                            other => game.design_key(other, aspect),
-                        }
-                    }
-                    return;
-                }
-                if game.panel_open() {
-                    // M closes the map from anywhere in it; B the bay.
-                    if pressed && !event.repeat && code == game.bind(Named::Map) {
-                        game.toggle_map();
-                        return;
-                    }
-                    if pressed && !event.repeat && code == game.bind(Named::Bay) {
-                        game.toggle_bay();
-                        return;
-                    }
-                    // Pane zoom from the keyboard, for a mouse with no wheel.
-                    if pressed && game.pane_open() {
-                        let notches = match code {
-                            KeyCode::Equal | KeyCode::NumpadAdd => 1.0,
-                            KeyCode::Minus | KeyCode::NumpadSubtract => -1.0,
-                            _ => 0.0,
-                        };
-                        if game.map_open() {
-                            game.map_view.zoom_by(notches);
-                        } else {
-                            game.bay_view.zoom_by(notches);
-                        }
-                    }
-                    if pressed && !event.repeat {
-                        let panel = if game.map_open() {
-                            &mut game.map_panel
-                        } else if game.bay_open() {
-                            &mut game.bay_panel
-                        } else {
-                            &mut game.menu
-                        };
-                        let ev = panel.key(code, &mut game.settings);
-                        apply_menu_event(game, gpu, event_loop, ev);
-                    }
-                    return;
-                }
-                match code {
-                    // Whatever was held is released when a panel opens: the
-                    // world pauses, the keys must not carry a thrust demand
-                    // across.
-                    KeyCode::Escape if pressed && !event.repeat => game.toggle_menu(),
-                    // Every named control below reads its binding — the
-                    // KEYS page lists all of them, so what the menu shows
-                    // is what the keyboard does. Edge-triggered, and
-                    // `repeat` is filtered: holding a key must not strobe
-                    // a toggle.
-                    c if pressed && !event.repeat && c == game.bind(Named::Bay) => {
-                        game.toggle_bay()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Hold) => {
-                        game.toggle_hold()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Map) => {
-                        game.toggle_map()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Appearance) => {
-                        game.cycle_appearance()
-                    }
-                    c if pressed
-                        && !event.repeat
-                        && (c == game.bind(Named::Capture) || c == KeyCode::F12) =>
-                    {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            gpu.capture_requested = true;
-                        }
-                    }
-                    c if pressed
-                        && !event.repeat
-                        && (c == game.bind(Named::ScaleDown) || c == game.bind(Named::ScaleUp)) =>
-                    {
-                        let step = if c == game.bind(Named::ScaleUp) {
-                            0.1
-                        } else {
-                            -0.1
-                        };
-                        let next = gpu.scene.scale() + step;
-                        gpu.scene.set_scale(next);
-                        log::info!("render scale {:.0}%", gpu.scene.scale() * 100.0);
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Engage) => {
-                        game.engage_warp()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::WarpStop) => {
-                        game.warp_stop()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Landing) => {
-                        game.toggle_landing()
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Design) => {
-                        game.toggle_design();
-                        gpu.set_look_cursor(game.look.engaged() && !game.design);
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::LookLock) => {
-                        game.look.toggle_lock();
-                        gpu.set_look_cursor(game.look.engaged());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Trajectory) => {
-                        game.settings.layout.cycle(Instrument::Trajectory, true);
-                        game.settings.save();
-                        log::info!(
-                            "trajectory {}",
-                            game.settings.layout.get(Instrument::Trajectory).name()
-                        );
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Chase) => {
-                        game.settings.camera_chase = !game.settings.camera_chase;
-                        game.settings.save();
-                        log::info!(
-                            "camera {}",
-                            if game.settings.camera_chase {
-                                "CHASE"
-                            } else {
-                                "FIRST PERSON"
-                            }
-                        );
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Holo) => {
-                        game.settings.holo_view = !game.settings.holo_view;
-                        game.settings.save();
-                        log::info!(
-                            "holo3PP {}",
-                            if game.settings.holo_view { "ON" } else { "OFF" }
-                        );
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Weapon1) => {
-                        game.arms.select(arms::Weapon::Cannon);
-                        log::info!("arms: {}", game.arms.selected.name());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Weapon2) => {
-                        game.arms.select(arms::Weapon::Rail);
-                        log::info!("arms: {}", game.arms.selected.name());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::NextWeapon) => {
-                        game.arms.next_weapon();
-                        log::info!("arms: {}", game.arms.selected.name());
-                    }
-                    c if pressed && !event.repeat && c == game.bind(Named::Assist) => {
-                        game.assist = !game.assist;
-                        log::info!("flight assist {}", if game.assist { "ON" } else { "OFF" });
-                    }
-                    _ => game.input.set(code, pressed),
-                }
+                self.key_input(event_loop, code, pressed, event.repeat);
             }
             WindowEvent::MouseInput {
                 state,
@@ -5149,7 +7413,7 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 game.look.set_held(state == ElementState::Pressed);
-                gpu.set_look_cursor(game.look.engaged());
+                gpu.set_look_cursor(game.grabs_cursor());
                 if !game.look.engaged() {
                     game.end_drag();
                 }
@@ -5162,12 +7426,18 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 game.left_down = state == ElementState::Pressed;
+                // The CONTROLS card: a click puts it away like any key.
+                if game.card_open {
+                    if game.left_down {
+                        game.close_card();
+                    }
+                    return;
+                }
                 if game.left_down {
                     let aspect = gpu.config.width as f32 / gpu.config.height as f32;
                     let cam = game.camera(aspect);
-                    let hud_scale = (gpu.config.height as f32 / 260.0).clamp(2.0, 8.0).floor();
-                    let px = hud_scale * 2.0 / gpu.config.height as f32 * game.text_fov_scale(&cam);
-                    let text_w = text_width_ndc(px);
+                    let px = panel::px_canopy(gpu.config.height as f32) * game.text_fov_scale(&cam);
+                    let text_w = game.text_w(px);
                     game.press_flash = 1.0;
                     // The pointer first: a row of the bay's card or a pip,
                     // or a row of a text panel, is a click.
@@ -5177,16 +7447,21 @@ impl ApplicationHandler for App {
                             return;
                         }
                         if game.menu.open || game.map_open() {
-                            let anchor = game.text_anchor(aspect, text_w);
+                            let anchor = game.text_anchor(aspect, px);
                             let on = at[0] >= anchor[0] - 0.01
                                 && at[0] <= anchor[0] + text_w / aspect + 0.01
                                 && at[1] <= anchor[1];
                             if on {
-                                let row = ((anchor[1] - at[1]) / (6.0 * px)).floor() as usize;
+                                let row =
+                                    ((anchor[1] - at[1]) / (LINE as f32 * px)).floor() as usize;
+                                let col = ((at[0] - anchor[0]) * aspect
+                                    / (farfall_render::text::ADVANCE as f32 * px))
+                                    .floor()
+                                    .max(0.0) as usize;
                                 let ev = if game.map_open() {
-                                    game.map_panel.click(row, &mut game.settings)
+                                    game.map_panel.click(row, col, &mut game.settings)
                                 } else {
-                                    game.menu.click(row, &mut game.settings)
+                                    game.menu.click(row, col, &mut game.settings)
                                 };
                                 if ev != MenuEvent::Nothing {
                                     apply_menu_event(game, gpu, event_loop, ev);
@@ -5199,10 +7474,7 @@ impl ApplicationHandler for App {
                     // The glass first: a dial or a panel under the gaze is
                     // picked up. Nothing there, and the button is the
                     // trigger.
-                    let picked = game.begin_drag(
-                        &cam,
-                        text_width_ndc(hud_scale * 2.0 / gpu.config.height as f32),
-                    );
+                    let picked = game.begin_drag(&cam, panel::px_canopy(gpu.config.height as f32));
                     game.fire_held =
                         !picked && !game.menu.open && !game.pane_open() && !game.design;
                 } else {
@@ -5240,14 +7512,24 @@ impl ApplicationHandler for App {
                     };
                     game.bay_view.zoom_by(notches);
                 }
+                // In flight the wheel zooms the hologram: up is closer.
+                if !game.panel_open() && game.holo_active() {
+                    let notches = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+                    };
+                    game.zoom_holo(-notches);
+                }
             }
             // A key held while the window loses focus never sees its release
             // event; without this the ship keeps thrusting unattended.
             WindowEvent::Focused(false) => {
                 game.input.release_all();
+                game.eva_keys = eva::Keys::default();
                 game.fire_held = false;
+                game.stick_fire = false;
                 game.look.set_held(false);
-                gpu.set_look_cursor(game.look.engaged());
+                gpu.set_look_cursor(game.grabs_cursor());
                 game.end_drag();
             }
             WindowEvent::Resized(size) => {
@@ -5260,6 +7542,12 @@ impl ApplicationHandler for App {
                 gpu.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                // The stick is polled once a frame, here, before the frame
+                // samples the controls.
+                self.poll_stick(event_loop);
+                let (Some(gpu), Some(game)) = (self.gpu.as_mut(), self.game.as_mut()) else {
+                    return;
+                };
                 redraw(gpu, game, self.audio.as_ref(), Some(event_loop));
             }
             _ => {}
@@ -5284,6 +7572,87 @@ mod tests {
     use glam::{DQuat, DVec3};
     use input::{Action, InputState};
     use winit::keyboard::KeyCode;
+
+    /// The whole EVA loop (SPEC §6.5b): DISEMBARK while LANDED walks out,
+    /// the sim's ship never moves (the golden hash's state is untouched),
+    /// the readout swaps to the suit's lines, boarding needs the hull in
+    /// reach, and the same key walks back in.
+    #[test]
+    fn disembark_walks_out_and_the_same_key_boards_back() {
+        let mut game = Game::new();
+        game.state.ship = landing::parked(&game.params, 0);
+        let before = game.state;
+        let hash = sim::state_hash(&game.state);
+        game.disembark();
+        assert!(game.eva_active(), "on foot");
+        assert_eq!(sim::state_hash(&game.state), hash, "the sim never felt it");
+        assert_eq!(game.state.ship.pos_m, before.ship.pos_m, "the ship stays");
+        // The suit's readout, with the boarding offer: the walk-out
+        // stands within reach of the hull.
+        let text = game.eva_text().expect("the suit's lines");
+        assert!(text.contains("EVA"), "{text}");
+        assert!(text.contains("BOARD"), "{text}");
+        // The eye is outside the ship: the hull shows, the cabin stays home.
+        assert!(game.exterior_view());
+        let pose = game.pose(1.5);
+        assert!(pose.eye_ship != DVec3::ZERO, "the eye left the ship");
+        let d = game.eva_ship_m().unwrap();
+        assert!((d - eva::EXIT_M).abs() < 3.0, "beside the ship: {d}");
+        // Too far from the hull, the key does not board.
+        let b = game.params.bodies(game.state.time_s)[0];
+        if let Some(w) = game.eva.as_mut() {
+            let t = w.up().any_orthonormal_vector();
+            w.feet_m = (w.feet_m + t * 300.0).normalize() * b.radius_m;
+        }
+        game.try_board();
+        assert!(game.eva_active(), "still walking back");
+        // Beside it again, the same key boards.
+        game.stage_eva_bench();
+        game.try_board();
+        assert!(!game.eva_active(), "back in the seat");
+        assert_eq!(sim::state_hash(&game.state), hash, "and the sim never knew");
+        assert_eq!(game.disembark_notice.map(|(n, _)| n), Some("BOARDED SHIP"));
+    }
+
+    /// The readout is diagnostics, not glassware: turning the head must
+    /// not move it (it once drifted mid-sky through a spinning bench
+    /// capture). The design card still rides the glass with the look.
+    #[test]
+    fn the_readout_keeps_its_screen_place_through_a_head_turn() {
+        let mut game = Game::new();
+        let cam = game.camera(1.5);
+        game.look.aim(0.0, 0.0);
+        let centred = game.text_screen_anchor(&cam, 0.002);
+        game.look.aim(1.2, -0.4);
+        let turned = game.text_screen_anchor(&game.camera(1.5), 0.002);
+        assert_eq!(centred, turned, "the readout moved with the head");
+        game.design = true;
+        let designing = game.text_screen_anchor(&game.camera(1.5), 0.002);
+        assert_ne!(centred, designing, "the design card is glass, and swings");
+    }
+
+    /// The gyro ball is a real sphere cast in the dash: near the rim of
+    /// a far-turned view its projection blows out and once filled a
+    /// corner scissor patch with magnified globe. With its anchor off
+    /// the screen the ball is culled; head centred, it is back.
+    #[test]
+    fn the_gyro_ball_is_culled_once_its_anchor_leaves_the_screen() {
+        let mut game = Game::new();
+        game.settings.gauge_style = settings::GaugeStyle::Warthog;
+        game.look.aim(0.0, 0.0);
+        let cam = game.camera(1.5);
+        let tw = game.dial_tweak(Instrument::Gyro);
+        assert!(
+            game.gyro_ball(&cam, tw).is_some(),
+            "centred: the ball shows"
+        );
+        game.look.aim(1.2, 0.0);
+        let cam = game.camera(1.5);
+        assert!(
+            game.gyro_ball(&cam, tw).is_none(),
+            "turned 69\u{b0} right: the ball's anchor is off screen"
+        );
+    }
 
     /// The camera basis must agree with the ship's own axes exactly. If these
     /// ever diverge, the world is mirrored or rolled relative to the hull.
@@ -5376,7 +7745,7 @@ mod tests {
         // The jet draws in chase and never in the cockpit.
         assert!(game.chase_active());
         game.settings.camera_chase = false;
-        assert!(!game.chase_active());
+        assert!(!game.exterior_view());
     }
 
     fn fly(keys: &[KeyCode], secs: u64) -> sim::ShipState {
@@ -5433,6 +7802,97 @@ mod tests {
             game.drag,
             Some((Dragged::Dial(Instrument::Speed), _))
         ));
+    }
+
+    /// The DESIGN keys turn a dial all three ways — tilt (,/.), sideways
+    /// lean (;/'), in-plane rotation (9/0) — each held to its reach, and
+    /// Backspace puts the whole tweak back to stock.
+    #[test]
+    fn design_keys_lean_and_rotate_a_dial_and_backspace_resets() {
+        let mut game = Game::new();
+        game.design = true;
+        game.look.aim(0.0, 0.0);
+        game.window_size = (1500.0, 1000.0);
+        game.settings.readout_anchor = [-0.9, 0.9];
+        let cam = game.camera(1.5);
+        let a = game.settings.layout.anchor(Instrument::Speed).unwrap();
+        let t = game.ref_tan();
+        let k = t / (cam.fov_y * 0.5).tan();
+        game.cursor = Some(((a[0] * k + 1.0) * 750.0, (1.0 - a[1] * k) * 500.0));
+        assert_eq!(
+            game.design_target(1.5),
+            Some(DesignEl::Dial(Instrument::Speed))
+        );
+        game.design_key(KeyCode::Quote, 1.5);
+        game.design_key(KeyCode::Quote, 1.5);
+        game.design_key(KeyCode::Digit9, 1.5);
+        game.design_key(KeyCode::Comma, 1.5);
+        let d = game.settings.dials[Instrument::Speed as usize];
+        assert_eq!(d.lean_deg, 10.0);
+        assert_eq!(d.rotate_deg, -15.0);
+        assert_eq!(d.tilt_deg, -5.0);
+        for _ in 0..40 {
+            game.design_key(KeyCode::Quote, 1.5);
+            game.design_key(KeyCode::Digit0, 1.5);
+        }
+        let d = game.settings.dials[Instrument::Speed as usize];
+        assert_eq!(d.lean_deg, settings::TILT_MAX);
+        assert_eq!(d.rotate_deg, settings::ROTATE_MAX);
+        game.design_key(KeyCode::Backspace, 1.5);
+        assert_eq!(
+            game.settings.dials[Instrument::Speed as usize],
+            settings::DialTweak::DEFAULT
+        );
+    }
+
+    /// The holo3PP, the mini map and the readout are design elements
+    /// like the dials: DESIGN mode's pointer finds them, -/= sizes them,
+    /// and the mini map can be dragged anywhere and keeps its place.
+    #[test]
+    fn design_mode_takes_the_holo_the_mini_map_and_the_readout() {
+        let mut game = Game::new();
+        game.design = true;
+        game.look.aim(0.0, 0.0);
+        game.window_size = (1500.0, 1000.0);
+        let cam = game.camera(1.5);
+        let t = game.ref_tan();
+        let k = t / (cam.fov_y * 0.5).tan();
+        let at = |a: [f32; 2]| ((a[0] * k + 1.0) * 750.0, (1.0 - a[1] * k) * 500.0);
+        // The hologram: found by its anchor, sized with =.
+        game.cursor = Some(at(game.settings.holo_anchor));
+        assert_eq!(game.design_target(1.5), Some(DesignEl::Holo));
+        let size = game.settings.holo_size;
+        game.design_key(KeyCode::Equal, 1.5);
+        assert!(game.settings.holo_size > size);
+        // The mini map: found by its pane, shrunk with -, dragged and
+        // its anchor kept on the layout.
+        assert!(game.mini_map_shown(), "the mini map shows in DESIGN mode");
+        let mini = game.settings.layout.inset(game.mini_map_anchor());
+        game.cursor = Some(at(mini));
+        assert_eq!(game.design_target(1.5), Some(DesignEl::MiniMap));
+        game.design_key(KeyCode::Minus, 1.5);
+        assert!(game.settings.dials[Instrument::Map as usize].size < 1.0);
+        assert!(game.mini_map_half_h() < map::MINI_HALF_H);
+        assert!(game.begin_drag(&cam, 0.4), "the mini map is picked up");
+        assert!(matches!(game.drag, Some((Dragged::MiniMap, _))));
+        game.cursor = Some(at([mini[0] - 0.3, mini[1] - 0.4]));
+        game.update_drag(&cam);
+        let moved = game.mini_map_anchor();
+        assert!(
+            (moved[0] - map::MINI_ANCHOR[0]).abs() > 0.1
+                || (moved[1] - map::MINI_ANCHOR[1]).abs() > 0.1,
+            "{moved:?}"
+        );
+        game.design_key(KeyCode::Backspace, 1.5);
+        // The readout: found by its block; its SIZE scales the text.
+        game.cursor = Some(at([
+            game.settings.readout_anchor[0] + 0.06,
+            game.settings.readout_anchor[1] - 0.14,
+        ]));
+        assert_eq!(game.design_target(1.5), Some(DesignEl::Readout));
+        game.design_key(KeyCode::Equal, 1.5);
+        game.design = false;
+        assert!(game.text_fov_scale(&cam) > 1.0 * 0.99 * 1.1);
     }
 
     #[test]
@@ -5850,5 +8310,272 @@ mod tests {
     #[test]
     fn action_count_matches_bindings() {
         assert_eq!(Action::COUNT, 12);
+    }
+
+    /// A little of everything a save is meant to carry, mutated away from
+    /// `Game::new`'s defaults so a round trip that silently dropped a
+    /// field would show up as a mismatch rather than an accidental match.
+    fn mutate_for_save_tests(game: &mut Game) {
+        game.state.ship.pos_m = DVec3::new(1.0e7, 2.0e6, -3.0e5);
+        game.state.ship.vel_mps = DVec3::new(120.0, -5.0, 30.0);
+        game.state.ship.orient = DQuat::from_euler(glam::EulerRot::YXZ, 0.4, -0.2, 0.1).normalize();
+        game.state.ship.ang_vel_radps = DVec3::new(0.01, 0.0, -0.02);
+        game.state.time_s = 4_321.0;
+        game.assist = false;
+        game.landing = true;
+        game.appearance_index = 2;
+        game.hyper_strain = 0.35;
+        game.slip_at = 0.77;
+        game.jumps = 5;
+        game.arms.selected = arms::Weapon::Rail;
+        game.arms.ammo = [400, 10];
+        game.arms.jammed = [true, false];
+        game.arms.heat = [0.6, 0.2];
+        game.arms.charge = 0.9;
+        game.haul.tonnes = [1.0, 2.0, 3.0, 4.0];
+        game.mimics.hull = 0.6;
+        game.strikes = 9;
+        game.strike_rng = 0xDEAD_BEEF;
+        game.odometer_m = 12_345.0;
+        game.hoops_passed = 7;
+        game.belt.dead.insert((1, 2, 3, 0));
+        game.belt.wounds.insert((1, 2, 3, 0), 555.0);
+        game.mimics.revealed.insert((4, 5, 6, 1));
+        game.mimics.ships.push(mimic::Mimic::planted(
+            DVec3::new(10.0, 0.0, 0.0),
+            DVec3::new(1.0, 0.0, 0.0),
+            DQuat::IDENTITY,
+            game.state.time_s,
+            mimic::Phase::Hailing,
+            mimic::Mood::Hail,
+            0.42,
+        ));
+    }
+
+    #[test]
+    fn a_saved_world_comes_back_bit_for_bit() {
+        let mut game = Game::new();
+        mutate_for_save_tests(&mut game);
+
+        let saved = game.snapshot();
+        let parsed = save::Save::parse(&saved.render()).expect("a fresh snapshot always parses");
+        assert_eq!(parsed, saved, "render/parse must be lossless");
+
+        let mut resumed = Game::new();
+        resumed.restore(&parsed);
+
+        assert_eq!(
+            sim::state_hash(&resumed.state),
+            sim::state_hash(&game.state)
+        );
+        assert_eq!(resumed.assist, game.assist);
+        assert_eq!(resumed.landing, game.landing);
+        assert_eq!(resumed.appearance_index, game.appearance_index);
+        assert_eq!(resumed.hyper_strain, game.hyper_strain);
+        assert_eq!(resumed.slip_at, game.slip_at);
+        assert_eq!(resumed.jumps, game.jumps);
+        assert_eq!(resumed.arms.selected, game.arms.selected);
+        assert_eq!(resumed.arms.ammo, game.arms.ammo);
+        assert_eq!(resumed.arms.jammed, game.arms.jammed);
+        assert_eq!(resumed.arms.heat, game.arms.heat);
+        assert_eq!(resumed.arms.charge, game.arms.charge);
+        assert_eq!(resumed.haul.tonnes, game.haul.tonnes);
+        assert_eq!(resumed.mimics.hull, game.mimics.hull);
+        assert_eq!(resumed.strikes, game.strikes);
+        assert_eq!(resumed.strike_rng, game.strike_rng);
+        assert_eq!(resumed.odometer_m, game.odometer_m);
+        assert_eq!(resumed.hoops_passed, game.hoops_passed);
+        assert_eq!(resumed.belt.dead, game.belt.dead);
+        assert_eq!(resumed.belt.wounds, game.belt.wounds);
+        assert_eq!(resumed.mimics.revealed, game.mimics.revealed);
+        assert_eq!(resumed.mimics.ships.len(), game.mimics.ships.len());
+        assert_eq!(resumed.mimics.ships[0].pos, game.mimics.ships[0].pos);
+        assert_eq!(resumed.mimics.ships[0].phase, game.mimics.ships[0].phase);
+        assert_eq!(resumed.mimics.ships[0].mood, game.mimics.ships[0].mood);
+    }
+
+    #[test]
+    fn a_resumed_world_runs_on_exactly_as_the_uninterrupted_one() {
+        let mut original = Game::new();
+        let controls = sim::Controls {
+            thrust_body: DVec3::new(0.3, 0.0, -0.6),
+            torque_body: DVec3::new(0.1, -0.05, 0.02),
+            assist: true,
+            ..Default::default()
+        };
+        for _ in 0..50 {
+            original.state = sim::step(&original.params, &original.state, controls);
+        }
+        let saved = original.snapshot();
+
+        let mut resumed = Game::new();
+        resumed.restore(&saved);
+        assert_eq!(
+            sim::state_hash(&resumed.state),
+            sim::state_hash(&original.state),
+            "restore itself must be exact before either runs on"
+        );
+
+        for _ in 0..30 {
+            original.state = sim::step(&original.params, &original.state, controls);
+            resumed.state = sim::step(&resumed.params, &resumed.state, controls);
+        }
+        assert_eq!(
+            sim::state_hash(&resumed.state),
+            sim::state_hash(&original.state),
+            "the same controls from the same state must land the same hash"
+        );
+    }
+
+    #[test]
+    fn the_haul_the_hull_the_ammo_and_the_dead_rocks_survive_a_quit() {
+        let mut game = Game::new();
+        mutate_for_save_tests(&mut game);
+        let saved = game.snapshot();
+        let mut resumed = Game::new();
+        resumed.restore(&saved);
+
+        assert_eq!(resumed.haul.tonnes, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(resumed.mimics.hull, 0.6);
+        assert_eq!(resumed.arms.ammo, [400, 10]);
+        assert_eq!(resumed.arms.jammed, [true, false]);
+        assert!(resumed.belt.dead.contains(&(1, 2, 3, 0)));
+        assert_eq!(resumed.belt.wounds.get(&(1, 2, 3, 0)), Some(&555.0));
+    }
+
+    #[test]
+    fn a_warp_in_flight_and_a_hold_come_back_idle() {
+        let mut game = Game::new();
+        game.warp.engage();
+        assert!(game.warp.active(), "test setup: the drive is mid-sequence");
+        game.hold.target = Some((hold::Target::Rock((1, 2, 3, 0)), DVec3::new(10.0, 0.0, 0.0)));
+        assert!(game.hold.engaged(), "test setup: the lock is on");
+
+        let saved = game.snapshot();
+        let mut resumed = Game::new();
+        // Give it something to be idle FROM, so this is not just "a fresh
+        // Game::new() happens to be idle".
+        resumed.warp.engage();
+        resumed.hold.target = Some((hold::Target::Rock((9, 9, 9, 0)), DVec3::ZERO));
+        resumed.restore(&saved);
+
+        assert!(
+            !resumed.warp.active(),
+            "a warp in flight is never resumed mid-jump"
+        );
+        assert!(!resumed.hold.engaged(), "a hold lock never survives a quit");
+    }
+
+    #[test]
+    fn new_game_forgets_the_world_and_stands_at_the_stock_orbit() {
+        let fresh_hash = sim::state_hash(&Game::new().state);
+
+        let mut game = Game::new();
+        mutate_for_save_tests(&mut game);
+        assert_ne!(
+            sim::state_hash(&game.state),
+            fresh_hash,
+            "test setup: the mutation actually moved the ship"
+        );
+
+        game.reset_world();
+        assert_eq!(sim::state_hash(&game.state), fresh_hash);
+        assert_eq!(game.arms.ammo, arms::Arms::default().ammo);
+        assert!(game.belt.dead.is_empty());
+        assert!(game.mimics.ships.is_empty());
+    }
+
+    #[test]
+    fn new_game_keeps_the_pilots_settings_look_and_open_menu() {
+        let mut game = Game::new();
+        let mut settings = game.settings;
+        settings.fov = 95.0;
+        game.apply_settings(settings);
+        game.look.sensitivity = 3.0;
+        game.menu.toggle();
+        assert!(game.menu.open, "test setup: the menu is open");
+
+        game.reset_world();
+        assert_eq!(game.settings.fov, 95.0, "settings survive a new game");
+        assert_eq!(game.look.sensitivity, 3.0, "look survives a new game");
+        assert!(game.menu.open, "the open menu itself survives a new game");
+    }
+
+    #[test]
+    fn resume_off_or_a_bench_run_never_touches_the_world_file() {
+        assert!(resume_allowed(true, false, None, false));
+        assert!(!resume_allowed(false, false, None, false), "RESUME off");
+        assert!(!resume_allowed(true, true, None, false), "frozen (a bench)");
+        assert!(
+            !resume_allowed(true, false, None, true),
+            "a bench spawn override on its own, without FARFALL_BENCH itself"
+        );
+        for off in ["0", "off", "false"] {
+            assert!(!resume_allowed(true, false, Some(off), false), "{off}");
+        }
+        assert!(
+            resume_allowed(true, false, Some("1"), false),
+            "a non-off value neither forces it on nor off"
+        );
+        assert!(
+            !resume_allowed(false, false, Some("1"), false),
+            "the environment can turn resume off but never force it on over the setting"
+        );
+    }
+
+    #[test]
+    fn bench_save_and_resume_knobs_only_ever_act_during_a_bench() {
+        use std::ffi::OsStr;
+        let path = Some(OsStr::new("C:\\tmp\\w.cfg"));
+        assert!(bench_path_action_allowed(true, path), "bench + a path");
+        assert!(
+            !bench_path_action_allowed(false, path),
+            "a path with no bench running does nothing"
+        );
+        assert!(
+            !bench_path_action_allowed(true, None),
+            "a bench with no path set does nothing"
+        );
+        assert!(!bench_path_action_allowed(false, None));
+    }
+
+    /// The mechanics `FARFALL_BENCH_SAVE`/`FARFALL_BENCH_RESUME` lean on:
+    /// an explicit path, never `~/.farfall`, through the same seal as a
+    /// real resume — including refusing a tampered file at that path.
+    #[test]
+    fn store_to_and_load_from_an_explicit_path_round_trip_and_refuse_tampering() {
+        let mut game = Game::new();
+        mutate_for_save_tests(&mut game);
+        let path = std::env::temp_dir().join(format!(
+            "farfall-bench-save-test-{}.cfg",
+            std::process::id()
+        ));
+        let _cleanup = TempFileGuard(path.clone());
+
+        game.snapshot().store_to(&path);
+        let loaded = save::load_from(&path).expect("a freshly stored save loads back");
+        assert_eq!(loaded, game.snapshot());
+
+        let tampered = std::fs::read_to_string(&path).unwrap().replacen(
+            "world.version = 1",
+            "world.version = 99",
+            1,
+        );
+        std::fs::write(&path, tampered).unwrap();
+        assert_eq!(
+            save::load_from(&path),
+            None,
+            "a tampered file at an explicit path is refused, same as ~/.farfall"
+        );
+    }
+
+    /// Removes the file it names when dropped, so a test that writes to
+    /// the real filesystem (an explicit-path save, never `~/.farfall`)
+    /// never leaves anything behind, pass or fail.
+    struct TempFileGuard(std::path::PathBuf);
+    impl Drop for TempFileGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 }

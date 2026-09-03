@@ -13,7 +13,7 @@ pub const GHOST_LIFE_S: f32 = 1.8;
 /// slides on, fast at first — the ship's own motion, seen leaving.
 pub fn ghost_distance_m(age_s: f32) -> f32 {
     let a = age_s.max(0.0);
-    12.0 + 70.0 * (1.0 - (-a * 1.6).exp())
+    10.0 + 42.0 * (1.0 - (-a * 1.4).exp())
 }
 /// The fade: a quick bloom, a long tail.
 pub fn ghost_fade(age_s: f32) -> f32 {
@@ -22,7 +22,7 @@ pub fn ghost_fade(age_s: f32) -> f32 {
     }
     let bloom = (age_s / 0.08).min(1.0);
     let tail = 1.0 - age_s / GHOST_LIFE_S;
-    bloom * tail * tail
+    bloom * tail * tail.sqrt()
 }
 
 #[repr(C)]

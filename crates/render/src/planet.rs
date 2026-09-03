@@ -20,8 +20,9 @@ pub struct PlanetAppearance {
     /// Colour of the air: the rim, and what the surface fades into.
     pub atmosphere_colour: Vec3,
     /// Optical density of the whole air column. Under the unified scattering
-    /// model this is a true optical depth: ~0.45 reads as Earth, ~0.1 as thin
-    /// and dusty, above ~1.5 the ground dissolves into the sky.
+    /// model this is a true optical depth: ~0.3 reads as Earth (blue OD per
+    /// kilometre near Earth's on this small, short-scale-height world), ~0.1
+    /// as thin and dusty, above ~1.5 the ground dissolves into the sky.
     pub atmosphere_density: f32,
     /// 0 clears the sky, 1 overcasts it.
     pub cloud_coverage: f32,
@@ -40,7 +41,7 @@ impl PlanetAppearance {
     pub const EARTHLIKE: Self = Self {
         name: "EARTHLIKE",
         atmosphere_colour: Vec3::new(0.28, 0.48, 0.95),
-        atmosphere_density: 0.45,
+        atmosphere_density: 0.30,
         cloud_coverage: 0.42,
         cloud_altitude_m: 2_200.0,
         cloud_sharpness: 0.85,
@@ -117,6 +118,10 @@ pub struct PlanetUniforms {
     /// (m), w radius (m); w <= 0 is none.
     occluder0: [f32; 4],
     occluder1: [f32; 4],
+    /// x: TERRAIN DETAIL (0 baked only, 1 stock, 2 an octave finer),
+    /// y: CLOUDS (multiplier on the preset's coverage), z: CITY LIGHTS
+    /// (0 dark, 1 stock), w: unused.
+    detail: [f32; 4],
 }
 
 /// The pilot's eye is never in the ground: a ship set down on a body sits
@@ -190,7 +195,24 @@ impl PlanetUniforms {
             ],
             occluder0: [0.0; 4],
             occluder1: [0.0; 4],
+            detail: [1.0, 1.0, 1.0, 0.0],
         }
+    }
+
+    /// The pilot's GFX knobs for the ground and its weather: TERRAIN DETAIL
+    /// (0 baked only .. 2 an octave finer), CLOUDS (a multiplier on the
+    /// preset's coverage, 0 clears the sky) and CITY LIGHTS (0 dark .. 2).
+    /// Anything non-finite falls back to stock.
+    pub fn with_detail(mut self, terrain: f32, clouds: f32, city_lights: f32) -> Self {
+        let k = |v: f32| {
+            if v.is_finite() {
+                v.clamp(0.0, 2.0)
+            } else {
+                1.0
+            }
+        };
+        self.detail = [k(terrain), k(clouds), k(city_lights), 0.0];
+        self
     }
 
     /// Bodies that stand between the camera and the planet: each as its
@@ -507,5 +529,89 @@ mod tests {
         );
         let len = (u.sun_dir[0] * u.sun_dir[0] + u.sun_dir[1] * u.sun_dir[1]).sqrt();
         assert!((len - 1.0).abs() < 1e-6, "sun dir not unit: {len}");
+    }
+}
+
+/// The air's Rayleigh scale height as a share of the planet's radius —
+/// `planet.wgsl`'s H_RAY. The SKY feature's contract is written against it:
+/// over a 64 km world the dome is full at 3 km, pale at 8, dim at 15, gone
+/// by 25 (see [`sky_column`]).
+pub const H_RAY: f32 = 0.07;
+
+/// How much of the ground-level sky column is above altitude `h_m` on a
+/// planet of `radius_m`: what the zenith's blue scales by as the ship
+/// climbs. Mirrors the shader's exponential shell.
+pub fn sky_column(h_m: f32, radius_m: f32) -> f32 {
+    (-h_m.max(0.0) / (H_RAY * radius_m)).exp()
+}
+
+/// Chapman function, as the shader has it: how much longer an exponential
+/// atmosphere's column is along a slant at zenith cosine `cz` than straight
+/// up, at `x` scale heights from the centre. Schüler's closed form, with the
+/// below-horizon branch as two grazing halves less the part behind.
+pub fn chapman(x: f32, cz: f32) -> f32 {
+    let c = (x * core::f32::consts::FRAC_PI_2).sqrt();
+    if cz >= 0.0 {
+        return c / ((c - 1.0) * cz + 1.0);
+    }
+    let sz = (1.0 - cz * cz).max(0.0).sqrt();
+    let xt = x * sz;
+    2.0 * (x - xt).min(30.0).exp() * (xt * core::f32::consts::FRAC_PI_2).sqrt()
+        - c / ((c - 1.0) * (-cz) + 1.0)
+}
+
+#[cfg(test)]
+mod air_tests {
+    use super::*;
+
+    #[test]
+    fn the_ground_knobs_are_carried_clamped_and_stock_by_default() {
+        let cam = CameraFrame {
+            orient: glam::Quat::IDENTITY,
+            fov_y: 1.2,
+            aspect: 1.6,
+            time_s: 0.0,
+            exposure: 1.6,
+        };
+        let base = PlanetUniforms::new(
+            &cam,
+            Vec3::NEG_Y * 1.0e5,
+            6.0e4,
+            Vec3::X,
+            &PlanetAppearance::EARTHLIKE,
+            0.0,
+        );
+        assert_eq!(base.detail, [1.0, 1.0, 1.0, 0.0]);
+        let u = base.with_detail(2.0, 0.0, 1.5);
+        assert_eq!(u.detail, [2.0, 0.0, 1.5, 0.0]);
+        let wild = base.with_detail(9.0, -1.0, f32::NAN);
+        assert_eq!(wild.detail, [2.0, 0.0, 1.0, 0.0]);
+    }
+
+    /// The SKY feature's contract over a 64 km world: full blue at 3 km,
+    /// pale at 8, dim at 15, black at 25.
+    #[test]
+    fn the_dome_thins_with_altitude_as_the_sky_feature_promises() {
+        let r = 63_710.0;
+        assert!(sky_column(0.0, r) == 1.0);
+        assert!(sky_column(3_000.0, r) > 0.45, "{}", sky_column(3_000.0, r));
+        let pale = sky_column(8_000.0, r);
+        assert!(pale > 0.1 && pale < 0.3, "{pale}");
+        let dim = sky_column(15_000.0, r);
+        assert!(dim > 0.02 && dim < 0.06, "{dim}");
+        assert!(sky_column(25_000.0, r) < 0.01);
+    }
+
+    #[test]
+    fn the_chapman_column_is_one_at_the_zenith_and_longest_at_the_horizon() {
+        let x = 1.0 / H_RAY; // ground level, in scale heights from the centre
+        assert!((chapman(x, 1.0) - 1.0).abs() < 1e-5);
+        let grazing = chapman(x, 0.0);
+        assert!((grazing - (x * core::f32::consts::FRAC_PI_2).sqrt()).abs() < 1e-3);
+        assert!(chapman(x, 0.5) > 1.0 && chapman(x, 0.5) < grazing);
+        // Continuous across the horizon.
+        assert!((chapman(x, 1e-4) - chapman(x, -1e-4)).abs() < 0.05);
+        // Just below the horizon the column keeps growing.
+        assert!(chapman(x, -0.05) > grazing);
     }
 }

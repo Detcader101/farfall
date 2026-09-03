@@ -31,6 +31,29 @@ pub struct Marks {
     /// Landing mode: the hoops carry the predicted touchdown's danger,
     /// 0 (calm) to 1 (fatal).
     pub landing: Option<f32>,
+    /// The landing pad: a ring on the ground at the predicted touchdown.
+    pub pad: Option<Pad>,
+}
+
+/// Where the ship will touch down, for the pad drawn there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pad {
+    /// The touchdown point relative to the camera, metres (f64 subtraction
+    /// done by the caller — SPEC P3).
+    pub rel: Vec3,
+    /// The surface normal there.
+    pub up: Vec3,
+}
+
+/// The pad's radius on the ground, metres, at least: it also grows with
+/// distance so that it never shrinks below about a degree of sky.
+pub const PAD_RADIUS_M: f32 = 60.0;
+/// The pad's radius as a fraction of its distance, when that is larger.
+pub const PAD_ANGULAR: f32 = 0.02;
+
+/// The pad's radius `dist_m` away: the same rule the shader draws with.
+pub fn pad_radius_m(dist_m: f32) -> f32 {
+    PAD_RADIUS_M.max(dist_m * PAD_ANGULAR)
 }
 
 /// The world's laws, as the prediction needs them. Plain numbers copied
@@ -65,6 +88,8 @@ pub struct TrajectoryUniforms {
     vel: [f32; 4],
     look: [f32; 4],
     mark: [f32; 4],
+    pad: [f32; 4],
+    pad_up: [f32; 4],
 }
 
 impl TrajectoryUniforms {
@@ -113,6 +138,19 @@ impl TrajectoryUniforms {
                 },
                 HOOP_RADIUS_M * marks.hoop_scale.clamp(0.1, 10.0),
             ],
+            pad: match marks.pad {
+                Some(p) if p.rel.is_finite() => {
+                    [p.rel.x, p.rel.y, p.rel.z, pad_radius_m(p.rel.length())]
+                }
+                _ => [0.0; 4],
+            },
+            pad_up: match marks.pad {
+                Some(p) if p.rel.is_finite() && p.up.is_finite() => {
+                    let u = p.up.normalize_or_zero();
+                    [u.x, u.y, u.z, if u == Vec3::ZERO { 0.0 } else { 1.0 }]
+                }
+                _ => [0.0; 4],
+            },
         }
     }
 }
@@ -223,8 +261,8 @@ impl TrajectoryPass {
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        // The ribbon, two reticle quads, then the distance rings.
-        pass.draw(0..(SEGMENTS * 6 + 12 + RINGS * 6), 0..1);
+        // The ribbon, two reticle quads, the distance rings, then the pad.
+        pass.draw(0..(SEGMENTS * 6 + 12 + RINGS * 6 + 6), 0..1);
     }
 }
 
@@ -258,11 +296,49 @@ mod tests {
             hoop_scale: 0.0,
             spacing_m: 0.0,
             landing: None,
+            pad: None,
         };
         let u = TrajectoryUniforms::new(&cam, &world, 0.0, 7.0, 0.0, marks);
         assert_eq!(u.mark[0], 0.0);
         assert_eq!(u.mark[2], 0.0);
         assert_eq!(u.mark[3], HOOP_RADIUS_M * 0.1);
+        assert_eq!(u.pad_up[3], 0.0, "no pad, none shown");
+        // A pad: its normal unit, its radius at least the stock size and
+        // growing with distance, and never shown with a broken normal.
+        let pad = Pad {
+            rel: Vec3::new(0.0, -300.0, -400.0),
+            up: Vec3::Y * 3.0,
+        };
+        let u = TrajectoryUniforms::new(
+            &cam,
+            &world,
+            0.0,
+            7.0,
+            0.0,
+            Marks {
+                pad: Some(pad),
+                ..marks
+            },
+        );
+        assert_eq!(u.pad_up, [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(u.pad[3], PAD_RADIUS_M);
+        let far = Pad {
+            rel: Vec3::new(0.0, -6_000.0, -8_000.0),
+            up: Vec3::ZERO,
+        };
+        let u = TrajectoryUniforms::new(
+            &cam,
+            &world,
+            0.0,
+            7.0,
+            0.0,
+            Marks {
+                pad: Some(far),
+                ..marks
+            },
+        );
+        assert_eq!(u.pad[3], 10_000.0 * PAD_ANGULAR);
+        assert_eq!(u.pad_up[3], 0.0, "a zero normal hides the pad");
         let marks = Marks {
             hoops: true,
             hoop_scale: 2.0,

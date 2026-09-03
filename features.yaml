@@ -23,25 +23,30 @@ rules:
 # persisted as control.<key>; the menu lists every one (id complete-key-menu).
 controls:
   axes: {thrust-forward: W, thrust-back: S, strafe-left: A, strafe-right: D, thrust-up: R, thrust-down: F, pitch-up: Up, pitch-down: Down, yaw-left: Left, yaw-right: Right, roll-left: Q, roll-right: E}
-  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P, bay: B, next-weapon: U, weapon-1: 1, weapon-2: 2, scale-down: "[", scale-up: "]", hold: O}
-  fixed: {menu: Esc, page: Tab, capture-alt: F12, pane-zoom: "+ / -", fire: "left mouse", freelook: "right mouse"}
-  rule: every key the game answers to is a Named bind on the KEYS page; only the menu keys, the pane zoom and the mouse buttons are fixed
-  mouse: freelook while the right button is held; left drag turns the map or moves a panel; wheel zooms the map
+  named: {boost: ShiftLeft, brake: Space, despin: Z, hyper: H, warp-stop: V, map: M, atmosphere: C, engage: J, landing: G, design: K, look-lock: L, trajectory: T, assist: X, chase: Y, holo: N, capture: P, bay: B, next-weapon: U, weapon-1: 1, weapon-2: 2, scale-down: "[", scale-up: "]", hold: O, holo-out: ",", holo-in: ".", disembark: I}
+  fixed: {menu: Esc, page: Tab, controls-card: F1, capture-alt: F12, pane-zoom: "+ / -", fire: "left mouse", freelook: "right mouse"}
+  rule: every key the game answers to is a Named bind on the KEYS page; only the menu keys, F1, the pane zoom and the mouse buttons are fixed; the HELP page lists every one by group with what it does
+  mouse: freelook while the right button is held; left drag turns the map or moves a panel; wheel zooms the map, the bay, or in flight the hologram
 
 # Every key ~/.farfall/settings.cfg may hold, by group (crates/app/src/settings.rs).
 settings_keys:
-  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread]
-  camera: [camera.chase, holo.view, holo.size, cam.shake, cam.drive-shake]
+  graphics: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.fps-floor, graphics.sky, graphics.flare, graphics.dust, graphics.wind, graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe, graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread, graphics.terrain-detail, graphics.clouds, graphics.city-lights]
+  camera: [camera.chase, holo.view, holo.size, cam.shake, cam.drive-shake, holo.range]
   cockpit: [cockpit.frame, cockpit.glow, cockpit.hull, cockpit.res]
-  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, "ui.<dial>.size / .style / .fade / .tilt", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
+  ui: [ui.gauges, ui.gauge-style, ui.guide, ui.shield, ui.hoop-size, ui.landing-hoops, ui.safe-edge, ui.controls-card, "ui.<instrument> (slot, the mini map is ui.map)", "ui.<dial>.size / .style / .fade / .tilt / .lean / .rotate", ui.panel-menu, ui.panel-map, ui.panel-readout, ui.panel-holo]
+  rule: every key above has a menu row (crates/app/src/menu.rs::every_settings_key_has_a_menu_row walks settings.rs::KEYS), save the panel anchors, which are set by dragging
   map: [map.rings, map.grid]
-  warp: [warp.destination, warp.safe-radii]
+  warp: [warp.destination, warp.safe-radii, warp.length]
   sound: [sound.hull]
   controls: ["control.<axis>", "control.<named>", control.look-sens]
+  stick: [stick.enabled, stick.pitch, stick.yaw, stick.roll, stick.throttle, stick.strafe, stick.lift, stick.deadzone, stick.curve, stick.throttle-zero, stick.layout, stick.fire, "stick.button.<named>"]
   arms: [arms.power, arms.glow, arms.sight, arms.shards, arms.shard-life, arms.scar-size, arms.scar-cool, arms.ore]
-  mimics: [mimics.chance, mimics.hostility]
+  mimics: [mimics.chance, mimics.hostility, mimics.size]
+  miners: [miners.count, miners.growth]
   hold: [hold.gain, hold.face]
-  ship: ["ship.hardpoint.<n>", ship.holo-hue, ship.holo-saturation, ship.holo-scanlines, ship.holo-size, ship.holo-spin, ui.panel-bay-card, ui.pointer-size]
+  landing: [landing.assist, landing.pad]
+  game: [game.resume]
+  ship: [ship.craft, "ship.hardpoint.<n>", ship.holo-hue, ship.holo-saturation, ship.holo-scanlines, ship.holo-size, ship.holo-spin, ui.panel-bay-card, ui.pointer-size]
 
 # The bench harness (documented in crates/app/src/main.rs). All FARFALL_BENCH_*
 # are benchmark-only; the capture is the presented frame.
@@ -57,12 +62,19 @@ bench:
     FARFALL_BENCH_ALT: frozen altitude in metres over the planet
     FARFALL_BENCH_HEAD: head yaw,pitch in degrees
     FARFALL_BENCH_SPIN: the head turns a full circle over the run, n times
-    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND: the map, the settings menu (paged n times), DESIGN mode, LANDING mode up
+    FARFALL_BENCH_MAP / _MENU=n / _DESIGN / _LAND / _CARD: the map, the settings menu (paged n times, 0..8; 2 is the STICK page), DESIGN mode, LANDING mode, the CONTROLS card up
+    FARFALL_BENCH_STICK=n: the stick wizard open at step n (0-based) with a stand-in detection on it
+    FARFALL_BENCH_DEMAND=p,r,y,t: a parked pitch/roll/yaw/throttle demand, for the console stick mirror
+    FARFALL_BENCH_LANDED / _DISEMBARK: parked on the ground, LANDED, on its gear; DISEMBARK pressed at once for its answer on the readout
+    FARFALL_BENCH_EVA: parked LANDED and already on foot — walked out a dozen metres, looking back at the ship, the suit's readout up
     FARFALL_BENCH_CHASE / _HOLO: the chase camera, the holo3PP
     FARFALL_BENCH_NEBULA=1|off: a full sky of nebula at twice the stock glow, or off for a baseline
     FARFALL_BENCH_HYPER / _WARP=s / _GHOST=age: the chaos drive's field up; the wormhole drive engaged at s; a WARP STOP after-image this old
     FARFALL_BENCH_STRIKES=n / _G=x,y,z / _THRUST=m,p,y,r: n shield strikes; a felt load in g; forced thrust demands
+    FARFALL_BENCH_WIND=mps[,deg]: force the wind the ribbons and the WIND readout show — deg is where it blows FROM, off the nose (0 headwind, 90 from the right; 90 if omitted); visuals only, a bench's frozen sim never feels it
+    FARFALL_SKIP=dust: leave the space dust out, to measure it by its absence (staged moments — GHOST, STRIKES — are aged against the capture, which lands halfway through FARFALL_BENCH_SECONDS)
     FARFALL_BENCH_MIMIC=reveal|hail|attack|wreck: a ship out of a rock ahead-left, mid-reveal, hailing, attacking (fire in the air, a hit on the shell) or a wreck
+    FARFALL_BENCH_MINERS=tier[,mine|fight]: a miner of tier 0..3 ahead-left mining a planted rock with its beam, or come about with its fire in the air; a second one far off as a speck
     FARFALL_CAPTURE=final / FARFALL_MSAA / FARFALL_VSYNC / FARFALL_SCALE / FARFALL_MUTE / FARFALL_SKIP=a,b: capture the presented frame; renderer overrides; leave passes out for profiling
   scene_tests: "crates/app/tests/scenes.rs, gated by FARFALL_SCENE_TESTS=1 (the pre-commit gate sets it; FARFALL_NO_SCENES=1 skips) — 11 captures measured"
 
@@ -118,11 +130,11 @@ features:
     e2e: captures
 
   - id: menu-settings
-    name: "In-game menu — GFX / KEYS / CABIN / GAUGES pages, settings grouped by topic (the ship, then every path/hoop setting in one run on CABIN; dials on GAUGES), a flat framed card on the screen with the chosen row banded; every row proven to fit; settings file"
+    name: "In-game menu — GFX / KEYS / CABIN / DIALS / ARMS / MAP / SHIP / HELP tabs, settings grouped by topic (the ship, then every path/hoop setting in one run on CABIN; dials on DIALS; the bay hologram look on SHIP), a flat framed card centred on the screen with the chosen row banded; every row proven to fit; settings file. Superseded in layout by id menu-card"
     state: complete
     settings: [graphics.msaa, graphics.scale, graphics.vsync, graphics.fov, graphics.sky, graphics.flare, ui.panel-menu]
-    tests: ["crates/app/src/menu.rs::every_row_of_every_page_fits_the_panel", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense", crates/app/src/settings.rs]
-    e2e: "FARFALL_BENCH_MENU=3 capture — GAUGES page, rows aligned, card framed"
+    tests: ["crates/app/src/menu.rs::every_row_of_every_page_fits_the_card", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense", crates/app/src/settings.rs]
+    e2e: "FARFALL_BENCH_MENU=3 capture — DIALS page, rows aligned, card framed"
 
   - id: relativity
     name: "Light limit above 9,500 m/s; mouldable speed units"
@@ -167,6 +179,13 @@ features:
     tests: ["crates/app/src/warp.rs::uranus_is_arrived_at_in_the_belt_riding_with_the_rocks", "crates/app/src/warp.rs::every_body_is_arrived_at_in_a_circular_orbit", crates/app/src/warp.rs, crates/audio/src/synth.rs]
     e2e: "FARFALL_BENCH_WARP captures; flown — ENGAGE DRIVE with URANUS set drops you among the rocks at rest relative to them"
 
+  - id: warp-liquid-sequence
+    name: "The wormhole jump is an eight-second liquid sequence, all in the post pass on the world alone (the dash stays crisp): CHARGE (2 s) — space stretches radially, the stars draw into threads, a shimmer builds at the rim; PULL (2 s) — the picture warps harder, the chromatic split grows, the view folds toward the nose with a slow turn; FLIP (1.5 s) — the mirror-sphere inversion made long and liquid, the one jump exactly at its peak; REFORM (2.5 s) — the destination pours in as fluid, settling rings and chromatic fringes easing to stillness. Every phase's look flows into the next without a seam; WARP LENGTH on the DRIVE page scales the whole of it 50–200% (warp.length)"
+    state: complete
+    settings: [warp.length]
+    tests: ["crates/app/src/warp.rs::the_sequence_jumps_exactly_once_at_the_flips_peak", "crates/app/src/warp.rs::the_sequence_is_eight_seconds_and_the_length_setting_scales_it", "crates/app/src/warp.rs::the_phases_flow_in_order_and_every_one_is_seen", "crates/app/src/warp.rs::the_look_flows_between_phases_without_a_seam", "crates/render/src/post.rs::the_drive_lanes_are_clamped_and_zero_at_idle"]
+    e2e: "farfall-captures/warp/seq-s1..s75 (1, 3, 4.5, 6, 7.5 s into the sequence), spin-1..4 (head turning, one mid-PULL), seq-after (ends still), perf-full (2880x1800 4xMSAA mid-sequence: 5.83 ms avg) — all looked at"
+
   - id: warp-crack
     name: "The warp-barrier crack at the jump (bassier, heavier than the sonic boom)"
     state: tests-pass
@@ -186,11 +205,62 @@ features:
     e2e: capture
 
   - id: landing-mode
-    name: "G toggles LANDING — close gates down the path coloured by predicted touchdown; readout"
-    state: complete
-    tests: [crates/app/src/landing.rs, crates/render/src/trajectory.rs]
+    name: "G toggles LANDING — the hoops become HDR-bright gates (radiance 2.2) converging on the predicted touchdown, coloured by the verdict; the prediction is at the gear's height like the sim's contact; a two-line readout that fits the panel: LAND SOFT/FIRM/HARD IN Ns ALT, then VS / ALONG and the cue — FLARE (descent past what the gear takes, ground close), LEVEL (tilted past 15°), GEAR DOWN (last 15 s)"
+    state: tests-pass
+    tests: ["crates/app/src/landing.rs::every_readout_line_fits_the_panel_in_every_state", "crates/app/src/landing.rs::the_hoops_are_phased_onto_the_touchdown", "crates/app/src/landing.rs::an_orbit_touches_nothing_and_a_hover_is_safe", crates/render/src/trajectory.rs]
     settings: [ui.landing-hoops]
-    e2e: "FARFALL_BENCH_LAND capture (HARD verdict, red gates)"
+    e2e: "farfall-captures/landing/approach-1.png (FARFALL_BENCH_LAND=1 FARFALL_BENCH_ALT=300)"
+
+  - id: landing-pad
+    name: "A landing pad drawn on the ground at the predicted touchdown in LANDING mode (LANDING PAD, landing.pad): a flat ring in the surface's tangent plane with compass ticks, a centre dot and a ring that keeps closing on the centre, in the verdict's colour at radiance 3.0; 60 m across at least, growing with distance so it never shrinks under a degree of sky. A shader quad in the trajectory pass, no assets; the hoops' grid is phased onto it"
+    state: tests-pass
+    tests: ["crates/render/src/trajectory.rs::uniforms_are_clamped_and_sized", "crates/app/src/landing.rs::the_hoops_are_phased_onto_the_touchdown", crates/render/tests/shader_validation.rs]
+    settings: [landing.pad]
+    e2e: "farfall-captures/landing/approach-1.png"
+
+  - id: landing-assist
+    name: "LANDING ASSIST (landing.assist, default on): in LANDING mode with a touchdown ahead the flight computer holds the hull level over the ground — pitch and roll toward the surface normal, damped (ζ ≈ 0.8 on roll), on any axis the pilot is not using; yaw is the pilot's. App-side control glue like HOLD; the sim is untouched"
+    state: tests-pass
+    tests: ["crates/app/src/landing.rs::the_assist_levels_the_hull_and_yields_to_the_pilot"]
+    settings: [landing.assist]
+    e2e: "flight — to be flown; the capture bench is frozen"
+
+  - id: landed-state
+    name: "The ship LANDS: set down gently (under 12 m/s) and upright (within 15°), it settles onto its gear at a fixed 2.5 m stance once it slides under 2 m/s, levels, kills its spin, and stays put — velocity locked to the ground's own (the Moon carries it, bit for bit), position recomputed from the body's centre each tick so it cannot drift — until thrust, boost or the hyper field releases it. A hard or tilted touchdown is DOWN, not landed: it skids as before and never settles until it lifts off and re-lands (the crash it should be is deferred, id crash). Sim state (farfall_sim::Ground on ShipState), in the hash; the golden is unchanged because a ship in flight adds nothing. The readout says LANDED ON <BODY> with the touchdown's verdict and speeds (recorded by the app the tick the ground was met), or DOWN ON <BODY> HARD / ROLLING ON <BODY>, mode or no mode"
+    state: tests-pass
+    tests: ["crates/sim/tests/contact.rs::a_slow_upright_touchdown_settles_and_stays_put_through_a_thousand_ticks", "crates/sim/tests/contact.rs::a_landed_ship_rides_the_ground_exactly_as_the_planet_turns", "crates/sim/tests/contact.rs::throttle_releases_a_landed_ship", "crates/sim/tests/contact.rs::a_hard_or_tilted_touchdown_does_not_settle", "crates/sim/tests/contact.rs::the_ground_state_is_in_the_hash", "crates/sim/tests/invariants.rs::golden_hash", "crates/app/src/landing.rs::a_touchdown_is_judged_from_the_tick_it_happens", "crates/app/src/landing.rs::a_parked_ship_is_landed_level_and_still"]
+    e2e: "farfall-captures/landing/landed-1.png (FARFALL_BENCH_LANDED=1)"
+
+  - id: disembark
+    name: "DISEMBARK (I, control.disembark): leave the ship. LANDED it walks out — the EVA walker, see eva-walk — unless a pad's helicopter is in boarding range, which the key boards first; NOT LANDED when down, LAND FIRST in flight, on the readout for four seconds; the LANDED readout names the key"
+    state: tests-pass
+    tests: ["crates/app/src/input.rs::no_two_default_binds_share_a_key", "crates/app/src/landing.rs::every_readout_line_fits_the_panel_in_every_state", "crates/app/src/lib.rs::disembark_walks_out_and_the_same_key_boards_back", crates/app/src/menu.rs]
+    settings: [control.disembark]
+    e2e: "farfall-captures/landing/disembark-1.png (FARFALL_BENCH_LANDED=1 FARFALL_BENCH_DISEMBARK=1)"
+
+  - id: eva-walk
+    name: "EVA on foot (SPEC 6.5b): DISEMBARK while LANDED leaves the seat — a first-person
+      walker beside the ship, app-side like the mimics, never in the sim, the golden hash
+      unmoved. The translation binds walk the body's analytic sphere (the ground the gear
+      stands on), BOOST's key runs, BRAKE's key jumps, gravity the body's own mu/r^2 in the
+      body's frame, the mouse look always engaged, ESC still menus. The ship stays LANDED
+      with its controls zeroed so it cannot leave without you; the jet pass shows the hull
+      from outside; the readout swaps to the suit's lines — the ship's distance, the key
+      reading BOARD in range at the hull — and the same key walks back in.
+      FARFALL_BENCH_EVA=1 stages it a dozen metres out, looking back at the ship"
+    state: tests-pass
+    tests: ["crates/app/src/eva.rs::a_standing_walker_stays_on_the_ground_through_a_thousand_steps",
+            "crates/app/src/eva.rs::walking_forward_carries_along_the_ground_not_off_it",
+            "crates/app/src/eva.rs::running_outpaces_walking",
+            "crates/app/src/eva.rs::a_jump_leaves_the_ground_and_gravity_brings_it_back",
+            "crates/app/src/eva.rs::mouse_right_turns_the_walker_right_and_up_looks_up",
+            "crates/app/src/eva.rs::the_gaze_stays_short_of_the_poles",
+            "crates/app/src/eva.rs::the_walk_out_stands_beside_the_ship_facing_the_hull",
+            "crates/app/src/eva.rs::the_camera_leans_with_the_planet",
+            "crates/app/src/eva.rs::the_suit_lines_name_the_ship_and_offer_the_key_in_range",
+            "crates/app/src/lib.rs::disembark_walks_out_and_the_same_key_boards_back"]
+    settings: [control.disembark]
+    e2e: "farfall-captures/eva/eva-1.png (FARFALL_BENCH_EVA=1)"
 
   - id: ladder-on-nose
     name: "Pitch ladder stays on the boresight under freelook"
@@ -251,6 +321,7 @@ features:
     tests: ["crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense", crates/render/src/cabin.rs, crates/app/src/settings.rs, crates/app/src/menu.rs]
     settings: [ui.gauge-style, ui.gauges, ui.guide, graphics.fov]
     e2e: "FARFALL_BENCH_HEAD=10,-22 capture with jet + guide on — bowls, bezels, dials inside, ruled glass, reach rings, gaze reticle; FARFALL_BENCH_HEAD=8,-24 with dial — flush wells, bezels, faces foreshortened in the dash"
+    note: "2026-08-31 polish (fable/gauges): nothing is hollowed into the dash any more — no bowls, wells, recesses or lit sockets; every instrument sits ON the dash (see gauges-on-the-dash). WARTHOG is the default style."
 
   - id: ship-fixed-glass
     name: "Glass anchors laid out in a FIXED 70° reference projection and shown through the live FOV — dials stay fixed to the ship through the FOV setting, throttle flare and warp, and scale like objects"
@@ -272,6 +343,7 @@ features:
     tests: ["crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin", "crates/app/src/settings.rs::a_tilt_is_held_within_reach", "crates/app/src/menu.rs::cockpit_page_cycles_slots_and_quit_quits"]
     settings: ["ui.<dial>.tilt"]
     e2e: "FARFALL_BENCH_HEAD=20,-26 capture — speedo at +40° in its pod, black face, readable; altimeter at -30° in the left console"
+    note: "2026-08-31 polish: no well — a leaned face is lifted along the dash normal so its low edge clears the surface and its housing rises to carry it (cabin.rs Placement::in_dash mirrors cockpit.wgsl)"
 
   - id: despin
     name: "Emergency gyro (Z, rebindable DESPIN) — kills any spin on a fixed time constant in the sim"
@@ -340,7 +412,7 @@ features:
     tests: ["crates/sim/tests/assist.rs::the_brake_kills_spin_harder_than_the_gyro"]
 
   - id: asteroid-belt
-    name: "The asteroid belt is Uranus' ring — one universe, no separate level: drive to URANUS and fly on into the ring (1.6–2.0 radii, in the plane of its spin axis) and it is there. A procedural population through the ring's volume (hashed cells of 1.4 km, 0–3 rocks each, 5–300 m, rigid ring rotation plus a drift of a few m/s so they meet); the nearest 48 are live on the CPU — rock on rock (mass by volume, restitution 0.4) and rock on ship (an impulse on the ship, a shield ripple, grit in the sound); belt.wgsl ray-traces them with noise-bumped silhouettes and normals, Sun-lit with the ring's dust-light for fill, each turning on its axis. From afar the ring resolves into the belt itself: bodies.wgsl draws the same hashed population (same cells, same hash, the ring's rotation phase in a uniform lane) as Sun-lit specks on the sheet out to where a rock is under a pixel, the dust veil grained by the belt's hash and opaque to the stars behind it; from inside it thins to a faint haze and the live rocks take over"
+    name: "The asteroid belt is Uranus' ring — one universe, no separate level: drive to URANUS and fly on into the ring (1.6–2.0 radii, in the plane of its spin axis) and it is there. A procedural population through the ring's volume (hashed cells of 1.4 km, 0–3 rocks each, 5–300 m, rigid ring rotation plus a drift of a few m/s so they meet); the nearest 48 are live on the CPU — rock on rock (mass by volume, restitution 0.4) and rock on ship (an impulse on the ship, a shield ripple, grit in the sound); belt.wgsl ray-traces them with noise-bumped silhouettes and normals, Sun-lit with the ring's dust-light for fill, each turning on its axis. From afar the ring resolves into the belt itself: bodies.wgsl draws the same hashed population (same cells, same hash, the ring's rotation phase in a uniform lane) as Sun-lit specks on the sheet out to where a rock is under a pixel — each speck glinting as a Sun-lit facet turns through the half-vector, a brief sharp twinkle — the dust veil grained by the belt's hash and opaque to the stars behind it; from inside it thins to a faint haze and the live rocks take over"
     state: complete
     tests: [crates/app/src/belt.rs, crates/render/src/belt.rs, crates/render/tests/shader_validation.rs, crates/app/tests/scenes.rs]
     e2e: "capture parked in the ring — craggy rocks ahead, the ring's haze behind; capture 9 km above the plane — the sheet is a field of rocks receding to the horizon, no stars through it (scene test the_far_ring_resolves_into_rocks_and_hides_the_stars)"
@@ -352,8 +424,24 @@ features:
     tests: ["crates/app/src/input.rs::no_two_default_binds_share_a_key", "crates/app/src/input.rs::rebinding_swaps_uniformly_across_actions_and_named_controls", crates/app/src/menu.rs, crates/app/src/settings.rs]
     e2e: "menu capture — the KEYS page walks every bind"
 
+  - id: hotas-stick
+    name: "A HOTAS / joystick flies the ship (crates/app/src/stick.rs): on Windows through winmm (windows-sys, already in the tree — no new dependency), in the browser through the Gamepad API; the Thrustmaster T.Flight HOTAS 4 is recognised by its USB id and works out of the box with a measured default map (X roll, Y pitch, Z throttle inverted, V rocker strafe, R twist yaw; trigger fires, L1 boost, R3 brake, L3 despin, the throttle's face buttons map/landing/next weapon/assist, R2 chaos drive, L2 warp stop, base buttons chase/holo, the hat look-lock/rail/hold/cannon). Axes are shaped (symmetric deadzone, power curve, invert, throttle zero at centre or bottom) into the same body axes the keys drive and summed with them, clamped; a stick button IS the key its named control is bound to (one key path, App::key_input), so every action is bindable to a button. A STICK page (device line, on/off, the wizard, each flight axis, deadzone, curve, throttle zero, trigger) and the KEYS page showing stick binds beside keys (a stick button pressed on a PRESS KEY row binds itself). The SETUP WIZARD walks the stick control by control — move the axis / press the button, the wizard detects which and which way, ENTER keeps, I inverts, X clears, S skips, B back, ESC finishes — to a summary; re-runnable any time; saved as stick.* keys as it goes"
+    state: tests-pass
+    settings: [stick.enabled, stick.pitch, stick.yaw, stick.roll, stick.throttle, stick.strafe, stick.lift, stick.deadzone, stick.curve, stick.throttle-zero, stick.throttle-brake, stick.throttle-jump, stick.layout, stick.fire, "stick.button.<named>", cockpit.stick]
+    tests: ["crates/app/src/stick.rs::hotas4_defaults_fly_the_ship_the_right_way", "crates/app/src/stick.rs::every_shaped_value_stays_finite_and_in_range", "crates/app/src/stick.rs::deadzone_is_symmetric_and_full_travel_still_reaches_one", "crates/app/src/stick.rs::the_wizard_learns_an_axis_from_the_move_it_sees", "crates/app/src/stick.rs::the_wizard_binds_buttons_skips_and_goes_back", "crates/app/src/stick.rs::every_wizard_page_fits_the_panel", "crates/app/src/stick.rs::the_map_round_trips_through_the_settings_file", "crates/app/src/stick.rs::an_unidentified_axis_resting_at_full_deflection_moves_nothing", "crates/app/src/input.rs::the_stick_sums_with_the_keys_within_range", "crates/app/src/menu.rs::the_stick_page_and_its_wizard_are_in_the_menu"]
+    e2e: "farfall-captures/hotas/: the STICK page, KEYS with stick binds, wizard steps (axis, deadzone, trigger, button, summary), each run finding the real HOTAS 4 by winmm; AND a live flight by Jay Jay (farfall-captures/live/hotas-live.log): pitch/roll/yaw/throttle full-range and the right way up — which caught winmm reporting the untouched rocker at full rail (strafe +1.00 at rest), fixed by the reader's calibration gate — see docs/polish/hotas.md"
+    notes: "docs/HOTAS.md: the design (device map vs actions, lifted from hotas-reforger), the default map as a table, the settings keys, adding another stick. Linux/macOS have no reader yet (gilrs is the road, behind the same platform::{find, read} pair)"
+
+  - id: hotas-gestures
+    name: "The throttle's gestures and the cabin's answering stick: the lever hard back (bottom ~5% of true travel, centre-zero maps only) holds the air brake exactly as Space does (stick.throttle-brake); the lever slammed forward (70% of travel inside a quarter second, ending past halfway) holds the chaos drive for two seconds and lets go, the drive's own charge/entropy rules untouched, and a smooth push can never trigger it (stick.throttle-jump); both on the HELP page under DRIVES and as STICK rows with descriptions. The control column on the console mirrors the live demand (cockpit.stick, CABIN page): the stick leans with pitch/roll, the grip twists with yaw, the left lever slides with the throttle — HOTAS or keys, through one render lane (CabinUniforms::with_stick, quantised 0.05)"
+    state: tests-pass
+    settings: [stick.throttle-brake, stick.throttle-jump, cockpit.stick]
+    tests: ["crates/app/src/stick.rs::a_smooth_throttle_push_never_jumps", "crates/app/src/stick.rs::a_slam_jumps_for_two_seconds_and_releases", "crates/app/src/stick.rs::the_lever_hard_back_holds_the_air_brake", "crates/app/src/input.rs::the_stick_sums_with_the_keys_within_range", crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/hotas/cabin-stick-neutral-1.png vs cabin-stick-demand-1.png (FARFALL_BENCH_DEMAND=1,0.7,0.5,0.8, HEAD=0,-35): the console column leaned back-and-right, grip twisted, lever slid - looked at; the gestures themselves await Jay Jay's next flight"
+    notes: "the gestures read the lever's true position (post-invert, pre-deadzone) from the admitted sample, so the calibration gate keeps an untouched railed lever out of both zones"
+
   - id: holo3pp
-    name: "The holo3PP (N, holo.view — clear of H, which is the chaos drive), and the chase camera it is measured against (Y, camera.chase): third person without ever leaving first person, and not a screen. holo.wgsl marches a real 3D hologram over an emitter in the dash — the fighter itself (the same SDF as cabin/map/ghost/jet) in miniature at its true attitude, translucent cyan with rim light, a Sun-lit side so its shape reads, scanlines drifting up through the volume, the nozzles glowing with effort/hyper; around it the things the canopy cannot show: the velocity vector (relative to the nearest body; a rod as long as the log of the speed), the nearest body as an amber wire globe at its true bearing and TRUE angular size (the ground swells up under the little ship as it descends), the Sun's bearing as a bead. It is a real object in the ship's frame: turn the head and it has parallax, look down on it. Light, not glass — it adds over the cabin. Its emitter is a glass anchor whose direction meets the dash at the socket (the same placement as the dials), draggable along the dash, sized by HOLO SIZE; default lower right, out of the forward view. Every world pass draws from a ViewPose (camera + a head rotation + an eye seat in the ship's frame), so the chase view is only a camera — the ship-attached shaders (shield shell, after-image, belt) fold the eye offset through with_eye lanes and stay glued to the hull; jet.wgsl draws the ship itself from outside. Chase (Y) swings the whole screen behind the ship; cockpit passes skip. GFX menu: CAMERA, HOLO VIEW, HOLO SIZE"
+    name: "The holo3PP (N, holo.view — clear of H, which is the chaos drive), and the chase camera it is measured against (Y, camera.chase): third person without ever leaving first person, and not a screen. holo.wgsl marches a real 3D hologram over an emitter in the dash — the fighter itself (the same SDF as cabin/map/ghost/jet) in miniature at its true attitude, translucent cyan with rim light, a Sun-lit side so its shape reads, scanlines drifting up through the volume, an interference shimmer of fine fringes beating over the volume (the bay hologram has the same), plumes trailing out of the nozzles with effort/hyper; around it the things the canopy cannot show: the velocity vector (relative to the nearest body; a rod as long as the log of the speed), the nearest body as an amber wire globe at its true bearing and TRUE angular size (the ground swells up under the little ship as it descends), the Sun's bearing as a bead. It is a real object in the ship's frame: turn the head and it has parallax, look down on it. Light, not glass — it adds over the cabin. Its emitter is a glass anchor whose direction meets the dash at the socket (the same placement as the dials), draggable along the dash or anywhere in the glass, sized by HOLO SIZE; stock at the upper right of the glass under the mini map (clear of the dials — over the dash it sat on the speed dial and the G meter), out of the forward view. Every world pass draws from a ViewPose (camera + a head rotation + an eye seat in the ship's frame), so the chase view is only a camera — the ship-attached shaders (shield shell, after-image, belt) fold the eye offset through with_eye lanes and stay glued to the hull; jet.wgsl draws the ship itself from outside. Chase (Y) swings the whole screen behind the ship; cockpit passes skip. GFX menu: CAMERA, HOLO VIEW, HOLO SIZE"
     state: complete
     settings: [camera.chase, holo.view, holo.size, ui.panel-holo]
     tests: [crates/render/src/jet.rs, crates/render/src/holo.rs, "crates/app/src/main.rs::the_chase_eye_sits_behind_the_ship_and_the_world_measures_from_it", crates/render/tests/shader_validation.rs, "crates/app/tests/scenes.rs::the_holo3pp_stands_as_a_3d_hologram_over_the_dash", "crates/app/tests/scenes.rs::the_chase_view_shows_the_ship_and_no_cockpit"]
@@ -386,6 +474,7 @@ features:
     state: complete
     tests: [crates/render/tests/shader_validation.rs, crates/render/src/cabin.rs]
     e2e: "FARFALL_BENCH_HEAD=0,-28 capture, gyro JET ×1.5 — a shaded globe in the bowl, earth up for a nose-down ship"
+    note: "2026-08-31 polish: the bowl is gone — the ball stands proud of the dash (centre 4 cm under the surface) with a thin seam ring, clipped at the metal; WARTHOG has the same ball, brighter, white markings with a dark border"
 
   - id: fps-floor
     name: "FPS FLOOR (graphics.fps-floor, default 60) — a governor on the cabin's moving size; while turning the head costs more than the floor allows, the moving march shrinks (to 0.3 of the still size) and grows back when there is room; the sharp cabin is untouched"
@@ -406,15 +495,41 @@ features:
     state: complete
     e2e: "8 frames inspected"
 
+  - id: space-dust
+    name: "Space dust (dust.wgsl, one instanced draw): fine motes and ice crystals in a 280 m volume about the eye, hash-placed on a 40 m world lattice so they hold still as the ship flies through; Sun-lit ice that glints as it turns with a forward-scatter halo toward the Sun, the belt's grit duller and warmer; drawn into streaks a frame long by the eye's velocity relative to the local circular orbit about the nearest body (a coasting ship sees them hang, thrust or a fall streams them); sparse in deep space (10%), dense in the belt (ring_density: 1 inside the ring, fading over 5 km) and in a planet's air, gone under the hyper field, hidden behind the nearest body; and a few motes drifting in the cabin between the head and the dash in its cyan light, drawn after the cabin. DUST setting (graphics.dust, 0..200%) on the GRAPHICS page; FARFALL_SKIP=dust"
+    state: complete
+    tests: ["crates/render/src/dust.rs::motes_stay_put_on_the_lattice_as_the_eye_moves", "crates/render/src/dust.rs::dust_rests_in_the_local_orbit", "crates/render/src/dust.rs::dust_is_sparse_in_deep_space_thick_in_the_belt_and_gone_under_the_drive", "crates/app/src/belt.rs::the_dust_thickens_into_the_ring_and_is_nothing_at_earth", crates/render/tests/shader_validation.rs]
+    settings: [graphics.dust]
+    e2e: "farfall-captures/particles/dustonly-{1,belt,fast}-1.png (FARFALL_SKIP=starfield,nebula,bodies): sparse glints at rest in orbit, a field of them in the ring, streaks at 3 km/s; cost ~0.02 ms at 10% and ~0.15 ms in the belt at 1080p"
+
+  - id: wind
+    name: "Wind (sim + wind.wgsl): the planet's atmosphere blows, and the wind is physics — a deterministic layered field (zonal bands, an eastward jet stream up to ~60 m/s at altitude, three travelling cells, slow two-sine gusts; libm-only, scale-free on sqrt(g*H), exactly zero above the air and at the poles) that every aero term takes against v - wind, so a headwind costs delta-v, a tailwind gives it back, a crosswind weathervanes the nose and shoves a slow ship, and a landed one stays parked on its gear; WorldParams.wind_strength 0..2 (default 1; 0 reproduces the pre-wind golden hash bit for bit). Made visible by one instanced draw of ~1250 ribbons on a 50 m world lattice about the eye, each stretched along the LOCAL wind (the sim's own two samples interpolated on the GPU — never a second weather), a bright packet running downwind, longer and brighter the harder it blows, denser in a gust, fading with the air; and a WIND line on the readout — whole m/s and an 8-way arrow relative to the nose. WIND setting (graphics.wind, 0..200% visual density) on GRAPHICS; FARFALL_BENCH_WIND=mps[,deg]; FARFALL_SKIP=wind"
+    state: complete
+    tests: ["crates/sim/tests/wind.rs (identical across runs, dies above the atmosphere, a landed ship stays put, still air matches the old drag exactly, the field is smooth, it keeps to its lanes)", "crates/sim/tests/invariants.rs::golden_hash (regenerated: the 20 km scenario is inside the air)", "crates/render/src/wind.rs (lattice holds places, density thickens with air/wind/setting and vanishes when off, uniforms carry the sim's own samples)", "crates/app/src/readout.rs::the_wind_line_reads_speed_and_the_way_the_air_goes", crates/render/tests/shader_validation.rs]
+    settings: [graphics.wind]
+    e2e: "farfall-captures/wind/wind-{500m,3km,forced,cross,jet,landed,space,skip}-1.png: WIND 7 M/S ^ at 500 m, 61 M/S > in the jet band at 13.8 km (FARFALL_BENCH_POS at 40°N — ALT_AT only steers under-8-km flights), 45 M/S < forced crosswind with ribbons running flat across the sky (diff-cross-vs-skip.png proves the pass against FARFALL_SKIP=wind), 4 M/S <^ LANDED, no WIND line and no ribbons at 30 km; pass cost is in the noise at 800x600 (~0.1 ms class, one instanced draw)"
+
+  - id: engine-plumes-outside
+    name: "The ship from outside is lit and its engines read: jet.wgsl draws a white-hot plume core with shock diamonds down its first half inside a translucent blue-violet skin that widens aft and ripples as it streams (closest-approach light, no march, hidden behind the hull), longer and brighter with the effort and pulled to cyan by the hyper field, the nozzle lips hot amber, the nacelle tails washed blue; RCS puffs as flickering balls of gas at the nose and wingtips by the demands; the hull with panel seams, Fresnel, the nearest body's light on the belly; the chase view takes FARFALL_BENCH_THRUST like the cabin does (thrust_look). The cabin's own plumes (cabin_blit.wgsl) get the same core, diamonds and rippling skin, and the hull catches a blue cast aft under thrust; the holo3PP's miniature trails plumes out of its nozzles"
+    state: complete
+    tests: ["crates/render/src/jet.rs::jet_lanes_hold_their_places", crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/particles/thrust-1.png (FARFALL_BENCH_CHASE=1 FARFALL_BENCH_THRUST=1,0,0,0) — twin plumes with amber mouths under a shaded hull; thrust-rcs-1.png — the roll puff at the wingtip; aft-thrust-1.png — the plumes' tails over the spine from the cockpit; holo-thrust-1.png — the miniature's plumes"
+
+  - id: after-image-liquid
+    name: "The warp after-image is a liquid, chromatic thing: a shell of the field's blue whose rim splits into a fringe (red hugging the body, blue standing off the silhouette), caustics flowing down its length like water over glass, a faint white heart; it starts nearer and slides less far (10 + 42 m) so it reads, and fades with a longer tail. The bench knobs FARFALL_BENCH_GHOST and FARFALL_BENCH_STRIKES are aged against the capture time (halfway through the bench) — they were aged against a 1 s capture that no longer exists, which is why the baseline showed nothing"
+    state: complete
+    tests: ["crates/render/src/ghost.rs::the_image_slides_away_and_fades", crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/particles/ghost-1.png (FARFALL_BENCH_GHOST=0.5) — the banked image ahead, blue-white with a chromatic edge"
+
   - id: shield
-    name: "The force field (shield.wgsl) — a 4.2 m shell about the hull, invisible until debris hits it (none at rest, one every couple of seconds at 1 km/s, a patter at speed, anywhere on the shell at a crawl and from ahead when fast; under the hyper drive the whole shell ablates, lit from the nose back under bands streaming aft); each strike raises a ripple of blue holographic light spreading evenly over the shell at 5 m/s with a wake, the field's honeycomb showing in a band behind the front and at the impact, fading over ~3 s; impacts come from ahead of the motion, scattered; SHIELD setting (ui.shield, 0..200%)"
+    name: "The force field (shield.wgsl) — a 4.2 m shell about the hull, invisible until debris hits it (none at rest, one every couple of seconds at 1 km/s, a patter at speed, anywhere on the shell at a crawl and from ahead when fast; under the hyper drive the whole shell is a liquid skin — lit from the nose back under bands streaming aft, a refractive sheen wandering over it, a violet fringe at the graze, the honeycomb all but hidden); each strike raises a liquid wave spreading evenly over the shell at 5 m/s — a white-hot crest, caustics wrinkling the field inside it, a swell and a second crest in its wake, all thinning as the ring grows — and in a ring just behind the crest the field's honeycomb shows cell by cell (pointy-top hexes, a 0.32 m cell), lit by the caustics, dying with distance from the strike and within a couple of seconds — a few cells round each hit, never the whole shell; impacts come from ahead of the motion, scattered; SHIELD setting (ui.shield, 0..200%). Written as radiance for the post pass's bloom"
     state: complete
     tests: [crates/render/src/shield.rs, crates/render/tests/shader_validation.rs, "crates/app/src/main.rs::the_hull_meets_more_rock_the_faster_it_goes_and_none_in_air"]
     settings: [ui.shield]
-    e2e: "FARFALL_BENCH_STRIKES=5 capture in space — rings spreading over the shell ahead"
+    e2e: "farfall-captures/tuning/r4-strikes-1.png (FARFALL_BENCH_STRIKES=3) — three crest rings spreading over the shell ahead, the honeycomb lit only in a patch of cells round each hit, the rest of the sky clear; r4-hyper-1.png (FARFALL_BENCH_HYPER=1) — a wet sheen streaming aft, no lattice (the devlog's mode-strikes/mode-hyper had the honeycomb tiling the whole sky)"
 
   - id: nebula
-    name: "The nebula (nebula.wgsl) — coloured gas across the sky: a few soft clouds placed by a seed, each a domain-warped fbm of banks with ridged filaments lit as emission cores and dark dust lanes cut through, two hues drifting into each other; baked once into a 1024x512 equirect with mips whenever a knob moves and fetched once per pixel by the starfield, which also dims stars a little behind thick gas; NEBULA block on the GRAPHICS page: glow (0..300%, OFF), seed, scale, density, clouds, hue, hue 2, spread"
+    name: "The nebula (nebula.wgsl) — coloured gas across the sky: a few soft clouds placed by a seed, each a domain-warped fbm of banks with ridged filaments lit as emission cores and dark dust lanes cut through, two hues drifting into each other; baked once into a 4096x2048 equirect with mips whenever a knob moves (five ridged octaves of filaments, a lace of the finest threads, dust lanes with ragged edges) and fetched once per pixel by the starfield, which also dims stars a little behind thick gas; NEBULA block on the GRAPHICS page: glow (0..300%, OFF), seed, scale, density, clouds, hue, hue 2, spread"
     state: tests-pass
     tests: [crates/render/src/nebula.rs, crates/render/tests/shader_validation.rs, "crates/app/src/settings.rs::nebula_keys_clamp_and_wrap", "crates/app/src/menu.rs::the_nebula_knobs_step_clamp_and_wrap", "crates/app/tests/scenes.rs::the_nebula_colours_the_sky_and_goes_away_when_off"]
     settings: [graphics.nebula, graphics.nebula-seed, graphics.nebula-scale, graphics.nebula-density, graphics.nebula-clouds, graphics.nebula-hue, graphics.nebula-hue2, graphics.nebula-spread]
@@ -431,7 +546,41 @@ features:
     state: complete
     tests: ["crates/app/src/settings.rs::edits_round_trip", crates/app/src/menu.rs]
     settings: [graphics.sky]
-    e2e: "captures looking up at 0/3/8/15/25 km — full blue at 3, pale at 8, stars through a dim blue at 15, black at 25"
+    e2e: "farfall-captures/tuning/r4-alt3k-up-1.png, r4-low500-up-1.png (looking up at 3 km and 500 m — a blue dome, the brightest stars through it), r4-alt12k-1.png (deep graded blue, many stars), r4-alt80k-1.png (black space)"
+
+  - id: atmosphere-scatter
+    name: "The air is single scattering, marched (planet.wgsl): an exponential shell with a Rayleigh component whose tint is the preset's colour (blue sky, orange sunsets on EARTHLIKE; amber, green on the others) and a low Mie haze for the horizon glow and the Sun's forward scatter; eight samples per ray clustered at its lowest point, each lit through an analytic Chapman column that is zero in the planet's shadow. One integral gives the daytime dome and its thinning with altitude (the SKY contract: full at 3 km, gone by 25 over a 64 km world), the aerial perspective on the ground, the glowing limb seen from orbit thinning into space, and the terminator's twilight. SKY scales the in-scattered light."
+    state: complete
+    tests: ["crates/render/src/planet.rs::the_dome_thins_with_altitude_as_the_sky_feature_promises", "crates/render/src/planet.rs::the_chapman_column_is_one_at_the_zenith_and_longest_at_the_horizon", crates/render/tests/shader_validation.rs]
+    settings: [graphics.sky]
+    e2e: "farfall-captures/tuning/r4-low500-1.png, r4-low500-side-1.png (500 m over the coast: dunes and hills with relief, sand, a turquoise shallows and the sea, a pale horizon under a blue gradient), r4-alt3k-1.png (3 km: land, coast, sea, the deck), r4-alt12k-1.png (12 km: deep blue dome, stars), r4-alt80k-1.png (space), d2-globe-1.png (the globe from 336 km). SUN_I 26 → 5 with the ground lit from the same number, EARTHLIKE density 0.45 → 0.30, Mie 0.15/0.72 → 0.06/0.55, the deck darker from below — docs/polish/tuning.md"
+
+  - id: terrain-relief
+    name: "The ground has relief: over the baked continents a live fbm adds hills, ridged noise adds mountains where the continents are high, and the height a footprint away along two tangents gives a shaded normal — octaves are added only up to the pixel's footprint (one from orbit, six at a few hundred metres, the last fading in), so orbit stays cheap and the detail arrives on descent. Colour by height, slope and latitude: shallow turquoise water and detailed coasts, sand at the shore, green to arid lowland, grey rock on the steep and the high, snow above a line that falls toward the poles. TERRAIN DETAIL row (graphics.terrain-detail, 0 baked only .. 200% an octave finer)"
+    state: tests-pass
+    tests: ["crates/render/src/planet.rs::the_ground_knobs_are_carried_clamped_and_stock_by_default", "crates/app/src/settings.rs::the_ground_keys_clamp_and_default_to_stock", "crates/app/src/menu.rs::the_ground_knobs_step_to_off_and_hold_at_double", crates/render/tests/shader_validation.rs]
+    settings: [graphics.terrain-detail]
+    e2e: "pending — benchmarks halted 2026-08-31; FARFALL_BENCH_ALT=500/3000 spins and the 2880x1800 cost at 500 m are the evidence to take"
+
+  - id: cloud-detail
+    name: "The cloud deck gets live edge detail (four fbm-LOD octaves over the baked field, footprint-banded so it appears only overhead and low down), casts its shadows on the ground with that detail, and is lit through the air so it reddens at sunset. CLOUDS row (graphics.clouds, a multiplier on the preset's coverage: OFF clears the sky, 200% doubles it)"
+    state: tests-pass
+    tests: ["crates/app/src/settings.rs::the_ground_keys_clamp_and_default_to_stock", "crates/app/src/menu.rs::the_ground_knobs_step_to_off_and_hold_at_double"]
+    settings: [graphics.clouds]
+    e2e: "pending — benchmarks halted 2026-08-31"
+
+  - id: city-lights
+    name: "Night-side cities (the SPEC §6.6 direction): on habitable coastal lowland where the baked settlement field is high, a street grid with brighter avenues every fifth block and lit points on a finer lattice — sodium, white, the odd cyan or magenta — written as radiance past 1 for the bloom; from orbit, where a block is under a pixel, the same as its mean, a warm glow. CITY LIGHTS row (graphics.city-lights, OFF .. 200%)"
+    state: tests-pass
+    tests: ["crates/render/src/planet.rs::the_ground_knobs_are_carried_clamped_and_stock_by_default", "crates/app/src/settings.rs::the_ground_keys_clamp_and_default_to_stock", "crates/app/src/menu.rs::the_ground_knobs_step_to_off_and_hold_at_double"]
+    settings: [graphics.city-lights]
+    e2e: "pending — benchmarks halted 2026-08-31; the night-side low pass (FARFALL_BENCH_POS=-40060,-27160,42640 FARFALL_BENCH_SPIN=6) and the globe from +Z at 400 km are the evidence to take"
+
+  - id: ring-slab
+    name: "Uranus' ring is a slab the belt's own height (bodies.wgsl): every ray is charged for its run inside slab ∩ annulus, so from inside the belt the ring is a soft band of sun-lit dust on its own horizon, brightest at the grazing horizon and toward the Sun, and the far rocks appear on both sides of the plane. This replaces the mid-plane hit that, with the camera on the plane, drew the plane's great circle across the sky as a hard edge with a grey wash on one side — the baseline's 'nebula seam'"
+    state: complete
+    tests: ["crates/render/src/bodies.rs::from_inside_the_belt_the_haze_is_a_band_continuous_across_the_plane", "crates/render/src/bodies.rs::the_run_stops_at_the_holes_wall", "crates/render/src/bodies.rs::from_far_above_the_ring_only_rays_through_the_annulus_are_charged", "crates/render/src/bodies.rs::crossing_the_slabs_face_changes_nothing_suddenly"]
+    e2e: "farfall-captures/world/ring-belt-{1..12}.png (FARFALL_SPAWN=belt spin, 2026-08-31): no seam, a vertical band of haze where the plane is; ring-oblique-1 / ring-far-1 from 800 km and 2.5 Mm up the axis: the dark thread over Uranus unchanged"
 
   - id: crash
     name: "Ship loss on hard impact / Sun contact"
@@ -446,7 +595,7 @@ features:
     note: "hardpoint mounting, fire groups, the belly slot and the power split against drive/shield are still to come"
 
   - id: arms-autocannon
-    name: "Cannon and rail slugs as a GPU tracer pass — a white-hot head with an orange guttering tail (the rail's a violet plasma wake), muzzle flashes, sparks spraying off a hit rock with a puff of dust, all hidden behind rocks; rocks wounded by energy against a toughness by their face, keyed on their cell id"
+    name: "Cannon and rail slugs as a GPU tracer pass — a white-hot head with an orange guttering tail (the rail's a violet plasma wake), muzzle flashes, sparks spraying off a hit rock with a puff of dust and a field of fine glowing grit swelling out with the sparks and guttering as it cools, all hidden behind rocks; rocks wounded by energy against a toughness by their face, keyed on their cell id"
     state: tests-pass
     tests: [crates/render/src/tracer.rs, "crates/app/src/belt.rs::a_rock_is_shoved_and_wounded_then_breaks_into_fragments_and_stays_dead", "crates/app/tests/scenes.rs::the_arms_light_the_belt"]
     e2e: "FARFALL_BENCH_ARMS=1 capture at the ring looked at — tracers, sparks, the wake; not yet fired in flight"
@@ -489,13 +638,20 @@ features:
     state: tests-pass
     tests: ["crates/app/src/mimic.rs::the_haul_grows_with_energy_by_kind_and_a_break_leaves_a_lump", "crates/app/src/settings.rs::edits_round_trip", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense"]
     settings: [arms.ore]
-    note: "a cargo hold with mass, a market and persistence are still to come"
+    note: "a cargo hold with mass and a market are still to come; the HAUL now survives a quit (id world-resume)"
+
+  - id: world-resume
+    name: "You wake where you left off — the world file (~/.farfall/world.cfg; localStorage farfall.world in the browser): the whole WorldState plus the ledgers that are not a function of it (flight computer, atmosphere, the chaos drive's entropy and its hidden slip threshold, ammo/heat/jams, the HAUL, hull integrity, dead and wounded rocks, revealed mimics and the live ships, the PRNG seed, odometer) written on quit, on close, on the page hiding and every 30 s of sim time, sealed by sim::state_hash so a hand-edited or truncated file is refused whole; read back at launch. A warp in flight, a HOLD and every wall-clock fade come back idle. Never during a bench (captures stay reproducible). RESUME on the GFX page (game.resume) and FARFALL_RESUME=0 skip it; NEW GAME forgets the file and stands the ship at the stock orbit. Fixed on the way: the config dir falls back to USERPROFILE when HOME is unset (on Windows the settings file was never written), and mimics.chance/hostility and arms.ore apply at launch, not only after a bay click"
+    state: complete
+    settings: [game.resume]
+    tests: ["crates/app/src/save.rs::a_hand_edit_to_the_hull_the_ammo_or_the_haul_is_refused_whole", "crates/app/src/lib.rs::a_resumed_world_runs_on_exactly_as_the_uninterrupted_one", "crates/app/src/lib.rs::new_game_forgets_the_world_and_stands_at_the_stock_orbit", "crates/app/src/lib.rs::resume_off_or_a_bench_run_never_touches_the_world_file", "crates/app/src/settings.rs::the_home_directory_falls_back_to_userprofile", "crates/app/src/menu.rs::every_row_of_every_page_fits_the_panel"]
+    e2e: "2026-08-31 captures (farfall-captures/resume): belt-save parked above the ring with FARFALL_BENCH_SAVE, belt-resume from that file with no spawn override is the same view to the pixel plus RESUMED T+ on the readout, a hull hand-edit is refused in the log and the stock orbit stands, stock for comparison. Not yet flown by hand: the 30 s autosave cadence, quitting from the menu, NEW GAME, the browser listeners"
 
   - id: mimics
-    name: "Mimics — some of the ring's rocks are ships in a holographic shroud shaped like a stone, keyed on the rock's identity (MIMICS, mimics.chance: the share of rocks, 0..100%, 100% stock at the user's ask so every rock is a ship until turned down; fragments never). A slug on one is the reveal: the ship glows through the stone as a cyan hologram (bands running its length, a scan plane, a projector's flicker), the rock winks off (taken out of the belt for good, so it never comes back from the hash), the hologram hardens into a sun-lit hull over 2.6 s; a thrum through the frame; CONTACT on the readout. Then by its mood (HOSTILITY, mimics.hostility: the share that shoot, 50% stock): a HAILER comes about to face us, matches velocity at a courteous range, and talks — one of six lines on the readout, a white beacon pulsing at its nose, the relay knocking in twice — then burns away; a HOSTILE (darker hull, a rust belly stripe, amber engines) comes about, holds ~500 m weaving, leads us and fires its cannon in bursts (red tracers) — hits ring the shield, kick the helmet camera and cost HULL (35 % a slug on the readout: HULL 65%  UNDER FIRE; no ship loss, crash is deferred). Ours land on it too: bursts on the hull, scorch spreading with the wound, past 2.4 MJ it is a WRECK — dark, tumbling, embers guttering in the damage, shards off the break, salvage into the HAUL — and a hostile hurt past half breaks off and runs; a hailer shot at goes hostile or runs. Up to four in the air; mimic.wgsl draws them from the shared fighter SDF at their own poses, hidden behind nearer rocks; their tracers ride the tracer pass"
+    name: "Mimics — some of the ring's rocks are ships in a holographic shroud shaped like a stone, keyed on the rock's identity (MIMICS, mimics.chance: the share of rocks, 0..100%, 100% stock at the user's ask so every rock is a ship until turned down; fragments never). A slug on one is the reveal: the ship glows through the stone as a cyan hologram (bands running its length, a scan plane, a projector's flicker), the rock winks off (taken out of the belt for good, so it never comes back from the hash), the hologram hardens into a sun-lit hull over 2.6 s; a thrum through the frame; CONTACT on the readout. Then by its mood (HOSTILITY, mimics.hostility: the share that shoot, 50% stock): a HAILER comes about to face us, matches velocity at a courteous range, and talks — one of six lines on the readout, a white beacon pulsing at its nose, the relay knocking in twice — then burns away; a HOSTILE (darker hull, a rust belly stripe, amber engines) comes about, holds ~500 m weaving, leads us and fires its cannon in bursts (red tracers) — hits ring the shield, kick the helmet camera and cost HULL (35 % a slug on the readout: HULL 65%  UNDER FIRE; no ship loss, crash is deferred). Ours land on it too: bursts on the hull, scorch spreading with the wound, past 2.4 MJ it is a WRECK — dark, tumbling, embers guttering in the damage, shards off the break, salvage into the HAUL — and a hostile hurt past half breaks off and runs; a hailer shot at goes hostile or runs. Up to four in the air; mimic.wgsl draws them from the shared fighter SDF at their own poses, hidden behind nearer rocks; their tracers ride the tracer pass. Polish (2026-08-31, the owner's 'make mimic ships as big as me'): a mimic IS our fighter's SDF at 1:1 — it read small only because of range — so the pass carries a size lane per hull (MimicView.size, the hit sphere scaling with it) and the encounter comes in close enough to see: a hailer comes alongside at 90 m, a hostile holds 320 m (its spread widened a touch). The pass has 12 lanes now (mimics and miners) and the sight marks all of them"
     state: tests-pass
     tests: ["crates/app/src/mimic.rs::a_share_of_rocks_are_ships_and_fragments_never", "crates/app/src/mimic.rs::a_struck_mimic_reveals_once_then_hails_and_leaves", "crates/app/src/mimic.rs::a_hostile_mimic_comes_about_fires_and_hits_the_hull", "crates/app/src/mimic.rs::our_slugs_wreck_it_and_the_wreck_is_salvage", crates/render/src/mimic.rs, crates/render/tests/shader_validation.rs, "crates/audio/src/synth.rs::a_reveal_thrums_low_once_and_a_hail_knocks_twice", "crates/app/tests/scenes.rs::a_mimic_drops_its_shroud_and_a_hostile_one_opens_fire"]
-    settings: [mimics.chance, mimics.hostility]
+    settings: [mimics.chance, mimics.hostility, mimics.size]
     e2e: "FARFALL_BENCH_MIMIC=reveal|attack|hail|wreck captures at the ring looked at (2026-08-26) — the cyan hologram of the fighter banded and rimmed 40 m ahead-left with the hull just hardening; the hostile hull sun-lit with amber nozzles and its tracers in the air; the hailer facing us; the wreck dark and scorched with embers in patches (scene test measures reveal and attack). Not yet met in flight: a live reveal, the hail line on the readout, being shot at"
     note: "targeting/lock, a lead marker, threat arrows and a proper ship damage model (arms-targeting, arms-ship-damage) are still planned; a hail is one line, not a conversation"
 
@@ -506,6 +662,14 @@ features:
     settings: [hold.gain, hold.face, control.hold]
     e2e: "not yet flown; no capture shows it (it is a control law, the picture is the same ship hanging still)"
     note: "a lock bracket on the glass (a sight-pass hologram round the target) and a lead marker are the arms-targeting work still to come"
+
+  - id: miners
+    name: "Miners — the ring is worked: MINERS (miners.count, 0..8, 4 stock) ships of our own class are placed from hashes the moment the belt goes live about us (900–2 600 m off, riding the ring, most with little aboard and a few already a tier up), and never again until the ring has been left. Each seeks the nearest rock worth mining (≥ 8 m, within 4 km, not a shroud, not another's claim, and NEVER the rock the pilot is holding station on — taking HOLD on a miner's rock makes it stand off: MINER: YOUR ROCK. WE STAND OFF), flies to a stand-off point off its face matching its velocity, nose on it, and cuts: a hot amber-white beam with a faint red halo from the nose to the rock, ore motes sliding up it toward the ship, a glow where it bites; the haul grows at 0.35 t/s × (1 + tier/2) × MINER GROWTH (miners.growth, 25..400%, 100% stock) by the rock's ore kind, and when the rock has given its share (0.1% of its mass, 2–80 t) it breaks like a shot rock and the miner seeks again. Four tiers by the haul (40 / 160 / 480 t): the hull grows 1.0 → 1.6 → 2.4 → 3.4 × our fighter with the tier's parts unioned on (ore tanks under the wings; a dorsal collector and fatter nacelles; the drill boom), toughness 2.4 → 32 MJ, a shield that sheds 40 % then 65 % of a hit (a cyan sheen over the hull), and guns: longer bursts each tier, the rail at tier 3. Neutral until shot at — a neutral one within 300 m hails once (the relay knock, a line on the readout) — then a tier-0 miner runs and a grown one comes about and fights harder than a mimic; a wreck (dark, tumbling, shards off the break) gives its WHOLE haul to ours × ORE YIELD, plus salvage: WRECK: 200 T HAUL TAKEN. HOLD (O) locks on a miner (HOLD MINER). Far off a miner is a lit speck; the sight marks it with an ivory diamond or edge arrow (kind 3), red and pulsing when hostile (kind 4); Game::contacts() lists mimics and miners as (position, kind) for anything else that marks them. Their slugs, hails and lines ride the mimics' machinery, so the shield, the tracers and the readout needed nothing new"
+    state: tests-pass
+    settings: [miners.count, miners.growth]
+    tests: ["crates/app/src/miner.rs::a_miner_grows_through_its_tiers_as_its_haul_crosses_the_thresholds", "crates/app/src/miner.rs::a_miner_seeks_a_rock_flies_to_it_mines_it_with_the_beam_and_seeks_again_when_it_is_spent", "crates/app/src/miner.rs::a_miner_picks_the_nearest_rock_worth_mining_and_not_a_claim_or_a_shroud", "crates/app/src/miner.rs::a_miner_never_mines_the_rock_the_pilot_is_holding_station_on", "crates/app/src/miner.rs::a_shot_small_miner_runs_and_a_grown_one_fights_back_harder_until_it_is_a_wreck_that_drops_its_haul", "crates/app/src/miner.rs::the_population_is_placed_once_in_the_ring_and_again_after_leaving_it", "crates/render/src/mimic.rs::mimic_lanes_hold_their_places", "crates/app/src/settings.rs::edits_round_trip", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense", crates/render/tests/shader_validation.rs]
+    e2e: "FARFALL_BENCH_MINERS=tier,mine|fight captures (farfall-captures/ships/, 2026-08-31): see docs/polish/ships.md"
+    note: "the miners do not trade, dock or go home; a spent rock breaks rather than shrinking (rocks are hashed, not stored); the population is per visit to the ring"
 
   - id: arms-targeting
     name: "Targeting — lock, lead marker on the glass from target velocity and slug speed, threat arrows at the glass edge, turret mode where freelook gimbals the guns"
@@ -545,7 +709,7 @@ features:
     e2e: "FARFALL_BENCH_SHIP=1 capture — the arrow over the hologram at 62%,36% (scene test); clicked through the GFX page by hand"
 
   - id: render-pipeline
-    name: "The frame's plumbing: bake.wgsl bakes the noise/star maps once at start; the scene renders at graphics.scale into a target, blit.wgsl upscales it with the post look (exposure, warp effects) and the HUD draws native on top; cabin_blit.wgsl composites the cached cabin march (id cabin-cached) over the sky. FARFALL_SKIP=a,b leaves passes out for profiling; FARFALL_SCALE overrides the scale; [ and ] step it in flight (RENDER SCALE +/- binds)"
+    name: "The frame's plumbing: bake.wgsl bakes the noise/star maps once at start; the world renders at graphics.scale into an HDR (Rgba16Float) target, post.wgsl blooms, exposes and tonemaps it (id hdr-post) and does the drive's distortion to it, the cabin and dials draw over that into an 8-bit target, blit.wgsl upscales it and the HUD draws native on top; cabin_blit.wgsl composites the cached cabin march (id cabin-cached) over the sky. FARFALL_SKIP=a,b leaves passes out for profiling; FARFALL_SCALE overrides the scale; [ and ] step it in flight (RENDER SCALE +/- binds)"
     state: complete
     settings: [graphics.scale, graphics.msaa, graphics.vsync, control.scale-down, control.scale-up]
     tests: ["crates/render/tests/shader_validation.rs", "crates/app/src/settings.rs::edits_round_trip", "crates/app/src/input.rs::no_two_default_binds_share_a_key"]
@@ -563,4 +727,153 @@ features:
     settings: [ui.gauge-style, "ui.<dial>.style"]
     tests: ["crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense", "crates/app/src/settings.rs::dials_stay_lit_by_default_and_every_style_is_open_to_every_dial", "crates/render/tests/shader_validation.rs", "crates/app/tests/scenes.rs::the_warthog_dials_are_white_steam_gauges_in_the_dash"]
     e2e: "FARFALL_BENCH_STYLE=warthog capture — three white-on-black steam gauges with bezels set into the dash, the ADI ball blue over brown (scene test)"
+    note: "2026-08-31 polish: WARTHOG is now the cockpit default (settings.rs); the faces sit on the dash in machined bezels, no housing well; the gyro is the real ball"
 
+
+  - id: gauges-on-the-dash
+    name: "Polish pass, gauges (fable/gauges, 2026-08-31) — WARTHOG is the default gauge style; NO CAVITIES: the cabin marcher no longer hollows anything for an instrument (no TRON recess or lit socket, no JET bowl, no DIAL well) — a DIAL/WARTHOG face is a black plate 8 mm proud of the dash's real surface (the slab's 4 cm rounding, DASH_SURFACE) inside a thin machined bezel, the JET/WARTHOG gyro a real sphere standing out of the metal with a seam ring and painted only above the surface, JET dials over a thin flush ring, TRON over bare metal with its beam; the seam light lines no longer paint the plates. Quality: every stroke on gauge/gvec/gyro is a constant-width line with one pixel of AA (ticks are arc-length strokes at true multiples of the scale — 0 and full scale included, so a major sits under every mach bar), halo light separated from structure and switched off on the dash (printed markings, no glow), a tapered steam-gauge pointer with a boss, the warning arc painted red on the scale (top for speed/G, bottom for altitude) instead of tinting the whole dial, the ×m Ek multiplier printed on the face under the hub (arc gauge) and the G-vector drawn at 0.82 on the dash so its bar sits on the plate, heavier readout digits, the ball's wings with a dark border, hologram accents at radiance > 1. Pitch ladder: 9° bars, 30°/60° heavier, end ticks, the pitch in degrees at both ends (7-seg), azimuth conformal (cos elev), camera-space handedness fixed so numerals read the right way round, drawn BEFORE the cabin so the dash occludes it. Landing hoops: crisp one-pixel-plus core at 1.8 radiance with a soft skirt"
+    state: complete
+    tests: ["crates/render/src/cabin.rs::the_ball_stands_proud_of_the_dash_with_no_bowl", "crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin", "crates/app/src/settings.rs::warthog_is_the_default_and_the_menu_still_cycles_every_style", "crates/render/tests/shader_validation.rs", "crates/render/src/gauge.rs::jet_style_rides_on_the_warning_sense"]
+    settings: [ui.gauge-style, "ui.<dial>.style"]
+    e2e: "farfall-captures/gauges: r3-default (WARTHOG cluster on the dash, no cavities), r3-head (FARFALL_BENCH_HEAD=30,-15 — plates and ball seen at an angle, nothing hollow), r3-tron / r3-jet / r3-dial, r3-g (FARFALL_BENCH_G=1,0.5,2), r3-landing (hoops + ladder), r3-spin-1..4, r3-full perf"
+
+  - id: hdr-post
+    name: "HDR picture (polish pass, fable/postfx): the world renders into a float Rgba16Float target (MSAA as before) and every world pass writes exposed linear radiance (common.wgsl radiance()) instead of curving itself; post.wgsl then does it once — a bloom mip chain (13-tap down / 9-tap tent up, threshold with a soft knee in radiance, partial Karis so a lone star seeds a halo not a firefly; the chain starts at half the scene so its cost follows the render scale governor), exposure (EXPOSURE, ±2 stops in quarter steps, with a slow built-in drift off the frame's mean log luminance riding in the chain's alpha: a starry sky lifted a third of a stop at most, a sunlit planet held back half), a filmic curve (TONEMAP: AGX — highlights roll to white through their hue — / SOFT / OFF), a hair of chromatic fringing at the glass rim only (FRINGE) and a hash dither to 8 bits. The cabin, dials, holo3PP, map, bay and text draw AFTER it into the 8-bit ship target / the swapchain, so none of them bloom, curve or fringe. FARFALL_SKIP=post|bloom for the cost"
+    state: complete
+    settings: [graphics.bloom, graphics.exposure, graphics.tonemap, graphics.fringe]
+    tests: ["crates/render/src/post.rs::the_bloom_chain_halves_until_a_level_would_be_too_small", "crates/render/src/post.rs::the_look_is_clamped_and_never_nan", "crates/render/src/post.rs::tonemap_keys_round_trip_and_cycle", "crates/app/src/settings.rs::edits_round_trip", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense", crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/postfx: cockpit, arms, hyper, nebula, alt500, chase, full — the Sun, tracers, plumes and the drive field bloom; the dials do not (see docs/polish/postfx.md)"
+
+  - id: drive-outside-the-glass
+    name: "The drives' picture — the wormhole's mirror-sphere FLIP and inversion, the chaos field's liquid refraction and ripples, the speed streaks and their chromatic split, the cool rim — moved from the swapchain blit to the post pass, so it is done to the WORLD before the cabin, the dials, the holo3PP and the text are drawn: the drive is seen through the glass, the dash and the gauges hold still and crisp through the whole sequence (Jay Jay: 'shaders not on POV but outside the ship')"
+    state: complete
+    tests: [crates/render/tests/shader_validation.rs, "crates/app/src/warp.rs::the_sequence_jumps_exactly_once_at_the_flips_peak"]
+    e2e: "farfall-captures/postfx/hyper-*.png — the streaks and the field stop at the sill; the dials read (baseline/hyper-1.png smeared them)"
+
+  - id: stars-fine
+    name: "The starfield as points: sub-pixel gaussian cores (sigma ~0.6 px) instead of the old 3-px blobs, a steeper magnitude law (most stars faint, a few brilliant, the rare one blazing) so only the bright ones bloom, the tint by temperature strongest on the bright ones where the eye actually sees colour, and the nebula carrying the sky behind them"
+    state: complete
+    tests: [crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/postfx/cockpit-*.png and nebula-*.png against baseline/cockpit-1.png (the 'snow'); the octahedral fold: farfall-captures/tuning/r5-belt-1.png — no column of oversized stars along x=0,z<0 (the star footprint is measured from the view ray's derivatives and the neighbourhood wraps through the fold's mirror; starfield.rs::a_cell_past_the_maps_edge_is_the_mirror_of_its_neighbour_across_the_fold)"
+
+  - id: shake-subtle
+    name: "The felt shake down to a hint: cam.drive-shake stock 40% → 12% (the chaos drive's jostle of the stick is a warning, not a beating), the helmet camera's sway/roll per g, tremor and gun kick at roughly a third of what they were, its cap 0.12 rad. Every knob stays: CAMERA SHAKE and DRIVE SHAKE on the CABIN page go to 200%. The gauges are drawn in the same head frame as the dash, so they never move relative to it"
+    state: complete
+    settings: [cam.shake, cam.drive-shake]
+    tests: ["crates/app/src/shake.rs::thrust_and_load_bring_a_tremor_and_the_setting_scales_everything", "crates/app/src/shake.rs::a_gun_kicks_the_view_the_rail_more_and_it_is_capped", "crates/app/src/settings.rs::defaults_round_trip"]
+    e2e: "flown: the dash reads under full thrust and through a hyper run"
+  - id: hud-font-5x7
+    name: "A readable HUD font: 5x7 glyphs (slashed 0 against O, serifed 1 against I and l, square 5 against S, flat B against 8) on a 6-pixel advance and a 9-pixel line pitch, the bitmap 384x180 (three vec4<u32> a row); hud.wgsl box-filters the bits over each pixel's footprint so the text is anti-aliased at any scale, with a dark halo under the strokes on the glass so it reads over a white sky; the scale is fractional (h/400, 1.5..8 px a dot) so every block is the same size in canopy units at 800x600 and 2880x1800"
+    state: tests-pass
+    tests: ["crates/render/src/text.rs::look_alike_glyphs_are_distinct", "crates/render/src/text.rs::every_glyph_fits_its_cell", "crates/render/src/text.rs::the_games_charset_is_covered", "crates/render/src/text.rs::wrap_breaks_at_spaces_and_cuts_long_words", "crates/render/src/hud.rs::the_bitmap_rows_match_the_shaders_array", "crates/app/src/panel.rs::a_font_pixel_is_the_same_share_of_every_supported_screen", crates/render/tests/shader_validation.rs]
+    e2e: "pending — the bench is halted; cockpit / menu-keys / card captures in farfall-captures/hud-menu"
+
+  - id: menu-card
+    name: "The settings menu as a card a stranger can read: 48 columns, eight tabs all in the header, twelve rows with a scrollbar and ROW n/m in the footer, every key name whole, a one- or two-line description of the chosen row under a footer rule (in ivory), PageUp/PageDown, the card kept by its centre (ui.panel-menu) so it is centred on any screen; SAFE EDGE and HOLO RANGE and CARD AT START have rows; the bay hologram's look moved from GFX to SHIP"
+    state: tests-pass
+    settings: [ui.panel-menu, ui.safe-edge, holo.range, ui.controls-card]
+    tests: ["crates/app/src/menu.rs::every_row_of_every_page_fits_the_card", "crates/app/src/menu.rs::the_card_fits_the_smallest_window", "crates/app/src/menu.rs::long_pages_scroll_with_a_bar_and_a_count", "crates/app/src/menu.rs::every_settings_key_has_a_menu_row", "crates/app/src/menu.rs::the_pages_are_categories_that_make_sense", "crates/app/src/settings.rs::the_key_list_is_the_file"]
+    e2e: "pending — FARFALL_BENCH_MENU=0..7 captures"
+
+  - id: help-page
+    name: "The HELP page: every control by group (FLIGHT, DRIVES, VIEW, ARMS, PANELS) — the live key, the control, a gloss — with a sentence on what it does in the footer; the fixed keys (Esc, Tab, F1, the mouse buttons, + -) listed with the binds; the KEYS page's rows carry the same sentences"
+    state: tests-pass
+    tests: ["crates/app/src/menu.rs::the_help_page_lists_every_control_once_with_what_it_does"]
+    e2e: "pending — FARFALL_BENCH_MENU=7 capture"
+
+  - id: controls-card
+    name: "The CONTROLS card: the essential keys in two columns (flight and drives; view, panels, arms), read from the live bindings, on the first run (no settings file yet), at every start if ui.controls-card is on, and on F1 any time; any key or a click puts it away and writes the settings so it does not return unasked; FARFALL_BENCH_CARD=1 for a capture"
+    state: tests-pass
+    settings: [ui.controls-card]
+    tests: ["crates/app/src/card.rs::the_card_fits_with_any_binding", "crates/app/src/card.rs::the_card_shows_the_essentials_with_their_live_keys", "crates/app/src/settings.rs::the_hologram_range_and_the_card_are_kept"]
+    e2e: "pending — FARFALL_BENCH_CARD=1 capture"
+
+  - id: readout-layout
+    name: "The readout laid out cleanly: the frame's numbers in two columns (FPS with its 1% low; CPU with the rest; MSAA, scale and size), then ALT, VEL, FC, and the status line (landing, hail, hold, strain, arms, haul) wrapped to the block over up to three lines so it never clips; stock anchor in the top-left corner of the glass, clear of the arch; still draggable"
+    state: tests-pass
+    settings: [ui.panel-readout]
+    tests: ["crates/app/src/readout.rs::long_status_lines_wrap_inside_the_block", "crates/app/src/readout.rs::the_numbers_read_in_two_columns"]
+    e2e: "pending — cockpit and FARFALL_BENCH_LAND=1 captures"
+
+  - id: stock-gauges-map-holo
+    name: "The mini map and the holo3PP are stock gauges: MINI MAP is an instrument (ui.map, ON by default, a row on DIALS) — the system map as a small undimmed pane in the top-right of the glass, re-projected with the head like a dial; M still opens the full map. HOLO VIEW is ON by default at a size and an anchor right of the cluster between the speed dial and the G meter"
+    state: complete
+    settings: [ui.map, holo.view, holo.size, ui.panel-holo]
+    tests: ["crates/app/src/cockpit.rs::default_layout_shows_the_cluster", "crates/app/src/settings.rs::the_hologram_range_and_the_card_are_kept", crates/app/src/map.rs]
+    e2e: "farfall-captures/tuning/r4-holo-1.png, r4-alt12k-1.png — the mini map top-right, the hologram in the glass under it at the upper right, clear of all five dials (the devlog's gfx-msaa8-1.png had it over the speed dial and the G meter); settings.rs::the_stock_hologram_sits_clear_of_the_dials_and_the_mini_map pins the geometry at 4:3 and 16:9"
+
+  - id: holo-range-marks
+    name: "HOLO RANGE (holo.range, 1..4): the hologram's ship shrinks by the range so the scene round it stands for that much more space (1500 m a rim at 1x); , and . (HOLO WIDER / HOLO CLOSER, rebindable) and the wheel in flight step it. Revealed mimics are marks round the little ship at their true bearing — a red beating octahedron for a hostile, amber for a hail, grey for a wreck — at their distance over the reach, on the rim beyond it, each on a hair of a tether"
+    state: tests-pass
+    settings: [holo.range, control.holo-out, control.holo-in]
+    tests: ["crates/render/src/holo.rs::marks_sit_at_their_bearing_by_their_distance_over_the_reach", "crates/render/src/holo.rs::holo_lanes_hold_their_places", "crates/app/src/menu.rs::the_hologram_range_and_the_card_have_rows", crates/render/tests/shader_validation.rs]
+    e2e: "pending — FARFALL_BENCH_MIMIC=hostile capture with the hologram"
+
+  - id: cockpit-arms
+    name: "The cockpit sees the bay's fit: the mounts on the visible airframe through the glass — a cannon's twin barrels off WING L from the pilot's seat, the rail's barrel and coils, an empty hardpoint's bare pylon — the same sd_mount geometry (lifted into common.wgsl) and the same Rust transform table (bay::fit_views over Hardpoint::pos) as the SHIP bay's hologram, so a refit in the bay changes the glass at once as a sharp in-place redraw; the chase view and the holo3PP's ship (the jet pass) carry the fit too; mounts join the cabin march only inside their hardpoints' bounding spheres, so an empty sky ray costs what it did"
+    state: tests-pass
+    tests: ["crates/app/src/bay.rs::every_pass_reads_the_same_fit_table", "crates/render/src/cabin.rs::the_bay_fit_reaches_the_glass_and_redraws_in_place", "crates/render/src/jet.rs::jet_lanes_hold_their_places", "crates/render/tests/shader_validation.rs"]
+    e2e: "farfall-captures/cockpit-arms/ ca-glass-{nose,wl-cannon,wl-rail,wr-cannon,wr-empty}-1.png (the fit on the airframe through the glass, both wings, a bare pylon), ca-bay-fit-1.png (the bay panel and hologram agreeing), ca-chase-fit-1.png (the chase view astern); perf held at ~325-360 fps"
+
+  - id: heli-pads
+    name: "Cold-war utility helicopters on the planet: hash-placed pads (deterministic from the world, like the belt's rocks — pad 0 on the tuning coast at 10N 320E), each with a generic Huey-silhouette hull of our own SDFs parked over a painted circle-and-H; land the fighter beside one and the DISEMBARK key boards it — the sim's ShipParams swap to a collective/cyclic/pedals helicopter set (hover at ~61% collective at Earth g, no boost, no drives, the fighter waits where it was left with its beacon on) and swap back on re-boarding; the rotors idle parked and blur by the collective in flight; WORLD page row HELI PADS (world.helis); FARFALL_BENCH_HELI=1 parks the capture beside the coast pad"
+    state: tests-pass
+    settings: [world.helis]
+    tests: ["crates/app/src/heli.rs::a_heli_hovers_when_collective_balances_gravity", "crates/app/src/heli.rs::boarding_swaps_params_and_disembark_swaps_back", "crates/app/src/heli.rs::the_drives_are_inert_in_the_helicopter", "crates/app/src/heli.rs::the_pads_are_where_the_hash_says_every_time", "crates/render/src/heli.rs::heli_lanes_hold_their_places", "crates/render/tests/shader_validation.rs"]
+    e2e: "farfall-captures/helis/ heli-pad-{glass,head,chase}-1.png (the hull, rotors and painted pad from the glass and the chase rig, I BOARD HELI on the readout) and heli-fly-{chase,glass}-1.png (=fly: hovering at 18 m, the fighter waiting below)"
+
+  - id: heli-craft
+    name: "The pilot's own craft (SPEC §6.5b): the SHIP page's first row is CRAFT — FIGHTER or HELICOPTER (ship.craft, settings-persisted like the fit; the world file is untouched, the golden hash never moves) — and choosing HELICOPTER means your own ship IS a FARFALL-native helicopter from spawn: our own sd_heli_exterior in the shader prelude (main-rotor disc, ring tail, stub wings carrying the same four hardpoints, nose probe), selected by one craft flag in the cabin, the chase/jet view, the SHIP bay hologram, the holo3PP and the map dart (mimics, miners, the ghost and the cold-war pad hulls are untouched); the flight model is the pad helis' collective/cyclic/anti-torque routing but the drives come with your own ship — hyper and warp work, boost does not; W/S and the stick's throttle are the collective (REFORGER HELI profile flies it as-is), the console's lever and a readout line show COLLECTIVE nn%; FARFALL_BENCH_CRAFT=heli stages it for a capture"
+    state: tests-pass
+    settings: [ship.craft]
+    tests: ["crates/app/src/bay.rs::the_craft_cycles_and_names_its_keys", "crates/app/src/heli.rs::the_farfall_heli_keeps_its_hyper_drive_but_not_boost", "crates/app/src/heli.rs::the_farfall_heli_hovers_too", "crates/app/src/settings.rs::the_craft_choice_survives_the_file", "crates/app/src/menu.rs::the_ship_panel_fits_the_hardpoints_and_never_pages", "crates/app/src/readout.rs::the_collective_reads_as_a_percentage_when_a_heli_is_flown", "crates/render/tests/shader_validation.rs"]
+    e2e: "farfall-captures/heli-ship/ craft-bay-1.png (the CRAFT row on HELICOPTER over the heli hologram), craft-chase-1.png and craft-hover-1.png (=hover: 40 m over the coast, COLLECTIVE 61% on the readout), craft-glass-1.png (the bubble canopy from the pilot's seat), craft-holo3pp-1.png, craft-map-1.png, fighter-baseline-chase-1.png (the fighter untouched); perf held ~354-360 fps"
+
+  - id: reforger-stick
+    name: "The STICK page speaks Reforger: a PROFILE row whose ENTER wears the next shipped map — FARFALL FIGHTER or REFORGER HELI (the hotas-reforger wizard's pilot profile as FARFALL jobs: cyclic/twist/lever axes, absolute bottom-zero collective with no lever gestures, no deadzone and a linear curve, the rocker free, buttons on the pilot jobs FARFALL shares — arrows do nothing so a wizard-built map cannot fall to a stray arrow, a touched map shows CUSTOM) — and EXPORT REFORGER CFG, whose ENTER writes a real Joystick_TFlightHotas4_0.conf (crates/app/src/reforger.rs: Reforger's exact grammar — UTF-8 no BOM, CRLF, one-space indents, 7CB1F0A54D-prefixed ids in emission order, byte-matched against the wizard's accepted output) into ~/.farfall/reforger/; FARFALL_BENCH_PROFILE=reforger wears the profile for a capture"
+    state: tests-pass
+    settings: []
+    tests: ["crates/app/src/stick.rs::the_profile_row_wears_the_shipped_maps_on_enter_alone", "crates/app/src/menu.rs::the_stick_page_wears_profiles_and_exports_the_reforger_conf", "crates/app/src/reforger.rs::the_conf_round_trips_and_matches_the_wizards_bytes", "crates/app/src/reforger.rs::every_id_is_unique_and_counted_in_order", "crates/app/src/reforger.rs::braces_balance_and_never_go_negative", "crates/app/src/reforger.rs::the_grammar_only_speaks_reforgers_tokens"]
+    e2e: "farfall-captures/helis/ stick-reforger-1.png (the STICK page, PROFILE on REFORGER HELI with its line in the footer)"
+
+  - id: settings-persist-and-hyper-camera
+    name: "Polish pass, design (fable/design): settings persist on a plain Windows launch — Settings::path falls back to USERPROFILE when HOME is unset (Explorer/shortcut launches set no HOME, so nothing was ever saved or loaded there); the file gains settings.version, and a versionless file still carrying the old 40% DRIVE SHAKE stock adopts the new 12% while any other value is kept as the pilot's choice; and while the hyper field is up the helmet camera's deflection is scaled down and capped at a quarter of its free limit so the dash reads all the way to the slip — the chaos drive still bucks the ship, which is the warning"
+    state: complete
+    settings: [cam.drive-shake]
+    tests: ["crates/app/src/settings.rs::an_old_files_stock_drive_shake_adopts_the_new_stock", "crates/app/src/shake.rs::the_hyper_field_reins_the_camera_in"]
+    e2e: "farfall-captures/design: mode-shake vs mode-hyper-shake (same parked 3,2,1-degree helmet camera; under the field the dash sits near level and reads through the streaks) and hyper-shake-spin-1..4"
+
+  - id: dial-lean-rotate
+    name: "A dial can face any way: sideways LEAN (;/' in DESIGN, ui.<dial>.lean, ±60°) and in-plane ROTATE (9/0, ui.<dial>.rotate, ±180°) beside the tilt — on the dash the face plane itself turns (dial_plane_uv takes the oriented normal, the DIAL/WARTHOG housing follows via the repacked socket code), on the glass the hologram foreshortens both ways and its face turns (dial_glass_uv, shared by gauge/gvec/gyro); the plate and its markings turn together so the needle reads true; LEAN and ROTATE rows on the DIALS page"
+    state: complete
+    settings: ["ui.<dial>.lean", "ui.<dial>.rotate"]
+    tests: ["crates/app/src/settings.rs::a_lean_and_a_rotation_are_held_within_reach", "crates/render/src/gauge.rs::a_dial_carries_its_lean_and_rotation", "crates/render/src/cabin.rs::the_head_turns_the_rays_not_the_cabin", "crates/app/src/lib.rs::design_keys_lean_and_rotate_a_dial_and_backspace_resets", crates/render/tests/shader_validation.rs]
+    e2e: "farfall-captures/design: design-lean and hud-fhud — the speed dial leaned 30 and rotated 45 on the dash, plate and markings turned together, the G meter tilted 20; hud-map-drag shows the same dial upright for contrast"
+
+  - id: design-elements-holo-map-readout
+    name: "The holo3PP, the mini map and the readout are design elements like the dials: DESIGN mode's pointer finds each (own card), -/= sizes them (holo.size; ui.map.size scales the mini map pane; ui.readout.size scales the readout text), Backspace resets each, the guide marks all eight anchors, the mini map stays up in DESIGN and drags anywhere with its anchor kept as 'ui.map = on at x,y'; HOLO VIEW/SIZE/RANGE rows live on the DIALS page now"
+    state: complete
+    settings: ["ui.map (slot + dragged anchor)", ui.map.size, ui.readout.size, holo.size, ui.panel-holo, ui.panel-readout]
+    tests: ["crates/app/src/lib.rs::design_mode_takes_the_holo_the_mini_map_and_the_readout", "crates/app/src/cockpit.rs::a_dragged_dial_keeps_its_own_anchor_until_the_slot_is_cycled"]
+    e2e: "farfall-captures/design: design-guide (the guide ringing the dials, the mini map, the holo and the readout; the card says POINT AT ANY GLASS PIECE), hud-map-drag (the mini map dragged to -0.30,0.20), design-lean (the mini map grown 1.5x at 0.10,0.55)"
+
+  - id: hud-file
+    name: "The cockpit as a shareable file: SAVE HUD / LOAD HUD on the DIALS page write and wear ~/.farfall/huds/hud-N.fhud — a small self-describing key=value file (header + hud.version 1) carrying every ui.* key, holo.* and the mini map's look, nothing of graphics/controls/world; an omitted key means stock, DEFAULT is the stock cockpit, SAVE overwrites the file worn last; sharing = sending the file; FARFALL_HUD=path wears one for a run. The first player-to-player artefact (SPEC §11)"
+    state: complete
+    settings: []
+    tests: ["crates/app/src/hud_file.rs::a_hud_file_round_trips_the_whole_cockpit_and_nothing_else", "crates/app/src/hud_file.rs::hud_files_are_numbered_and_sorted_naturally", "crates/app/src/menu.rs::the_dials_page_saves_and_loads_hud_files"]
+    e2e: "farfall-captures/design: hud-fhud — a generated .fhud worn via FARFALL_HUD in flight, the whole staged cockpit on the glass"
+
+  - id: bench-matrix-coverage
+    name: "bench-matrix.sh covers every feature with a frame: rows mode-hyper-shake (hyper field + the helmet camera parked non-zero), mode-disembark (LANDED + DISEMBARK's readout answer), gfx-dust / gfx-dust-belt (FARFALL_BENCH_DUST=k, a new frozen-only knob), design-lean (DESIGN mode wearing a staged .fhud with a leaned+rotated dial and a moved, grown mini map), hud-fhud (the same file worn in flight) and hud-map-drag (the mini map dragged off its corner via a one-line .fhud); the fixtures are generated by the script itself"
+    state: complete
+    settings: []
+    tests: []
+    e2e: "farfall-captures/design: mode-hyper-shake, mode-disembark (LANDED ... DISEMBARK NOT YET on the readout), gfx-dust, design-lean, hud-fhud, hud-map-drag — each row exercised once and looked at"
+
+  - id: stick-pilots-the-menus
+    name: "The whole game from the stick, keyboard reserved for the future on-foot controller: BASE R is ESC everywhere (the menu in flight, out of any panel/card/wizard, cancel a waiting bind); in any panel the hat is the arrow keys and the trigger ENTER, with SHIFT+hat walking the tabs (new [ ] keyboard keys land the same place) and zooming the pane; DESIGN mode sizes/tilts/styles the element from hat+trigger and rotates/leans it shifted; the wizard (now 39 steps — BACK and SHIFT learned after the trigger, never detected as bindings) navigates by SHIFT+trigger/hat with plain presses staying data; in flight SHIFT+button is its shifted bind (stick.shift-button.*) so all 26 named controls have a stick home and coverage stays 21 of 21; one press one key on release (stick_sent), the trigger never fires shifted or in a panel"
+    state: complete
+    settings: [stick.shift, stick.back, "stick.shift-button.*"]
+    tests: ["crates/app/src/stick.rs::back_is_esc_everywhere_and_shift_is_silent", "crates/app/src/stick.rs::the_hat_is_the_arrows_and_the_trigger_enter_in_a_panel", "crates/app/src/stick.rs::design_mode_pilots_the_element_from_the_hat", "crates/app/src/stick.rs::the_wizard_is_pilotable_from_the_stick_alone", "crates/app/src/stick.rs::the_wizard_never_learns_the_shift_or_back_button", "crates/app/src/stick.rs::the_stock_map_reaches_every_named_control", "crates/app/src/stick.rs::a_button_has_one_job_across_the_shift_and_back_roles", "crates/app/src/menu.rs::escape_closes_and_tab_pages", "crates/app/src/card.rs::the_card_shows_the_essentials_with_their_live_keys"]
+    e2e: "farfall-captures/stick-menu/: menu-stick-rows (STICK tab, 17 rows), wizard-back-step-1.png and wizard-shift-step-1.png (STEP 11/39 and 12/39, DETECTED BASE R / BASE L), card-stick-section-1.png (the STICK block on the CONTROLS card), menu-keys-shifted-1.png — each looked at; ~480-630 fps in the bench window"
