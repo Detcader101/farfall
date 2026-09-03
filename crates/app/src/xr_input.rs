@@ -1,24 +1,45 @@
-//! Valve Index controller input (fable/vr-hands): a single "flight"
-//! action set — aim pose, grip pose, trigger value, squeeze value,
-//! thumbstick, A/B click, haptic output, per hand — suggested for
+//! Controller input (fable/vr-hands), behind one trait so a bench can
+//! run the whole lane without a headset: [`HandSource`] is either
+//! [`OpenXrHands`] (a real Valve Index action set — aim pose, grip
+//! pose, trigger value, squeeze value, thumbstick, A/B click, haptic
+//! output, per hand, suggested for
 //! `/interaction_profiles/valve/index_controller` with a
 //! `/interaction_profiles/khr/simple_controller` fallback for whatever
-//! that profile actually has (grip/aim pose, a boolean "select" mapped
+//! that profile actually has: grip/aim pose, a boolean "select" mapped
 //! onto the trigger action via OpenXR's own click→float conversion, and
-//! haptics). Shape ported from openxrs' example (Ralith/openxrs,
-//! MIT/Apache-2.0, `openxr/examples/vulkan.rs`) — see
+//! haptics) or [`SynthHands`] (a deterministic scripted pair of hands,
+//! no runtime required at all). Shape ported from openxrs' example
+//! (Ralith/openxrs, MIT/Apache-2.0, `openxr/examples/vulkan.rs`) — see
 //! `docs/RESEARCH-VR-OSS.md` §1.
 //!
-//! [`XrInput::new`] must run once, right after [`crate::xr::init`]
+//! [`OpenXrHands::new`] must run once, right after [`crate::xr::init`]
 //! succeeds and before the event loop ever calls `begin_frame` — OpenXR
 //! requires every action set be attached
 //! (`Session::attach_action_sets`) before the session leaves its
 //! unattached state, and the session does not reach `READY` (the point
 //! `xr::XrSession::begin_frame` first calls `session.begin`) until some
-//! polling has happened. [`XrInput::sync`] and [`XrInput::hands`] are
-//! called every frame from `xr_begin_frame` in `lib.rs`, right beside
-//! where `game.vr` itself is set from the eyes — hands and eyes are the
-//! same seam, located in the same recentred LOCAL space.
+//! polling has happened. [`HandSource::sync`] and [`HandSource::hands`]
+//! are called every frame from `xr_begin_frame` in `lib.rs`, right
+//! beside where `game.vr` itself is set from the eyes — hands and eyes
+//! are the same seam, located in the same recentred LOCAL space.
+//!
+//! ## Which source runs (`FARFALL_VR_HANDS`)
+//!
+//! `FARFALL_VR_HANDS=synth` forces [`SynthHands`]; `=real` forces
+//! [`OpenXrHands`]. Unset, it follows `FARFALL_VR`: `FARFALL_VR=synth`
+//! (fable/vr's synthetic Index headset) defaults hands to synthetic
+//! too, anything else defaults to real ([`hands_mode`]/[`hands_mode_for`]).
+//! `SynthHands` reads its own script from `FARFALL_VR_SCRIPT` — the
+//! same variable fable/vr's synthetic head uses for its own motion
+//! (`still`/`look`/`lean`/`nod`/`spin`); a value this module doesn't
+//! recognise as a hand script (including all of those) is simply
+//! [`HandScript::Idle`] here, and vice versa on the head side. Every
+//! script is a deterministic pure function of elapsed bench time
+//! (`Game::started.elapsed()`), so a run is exactly reproducible, and
+//! every state transition (a reach completing, a grab taken, a release,
+//! a press) logs one line — `"VR hands: right GRAB stick t=2.1s"` — so
+//! a bench harness can assert a script did what it claims without
+//! reading pixels.
 
 use glam::{Quat, Vec3};
 
@@ -117,6 +138,315 @@ pub fn pose_from_openxr(p: openxr::Posef) -> (Quat, Vec3) {
     )
 }
 
+/// Which [`HandSource`] runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandsMode {
+    Real,
+    Synth,
+}
+
+/// [`hands_mode`]'s logic, pure: given `FARFALL_VR_HANDS` and
+/// `FARFALL_VR`'s own values (or `None` if unset), which source runs.
+/// `FARFALL_VR_HANDS` wins outright when it names either mode
+/// explicitly; otherwise a synthetic headset (`FARFALL_VR=synth`)
+/// defaults hands to synthetic too, and anything else defaults real.
+pub fn hands_mode_for(hands_var: Option<&str>, vr_var: Option<&str>) -> HandsMode {
+    match hands_var {
+        Some("synth") => return HandsMode::Synth,
+        Some("real") => return HandsMode::Real,
+        _ => {}
+    }
+    if vr_var == Some("synth") {
+        HandsMode::Synth
+    } else {
+        HandsMode::Real
+    }
+}
+
+/// [`hands_mode_for`] against the real environment.
+pub fn hands_mode() -> HandsMode {
+    hands_mode_for(
+        std::env::var("FARFALL_VR_HANDS").ok().as_deref(),
+        std::env::var("FARFALL_VR").ok().as_deref(),
+    )
+}
+
+/// A named, deterministic synthetic hand script (`FARFALL_VR_SCRIPT`,
+/// shared with fable/vr's head scripts — see the module doc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandScript {
+    /// Both hands resting on the lap: tracked, motionless, no squeeze.
+    Idle,
+    /// The right hand travels from the lap to the stick over
+    /// [`REACH_S`] seconds, then holds there without grabbing.
+    ReachStick,
+    /// The right hand reaches the stick, grabs it, then rolls it back
+    /// and forth — the roll axis (`InputState::summed`, `Controls::
+    /// torque_body.z`) must show the demand.
+    GrabStickRoll,
+    /// The left hand reaches the throttle, grabs it, then pushes it
+    /// from 0 to 80% over the run.
+    ThrottlePush,
+    /// The right hand's aim ray sweeps across the open menu and, at the
+    /// end, presses — the pointer/click path must register it.
+    LaserMenu,
+}
+
+impl HandScript {
+    /// `FARFALL_VR_SCRIPT`'s value, or `None` for a name this module
+    /// does not recognise as a hand script — a head-only name
+    /// (`still`/`look`/`lean`/`nod`/`spin`) or an unknown one, both of
+    /// which fall back to [`HandScript::Idle`] at the call site.
+    pub fn from_env_value(v: &str) -> Option<HandScript> {
+        match v {
+            "idle" => Some(HandScript::Idle),
+            "reach-stick" => Some(HandScript::ReachStick),
+            "grab-stick-roll" => Some(HandScript::GrabStickRoll),
+            "throttle-push" => Some(HandScript::ThrottlePush),
+            "laser-menu" => Some(HandScript::LaserMenu),
+            _ => None,
+        }
+    }
+}
+
+/// Which beat of a script time `t` falls in — logged once per change
+/// (not every frame) by [`SynthHands::hands`], and the harness's own
+/// hook: a script's own timeline is fully determined by
+/// [`synth_hands`], so asserting "did REACH stick complete by t=2.2s"
+/// needs nothing but this log line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Beat {
+    Idle,
+    ReachStick,
+    HoldStick,
+    GrabStick,
+    RollStick,
+    ReachThrottle,
+    GrabThrottle,
+    PushThrottle,
+    ReachAim,
+    AimSweep,
+    Press,
+}
+
+impl Beat {
+    fn label(self) -> &'static str {
+        match self {
+            Beat::Idle => "IDLE",
+            Beat::ReachStick => "REACH stick",
+            Beat::HoldStick => "HOLD stick",
+            Beat::GrabStick => "GRAB stick",
+            Beat::RollStick => "ROLL stick",
+            Beat::ReachThrottle => "REACH throttle",
+            Beat::GrabThrottle => "GRAB throttle",
+            Beat::PushThrottle => "PUSH throttle",
+            Beat::ReachAim => "REACH aim",
+            Beat::AimSweep => "AIM menu",
+            Beat::Press => "PRESS row",
+        }
+    }
+}
+
+/// Where a resting hand sits, ship frame — clear of the stick and the
+/// throttle both, so "idle" is visibly distinct from either grab.
+pub const LAP_LEFT: Vec3 = Vec3::new(-0.22, -1.05, -0.15);
+pub const LAP_RIGHT: Vec3 = Vec3::new(0.22, -1.05, -0.15);
+
+/// How long a reach travels, and how long a grab's squeeze takes to
+/// ramp in, seconds — generous enough to read clearly in a capture.
+pub const REACH_S: f32 = 2.0;
+pub const GRAB_RAMP_S: f32 = 0.6;
+const THROTTLE_REACH_S: f32 = 1.5;
+const THROTTLE_PUSH_S: f32 = 6.0;
+const AIM_REACH_S: f32 = 1.0;
+const AIM_SWEEP_S: f32 = 3.0;
+const AIM_PRESS_AT_S: f32 = 3.5;
+const AIM_PRESS_DUR_S: f32 = 0.15;
+const AIM_POS: Vec3 = Vec3::new(0.18, -0.35, -0.35);
+
+/// Smoothstep: a natural ease in/out for a scripted reach, `f` clamped
+/// to 0..1 first so an out-of-range call still returns a sane 0..1.
+fn ease(f: f32) -> f32 {
+    let f = f.clamp(0.0, 1.0);
+    f * f * (3.0 - 2.0 * f)
+}
+
+fn pose_at(pos: Vec3, trigger: f32, squeeze: f32) -> HandPose {
+    HandPose {
+        aim: (Quat::IDENTITY, pos),
+        grip: (Quat::IDENTITY, pos),
+        trigger,
+        squeeze,
+        thumbstick: (0.0, 0.0),
+        a: false,
+        b: false,
+    }
+}
+
+fn idle_pose(pos: Vec3) -> HandPose {
+    pose_at(pos, 0.0, 0.0)
+}
+
+fn reach_stick_pose(t: f32, grab_after: bool) -> (HandPose, Beat) {
+    if t < REACH_S {
+        let pos = LAP_RIGHT.lerp(crate::xr_grab::STICK_REST, ease(t / REACH_S));
+        return (idle_pose(pos), Beat::ReachStick);
+    }
+    if !grab_after {
+        return (idle_pose(crate::xr_grab::STICK_REST), Beat::HoldStick);
+    }
+    let since_arrive = t - REACH_S;
+    if since_arrive < GRAB_RAMP_S {
+        let squeeze = (since_arrive / GRAB_RAMP_S).clamp(0.0, 1.0);
+        return (
+            pose_at(crate::xr_grab::STICK_REST, 0.0, squeeze),
+            Beat::GrabStick,
+        );
+    }
+    // Rolling: oscillate the grip's X position around the stick's own
+    // rest, +/-8cm at 0.5Hz — past `xr_grab`'s dead zone and enough of
+    // its sensitivity to read as a clear, repeating roll demand rather
+    // than a twitch.
+    let roll_t = since_arrive - GRAB_RAMP_S;
+    let x = (roll_t * std::f32::consts::TAU * 0.5).sin() * 0.08;
+    let pos = crate::xr_grab::STICK_REST + Vec3::new(x, 0.0, 0.0);
+    (pose_at(pos, 0.0, 0.9), Beat::RollStick)
+}
+
+fn throttle_pose(t: f32) -> (HandPose, Beat) {
+    if t < THROTTLE_REACH_S {
+        let pos = LAP_LEFT.lerp(crate::xr_grab::THROTTLE_REST, ease(t / THROTTLE_REACH_S));
+        return (idle_pose(pos), Beat::ReachThrottle);
+    }
+    let since_arrive = t - THROTTLE_REACH_S;
+    if since_arrive < GRAB_RAMP_S {
+        let squeeze = (since_arrive / GRAB_RAMP_S).clamp(0.0, 1.0);
+        return (
+            pose_at(crate::xr_grab::THROTTLE_REST, 0.0, squeeze),
+            Beat::GrabThrottle,
+        );
+    }
+    let push_t = since_arrive - GRAB_RAMP_S;
+    let f = (push_t / THROTTLE_PUSH_S).clamp(0.0, 1.0);
+    // 0..80% of full deflection: an axis of 0.8 needs this much
+    // displacement past `xr_grab`'s own dead zone and sensitivity.
+    let target = -(crate::xr_grab::DEAD_ZONE_M + 0.8 / crate::xr_grab::SENSITIVITY_PER_M);
+    let pos = crate::xr_grab::THROTTLE_REST + Vec3::new(0.0, 0.0, target * f);
+    (pose_at(pos, 0.0, 0.9), Beat::PushThrottle)
+}
+
+fn laser_menu_pose(t: f32) -> (HandPose, Beat) {
+    if t < AIM_REACH_S {
+        let pos = LAP_RIGHT.lerp(AIM_POS, ease(t / AIM_REACH_S));
+        return (idle_pose(pos), Beat::ReachAim);
+    }
+    let since = t - AIM_REACH_S;
+    let yaw = if since < AIM_SWEEP_S {
+        (since / AIM_SWEEP_S * std::f32::consts::PI).sin() * 0.3
+    } else {
+        0.0
+    };
+    let rot = Quat::from_rotation_y(yaw);
+    let pressing = (AIM_PRESS_AT_S..AIM_PRESS_AT_S + AIM_PRESS_DUR_S).contains(&t);
+    let pose = HandPose {
+        aim: (rot, AIM_POS),
+        grip: (rot, AIM_POS),
+        trigger: if pressing { 1.0 } else { 0.0 },
+        squeeze: 0.0,
+        thumbstick: (0.0, 0.0),
+        a: false,
+        b: false,
+    };
+    (
+        pose,
+        if pressing {
+            Beat::Press
+        } else {
+            Beat::AimSweep
+        },
+    )
+}
+
+/// Both hands and their beats (index 0 left, 1 right) at time `t`
+/// (seconds since the script started) — the whole of what
+/// [`SynthHands`] needs, and fully pure: no runtime, no clock of its
+/// own, exercised by the pure tests below.
+pub fn synth_hands(script: HandScript, t: f32) -> (VrHands, [Beat; 2]) {
+    let t = t.max(0.0);
+    match script {
+        HandScript::Idle => (
+            VrHands {
+                left: Some(idle_pose(LAP_LEFT)),
+                right: Some(idle_pose(LAP_RIGHT)),
+            },
+            [Beat::Idle, Beat::Idle],
+        ),
+        HandScript::ReachStick => {
+            let (right, beat) = reach_stick_pose(t, false);
+            (
+                VrHands {
+                    left: Some(idle_pose(LAP_LEFT)),
+                    right: Some(right),
+                },
+                [Beat::Idle, beat],
+            )
+        }
+        HandScript::GrabStickRoll => {
+            let (right, beat) = reach_stick_pose(t, true);
+            (
+                VrHands {
+                    left: Some(idle_pose(LAP_LEFT)),
+                    right: Some(right),
+                },
+                [Beat::Idle, beat],
+            )
+        }
+        HandScript::ThrottlePush => {
+            let (left, beat) = throttle_pose(t);
+            (
+                VrHands {
+                    left: Some(left),
+                    right: Some(idle_pose(LAP_RIGHT)),
+                },
+                [beat, Beat::Idle],
+            )
+        }
+        HandScript::LaserMenu => {
+            let (right, beat) = laser_menu_pose(t);
+            (
+                VrHands {
+                    left: Some(idle_pose(LAP_LEFT)),
+                    right: Some(right),
+                },
+                [Beat::Idle, beat],
+            )
+        }
+    }
+}
+
+/// One frame's controller state, from whichever source is live —
+/// object-safe, so `Gpu::xr_input` can hold `Box<dyn HandSource>`
+/// chosen once at startup by [`hands_mode`].
+pub trait HandSource {
+    /// Sync this frame's action states (real: `sync_actions`; synth:
+    /// a no-op). Call once a frame, before [`Self::hands`].
+    fn sync(&self) -> openxr::Result<()>;
+
+    /// Both hands' state this frame. `space`/`time` locate a real
+    /// source's poses (the session's current LOCAL space, the
+    /// predicted display time) — a synthetic source ignores both and
+    /// reads `bench_t_s` (`Game::started.elapsed()`) instead, its one
+    /// and only clock.
+    fn hands(&mut self, space: &openxr::Space, time: openxr::Time, bench_t_s: f32) -> VrHands;
+
+    /// A short haptic pulse on one hand (0 left, 1 right). `amplitude`
+    /// 0..1, `duration_s` seconds. A real source drops the error
+    /// (log-and-continue: a haptic is confirmatory, never load-bearing)
+    /// rather than panicking; a synthetic one just logs what it would
+    /// have felt.
+    fn pulse(&self, hand: usize, amplitude: f32, duration_s: f32);
+}
+
 // ---------------------------------------------------------------------
 // The runtime: everything below touches a real OpenXR session and
 // cannot run in a unit test; exercised by `cargo check` and, eventually,
@@ -125,13 +455,17 @@ pub fn pose_from_openxr(p: openxr::Posef) -> (Quat, Vec3) {
 
 /// The attached action set plus the per-hand action spaces it created —
 /// the OpenXR side of hand input, alongside `xr::XrSession`'s eyes.
-pub struct XrInput {
+/// Holds its own clone of the session (cheap — an `Arc` internally, per
+/// the `openxr` crate) so [`HandSource`]'s methods need no session
+/// parameter of their own; `space`/`time` still come in fresh each
+/// frame from `HandSource::hands`, since the LOCAL space changes on
+/// every VR RECENTRE.
+pub struct OpenXrHands {
+    session: openxr::Session<openxr::Vulkan>,
     action_set: openxr::ActionSet,
     // Kept alive alongside `aim_space` (the action that created it must
     // outlive the space); not read directly today, only through the
-    // space it created. `#[allow]`ed rather than dropped: a later commit
-    // in this same sequence (SPEC §5.3b) reads `is_active` off it the
-    // same way `grip_pose` is read below.
+    // space it created.
     #[allow(dead_code)]
     aim_pose: openxr::Action<openxr::Posef>,
     grip_pose: openxr::Action<openxr::Posef>,
@@ -146,14 +480,14 @@ pub struct XrInput {
     grip_space: [openxr::Space; 2],
 }
 
-impl XrInput {
+impl OpenXrHands {
     /// Create the action set, suggest both profiles' bindings from
     /// [`BINDINGS`], attach it to the session, and create the aim/grip
     /// action spaces. Call once, right after `xr::init` succeeds.
     pub fn new(
         instance: &openxr::Instance,
         session: &openxr::Session<openxr::Vulkan>,
-    ) -> openxr::Result<XrInput> {
+    ) -> openxr::Result<OpenXrHands> {
         let action_set = instance.create_action_set("flight", "Flight Controls", 0)?;
         let hand_paths = [
             instance.string_to_path("/user/hand/left")?,
@@ -223,7 +557,8 @@ impl XrInput {
             grip_pose.create_space(session, hand_paths[1], openxr::Posef::IDENTITY)?,
         ];
 
-        Ok(XrInput {
+        Ok(OpenXrHands {
+            session: session.clone(),
             action_set,
             aim_pose,
             grip_pose,
@@ -239,39 +574,11 @@ impl XrInput {
         })
     }
 
-    /// Sync this frame's action states. Call once a frame, before
-    /// [`Self::hands`] or any `.state()` read.
-    pub fn sync(&self, session: &openxr::Session<openxr::Vulkan>) -> openxr::Result<()> {
-        session.sync_actions(&[openxr::ActiveActionSet::from(&self.action_set)])
-    }
-
-    /// Both hands' controller state this frame, located in `space` (the
-    /// session's current, recentred LOCAL space — the ship's frame) at
-    /// `time` (the frame's predicted display time). A hand with no
-    /// tracked grip pose (asleep, out of view, unbound) is `None`.
-    pub fn hands(
-        &self,
-        session: &openxr::Session<openxr::Vulkan>,
-        space: &openxr::Space,
-        time: openxr::Time,
-    ) -> VrHands {
-        VrHands {
-            left: self.hand(session, space, time, 0),
-            right: self.hand(session, space, time, 1),
-        }
-    }
-
-    fn hand(
-        &self,
-        session: &openxr::Session<openxr::Vulkan>,
-        space: &openxr::Space,
-        time: openxr::Time,
-        i: usize,
-    ) -> Option<HandPose> {
+    fn hand(&self, space: &openxr::Space, time: openxr::Time, i: usize) -> Option<HandPose> {
         let hand_path = self.hand_paths[i];
         if !self
             .grip_pose
-            .is_active(session, hand_path)
+            .is_active(&self.session, hand_path)
             .unwrap_or(false)
         {
             return None;
@@ -291,18 +598,18 @@ impl XrInput {
         // losing the hand entirely.
         let aim = located(&self.aim_space[i]).unwrap_or(grip);
         let f32_of = |a: &openxr::Action<f32>| {
-            a.state(session, hand_path)
+            a.state(&self.session, hand_path)
                 .map(|s| s.current_state)
                 .unwrap_or(0.0)
         };
         let bool_of = |a: &openxr::Action<bool>| {
-            a.state(session, hand_path)
+            a.state(&self.session, hand_path)
                 .map(|s| s.current_state)
                 .unwrap_or(false)
         };
         let thumbstick = self
             .thumbstick
-            .state(session, hand_path)
+            .state(&self.session, hand_path)
             .map(|s| (s.current_state.x, s.current_state.y))
             .unwrap_or((0.0, 0.0));
         Some(HandPose {
@@ -315,19 +622,22 @@ impl XrInput {
             b: bool_of(&self.b_click),
         })
     }
+}
 
-    /// A short haptic pulse on one hand (0 left, 1 right). `amplitude`
-    /// 0..1, `duration_s` seconds. Logs and drops the error rather than
-    /// panicking — a haptic is confirmatory, never load-bearing. Called
-    /// from `lib.rs::pulse_hand` on a grab, a release, and a laser
-    /// click (SPEC §5.3b(e)).
-    pub fn pulse(
-        &self,
-        session: &openxr::Session<openxr::Vulkan>,
-        hand: usize,
-        amplitude: f32,
-        duration_s: f32,
-    ) {
+impl HandSource for OpenXrHands {
+    fn sync(&self) -> openxr::Result<()> {
+        self.session
+            .sync_actions(&[openxr::ActiveActionSet::from(&self.action_set)])
+    }
+
+    fn hands(&mut self, space: &openxr::Space, time: openxr::Time, _bench_t_s: f32) -> VrHands {
+        VrHands {
+            left: self.hand(space, time, 0),
+            right: self.hand(space, time, 1),
+        }
+    }
+
+    fn pulse(&self, hand: usize, amplitude: f32, duration_s: f32) {
         let Some(&path) = self.hand_paths.get(hand.min(1)) else {
             return;
         };
@@ -337,9 +647,64 @@ impl XrInput {
             .duration(openxr::Duration::from_nanos(
                 (duration_s.max(0.0) * 1.0e9) as i64,
             ));
-        if let Err(e) = self.haptic.apply_feedback(session, path, &event) {
+        if let Err(e) = self.haptic.apply_feedback(&self.session, path, &event) {
             log::warn!("VR: haptic pulse: {e}");
         }
+    }
+}
+
+/// A deterministic synthetic pair of hands: no OpenXR session, no
+/// runtime, no headset — [`synth_hands`] driven by `Game::started.
+/// elapsed()`, so a bench (`FARFALL_BENCH=1 FARFALL_VR_HANDS=synth
+/// FARFALL_VR_SCRIPT=...`) exercises this whole lane deaf and 4-up on
+/// the desktop. Logs one line per [`Beat`] change per hand.
+pub struct SynthHands {
+    script: HandScript,
+    last_beat: [Option<Beat>; 2],
+}
+
+impl SynthHands {
+    pub fn new() -> Self {
+        let script = std::env::var("FARFALL_VR_SCRIPT")
+            .ok()
+            .and_then(|v| HandScript::from_env_value(&v))
+            .unwrap_or(HandScript::Idle);
+        log::info!("VR hands: synthetic, script {script:?}");
+        SynthHands {
+            script,
+            last_beat: [None; 2],
+        }
+    }
+}
+
+impl Default for SynthHands {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HandSource for SynthHands {
+    fn sync(&self) -> openxr::Result<()> {
+        Ok(())
+    }
+
+    fn hands(&mut self, _space: &openxr::Space, _time: openxr::Time, bench_t_s: f32) -> VrHands {
+        let (hands, beats) = synth_hands(self.script, bench_t_s);
+        for (i, beat) in beats.into_iter().enumerate() {
+            if self.last_beat[i] != Some(beat) {
+                self.last_beat[i] = Some(beat);
+                let hand_name = if i == 0 { "left" } else { "right" };
+                log::info!("VR hands: {hand_name} {} t={bench_t_s:.1}s", beat.label());
+            }
+        }
+        hands
+    }
+
+    fn pulse(&self, hand: usize, amplitude: f32, duration_s: f32) {
+        let hand_name = if hand == 0 { "left" } else { "right" };
+        log::info!(
+            "VR hands: {hand_name} PULSE amplitude={amplitude:.2} duration={duration_s:.3}s (synthetic)"
+        );
     }
 }
 
@@ -436,5 +801,124 @@ mod pure_tests {
         let (q, v) = pose_from_openxr(src);
         assert!(q.angle_between(yaw) < 1e-6);
         assert_eq!(v, Vec3::new(1.0, 2.0, -3.0));
+    }
+
+    #[test]
+    fn hands_var_wins_outright_over_vr_var() {
+        assert_eq!(hands_mode_for(Some("synth"), Some("1")), HandsMode::Synth);
+        assert_eq!(hands_mode_for(Some("real"), Some("synth")), HandsMode::Real);
+    }
+
+    #[test]
+    fn a_synthetic_headset_defaults_hands_synthetic_too() {
+        assert_eq!(hands_mode_for(None, Some("synth")), HandsMode::Synth);
+    }
+
+    #[test]
+    fn otherwise_hands_default_real() {
+        assert_eq!(hands_mode_for(None, Some("1")), HandsMode::Real);
+        assert_eq!(hands_mode_for(None, None), HandsMode::Real);
+    }
+
+    #[test]
+    fn a_head_only_script_name_is_idle_for_hands() {
+        for name in ["still", "look", "lean", "nod", "spin", "", "unknown"] {
+            assert_eq!(HandScript::from_env_value(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn every_hand_script_name_round_trips() {
+        for (name, script) in [
+            ("idle", HandScript::Idle),
+            ("reach-stick", HandScript::ReachStick),
+            ("grab-stick-roll", HandScript::GrabStickRoll),
+            ("throttle-push", HandScript::ThrottlePush),
+            ("laser-menu", HandScript::LaserMenu),
+        ] {
+            assert_eq!(HandScript::from_env_value(name), Some(script));
+        }
+    }
+
+    #[test]
+    fn idle_keeps_both_hands_motionless_on_the_lap() {
+        let (a, beats) = synth_hands(HandScript::Idle, 0.0);
+        let (b, _) = synth_hands(HandScript::Idle, 50.0);
+        assert_eq!(beats, [Beat::Idle, Beat::Idle]);
+        assert_eq!(a.left.unwrap().grip.1, LAP_LEFT);
+        assert_eq!(a.right.unwrap().grip.1, LAP_RIGHT);
+        assert_eq!(a.left.unwrap().grip.1, b.left.unwrap().grip.1, "motionless");
+        assert_eq!(a.left.unwrap().squeeze, 0.0);
+    }
+
+    #[test]
+    fn reach_stick_travels_from_the_lap_and_then_holds_without_grabbing() {
+        let (start, beat0) = synth_hands(HandScript::ReachStick, 0.0);
+        assert_eq!(beat0[1], Beat::ReachStick);
+        assert_eq!(start.right.unwrap().grip.1, LAP_RIGHT);
+        let (mid, beat_mid) = synth_hands(HandScript::ReachStick, REACH_S * 0.5);
+        assert_eq!(beat_mid[1], Beat::ReachStick);
+        let d0 = (start.right.unwrap().grip.1 - crate::xr_grab::STICK_REST).length();
+        let dm = (mid.right.unwrap().grip.1 - crate::xr_grab::STICK_REST).length();
+        assert!(dm < d0, "still closing on the target");
+        let (arrived, beat_end) = synth_hands(HandScript::ReachStick, REACH_S + 1.0);
+        assert_eq!(beat_end[1], Beat::HoldStick);
+        assert_eq!(arrived.right.unwrap().grip.1, crate::xr_grab::STICK_REST);
+        assert_eq!(arrived.right.unwrap().squeeze, 0.0, "holding, not grabbing");
+    }
+
+    #[test]
+    fn grab_stick_roll_grabs_then_oscillates_the_roll_axis() {
+        let (before, beat) = synth_hands(HandScript::GrabStickRoll, REACH_S + GRAB_RAMP_S * 0.5);
+        assert_eq!(beat[1], Beat::GrabStick);
+        assert!(before.right.unwrap().squeeze > 0.0 && before.right.unwrap().squeeze < 1.0);
+        let (rolling_a, beat_a) =
+            synth_hands(HandScript::GrabStickRoll, REACH_S + GRAB_RAMP_S + 0.5);
+        assert_eq!(beat_a[1], Beat::RollStick);
+        let (rolling_b, _) = synth_hands(HandScript::GrabStickRoll, REACH_S + GRAB_RAMP_S + 1.5);
+        assert!(
+            rolling_a.right.unwrap().grip.1.x != rolling_b.right.unwrap().grip.1.x,
+            "the grip's own x oscillates once rolling"
+        );
+        assert!(rolling_a.right.unwrap().squeeze > 0.6, "still gripped");
+    }
+
+    #[test]
+    fn throttle_push_ramps_from_zero_toward_eighty_percent() {
+        let (grabbed, beat0) = synth_hands(
+            HandScript::ThrottlePush,
+            THROTTLE_REACH_S + GRAB_RAMP_S + 0.01,
+        );
+        assert_eq!(beat0[0], Beat::PushThrottle);
+        let start_z = grabbed.left.unwrap().grip.1.z;
+        assert!(
+            (start_z - crate::xr_grab::THROTTLE_REST.z).abs() < 1e-3,
+            "no push yet: {start_z}"
+        );
+        let (pushed, _) = synth_hands(
+            HandScript::ThrottlePush,
+            THROTTLE_REACH_S + GRAB_RAMP_S + THROTTLE_PUSH_S,
+        );
+        let end_z = pushed.left.unwrap().grip.1.z;
+        assert!(
+            end_z < crate::xr_grab::THROTTLE_REST.z,
+            "pushed forward (−Z): {end_z}"
+        );
+    }
+
+    #[test]
+    fn laser_menu_sweeps_then_presses_once() {
+        let (aiming, beat) = synth_hands(HandScript::LaserMenu, AIM_REACH_S + 1.0);
+        assert_eq!(beat[1], Beat::AimSweep);
+        assert_eq!(aiming.right.unwrap().trigger, 0.0);
+        let (pressing, beat_p) = synth_hands(HandScript::LaserMenu, AIM_PRESS_AT_S + 0.05);
+        assert_eq!(beat_p[1], Beat::Press);
+        assert_eq!(pressing.right.unwrap().trigger, 1.0);
+        let (after, beat_after) = synth_hands(
+            HandScript::LaserMenu,
+            AIM_PRESS_AT_S + AIM_PRESS_DUR_S + 0.1,
+        );
+        assert_eq!(beat_after[1], Beat::AimSweep, "the press is momentary");
+        assert_eq!(after.right.unwrap().trigger, 0.0);
     }
 }

@@ -162,21 +162,32 @@ WebXR has no controller input in this codebase and none is added here).
 Four seams, each following §5.3's own pattern of a data type on `Game`
 that the flat/WebXR paths simply never populate:
 
-- **Action set + poses** (`crates/app/src/xr_input.rs`): one action set
-  `"flight"` — aim pose, grip pose, trigger value, squeeze value,
-  thumbstick, A/B click, haptic output, per hand — suggested for
-  `/interaction_profiles/valve/index_controller`, with a
+- **Action set + poses** (`crates/app/src/xr_input.rs`): a `HandSource`
+  trait behind which the controller source runs — `OpenXrHands`, a real
+  action set `"flight"` (aim pose, grip pose, trigger value, squeeze
+  value, thumbstick, A/B click, haptic output, per hand) suggested for
+  `/interaction_profiles/valve/index_controller` with a
   `/interaction_profiles/khr/simple_controller` fallback for whatever
   that profile actually has (grip/aim pose, trigger via the profile's
   boolean `select/click` through OpenXR's own click→float conversion,
-  haptics; no analog squeeze, thumbstick or A/B). `XrInput::new` attaches
+  haptics; no analog squeeze, thumbstick or A/B), or `SynthHands`, a
+  deterministic scripted pair of hands with no runtime at all —
+  selected by `FARFALL_VR_HANDS` (defaulting to synthetic under
+  fable/vr's own `FARFALL_VR=synth`), so a bench exercises this whole
+  lane headless and 4-up on the desktop. `OpenXrHands::new` attaches
   the set to the session once, right after `xr::init` succeeds and
   before the event loop's first `begin_frame` — OpenXR requires every
   action set be attached before the session leaves its unattached
   state. Synced and located each frame from `xr_begin_frame`, in the
-  same recentred LOCAL space and predicted display time the eyes are,
-  landing on `Game::vr_hands: VrHands { left, right: Option<HandPose> }`
-  — the ship frame, the same convention `VrEye` uses.
+  same recentred LOCAL space and predicted display time the eyes are
+  (a synthetic source ignores both, reading `Game::started.elapsed()`
+  instead — its one clock, driving `FARFALL_VR_SCRIPT`'s named scripts:
+  `idle`, `reach-stick`, `grab-stick-roll`, `throttle-push`,
+  `laser-menu`), landing on `Game::vr_hands: VrHands { left, right:
+  Option<HandPose> }` — the ship frame, the same convention `VrEye`
+  uses. Every script logs one line per state transition (`"VR hands:
+  right GRAB stick t=2.1s"`) so a bench harness can assert what
+  happened without reading pixels.
 - **Hand glyphs** (`crates/render/src/hands.rs`, `shaders/hands.wgsl`):
   a capsule-and-ring SDF raymarch per tracked hand at its grip pose,
   drawn in the ship pass right after the cabin, in the game's existing

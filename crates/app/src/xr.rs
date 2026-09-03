@@ -1621,12 +1621,6 @@ impl RealSession {
         (&self.instance, &self.session)
     }
 
-    /// The session handle alone, for a per-frame `sync_actions`/action
-    /// state read.
-    pub fn session_handle(&self) -> &openxr::Session<openxr::Vulkan> {
-        &self.session
-    }
-
     /// The current (possibly recentred) LOCAL space hands are located
     /// against — the same space `begin_frame` locates the eyes in.
     pub fn space(&self) -> &openxr::Space {

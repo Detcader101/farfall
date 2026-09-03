@@ -1231,11 +1231,12 @@ struct Gpu {
     /// to `device` with it) before `device`/`queue` below are dropped.
     #[cfg(not(target_arch = "wasm32"))]
     xr: Option<xr::XrSession>,
-    /// VR HANDS (fable/vr-hands): the Index action set, attached to
-    /// `xr` right after it comes up (see `xr_input`'s module doc) —
-    /// `None` whenever `xr` itself is `None`.
+    /// VR HANDS (fable/vr-hands): whichever `xr_input::HandSource` is
+    /// live — the real Index action set, or a synthetic scripted pair
+    /// (`FARFALL_VR_HANDS`; see `xr_input`'s module doc) — `None`
+    /// whenever `xr` itself is `None`.
     #[cfg(not(target_arch = "wasm32"))]
-    xr_input: Option<xr_input::XrInput>,
+    xr_input: Option<Box<dyn xr_input::HandSource>>,
     window: Arc<Window>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -6075,10 +6076,11 @@ pub struct VrView {
 }
 
 // VR HANDS (fable/vr-hands): one controller's state, in the same ship
-// frame `VrEye` uses (see its own doc comment) — populated by
-// `xr_input::XrInput::hands` on native OpenXR; left `VrHands::default()`
-// (both `None`) on every other build (flat, WebXR) and whenever the
-// runtime has nothing tracked to report.
+// frame `VrEye` uses (see its own doc comment) — populated by whichever
+// `xr_input::HandSource` is live (`xr_input::OpenXrHands` or a
+// synthetic `xr_input::SynthHands`) on native OpenXR; left
+// `VrHands::default()` (both `None`) on every other build (flat,
+// WebXR) and whenever the source has nothing to report.
 #[derive(Debug, Clone, Copy)]
 pub struct HandPose {
     /// The aim ray's pose: where the laser (SPEC §5.3b) is cast from.
@@ -6623,27 +6625,40 @@ impl App {
             }
             VrPair::new(&device, config.format, fmt, session.eye_size())
         });
-        // VR HANDS (fable/vr-hands): attach the Index action set right
-        // after the session comes up, before the event loop's first
-        // `xr_begin_frame` (see xr_input's module doc for why the
-        // ordering matters). Only a real session has an instance/session
-        // to attach to (a synthetic one, `xr::XrSession::Synth`, has
-        // neither); a failure here only loses hand input, so it is
-        // logged and swallowed rather than falling back to flat.
+        // VR HANDS (fable/vr-hands): pick the hand source (FARFALL_VR_HANDS,
+        // xr_input::hands_mode) and, for the real one, attach the Index
+        // action set right after the session comes up, before the event
+        // loop's first `xr_begin_frame` (see xr_input's module doc for
+        // why the ordering matters). Only a real session has an
+        // instance/session to attach to (a synthetic one,
+        // `xr::XrSession::Synth`, has neither); a real-source failure
+        // here only loses hand input, so it is logged and swallowed
+        // rather than falling back to flat, and a synthetic source
+        // cannot fail at all.
         #[cfg(not(target_arch = "wasm32"))]
-        let xr_input = xr_session.as_ref().and_then(|session| {
-            let xr::XrSession::Real(real) = session else {
-                return None;
-            };
-            let (instance, raw_session) = real.raw_handles();
-            match xr_input::XrInput::new(instance, raw_session) {
-                Ok(input) => Some(input),
-                Err(e) => {
-                    log::warn!("VR: hand input setup failed ({e}); controllers will not track");
-                    None
-                }
-            }
-        });
+        let xr_input: Option<Box<dyn xr_input::HandSource>> =
+            xr_session
+                .as_ref()
+                .and_then(|session| match xr_input::hands_mode() {
+                    xr_input::HandsMode::Synth => {
+                        Some(Box::new(xr_input::SynthHands::new()) as Box<dyn xr_input::HandSource>)
+                    }
+                    xr_input::HandsMode::Real => {
+                        let xr::XrSession::Real(real) = session else {
+                            return None;
+                        };
+                        let (instance, raw_session) = real.raw_handles();
+                        match xr_input::OpenXrHands::new(instance, raw_session) {
+                            Ok(input) => Some(Box::new(input) as Box<dyn xr_input::HandSource>),
+                            Err(e) => {
+                                log::warn!(
+                                    "VR: hand input setup failed ({e}); controllers will not track"
+                                );
+                                None
+                            }
+                        }
+                    }
+                });
         self.gpu = Some(Gpu {
             #[cfg(not(target_arch = "wasm32"))]
             xr: xr_session,
@@ -7326,19 +7341,20 @@ fn xr_begin_frame(gpu: &mut Gpu, game: &mut Game) -> XrGate {
             // time the eyes were just located in — hands and eyes are
             // the same seam. `session` above only reborrowed `gpu.xr`,
             // so `gpu.xr_input` (a disjoint field) is still free to
-            // borrow here. `xr_input` is only ever built for a real
-            // session (see `finish_init`), so a synthetic one just
-            // reports no hands rather than trying to read one.
-            game.vr_hands = match (&gpu.xr_input, &*session) {
+            // borrow here. Only a real session has a space/time to
+            // locate hands against at all (`xr::XrSession::Synth` has
+            // neither) — a synthetic session just reports no hands
+            // here, same as `xr_input` being `None`.
+            game.vr_hands = match (&mut gpu.xr_input, &*session) {
                 (Some(input), xr::XrSession::Real(real)) => {
                     let space = real.space();
                     let time = real.predicted_display_time();
-                    let raw_session = real.session_handle();
-                    if let Err(e) = input.sync(raw_session) {
+                    let bench_t_s = game.started.elapsed().as_secs_f32();
+                    if let Err(e) = input.sync() {
                         log::warn!("VR: hand sync: {e}");
                         VrHands::default()
                     } else {
-                        input.hands(raw_session, space, time)
+                        input.hands(space, time, bench_t_s)
                     }
                 }
                 _ => VrHands::default(),
@@ -7450,21 +7466,21 @@ const HAPTIC_RELEASE_AMPLITUDE: f32 = 0.2;
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const HAPTIC_RELEASE_S: f32 = 0.015;
 
-/// A short haptic pulse on one hand, through whichever of `gpu.xr`/
-/// `gpu.xr_input` is up — silently does nothing without a native
-/// session or hand input (flat play, WebXR, a synthetic headset with no
-/// real hand action set, or a runtime that never bound one).
+/// A short haptic pulse on one hand, through whichever `gpu.xr_input`
+/// source is up — silently does nothing without one (flat play,
+/// WebXR, or a real runtime that never bound the action set); a
+/// synthetic source always "succeeds", just logging what it would have
+/// felt.
 #[cfg(not(target_arch = "wasm32"))]
 fn pulse_hand(gpu: &Gpu, hand: xr_grab::Hand, amplitude: f32, duration_s: f32) {
-    let (Some(xr::XrSession::Real(real)), Some(input)) = (gpu.xr.as_ref(), gpu.xr_input.as_ref())
-    else {
+    let Some(input) = gpu.xr_input.as_ref() else {
         return;
     };
     let index = match hand {
         xr_grab::Hand::Left => 0,
         xr_grab::Hand::Right => 1,
     };
-    input.pulse(real.session_handle(), index, amplitude, duration_s);
+    input.pulse(index, amplitude, duration_s);
 }
 
 /// VR HAPTICS: a pulse on each control whose holder changed this tick —
