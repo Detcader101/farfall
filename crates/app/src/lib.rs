@@ -769,22 +769,27 @@ impl Config {
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(settings.scale)
             .clamp(0.25, 1.0);
-        // The profiler's own knob wins over the pilot's: a bench run never
-        // wants a headset, so `FARFALL_VR=0` overrides VR HEADSET without
-        // touching the file, and a bench forces it off outright.
-        let vr = !bench
-            && match std::env::var("FARFALL_VR").as_deref() {
-                Ok("1" | "on" | "true") => true,
-                Ok("0" | "off" | "false") => false,
-                _ => settings.vr_headset,
-            };
+        // The profiler's own knob wins over the pilot's: `FARFALL_VR=0`
+        // overrides VR HEADSET off without touching the file, and a
+        // plain bench (no FARFALL_VR set at all) defaults to flat, since
+        // most benches never want a headset — but `FARFALL_BENCH=1
+        // FARFALL_VR=1` is the VR bench (SPEC §5.3): a deaf run inside
+        // the OpenXR session, explicit VR always wins over a bare bench.
+        let vr = match std::env::var("FARFALL_VR").as_deref() {
+            Ok("1" | "on" | "true") => true,
+            Ok("0" | "off" | "false") => false,
+            _ => settings.vr_headset && !bench,
+        };
         let vr_scale = std::env::var("FARFALL_VR_SCALE")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
             .filter(|f| f.is_finite())
             .unwrap_or(settings.vr_scale)
             .clamp(settings::VR_SCALE_MIN, settings::VR_SCALE_MAX);
-        let vr_mirror_pair = std::env::var("FARFALL_VR_MIRROR").as_deref() == Ok("pair");
+        // A VR bench always wants the labelled pair, not a single
+        // letterboxed eye — its captures are that content specifically
+        // (see below).
+        let vr_mirror_pair = bench || std::env::var("FARFALL_VR_MIRROR").as_deref() == Ok("pair");
         let vr_label = matches!(
             std::env::var("FARFALL_VR_LABEL").as_deref(),
             Ok("1" | "on" | "true")
@@ -835,6 +840,9 @@ struct Perf {
     cpu: FrameStats,
     /// Time blocked acquiring a swapchain image — GPU and vsync, not CPU.
     wait: FrameStats,
+    /// VR only: CPU encode plus real GPU frame time (a forced gpu_sync
+    /// poll's own duration, added in) — the bench stamp's `render_ms`.
+    render: FrameStats,
     last_frame: Instant,
     last_log: Instant,
     last_title: Instant,
@@ -847,6 +855,7 @@ impl Perf {
             stats: FrameStats::default(),
             cpu: FrameStats::default(),
             wait: FrameStats::default(),
+            render: FrameStats::default(),
             last_frame: now,
             last_log: now,
             last_title: now,
@@ -993,6 +1002,31 @@ impl Gpu {
     #[cfg(target_arch = "wasm32")]
     fn ensure_vr_render_size(&mut self, _tans: [[f32; 4]; 2]) -> Option<(u32, u32)> {
         None
+    }
+
+    /// The runtime's own current display rate, Hz — the VR bench
+    /// stamp's `hz=`. `None` off any build without a native session.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn xr_display_refresh_hz(&self) -> Option<f32> {
+        self.xr.as_ref().and_then(xr::XrSession::display_refresh_hz)
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn xr_display_refresh_hz(&self) -> Option<f32> {
+        None
+    }
+
+    /// Wall-clock ms the most recent VR frame spent inside
+    /// `FrameWaiter::wait` — the VR bench stamp's `xr_wait_ms=`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn xr_last_wait_ms(&self) -> f32 {
+        self.xr
+            .as_ref()
+            .map(xr::XrSession::last_wait_ms)
+            .unwrap_or(0.0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn xr_last_wait_ms(&self) -> f32 {
+        0.0
     }
 
     /// The scene textures were recreated: point the post pass at the new
@@ -1544,6 +1578,7 @@ impl Gpu {
         &mut self,
         cpu_seconds: f64,
         wait_seconds: f64,
+        render_seconds: Option<f64>,
         fps_floor: f32,
         readout: &Readout,
     ) {
@@ -1560,6 +1595,9 @@ impl Gpu {
             (*altitude_m, *speed_mps, *assist, *show_readout);
         self.perf.cpu.record(cpu_seconds);
         self.perf.wait.record(wait_seconds);
+        if let Some(r) = render_seconds {
+            self.perf.render.record(r);
+        }
         let now = Instant::now();
         let dt = now.duration_since(self.perf.last_frame).as_secs_f64();
         self.perf.last_frame = now;
@@ -1609,10 +1647,43 @@ impl Gpu {
         if now.duration_since(self.perf.last_log) >= PERF_LOG_EVERY {
             self.perf.last_log = now;
             if let Some(s) = self.perf.stats.take_summary() {
+                // The VR bench stamp: key=value tokens the harness parses
+                // off this exact line (never the "perf split" line
+                // below). vr=<eyeW>x<eyeH>x2, scale, the runtime's own
+                // display rate (never assumed — "unknown" if the runtime
+                // never offered fb_display_refresh_rate), render_ms/
+                // render_ms_1pct (CPU encode + real GPU time, forced
+                // gpu_sync), xr_wait_ms (time inside wait_frame, the
+                // runtime's own pacing) and the headroom against the
+                // runtime's own rate.
+                let vr_stamp = self.cfg.vr.then(|| {
+                    let eye = self.xr_eye_size().unwrap_or((0, 0));
+                    let hz = self.xr_display_refresh_hz();
+                    let xr_wait_ms = self.xr_last_wait_ms();
+                    let render = self.perf.render.take_summary();
+                    let render_ms = render.map_or(0.0, |r| r.avg_ms);
+                    let render_ms_1pct = render.map_or(0.0, |r| {
+                        if r.low_1pct_fps > 0.0 {
+                            1000.0 / r.low_1pct_fps
+                        } else {
+                            0.0
+                        }
+                    });
+                    let headroom_ms = hz.map_or(0.0, |hz| 1000.0 / hz as f64 - render_ms);
+                    format!(
+                        " vr={}x{}x2 scale={:.2} hz={} render_ms={render_ms:.3} \
+                         render_ms_1pct={render_ms_1pct:.3} xr_wait_ms={xr_wait_ms:.3} \
+                         headroom_ms={headroom_ms:.3}",
+                        eye.0,
+                        eye.1,
+                        self.cfg.vr_scale,
+                        hz.map_or_else(|| "unknown".to_string(), |h| format!("{h:.1}")),
+                    )
+                });
                 log::info!(
                     "perf {}x{} {}xMSAA vsync={} gpu_sync={}: {:.1} fps avg \
                      | 1% low {:.1} fps | frame avg {:.2}ms worst {:.2}ms \
-                     best {:.2}ms | {} frames",
+                     best {:.2}ms | {} frames{}",
                     self.config.width,
                     self.config.height,
                     self.cfg.msaa,
@@ -1624,6 +1695,7 @@ impl Gpu {
                     s.worst_ms,
                     s.best_ms,
                     s.frames,
+                    vr_stamp.unwrap_or_default(),
                 );
                 if let (Some(c), Some(w)) =
                     (self.perf.cpu.take_summary(), self.perf.wait.take_summary())
@@ -5753,7 +5825,10 @@ async fn request_gpu(
     } else {
         wgpu::PresentMode::AutoNoVsync
     };
-    if capture_final() {
+    // VR always needs to be able to capture the mirror (a VR bench's own
+    // captures always come from it — xr_composite — regardless of
+    // whether FARFALL_CAPTURE=final was also set for the flat path).
+    if capture_final() || vr_active {
         config.usage |= wgpu::TextureUsages::COPY_SRC;
     }
     surface.configure(&device, &config);
@@ -5827,6 +5902,15 @@ impl App {
         // running, and any failure here falls back to flat with a log line.
         #[cfg(not(target_arch = "wasm32"))]
         let xr_init = cfg.vr.then(|| xr::init(cfg.vr_scale)).flatten();
+        // A VR bench that silently ran flat is a lie: the whole point of
+        // FARFALL_BENCH=1 FARFALL_VR=1 is numbers and captures from
+        // inside the OpenXR session, so a bench, unlike ordinary play,
+        // never falls back — it fails the run outright.
+        #[cfg(not(target_arch = "wasm32"))]
+        if cfg.bench && cfg.vr && xr_init.is_none() {
+            log::error!("VR bench: OpenXR init failed (see the warning above); exiting");
+            std::process::exit(3);
+        }
 
         let display_handle = event_loop.owned_display_handle();
         #[cfg(not(target_arch = "wasm32"))]
@@ -7464,8 +7548,12 @@ fn redraw(
             gpu.pointer.draw(&mut pass);
         }
         // Screenshot: recorded into the same command buffer, so it
-        // captures exactly the frame that was just drawn.
-        let pending = if gpu.capture_requested {
+        // captures exactly the frame that was just drawn. In native VR,
+        // `frame` (the mirror window's own surface) is not drawn into
+        // here at all — that happens in xr_composite, after this whole
+        // per-eye loop — so a capture request is left standing and
+        // handled there instead, once the labelled pair actually exists.
+        let pending = if gpu.capture_requested && !native_vr {
             gpu.capture_requested = false;
             if gpu.scene.colour_texture().is_none() {
                 log::warn!("capture skipped: scene target has no colour texture");
@@ -7507,6 +7595,26 @@ fn redraw(
     if native_vr {
         xr_composite(gpu, game, &frame_view);
     }
+    // The VR capture xr_composite's own mirror-pair draw made possible:
+    // the labelled pair (both eyes cropped, FARFALL_VR_LABEL honoured),
+    // not a raw scene target — frame_view now genuinely holds it, unlike
+    // at the point capture_requested is normally consumed above.
+    #[cfg(not(target_arch = "wasm32"))]
+    if native_vr && gpu.capture_requested {
+        gpu.capture_requested = false;
+        let path = std::env::temp_dir().join(format!(
+            "farfall-{:.0}.png",
+            game.started.elapsed().as_secs_f64() * 1000.0
+        ));
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("vr capture"),
+            });
+        let capture = Capture::record(&gpu.device, &mut encoder, &frame.texture, path);
+        gpu.queue.submit([encoder.finish()]);
+        captured = Some(capture);
+    }
 
     if let Some(capture) = captured {
         let bgra = matches!(
@@ -7515,11 +7623,27 @@ fn redraw(
         );
         // The rate at this moment (smoothed over the recent frames), not the
         // run's average: a spin's eight captures each get their own number.
+        // Per-frame render_ms=/headroom_ms= for the VR bench stamp (same
+        // smoothed convention as the fps just above, not this exact
+        // frame's own instantaneous value).
+        let vr_frame_stamp = native_vr.then(|| {
+            let render_fps = gpu.perf.render.smoothed_fps();
+            let render_ms = if render_fps > 0.0 {
+                1000.0 / render_fps
+            } else {
+                0.0
+            };
+            let headroom_ms = gpu
+                .xr_display_refresh_hz()
+                .map_or(0.0, |hz| 1000.0 / hz as f64 - render_ms);
+            format!(" render_ms={render_ms:.3} headroom_ms={headroom_ms:.3}")
+        });
         match capture.save(&gpu.device, bgra) {
             Ok(path) => log::info!(
-                "screenshot: {} ({:.1} fps at capture)",
+                "screenshot: {} ({:.1} fps at capture{})",
                 path.display(),
-                gpu.perf.stats.smoothed_fps()
+                gpu.perf.stats.smoothed_fps(),
+                vr_frame_stamp.unwrap_or_default(),
             ),
             Err(e) => log::warn!("screenshot failed: {e}"),
         }
@@ -7529,9 +7653,19 @@ fn redraw(
     }
 
     gpu.queue.present(frame);
-    if gpu.cfg.gpu_sync {
+    // render_ms (the VR bench stamp): CPU encode plus real GPU frame
+    // time, measured by forcing the block gpu_sync already offers as an
+    // opt-in profiling knob, timed here — chosen over new timestamp-query
+    // infrastructure this session could not verify against real hardware,
+    // and gpu_sync's blocking poll is already a proven, if normally
+    // opt-in, way to make a CPU-side clock GPU-honest.
+    let gpu_wait_seconds = if gpu.cfg.gpu_sync || native_vr {
+        let start = Instant::now();
         let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
-    }
+        start.elapsed().as_secs_f64()
+    } else {
+        0.0
+    };
     // A benchmark stops itself. Left running, it is a frozen window
     // that looks exactly like the game and answers no controls.
     if gpu.cfg.bench {
@@ -7551,9 +7685,11 @@ fn redraw(
         }
     }
     gpu.govern_scale(&game.settings, game.settings.fps_floor);
+    let render_seconds = native_vr.then_some(cpu_seconds + gpu_wait_seconds);
     gpu.frame_timing(
         cpu_seconds,
         wait_seconds,
+        render_seconds,
         game.settings.fps_floor,
         &Readout {
             altitude_m: game.altitude_vspeed().0,
