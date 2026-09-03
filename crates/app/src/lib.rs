@@ -240,13 +240,6 @@ const AUTO_SCALE_MIN: f32 = 0.35;
 const AUTO_SCALE_STEP_S: f32 = 0.75;
 /// How long the rate must sit on the floor before the scale is raised.
 const AUTO_SCALE_RAISE_S: f32 = 3.0;
-/// The assumed distance, metres, of the virtual plane every VR glass
-/// overlay is painted on (SPEC §5.3) — the readout, glass-style dials,
-/// the mini map, the eye-order label. Not yet a menu setting
-/// (`vr.hud-distance` is the eventual key); a reasonable dash-distance
-/// estimate a pilot's own pass can retune. Flat flight never reads this
-/// — `on_glass`'s eye offset is always zero there.
-const VR_HUD_DISTANCE_M: f32 = 1.0;
 
 /// FARFALL_VR_LABEL=1's own L/R corner mark's target angular height,
 /// degrees — a fixed *angle*, not a fixed canopy-NDC size, so it reads
@@ -292,11 +285,11 @@ fn label_px_canopy(ty: f32) -> f32 {
 /// silently stop matching the other the way the old hand-duplicated
 /// constants could.
 #[cfg(not(target_arch = "wasm32"))]
-fn label_geometry(eye: usize, eyes: &[VrEye; 2]) -> ([f32; 2], f32) {
+fn label_geometry(eye: usize, eyes: &[VrEye; 2], hud_distance: f32) -> ([f32; 2], f32) {
     let e = &eyes[eye];
     let tx = (e.tan[0] + e.tan[1]).max(1e-3) * 0.5;
     let ty = (e.tan[2] + e.tan[3]).max(1e-3) * 0.5;
-    let d = VR_HUD_DISTANCE_M;
+    let d = hud_distance;
     let shift = [-e.pos.x / (d * tx), -e.pos.y / (d * ty)];
     let px = label_px_canopy(ty);
     let width_ndc = farfall_render::text::ADVANCE as f32 * px;
@@ -321,12 +314,22 @@ fn label_geometry(eye: usize, eyes: &[VrEye; 2]) -> ([f32; 2], f32) {
 /// VR): without it every glass element sits at optical infinity while
 /// the cabin around it has real depth, which reads as a close plane
 /// obscuring the view (SPEC §5.3) — reproject_with_eye's own parallax
-/// shift is what puts it on the glass instead.
-fn on_glass(head: Quat, eye_pos: Vec3, cam: &CameraFrame, ref_tan: f32, a: [f32; 2]) -> [f32; 2] {
+/// shift is what puts it on the glass instead. `hud_distance` is the
+/// pilot's own `vr.hud-distance` setting (metres) — the assumed depth
+/// of the glass that shift converges on; irrelevant when `eye_pos` is
+/// zero, so flat/design callers may pass any finite value.
+fn on_glass(
+    head: Quat,
+    eye_pos: Vec3,
+    hud_distance: f32,
+    cam: &CameraFrame,
+    ref_tan: f32,
+    a: [f32; 2],
+) -> [f32; 2] {
     look::reproject_with_eye(
         head,
         eye_pos,
-        VR_HUD_DISTANCE_M,
+        hud_distance,
         a,
         ref_tan,
         (cam.fov_y * 0.5).tan(),
@@ -342,12 +345,13 @@ fn slot_of(
     layout: &cockpit::Layout,
     head: Quat,
     eye_pos: Vec3,
+    hud_distance: f32,
     cam: &CameraFrame,
     ref_tan: f32,
     i: Instrument,
 ) -> ([f32; 2], f32) {
     match layout.anchor(i) {
-        Some(a) => (on_glass(head, eye_pos, cam, ref_tan, a), 1.0),
+        Some(a) => (on_glass(head, eye_pos, hud_distance, cam, ref_tan, a), 1.0),
         None => ([0.0, 0.0], 0.0),
     }
 }
@@ -1236,6 +1240,11 @@ struct Gpu {
     /// GPU readback, once per session, not every frame.
     #[cfg(not(target_arch = "wasm32"))]
     stereo_checked: bool,
+    /// Set once the mirror's own eye-order self-check has run (the
+    /// desktop window surface, not the swapchain images) — a GPU
+    /// readback, once per session.
+    #[cfg(not(target_arch = "wasm32"))]
+    mirror_checked: bool,
     /// Set once both eyes have logged their trace line (FARFALL_BENCH=1
     /// only) — the exact per-eye pos/eye_ship/cabin-eye/glass-eye values
     /// at the point each is written, for tracing a comfort bug without
@@ -1455,6 +1464,7 @@ impl Gpu {
         let glass_head = game.glass_head();
         let glass_eye_pos = game.glass_eye_pos();
         let ref_tan = game.ref_tan();
+        let hud_distance = game.settings.vr_hud_distance;
         // Overlay-depth self-check: once a session, measure (not just
         // assert in a unit test) that the two eyes' own on_glass shift
         // actually differ — proof the live per-frame eye positions are
@@ -1465,15 +1475,17 @@ impl Gpu {
             if let Some(vr) = &game.vr {
                 self.overlay_depth_logged.set(true);
                 let t = (cam.fov_y * 0.5).tan();
-                let shift = |eye_pos: Vec3| on_glass(glass_head, eye_pos, cam, ref_tan, [0.0, 0.0]);
+                let shift = |eye_pos: Vec3| {
+                    on_glass(glass_head, eye_pos, hud_distance, cam, ref_tan, [0.0, 0.0])
+                };
                 let s0 = shift(vr.eyes[0].pos);
                 let s1 = shift(vr.eyes[1].pos);
                 let diff = ((s0[0] - s1[0]).powi(2) + (s0[1] - s1[1]).powi(2)).sqrt();
                 let ipd = (vr.eyes[1].pos - vr.eyes[0].pos).length();
-                let expected = ipd / (VR_HUD_DISTANCE_M * t.max(1e-4) * cam.aspect.max(1e-4));
+                let expected = ipd / (hud_distance * t.max(1e-4) * cam.aspect.max(1e-4));
                 log::info!(
                     "VR: overlay-depth self-check: eyes' on_glass shift differs by \
-                     {diff:.5} NDC units at hud-distance {VR_HUD_DISTANCE_M}m (IPD \
+                     {diff:.5} NDC units at hud-distance {hud_distance}m (IPD \
                      {ipd:.4}m, ~{expected:.5} expected)"
                 );
             }
@@ -1510,6 +1522,7 @@ impl Gpu {
             layout,
             glass_head,
             glass_eye_pos,
+            hud_distance,
             cam,
             ref_tan,
             Instrument::Speed,
@@ -1539,6 +1552,7 @@ impl Gpu {
             layout,
             glass_head,
             glass_eye_pos,
+            hud_distance,
             cam,
             ref_tan,
             Instrument::Altitude,
@@ -1566,6 +1580,7 @@ impl Gpu {
             layout,
             glass_head,
             glass_eye_pos,
+            hud_distance,
             cam,
             ref_tan,
             Instrument::GForce,
@@ -1593,6 +1608,7 @@ impl Gpu {
             layout,
             glass_head,
             glass_eye_pos,
+            hud_distance,
             cam,
             ref_tan,
             Instrument::GVector,
@@ -1620,6 +1636,7 @@ impl Gpu {
             layout,
             glass_head,
             glass_eye_pos,
+            hud_distance,
             cam,
             ref_tan,
             Instrument::Gyro,
@@ -1682,7 +1699,7 @@ impl Gpu {
             }
             let anchors: Vec<[f32; 2]> = anchors
                 .into_iter()
-                .map(|a| on_glass(look.rotation(), Vec3::ZERO, cam, ref_tan, a))
+                .map(|a| on_glass(look.rotation(), Vec3::ZERO, hud_distance, cam, ref_tan, a))
                 .take(8)
                 .collect();
             self.passes.guide.update(
@@ -1691,7 +1708,14 @@ impl Gpu {
                     aspect,
                     game.settings.guide || game.design,
                     layout.safe_edge,
-                    on_glass(look.rotation(), Vec3::ZERO, cam, ref_tan, gaze),
+                    on_glass(
+                        look.rotation(),
+                        Vec3::ZERO,
+                        hud_distance,
+                        cam,
+                        ref_tan,
+                        gaze,
+                    ),
                     DRAG_REACH,
                     look.engaged() || game.design,
                     &anchors,
@@ -2638,6 +2662,7 @@ impl Game {
                 let c = on_glass(
                     self.glass_head(),
                     self.glass_eye_pos(),
+                    self.settings.vr_hud_distance,
                     &cam,
                     self.ref_tan(),
                     a,
@@ -3271,17 +3296,32 @@ impl Game {
         if self.menu.open || self.pane_open() || self.card_open {
             a
         } else if self.design {
-            on_glass(self.look.rotation(), Vec3::ZERO, cam, self.ref_tan(), a)
+            on_glass(
+                self.look.rotation(),
+                Vec3::ZERO,
+                self.settings.vr_hud_distance,
+                cam,
+                self.ref_tan(),
+                a,
+            )
         } else if self.vr.is_some() {
             on_glass(
                 self.glass_head(),
                 self.glass_eye_pos(),
+                self.settings.vr_hud_distance,
                 cam,
                 self.ref_tan(),
                 a,
             )
         } else {
-            on_glass(Quat::IDENTITY, Vec3::ZERO, cam, self.ref_tan(), a)
+            on_glass(
+                Quat::IDENTITY,
+                Vec3::ZERO,
+                self.settings.vr_hud_distance,
+                cam,
+                self.ref_tan(),
+                a,
+            )
         }
     }
 
@@ -3357,6 +3397,7 @@ impl Game {
         let live = on_glass(
             self.glass_head(),
             self.glass_eye_pos(),
+            self.settings.vr_hud_distance,
             cam,
             self.ref_tan(),
             a,
@@ -6469,6 +6510,8 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             stereo_checked: false,
             #[cfg(not(target_arch = "wasm32"))]
+            mirror_checked: false,
+            #[cfg(not(target_arch = "wasm32"))]
             vr_eye_traced: [false; 2],
             #[cfg(not(target_arch = "wasm32"))]
             overlay_depth_logged: std::cell::Cell::new(false),
@@ -7318,7 +7361,7 @@ type PxBox = ((u32, u32), (u32, u32));
 /// order self-check OK" or FAILED, and exactly what failed; under
 /// `FARFALL_BENCH=1` a failure exits 9.
 #[cfg(not(target_arch = "wasm32"))]
-fn eye_order_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
+fn eye_order_self_check(gpu: &Gpu, eyes: &[VrEye; 2], hud_distance: f32) {
     let Some(session) = gpu.xr.as_ref() else {
         return;
     };
@@ -7367,7 +7410,7 @@ fn eye_order_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
             ok = false;
             continue;
         };
-        let (outer_anchor, px) = label_geometry(eye, eyes);
+        let (outer_anchor, px) = label_geometry(eye, eyes, hud_distance);
         // The inner corner: where the OTHER eye's own mark would land
         // in THIS eye's image if the two were ever crossed — mirroring
         // label_geometry's own eye-1-from-eye-0 formula.
@@ -7486,7 +7529,7 @@ fn diff_percent(b0: &[u8], b1: &[u8], size: (u32, u32), exclude: &[PxBox]) -> (u
 /// measured percentage either way; exits 9 under FARFALL_BENCH=1 if
 /// it's under the floor.
 #[cfg(not(target_arch = "wasm32"))]
-fn stereo_disparity_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
+fn stereo_disparity_self_check(gpu: &Gpu, eyes: &[VrEye; 2], hud_distance: f32) {
     let Some(session) = gpu.xr.as_ref() else {
         return;
     };
@@ -7495,7 +7538,7 @@ fn stereo_disparity_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
     let label_boxes: Vec<PxBox> = if gpu.cfg.vr_label {
         (0..2)
             .map(|eye| {
-                let (anchor, px) = label_geometry(eye, eyes);
+                let (anchor, px) = label_geometry(eye, eyes, hud_distance);
                 let width_ndc = farfall_render::text::ADVANCE as f32 * px;
                 let height_ndc = farfall_render::text::GLYPH_H as f32 * px;
                 let margin = 1.6;
@@ -7599,6 +7642,103 @@ fn stereo_disparity_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
     }
 }
 
+/// FARFALL_VR_MIRROR=pair + FARFALL_VR_LABEL=1: after the mirror draw,
+/// read back the DESKTOP WINDOW SURFACE's own two halves and run the
+/// identical ink+shape check `eye_order_self_check` runs on the
+/// headset's own swapchain images — so the desktop proof and the
+/// headset proof are the same check, on the actual pixels a person at
+/// the desk sees, not only the images nobody but the runtime samples
+/// directly. Reuses `label_geometry`'s own fractional position within
+/// the swapchain image, rescaled into this eye's letterboxed rect in
+/// the window (`xr::letterbox`, the same call `xr_composite`'s own
+/// mirror-pair draw makes) — a second screen-space stand-in for the
+/// canopy warp, layered on the first.
+#[cfg(not(target_arch = "wasm32"))]
+fn mirror_eye_order_self_check(
+    gpu: &Gpu,
+    window_texture: &wgpu::Texture,
+    eyes: &[VrEye; 2],
+    hud_distance: f32,
+    swapchain_eye_size: (u32, u32),
+) {
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let (ww, wh) = (gpu.config.width, gpu.config.height);
+    let half_w = (ww / 2).max(1);
+    let (lx, ly, lw, lh) = xr::letterbox((half_w, wh), swapchain_eye_size);
+    let mut ok = true;
+    for eye in 0..2 {
+        let (outer_anchor, px) = label_geometry(eye, eyes, hud_distance);
+        let width_ndc = farfall_render::text::ADVANCE as f32 * px;
+        let height_ndc = farfall_render::text::GLYPH_H as f32 * px;
+        let margin = 1.6;
+        let cx = outer_anchor[0] + width_ndc / 2.0;
+        let cy = outer_anchor[1] - height_ndc / 2.0;
+        let to_frac = |nx: f32, ny: f32| {
+            (
+                ((nx + 1.0) / 2.0).clamp(0.0, 1.0),
+                ((1.0 - ny) / 2.0).clamp(0.0, 1.0),
+            )
+        };
+        let (fx0, fy0) = to_frac(
+            cx - width_ndc / 2.0 * margin,
+            cy + height_ndc / 2.0 * margin,
+        );
+        let (fx1, fy1) = to_frac(
+            cx + width_ndc / 2.0 * margin,
+            cy - height_ndc / 2.0 * margin,
+        );
+        let (fx0, fx1) = (fx0.min(fx1), fx0.max(fx1));
+        let (fy0, fy1) = (fy0.min(fy1), fy0.max(fy1));
+        let base_x = eye as u32 * half_w + lx;
+        let ox = (base_x as f32 + fx0 * lw as f32) as u32;
+        let oy = (ly as f32 + fy0 * lh as f32) as u32;
+        let ex = (base_x as f32 + fx1 * lw as f32) as u32;
+        let ey = (ly as f32 + fy1 * lh as f32) as u32;
+        let size = (ex.saturating_sub(ox).max(1), ey.saturating_sub(oy).max(1));
+        let expected = if eye == 0 { 'L' } else { 'R' };
+        let wrong = if eye == 0 { 'R' } else { 'L' };
+        match readback_patch(&gpu.device, &gpu.queue, window_texture, (ox, oy), size) {
+            Some(bytes) => {
+                let fraction = ink_fraction(&bytes);
+                if fraction < 0.01 {
+                    ok = false;
+                    log::error!(
+                        "VR: mirror eye-order self-check: eye {eye}'s own corner in the \
+                         window has no ink (lit fraction {fraction:.4})"
+                    );
+                } else {
+                    let shape = glyph_shape(&bytes, size);
+                    let want = glyph_match_score(shape, farfall_render::text::glyph(expected));
+                    let dont = glyph_match_score(shape, farfall_render::text::glyph(wrong));
+                    if want <= dont {
+                        ok = false;
+                        log::error!(
+                            "VR: mirror eye-order self-check: eye {eye}'s window corner reads \
+                             as '{wrong}' (score {dont}), not '{expected}' (score {want})"
+                        );
+                    }
+                }
+            }
+            None => {
+                ok = false;
+                log::error!("VR: mirror eye-order self-check: eye {eye}'s window readback failed");
+            }
+        }
+    }
+    if let Some(e) = pollster::block_on(scope.pop()) {
+        ok = false;
+        log::error!("VR: mirror eye-order self-check: a device validation error: {e}");
+    }
+    if ok {
+        log::info!("VR: mirror eye-order self-check OK");
+    } else {
+        log::error!("VR: mirror eye-order self-check FAILED");
+        if gpu.cfg.bench {
+            std::process::exit(9);
+        }
+    }
+}
+
 /// The crop-and-mirror step native VR needs and WebXR gets for free from
 /// the browser's own compositor (`web/xr.js`): cut each eye's true
 /// asymmetric field back out of the wide symmetric pair just rendered
@@ -7608,7 +7748,12 @@ fn stereo_disparity_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
 /// this module itself maintains (`gpu.xr`/`gpu.vr_pair`/`game.vr` are
 /// all set together, by `xr_begin_frame`).
 #[cfg(not(target_arch = "wasm32"))]
-fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
+fn xr_composite(
+    gpu: &mut Gpu,
+    game: &Game,
+    window_view: &wgpu::TextureView,
+    window_texture: &wgpu::Texture,
+) {
     let label = gpu.cfg.vr_label;
     let mirror_pair = gpu.cfg.vr_mirror_pair;
     let (ww, wh) = (gpu.config.width, gpu.config.height);
@@ -7673,8 +7818,8 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
         // swapchain image the headset itself will show — proves the eye
         // order on the headset side, not only the desktop mirror. A small
         // opaque glyph in the eye's own upper-outer corner, at the same
-        // ~1 m glass depth as every other overlay (VR_HUD_DISTANCE_M):
-        // no plate, no full-eye tint, and a genuine per-eye parallax
+        // glass depth as every other overlay (vr.hud-distance): no
+        // plate, no full-eye tint, and a genuine per-eye parallax
         // shift, not a coincidence of matching screen position — a
         // zero-disparity full-eye label is itself the "close obscuring
         // plane" this exists to rule out.
@@ -7683,7 +7828,7 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
             pair.label_bitmap
                 .draw(0, 0, if eye == 0 { "L" } else { "R" });
             let aspect = swapchain_eye_size.0 as f32 / swapchain_eye_size.1.max(1) as f32;
-            let (anchor, px) = label_geometry(eye, &eyes);
+            let (anchor, px) = label_geometry(eye, &eyes, game.settings.vr_hud_distance);
             let mut block = farfall_render::hud::HudBlock::glass(
                 anchor,
                 px,
@@ -7768,11 +7913,21 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
     gpu.queue.submit([encoder.finish()]);
     if label && !gpu.eye_order_checked {
         gpu.eye_order_checked = true;
-        eye_order_self_check(gpu, &eyes);
+        eye_order_self_check(gpu, &eyes, game.settings.vr_hud_distance);
     }
     if !gpu.stereo_checked {
         gpu.stereo_checked = true;
-        stereo_disparity_self_check(gpu, &eyes);
+        stereo_disparity_self_check(gpu, &eyes, game.settings.vr_hud_distance);
+    }
+    if label && mirror_pair && !gpu.mirror_checked {
+        gpu.mirror_checked = true;
+        mirror_eye_order_self_check(
+            gpu,
+            window_texture,
+            &eyes,
+            game.settings.vr_hud_distance,
+            swapchain_eye_size,
+        );
     }
     // Present (below, in redraw) must never block the XR frame: end_frame
     // — the runtime's own submission — always runs here, before redraw
@@ -8497,7 +8652,7 @@ fn redraw(
     // surface, and hand the frame back to the runtime.
     #[cfg(not(target_arch = "wasm32"))]
     if native_vr {
-        xr_composite(gpu, game, &frame_view);
+        xr_composite(gpu, game, &frame_view, &frame.texture);
     }
     // The VR capture xr_composite's own mirror-pair draw made possible:
     // the labelled pair (both eyes cropped, FARFALL_VR_LABEL honoured),
@@ -8582,9 +8737,29 @@ fn redraw(
         }
         if t > gpu.cfg.bench_seconds {
             log::info!("benchmark complete, exiting");
-            if let Some(el) = event_loop {
+            if event_loop.is_some() {
                 bench_save_world(game, gpu.cfg.bench);
-                el.exit();
+                // A bench row wants a guaranteed, immediate exit(0), not
+                // winit's own event_loop.exit() (which only requests a
+                // stop a further iteration or two out) followed by
+                // Rust's ordinary Drop chain for Gpu/App — on native VR
+                // that chain tears down the OpenXR session and the
+                // wgpu-hal Vulkan device it was born from together, and
+                // a real-headset row has shown a non-zero exit (5) after
+                // a run that otherwise completed and captured cleanly,
+                // consistent with a native crash somewhere in that
+                // teardown rather than anything Rust-level erroring.
+                // std::process::exit skips all of that: the OS reclaims
+                // the GPU/OpenXR resources on process exit regardless,
+                // exactly as it does for a window closed from the
+                // taskbar, and the process reports the exit code this
+                // line actually asks for.
+                #[cfg(not(target_arch = "wasm32"))]
+                std::process::exit(0);
+                #[cfg(target_arch = "wasm32")]
+                if let Some(el) = event_loop {
+                    el.exit();
+                }
             }
         }
     }
