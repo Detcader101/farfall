@@ -681,6 +681,25 @@ struct Config {
     /// A factor on the OpenXR runtime's recommended per-eye render size.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     vr_scale: f32,
+    /// FARFALL_VR_MIRROR=pair: the desktop mirror shows both cropped
+    /// eyes side by side — exactly what the headset sees, provable
+    /// before anyone wears it — instead of the default single letterboxed
+    /// eye.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    vr_mirror_pair: bool,
+    /// FARFALL_VR_LABEL=1: stamp a big "L"/"R" into each eye's own
+    /// swapchain image, so the headset side (not only the mirror) proves
+    /// which eye is which.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    vr_label: bool,
+    /// Render (and, under FARFALL_CAPTURE, save) a VR frame even when
+    /// the runtime says `should_render` is false — a bench run or a
+    /// desk-side capture needs a picture whether or not the compositor
+    /// currently wants one submitted; the frame is still rendered either
+    /// way; only the submission to the OpenXR swapchain is skipped when
+    /// the runtime didn't ask for one.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    vr_force_render: bool,
 }
 
 impl Config {
@@ -765,6 +784,16 @@ impl Config {
             .filter(|f| f.is_finite())
             .unwrap_or(settings.vr_scale)
             .clamp(settings::VR_SCALE_MIN, settings::VR_SCALE_MAX);
+        let vr_mirror_pair = std::env::var("FARFALL_VR_MIRROR").as_deref() == Ok("pair");
+        let vr_label = matches!(
+            std::env::var("FARFALL_VR_LABEL").as_deref(),
+            Ok("1" | "on" | "true")
+        );
+        // A desk-side capture needs a picture with nobody wearing the
+        // headset: the runtime may leave `should_render` false while the
+        // session sits VISIBLE-but-unworn, and a bench (queued
+        // separately) needs one every frame regardless.
+        let vr_force_render = bench || capture_final();
         Self {
             msaa,
             vsync,
@@ -774,6 +803,9 @@ impl Config {
             bench_seconds,
             vr,
             vr_scale,
+            vr_mirror_pair,
+            vr_label,
+            vr_force_render,
             bench_warp_at: std::env::var("FARFALL_BENCH_WARP")
                 .ok()
                 .and_then(|v| v.parse::<f64>().ok()),
@@ -1044,6 +1076,17 @@ struct VrPair {
     size: (u32, u32),
     to_swapchain: farfall_render::blit_xr::XrBlitPass,
     to_window: farfall_render::blit_xr::XrBlitPass,
+    /// FARFALL_VR_MIRROR=pair: a second window-format blit, rebound each
+    /// frame to whichever swapchain image was just cropped (unlike
+    /// `to_window`, which is bound once to the pair itself) — the
+    /// mirror then shows exactly what the headset does, labels
+    /// included, instead of re-deriving its own crop.
+    mirror_swap: farfall_render::blit_xr::XrBlitPass,
+    /// FARFALL_VR_LABEL=1: a big "L"/"R" stamped into each eye's own
+    /// swapchain image, so the headset itself (not just the mirror)
+    /// proves which eye is which before anyone puts it on.
+    label_bitmap: farfall_render::text::TextBitmap,
+    label_hud: farfall_render::hud::HudPass,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1074,11 +1117,18 @@ impl VrPair {
         to_swapchain.rebind(device, &view);
         let mut to_window = farfall_render::blit_xr::XrBlitPass::new(device, surface_format);
         to_window.rebind(device, &view);
+        // Bound to the pair for now; MIRROR=pair rebinds this to each
+        // swapchain image in turn every frame it is used.
+        let mut mirror_swap = farfall_render::blit_xr::XrBlitPass::new(device, surface_format);
+        mirror_swap.rebind(device, &view);
         Self {
             view,
             size,
             to_swapchain,
             to_window,
+            mirror_swap,
+            label_bitmap: farfall_render::text::TextBitmap::new(),
+            label_hud: farfall_render::hud::HudPass::new(device, xr_format, 1),
         }
     }
 }
@@ -6466,9 +6516,6 @@ impl App {
     }
 }
 
-/// One frame: tick the sim, draw the world into the scene target, upscale
-/// and lay the HUD over it, present. In VR the pair is drawn side by side
-/// into one surface, left eye first, each from its own eye.
 /// What [`xr_begin_frame`] found: whether the rest of `redraw` should
 /// draw this call at all.
 #[cfg(not(target_arch = "wasm32"))]
@@ -6491,7 +6538,7 @@ fn xr_begin_frame(gpu: &mut Gpu, game: &mut Game) -> XrGate {
     let Some(session) = gpu.xr.as_mut() else {
         return XrGate::NoVr;
     };
-    match session.begin_frame() {
+    match session.begin_frame(gpu.cfg.vr_force_render) {
         xr::Frame::Idle => {
             game.vr = None;
             XrGate::SkipFrame
@@ -6535,10 +6582,14 @@ fn xr_begin_frame(gpu: &mut Gpu, game: &mut Game) -> XrGate {
 /// all set together, by `xr_begin_frame`).
 #[cfg(not(target_arch = "wasm32"))]
 fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
+    let label = gpu.cfg.vr_label;
+    let mirror_pair = gpu.cfg.vr_mirror_pair;
+    let (ww, wh) = (gpu.config.width, gpu.config.height);
     let pair = gpu
         .vr_pair
-        .as_ref()
+        .as_mut()
         .expect("xr_composite is only called with vr_pair set");
+    let eye_size = (pair.size.0 / 2, pair.size.1);
     let eyes = game
         .vr
         .as_ref()
@@ -6579,16 +6630,77 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
             multiview_mask: None,
         });
         pair.to_swapchain.draw(&mut pass);
+        // FARFALL_VR_LABEL=1: stamped into the same pass, onto the same
+        // swapchain image the headset itself will show — proves the eye
+        // order on the headset side, not only the desktop mirror.
+        if label {
+            pair.label_bitmap.clear();
+            pair.label_bitmap
+                .draw(0, 0, if eye == 0 { "L" } else { "R" });
+            let aspect = eye_size.0 as f32 / eye_size.1.max(1) as f32;
+            let mut block = farfall_render::hud::HudBlock::glass(
+                [-0.09, 0.12],
+                0.16,
+                aspect,
+                eye_size.1 as f32,
+            );
+            block.flat = true; // an opaque backdrop: unmissable, not glass-subtle
+            pair.label_hud
+                .update(&gpu.queue, &pair.label_bitmap, &block);
+            pair.label_hud.draw(&mut pass);
+        }
     }
-    {
+    if mirror_pair {
+        // Sourced from the swapchain images themselves — post-crop, and
+        // post-label if FARFALL_VR_LABEL is on — so the desktop mirror
+        // shows exactly what each eye's display will, provable before
+        // anyone wears the headset (SPEC §5.3).
+        let half_w = (ww / 2).max(1);
+        for (eye, target) in swapchain_views.iter().enumerate() {
+            pair.mirror_swap.rebind(&gpu.device, target);
+            pair.mirror_swap.update(
+                &gpu.queue,
+                &farfall_render::blit_xr::XrBlitUniforms::new([0.0, 0.0, 1.0, 1.0]),
+            );
+            let (x, y, w, h) = xr::letterbox((half_w, wh), eye_size);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("xr mirror pair"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: window_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if eye == 0 {
+                            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_viewport(
+                (eye as u32 * half_w + x) as f32,
+                y as f32,
+                w as f32,
+                h as f32,
+                0.0,
+                1.0,
+            );
+            pair.mirror_swap.draw(&mut pass);
+        }
+    } else {
         // No further crop: the left eye's half, stretched to fill a
         // letterboxed viewport of its own aspect within the window.
         pair.to_window.update(
             &gpu.queue,
             &farfall_render::blit_xr::XrBlitUniforms::new([0.0, 0.0, 0.5, 1.0]),
         );
-        let (eye_w, eye_h) = (pair.size.0 / 2, pair.size.1);
-        let (x, y, w, h) = xr::letterbox((gpu.config.width, gpu.config.height), (eye_w, eye_h));
+        let (x, y, w, h) = xr::letterbox((ww, wh), eye_size);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("xr mirror"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -6609,12 +6721,18 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
         pair.to_window.draw(&mut pass);
     }
     gpu.queue.submit([encoder.finish()]);
+    // Present (below, in redraw) must never block the XR frame: end_frame
+    // — the runtime's own submission — always runs here, before redraw
+    // reaches gpu.queue.present(frame).
     gpu.xr
         .as_mut()
         .expect("xr_composite implies gpu.xr")
         .end_frame();
 }
 
+/// One frame: tick the sim, draw the world into the scene target, upscale
+/// and lay the HUD over it, present. In VR the pair is drawn side by side
+/// into one surface, left eye first, each from its own eye.
 fn redraw(
     gpu: &mut Gpu,
     game: &mut Game,
