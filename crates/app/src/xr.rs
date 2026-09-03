@@ -157,6 +157,43 @@ pub fn letterbox(window: (u32, u32), content: (u32, u32)) -> (u32, u32, u32, u32
     )
 }
 
+/// How much wider the symmetric hull is than the true asymmetric field,
+/// along one axis: `2*max(a,b) / (a+b)` for that axis' two tangents (`a`,
+/// `b` — left/right, or up/down). 1.0 exactly when the frustum is
+/// already symmetric (a == b); grows the more the lenses are canted.
+fn hull_over_true(a: f32, b: f32) -> f32 {
+    let hull = a.max(b).max(1e-6);
+    let true_extent = (a + b).max(1e-6);
+    (2.0 * hull) / true_extent
+}
+
+/// The per-eye *render* size a headset with canted, asymmetric lenses
+/// needs — bigger than the runtime's own `recommended` per-eye size,
+/// which is sized for the true asymmetric field, not the wider symmetric
+/// hull this engine actually renders (`VrEye::symmetric`) before cropping
+/// back down (`cutout_uv`). Undersizing the render leaves fewer pixels in
+/// the cropped region than the runtime's own swapchain wants, softening
+/// the image on every crop; this is `recommended × (hull_tan/true_tan)`
+/// per axis × `vr_scale`, rounded up, so the crop always maps at least
+/// 1:1 onto the swapchain. `tans` is both eyes' own tangents — a shared
+/// render serves both halves of the pair, so each axis takes whichever
+/// eye needs more.
+pub fn eye_render_size(recommended: (u32, u32), tans: [[f32; 4]; 2], vr_scale: f32) -> (u32, u32) {
+    let factor_x = tans
+        .iter()
+        .map(|t| hull_over_true(t[0], t[1]))
+        .fold(0.0f32, f32::max);
+    let factor_y = tans
+        .iter()
+        .map(|t| hull_over_true(t[2], t[3]))
+        .fold(0.0f32, f32::max);
+    let scale = vr_scale.max(0.0);
+    (
+        ((recommended.0 as f32) * factor_x * scale).ceil().max(1.0) as u32,
+        ((recommended.1 as f32) * factor_y * scale).ceil().max(1.0) as u32,
+    )
+}
+
 #[cfg(test)]
 mod pure_math_tests {
     use super::*;
@@ -357,6 +394,62 @@ mod pure_math_tests {
             "{rect1:?}: eye 1 should start past the midline"
         );
     }
+
+    #[test]
+    fn a_symmetric_headsets_render_needs_no_inflation() {
+        let symmetric = [1.0, 1.0, 1.0, 1.0];
+        let (w, h) = eye_render_size((2016, 2240), [symmetric, symmetric], 1.0);
+        assert_eq!((w, h), (2016, 2240));
+    }
+
+    #[test]
+    fn a_canted_headsets_render_is_inflated_by_the_hull_over_true_ratio() {
+        // left=2, right=1: hull=2, true=3, factor=4/3.
+        let tan = [2.0, 1.0, 1.0, 1.0];
+        let (w, _) = eye_render_size((900, 1000), [tan, tan], 1.0);
+        assert_eq!(w, (900.0f32 * (4.0 / 3.0)).ceil() as u32);
+    }
+
+    #[test]
+    fn the_render_size_takes_whichever_eye_needs_more_per_axis() {
+        // Eye 0 needs more width, eye 1 needs more height — a shared
+        // render must satisfy both, not just whichever eye came first.
+        let wide = [3.0, 1.0, 1.0, 1.0]; // x factor 3/2, y factor 1
+        let tall = [1.0, 1.0, 3.0, 1.0]; // x factor 1, y factor 3/2
+        let (w, h) = eye_render_size((1000, 1000), [wide, tall], 1.0);
+        assert_eq!(w, (1000.0f32 * 1.5).ceil() as u32, "eye 0's width need");
+        assert_eq!(h, (1000.0f32 * 1.5).ceil() as u32, "eye 1's height need");
+    }
+
+    #[test]
+    fn vr_scale_multiplies_the_render_size_directly() {
+        let symmetric = [1.0, 1.0, 1.0, 1.0];
+        let (w, h) = eye_render_size((1000, 1000), [symmetric, symmetric], 1.5);
+        assert_eq!((w, h), (1500, 1500));
+    }
+
+    #[test]
+    fn the_render_never_undersamples_the_crop_it_feeds() {
+        // For any tan set, the cropped fraction of the render times the
+        // render's own size must reach at least the recommended size —
+        // the whole point of the inflation.
+        let tan = [2.0, 1.0, 1.5, 0.5];
+        let recommended = (1832, 1920);
+        let (rw, rh) = eye_render_size(recommended, [tan, tan], 1.0);
+        let crop = cutout_uv(tan);
+        let cropped_w = (rw as f32) * (crop[2] - crop[0]);
+        let cropped_h = (rh as f32) * (crop[3] - crop[1]);
+        assert!(
+            cropped_w >= recommended.0 as f32 - 1.0,
+            "{cropped_w} < {}",
+            recommended.0
+        );
+        assert!(
+            cropped_h >= recommended.1 as f32 - 1.0,
+            "{cropped_h} < {}",
+            recommended.1
+        );
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -457,6 +550,9 @@ pub struct XrSession {
     blend_mode: openxr::EnvironmentBlendMode,
     eyes: [EyeSwapchain; 2],
     eye_size: (u32, u32),
+    /// The runtime's own recommended per-eye size, unscaled — the input
+    /// to [`eye_render_size`]; see the note where `eye_size` is set.
+    recommended_size: (u32, u32),
     event_storage: openxr::EventDataBuffer,
     session_running: bool,
     frame_open: bool,
@@ -547,6 +643,12 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
     }
     let mut exts = openxr::ExtensionSet::default();
     exts.khr_vulkan_enable2 = true;
+    // Optional: only ever read from (log the runtime's current rate for
+    // anything time-based, e.g. the queued bench mode's headroom calc)
+    // — SPEC §5.3 is explicit that native VR never *sets* a refresh
+    // rate, it only ever paces by wait_frame.
+    let have_refresh_rate = available.fb_display_refresh_rate;
+    exts.fb_display_refresh_rate = have_refresh_rate;
     let xr_instance = entry
         .create_instance(
             &openxr::ApplicationInfo {
@@ -737,6 +839,22 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
             )
             .map_err(|e| Error::Session(format!("create_session: {e}")))?;
 
+        // Read-only: log the runtime's current display rate if it will
+        // tell us (never assumed to be 90 Hz, and never set — the Index
+        // is switchable between 80/90/120/144).
+        let display_refresh_hz = have_refresh_rate
+            .then(|| session.get_display_refresh_rate().ok())
+            .flatten();
+        match display_refresh_hz {
+            Some(hz) => log::info!("VR: runtime's current display rate is {hz} Hz"),
+            None if have_refresh_rate => {
+                log::warn!(
+                    "VR: fb_display_refresh_rate offered but get_display_refresh_rate failed"
+                )
+            }
+            None => log::info!("VR: runtime doesn't offer fb_display_refresh_rate; rate unknown"),
+        }
+
         // LOCAL: gravity-level, seated at session start — exactly the
         // ship's own frame (+X right, +Y up, −Z the nose), no fix-up.
         // `natural_local` is a second handle on that exact same origin,
@@ -759,9 +877,24 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
             view_configs[0].recommended_image_rect_width,
             view_configs[0].recommended_image_rect_height,
         );
+        let recommended_size = (rw, rh);
+        // The swapchain itself stays at the runtime's own recommended
+        // size × VR RENDER SCALE — undistorted by the hull-vs-true
+        // inflation, which is entirely the render's own problem
+        // (eye_render_size, applied per frame once real tangents are
+        // known from the first locate_views; see redraw's native_vr
+        // path). Log the two numbers now so a mismatch is visible
+        // without a headset: recommended, and what the swapchain itself
+        // ended up at.
         let eye_size = (
             ((rw as f32) * render_scale).round().max(1.0) as u32,
             ((rh as f32) * render_scale).round().max(1.0) as u32,
+        );
+        log::info!(
+            "VR: runtime recommends {rw}x{rh} per eye; swapchain at {}x{} (scale {render_scale}); \
+             the render itself is sized per-frame from the real tangents (see eye_render_size)",
+            eye_size.0,
+            eye_size.1,
         );
 
         let offered = session
@@ -874,6 +1007,7 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
             blend_mode,
             eyes,
             eye_size,
+            recommended_size,
             event_storage: openxr::EventDataBuffer::new(),
             session_running: false,
             frame_open: false,
@@ -905,8 +1039,16 @@ fn try_init(render_scale: f32) -> Result<(VrDevice, XrSession, wgpu::TextureForm
 }
 
 impl XrSession {
+    /// The swapchain's own per-eye size (recommended × VR RENDER SCALE).
     pub fn eye_size(&self) -> (u32, u32) {
         self.eye_size
+    }
+
+    /// The runtime's own recommended per-eye size, unscaled — feed this
+    /// and the current frame's real tangents to [`eye_render_size`] for
+    /// the size the *render* itself wants, which is not the same thing.
+    pub fn recommended_size(&self) -> (u32, u32) {
+        self.recommended_size
     }
 
     /// Poll session-state events and, if the runtime wants a frame,
