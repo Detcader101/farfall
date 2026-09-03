@@ -799,6 +799,17 @@ struct Config {
     /// the runtime didn't ask for one.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     vr_force_render: bool,
+    /// FARFALL_BENCH_EXIT=drop: take the ordinary Drop-chain teardown
+    /// (winit's own `event_loop.exit()`, then Rust drops Gpu/App as
+    /// normal) on a clean bench completion instead of the default
+    /// `std::process::exit(0)` shortcut — so a real-headset bench row
+    /// with this set can prove or disprove a specific teardown-ordering
+    /// fix (`EyeSwapchain`'s field order) on its own, isolated from the
+    /// shortcut that would otherwise mask whichever exit code the
+    /// normal path produces. Off by default: the shortcut is what a
+    /// bench row actually wants day to day.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    bench_exit_drop: bool,
 }
 
 impl Config {
@@ -912,6 +923,7 @@ impl Config {
         // session sits VISIBLE-but-unworn, and a bench (queued
         // separately) needs one every frame regardless.
         let vr_force_render = bench || capture_final();
+        let bench_exit_drop = std::env::var("FARFALL_BENCH_EXIT").as_deref() == Ok("drop");
         Self {
             msaa,
             vsync,
@@ -927,6 +939,7 @@ impl Config {
             vr_mirror_pair,
             vr_label,
             vr_force_render,
+            bench_exit_drop,
             bench_warp_at: std::env::var("FARFALL_BENCH_WARP")
                 .ok()
                 .and_then(|v| v.parse::<f64>().ok()),
@@ -8778,23 +8791,37 @@ fn redraw(
             log::info!("benchmark complete, exiting");
             if event_loop.is_some() {
                 bench_save_world(game, gpu.cfg.bench);
-                // A bench row wants a guaranteed, immediate exit(0), not
-                // winit's own event_loop.exit() (which only requests a
-                // stop a further iteration or two out) followed by
-                // Rust's ordinary Drop chain for Gpu/App — on native VR
-                // that chain tears down the OpenXR session and the
-                // wgpu-hal Vulkan device it was born from together, and
-                // a real-headset row has shown a non-zero exit (5) after
-                // a run that otherwise completed and captured cleanly,
-                // consistent with a native crash somewhere in that
-                // teardown rather than anything Rust-level erroring.
-                // std::process::exit skips all of that: the OS reclaims
-                // the GPU/OpenXR resources on process exit regardless,
-                // exactly as it does for a window closed from the
-                // taskbar, and the process reports the exit code this
-                // line actually asks for.
+                // A bench row wants a guaranteed, immediate exit(0) by
+                // default, not winit's own event_loop.exit() (which only
+                // requests a stop a further iteration or two out)
+                // followed by Rust's ordinary Drop chain for Gpu/App —
+                // on native VR that chain tears down the OpenXR session
+                // and the wgpu-hal Vulkan device it was born from
+                // together, and a real-headset row has shown a non-zero
+                // exit (5) after a run that otherwise completed and
+                // captured cleanly, consistent with a native crash
+                // somewhere in that teardown rather than anything Rust-
+                // level erroring. std::process::exit skips all of that:
+                // the OS reclaims the GPU/OpenXR resources on process
+                // exit regardless, exactly as it does for a window
+                // closed from the taskbar.
+                //
+                // FARFALL_BENCH_EXIT=drop takes the ordinary Drop path
+                // instead — the shortcut would otherwise mask whatever
+                // exit code that path actually produces, and a PLAYER'S
+                // own quit still runs it; one real-headset row with this
+                // set is how the teardown-ordering fix
+                // (EyeSwapchain's own field order) gets proven on its
+                // own, not just assumed fixed because the shortcut no
+                // longer shows the symptom.
                 #[cfg(not(target_arch = "wasm32"))]
-                std::process::exit(0);
+                if gpu.cfg.bench_exit_drop {
+                    if let Some(el) = event_loop {
+                        el.exit();
+                    }
+                } else {
+                    std::process::exit(0);
+                }
                 #[cfg(target_arch = "wasm32")]
                 if let Some(el) = event_loop {
                     el.exit();
