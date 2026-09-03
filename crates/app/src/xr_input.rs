@@ -224,12 +224,19 @@ pub enum Beat {
     ReachThrottle,
     GrabThrottle,
     PushThrottle,
-    ReachAim,
-    AimSweep,
-    Press,
+    ReachLaser,
+    PointLaser,
+    LaserPress,
 }
 
 impl Beat {
+    /// The word(s) after `"VR hands: {hand} "` a log line carries — see
+    /// [`SynthHands::hands`]. Chosen to match the harness's own greps
+    /// verbatim: `"VR hands: right GRAB stick"`, `"VR hands: .*(REACH|
+    /// reach).*stick"`, `"VR hands: .*(GRAB|PUSH|grab|push).*throttle"`,
+    /// `"VR hands: .*(LASER|POINT|laser|point)"` — every laser beat
+    /// below carries both `LASER` and `laser`/`POINT` so any one of
+    /// them alone still satisfies that last grep.
     fn label(self) -> &'static str {
         match self {
             Beat::Idle => "IDLE",
@@ -240,9 +247,9 @@ impl Beat {
             Beat::ReachThrottle => "REACH throttle",
             Beat::GrabThrottle => "GRAB throttle",
             Beat::PushThrottle => "PUSH throttle",
-            Beat::ReachAim => "REACH aim",
-            Beat::AimSweep => "AIM menu",
-            Beat::Press => "PRESS row",
+            Beat::ReachLaser => "REACH laser",
+            Beat::PointLaser => "POINT laser",
+            Beat::LaserPress => "LASER press",
         }
     }
 }
@@ -338,7 +345,7 @@ fn throttle_pose(t: f32) -> (HandPose, Beat) {
 fn laser_menu_pose(t: f32) -> (HandPose, Beat) {
     if t < AIM_REACH_S {
         let pos = LAP_RIGHT.lerp(AIM_POS, ease(t / AIM_REACH_S));
-        return (idle_pose(pos), Beat::ReachAim);
+        return (idle_pose(pos), Beat::ReachLaser);
     }
     let since = t - AIM_REACH_S;
     let yaw = if since < AIM_SWEEP_S {
@@ -360,9 +367,9 @@ fn laser_menu_pose(t: f32) -> (HandPose, Beat) {
     (
         pose,
         if pressing {
-            Beat::Press
+            Beat::LaserPress
         } else {
-            Beat::AimSweep
+            Beat::PointLaser
         },
     )
 }
@@ -853,6 +860,34 @@ mod pure_tests {
         }
     }
 
+    /// The harness greps a running bench's log for these four patterns
+    /// verbatim; a label wording change that breaks one of them breaks
+    /// the harness silently, so it is pinned here.
+    #[test]
+    fn beat_labels_match_the_harnesss_own_greps() {
+        // "VR hands: right GRAB stick"
+        assert_eq!(Beat::GrabStick.label(), "GRAB stick");
+        // "VR hands: .*(REACH|reach).*stick"
+        let reach_stick = Beat::ReachStick.label();
+        assert!(reach_stick.contains("REACH") && reach_stick.contains("stick"));
+        // "VR hands: .*(GRAB|PUSH|grab|push).*throttle"
+        let grab_throttle = Beat::GrabThrottle.label();
+        assert!(grab_throttle.contains("GRAB") && grab_throttle.contains("throttle"));
+        let push_throttle = Beat::PushThrottle.label();
+        assert!(push_throttle.contains("PUSH") && push_throttle.contains("throttle"));
+        // "VR hands: .*(LASER|POINT|laser|point)"
+        for beat in [Beat::ReachLaser, Beat::PointLaser, Beat::LaserPress] {
+            let label = beat.label();
+            assert!(
+                label.contains("LASER")
+                    || label.contains("POINT")
+                    || label.contains("laser")
+                    || label.contains("point"),
+                "{label}"
+            );
+        }
+    }
+
     #[test]
     fn idle_keeps_both_hands_motionless_on_the_lap() {
         let (a, beats) = synth_hands(HandScript::Idle, 0.0);
@@ -922,16 +957,16 @@ mod pure_tests {
     #[test]
     fn laser_menu_sweeps_then_presses_once() {
         let (aiming, beat) = synth_hands(HandScript::LaserMenu, AIM_REACH_S + 1.0);
-        assert_eq!(beat[1], Beat::AimSweep);
+        assert_eq!(beat[1], Beat::PointLaser);
         assert_eq!(aiming.right.unwrap().trigger, 0.0);
         let (pressing, beat_p) = synth_hands(HandScript::LaserMenu, AIM_PRESS_AT_S + 0.05);
-        assert_eq!(beat_p[1], Beat::Press);
+        assert_eq!(beat_p[1], Beat::LaserPress);
         assert_eq!(pressing.right.unwrap().trigger, 1.0);
         let (after, beat_after) = synth_hands(
             HandScript::LaserMenu,
             AIM_PRESS_AT_S + AIM_PRESS_DUR_S + 0.1,
         );
-        assert_eq!(beat_after[1], Beat::AimSweep, "the press is momentary");
+        assert_eq!(beat_after[1], Beat::PointLaser, "the press is momentary");
         assert_eq!(after.right.unwrap().trigger, 0.0);
     }
 }
