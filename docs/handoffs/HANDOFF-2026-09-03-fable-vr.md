@@ -77,7 +77,7 @@ Unmerged local lanes besides these: fable/a10 (2 docs commits), fable/heli-ship 
 
 ## 5. In flight
 
-- **Teardown access violation on the real path** (agent vr-port, uncommitted in farfall-wt/vr
+- **Teardown access violation on the real path** — fix COMMITTED as d5505ab (field/drop order in RealSession, EyeSwapchain drop logging, Gpu.xr_instance_keepalive so xrDestroyInstance follows vkDestroyDevice, readback buffers always unmapped) but UNPROVEN: SteamVR was closed before the drop row could run. First job: with SteamVR up, `./bench-vr.sh vr-drop2 --out vr/check-d5505ab FARFALL_BENCH_EXIT=drop RUST_LOG=debug` must exit 0; if it still exits 5 the debug drop log shows which drop call dies. (Was: agent vr-port, uncommitted in farfall-wt/vr
   lib.rs + xr.rs): every real SteamVR bench row exits code 5 after "benchmark complete" =
   0xC0000005 truncated — a native crash in the Drop chain. `FARFALL_BENCH_EXIT=drop` row must
   exit 0; the `process::exit(0)` shortcut currently masks it for benches only. Fix = explicit
