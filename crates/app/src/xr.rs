@@ -523,6 +523,52 @@ mod pure_math_tests {
         );
     }
 
+    /// SPEC §5.3: the regression guard for the crop-uniform race a
+    /// synth capture caught (a9238a5 → 7c64062's own stereo-disparity
+    /// self-check still failed, 0.07% differing — both eye textures
+    /// cropped from the SAME half of the pair). `xr_composite` used one
+    /// shared `XrBlitPass` for both eyes' crop draws; `update()`'s two
+    /// calls (eye 0's rect, then eye 1's) both landed in that one
+    /// buffer before the single `queue.submit()`, so both draws read
+    /// eye 1's rect. This test alone cannot see that runtime race (it
+    /// is now impossible by construction — `VrPair::to_swapchain` is
+    /// `[XrBlitPass; 2]`), but it does pin the one thing that could
+    /// silently make the fix moot: that the *input* rects genuinely
+    /// differ for two eyes shaped like the real Index-mirrored fov this
+    /// engine actually ships (`fov_tangents`, angles mirrored left-for-
+    /// right the way `SynthSession::eye_tan` builds them) — not only
+    /// the exaggerated `distinguishable_eyes()` fixture above.
+    #[test]
+    fn a_realistic_mirrored_eye_pair_gets_two_different_crop_rects() {
+        let tan_of = |left_deg: f32, right_deg: f32, up_deg: f32, down_deg: f32| {
+            fov_tangents(
+                (-left_deg).to_radians(),
+                right_deg.to_radians(),
+                up_deg.to_radians(),
+                (-down_deg).to_radians(),
+            )
+        };
+        let eyes = [
+            VrEye {
+                head: Quat::IDENTITY,
+                pos: Vec3::new(-0.032, 0.0, 0.0),
+                tan: tan_of(54.0, 46.0, 55.0, 55.0),
+            },
+            VrEye {
+                head: Quat::IDENTITY,
+                pos: Vec3::new(0.032, 0.0, 0.0),
+                tan: tan_of(46.0, 54.0, 55.0, 55.0),
+            },
+        ];
+        let rect0 = pair_source_rect(0, &eyes);
+        let rect1 = pair_source_rect(1, &eyes);
+        assert_ne!(
+            rect0, rect1,
+            "a real Index-shaped eye pair must crop with two different rects, \
+             not the same one drawn twice"
+        );
+    }
+
     #[test]
     fn a_symmetric_headsets_render_needs_no_inflation() {
         let symmetric = [1.0, 1.0, 1.0, 1.0];

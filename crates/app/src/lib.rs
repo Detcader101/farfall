@@ -1288,11 +1288,27 @@ struct Gpu {
 /// and one for the mirror window (the left eye's half, uncropped).
 #[cfg(not(target_arch = "wasm32"))]
 struct VrPair {
+    /// Kept alongside `view` (not just the view) so the stereo-
+    /// disparity self-check can read the pair's own two halves back —
+    /// `copy_texture_to_buffer` needs the `wgpu::Texture` itself.
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
     /// (2 * one eye's width, one eye's height).
     size: (u32, u32),
     surface_format: wgpu::TextureFormat,
-    to_swapchain: farfall_render::blit_xr::XrBlitPass,
+    /// One per eye, not one shared: both eyes' crop draws are recorded
+    /// into the SAME encoder before the single `queue.submit()` at the
+    /// end of `xr_composite`, and `XrBlitPass::update`'s crop rect is
+    /// written via `queue.write_buffer` — a queued write, not one
+    /// interleaved with the encoder's own recorded commands. Two
+    /// `update()` calls to one shared buffer (eye 0's rect, then eye
+    /// 1's) both land before either crop draw actually runs on the GPU,
+    /// so the *second* write is what BOTH draws read — both eyes'
+    /// swapchain images cropped from the SAME half of the pair. The
+    /// same bug, the same fix, as `label_hud` below: a synth capture's
+    /// stereo-disparity self-check caught this one at 0.07% differing
+    /// pixels (want >= 2%).
+    to_swapchain: [farfall_render::blit_xr::XrBlitPass; 2],
     to_window: farfall_render::blit_xr::XrBlitPass,
     /// FARFALL_VR_MIRROR=pair: a second window-format blit, rebound each
     /// frame to whichever swapchain image was just cropped (unlike
@@ -1329,9 +1345,14 @@ impl VrPair {
         eye_size: (u32, u32),
     ) -> Self {
         let size = (eye_size.0 * 2, eye_size.1);
-        let view = Self::make_texture(device, surface_format, size);
-        let mut to_swapchain = farfall_render::blit_xr::XrBlitPass::new(device, xr_format);
-        to_swapchain.rebind(device, &view);
+        let (texture, view) = Self::make_texture(device, surface_format, size);
+        let mut to_swapchain = [
+            farfall_render::blit_xr::XrBlitPass::new(device, xr_format),
+            farfall_render::blit_xr::XrBlitPass::new(device, xr_format),
+        ];
+        for p in &mut to_swapchain {
+            p.rebind(device, &view);
+        }
         let mut to_window = farfall_render::blit_xr::XrBlitPass::new(device, surface_format);
         to_window.rebind(device, &view);
         // Bound to the pair for now; MIRROR=pair rebinds this to each
@@ -1339,6 +1360,7 @@ impl VrPair {
         let mut mirror_swap = farfall_render::blit_xr::XrBlitPass::new(device, surface_format);
         mirror_swap.rebind(device, &view);
         Self {
+            texture,
             view,
             size,
             surface_format,
@@ -1357,7 +1379,7 @@ impl VrPair {
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         size: (u32, u32),
-    ) -> wgpu::TextureView {
+    ) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("vr pair"),
             size: wgpu::Extent3d {
@@ -1369,10 +1391,21 @@ impl VrPair {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            // COPY_SRC alongside RENDER_ATTACHMENT | TEXTURE_BINDING: the
+            // stereo-disparity self-check reads the pair's own two
+            // halves back (before the crop), to tell "the render itself
+            // is mono" from "the crop reads one half twice" — the same
+            // class of usage-flag omission the mirror-pair crash and
+            // the eye-order self-check's own readback already hit, so
+            // this one is granted up front rather than found the same
+            // way a third time.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        texture.create_view(&wgpu::TextureViewDescriptor::default())
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
     }
 
     /// Resize the pair to `2 * eye_render_size` if it isn't already
@@ -1389,9 +1422,11 @@ impl VrPair {
         if size == self.size {
             return false;
         }
-        self.view = Self::make_texture(device, self.surface_format, size);
+        (self.texture, self.view) = Self::make_texture(device, self.surface_format, size);
         self.size = size;
-        self.to_swapchain.rebind(device, &self.view);
+        for p in &mut self.to_swapchain {
+            p.rebind(device, &self.view);
+        }
         self.to_window.rebind(device, &self.view);
         true
     }
@@ -7261,6 +7296,13 @@ fn glyph_match_score(
         .sum()
 }
 
+/// A pixel-space box, `(origin, size)`, both in pixels — a self-check
+/// readback region (a label's own corner, an area to exclude from a
+/// diff) small enough to name plainly rather than thread a `type` alias
+/// through every call site that only ever sees it once.
+#[cfg(not(target_arch = "wasm32"))]
+type PxBox = ((u32, u32), (u32, u32));
+
 /// FARFALL_VR_LABEL=1: on the first labelled composite, read back both
 /// of each eye's corners (its own outer one, and the inner one where
 /// the OTHER eye's mark would land if the two ever got crossed) and
@@ -7298,7 +7340,7 @@ fn eye_order_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
             ((1.0 - ny) / 2.0 * eye_size.1 as f32) as i64,
         )
     };
-    let patch_for = |eye: usize, corner_ndc: [f32; 2], px: f32| -> ((u32, u32), (u32, u32)) {
+    let patch_for = |eye: usize, corner_ndc: [f32; 2], px: f32| -> PxBox {
         let width_ndc = farfall_render::text::ADVANCE as f32 * px;
         let height_ndc = farfall_render::text::GLYPH_H as f32 * px;
         let cx = corner_ndc[0] + width_ndc / 2.0;
@@ -7390,6 +7432,46 @@ fn eye_order_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
     }
 }
 
+/// How many of `size`'s pixels differ by more than a modest per-channel-
+/// sum threshold (past ordinary sRGB dithering/rounding noise, well
+/// below "a different pixel of the scene") between two tightly-packed
+/// BGRA8 buffers, skipping any pixel inside an `exclude` box. Returns
+/// (differing, total considered, percent).
+#[cfg(not(target_arch = "wasm32"))]
+fn diff_percent(b0: &[u8], b1: &[u8], size: (u32, u32), exclude: &[PxBox]) -> (u64, u64, f64) {
+    let mut differing = 0u64;
+    let mut total = 0u64;
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            if exclude
+                .iter()
+                .any(|&((ox, oy), (sw, sh))| x >= ox && x < ox + sw && y >= oy && y < oy + sh)
+            {
+                continue;
+            }
+            let idx = ((y * size.0 + x) * 4) as usize;
+            if idx + 4 > b0.len() || idx + 4 > b1.len() {
+                continue;
+            }
+            total += 1;
+            let d: u32 = b0[idx..idx + 4]
+                .iter()
+                .zip(&b1[idx..idx + 4])
+                .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs())
+                .sum();
+            if d > 24 {
+                differing += 1;
+            }
+        }
+    }
+    let pct = if total == 0 {
+        0.0
+    } else {
+        differing as f64 / total as f64 * 100.0
+    };
+    (differing, total, pct)
+}
+
 /// The machine test for "both eyes are rendering from one viewpoint" —
 /// a synth capture caught exactly that (a stereo headset showing a mono
 /// cabin: the dash, dial housings and gyro ball pixel-identical between
@@ -7410,7 +7492,7 @@ fn stereo_disparity_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
     };
     let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let eye_size = session.eye_size();
-    let label_boxes: Vec<((u32, u32), (u32, u32))> = if gpu.cfg.vr_label {
+    let label_boxes: Vec<PxBox> = if gpu.cfg.vr_label {
         (0..2)
             .map(|eye| {
                 let (anchor, px) = label_geometry(eye, eyes);
@@ -7465,43 +7547,42 @@ fn stereo_disparity_self_check(gpu: &Gpu, eyes: &[VrEye; 2]) {
         }
         return;
     };
-    let mut differing = 0u64;
-    let mut total = 0u64;
-    for y in 0..eye_size.1 {
-        for x in 0..eye_size.0 {
-            if label_boxes
-                .iter()
-                .any(|&((ox, oy), (sw, sh))| x >= ox && x < ox + sw && y >= oy && y < oy + sh)
-            {
-                continue;
+    let (differing, total, pct) = diff_percent(b0, b1, eye_size, &label_boxes);
+    // The other half of the proof: diff the pair's own two halves too
+    // (before the crop, no label boxes drawn there yet) — if the pair
+    // halves differ but the eye textures don't, the render itself is
+    // stereo and the crop is at fault (the class of bug this branch's
+    // other commit fixed: one shared crop-rect uniform read by both
+    // draws); if neither differs, the render itself is mono.
+    let pair_pct: Option<(u64, u64, f64)> = gpu.vr_pair.as_ref().and_then(|pair| {
+        let (pw, ph) = pair.size;
+        let half_w = pw / 2;
+        let bytes = readback_patch(&gpu.device, &gpu.queue, &pair.texture, (0, 0), (pw, ph))?;
+        let row_bytes = (pw * 4) as usize;
+        let half_row_bytes = (half_w * 4) as usize;
+        let mut left = Vec::with_capacity(half_row_bytes * ph as usize);
+        let mut right = Vec::with_capacity(half_row_bytes * ph as usize);
+        for y in 0..ph as usize {
+            let row_start = y * row_bytes;
+            if row_start + row_bytes > bytes.len() {
+                break;
             }
-            let idx = ((y * eye_size.0 + x) * 4) as usize;
-            if idx + 4 > b0.len() || idx + 4 > b1.len() {
-                continue;
-            }
-            total += 1;
-            let d: u32 = b0[idx..idx + 4]
-                .iter()
-                .zip(&b1[idx..idx + 4])
-                .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs())
-                .sum();
-            // A modest per-channel-sum threshold: past ordinary sRGB
-            // dithering/rounding noise, well below "a different pixel
-            // of the scene."
-            if d > 24 {
-                differing += 1;
-            }
+            left.extend_from_slice(&bytes[row_start..row_start + half_row_bytes]);
+            right.extend_from_slice(&bytes[row_start + half_row_bytes..row_start + row_bytes]);
         }
+        Some(diff_percent(&left, &right, (half_w, ph), &[]))
+    });
+    match pair_pct {
+        Some((pd, pt, pp)) => log::info!(
+            "VR: stereo disparity self-check: eyes {pct:.2}% differ ({differing} of {total}, \
+             label boxes excluded), pair-halves {pp:.2}% differ ({pd} of {pt}, before the crop) \
+             — pair differs and eyes don't => the crop; neither differs => the render itself"
+        ),
+        None => log::warn!(
+            "VR: stereo disparity self-check: eyes {pct:.2}% differ ({differing} of {total}, \
+             label boxes excluded); pair-halves readback unavailable"
+        ),
     }
-    let pct = if total == 0 {
-        0.0
-    } else {
-        differing as f64 / total as f64 * 100.0
-    };
-    log::info!(
-        "VR: stereo disparity self-check: {pct:.2}% of pixels differ between the two eyes \
-         ({differing} of {total}, label boxes excluded)"
-    );
     let mut ok = pct >= 2.0;
     if !ok {
         log::error!(
@@ -7567,7 +7648,7 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
     }
     for (eye, target) in swapchain_views.iter().enumerate() {
         let rect = xr::pair_source_rect(eye, &eyes);
-        pair.to_swapchain.update(
+        pair.to_swapchain[eye].update(
             &gpu.queue,
             &farfall_render::blit_xr::XrBlitUniforms::new(rect),
         );
@@ -7587,7 +7668,7 @@ fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pair.to_swapchain.draw(&mut pass);
+        pair.to_swapchain[eye].draw(&mut pass);
         // FARFALL_VR_LABEL=1: stamped into the same pass, onto the same
         // swapchain image the headset itself will show — proves the eye
         // order on the headset side, not only the desktop mirror. A small
