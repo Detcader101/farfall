@@ -39,6 +39,8 @@ use look::Look;
 use menu::{Change, Menu, MenuEvent};
 use settings::Settings;
 use warp::Warp;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu_timing;
 mod telemetry;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
@@ -1185,6 +1187,21 @@ impl Gpu {
         false
     }
 
+    /// PLAN item 1: the VR bench stamp's `pass_ms_eye0=/pass_ms_eye1=`
+    /// token, from the most recent resolved frame — `None` off any
+    /// build without a native session, off a device that doesn't offer
+    /// timer queries, or before the first frame has resolved.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pass_ms_line(&self) -> Option<String> {
+        self.pass_timer
+            .as_ref()
+            .and_then(gpu_timing::GpuPassTimer::pass_ms_line)
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn pass_ms_line(&self) -> Option<String> {
+        None
+    }
+
     /// The scene textures were recreated: point the post pass at the new
     /// world and the blit at the new ship target, or they sample a
     /// destroyed view.
@@ -1270,6 +1287,12 @@ struct Gpu {
     /// session.
     #[cfg(not(target_arch = "wasm32"))]
     overlay_depth_logged: std::cell::Cell<bool>,
+    /// PLAN item 1 (`docs/PLAN-VR-PERF.md`): per-pass GPU timing for the
+    /// VR bench's perf line — `None` off a device that doesn't offer
+    /// `TIMESTAMP_QUERY_INSIDE_ENCODERS`. Only ever driven when
+    /// `native_vr` (`redraw`); a flat frame never touches it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pass_timer: Option<gpu_timing::GpuPassTimer>,
     /// The picture: bloom, exposure, tonemap and the drive's distortion,
     /// done to the world before the ship is drawn over it.
     post: PostPass,
@@ -2012,10 +2035,17 @@ impl Gpu {
                         }
                     });
                     let headroom_ms = hz.map_or(0.0, |hz| 1000.0 / hz as f64 - render_ms);
+                    // PLAN item 1: per-pass GPU timings, when the device
+                    // offers timer queries and at least one frame has
+                    // resolved since the last read.
+                    let pass_ms = self
+                        .pass_ms_line()
+                        .map(|line| format!(" {line}"))
+                        .unwrap_or_default();
                     format!(
                         " vr={}x{}x2 scale={:.2} hz={} render_ms={render_ms:.3} \
                          render_ms_1pct={render_ms_1pct:.3} xr_wait_ms={xr_wait_ms:.3} \
-                         headroom_ms={headroom_ms:.3} synth={}",
+                         headroom_ms={headroom_ms:.3} synth={}{pass_ms}",
                         eye.0,
                         eye.1,
                         self.cfg.vr_scale,
@@ -6164,10 +6194,17 @@ async fn request_flat_device(
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("farfall device"),
-            // Lets the adapter's real sample-count support count,
-            // rather than only the spec's guaranteed {1, 4}.
+            // Lets the adapter's real sample-count support count, rather
+            // than only the spec's guaranteed {1, 4}; TIMESTAMP_QUERY(_
+            // INSIDE_ENCODERS) is the VR bench's per-pass GPU timing
+            // (PLAN item 1, `gpu_timing::GpuPassTimer`) — requested when
+            // offered, never required, so a device that lacks it (rare
+            // on desktop; the synth bench headset uses this same path)
+            // just runs without a `pass_ms=` token.
             required_features: adapter.features()
-                & wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                & (wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+                    | wgpu::Features::TIMESTAMP_QUERY
+                    | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
             required_limits: wgpu::Limits::default(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
@@ -6507,6 +6544,10 @@ impl App {
             }
             VrPair::new(&device, config.format, fmt, session.eye_size())
         });
+        // Computed before the struct literal below moves `device`/`queue`
+        // into their own fields.
+        #[cfg(not(target_arch = "wasm32"))]
+        let pass_timer = gpu_timing::GpuPassTimer::new(&device, &queue);
         self.gpu = Some(Gpu {
             #[cfg(not(target_arch = "wasm32"))]
             xr: xr_session,
@@ -6528,6 +6569,8 @@ impl App {
             vr_eye_traced: [false; 2],
             #[cfg(not(target_arch = "wasm32"))]
             overlay_depth_logged: std::cell::Cell::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
+            pass_timer,
             post,
             blit,
             passes,
@@ -8360,6 +8403,30 @@ fn redraw(
     };
     let mut cpu_seconds = sim_seconds;
     let mut captured: Option<Capture> = None;
+    // PLAN item 1: bookend the VR eye loop's own named passes with GPU
+    // timestamps (`gpu_timing::GpuPassTimer`) — a no-op outside native
+    // VR, or off a device that doesn't offer the feature (`pass_timer`
+    // is `None` then). A macro rather than a closure: `gpu.pass_timer`
+    // needs a *fresh*, short-lived borrow at each call site (several
+    // `&mut gpu.method(...)` calls happen between them in this same
+    // loop), which a closure capturing it once up front cannot give.
+    #[cfg(not(target_arch = "wasm32"))]
+    macro_rules! gpu_pass_mark {
+        ($encoder:expr, $eye:expr, $name:expr, begin) => {
+            if native_vr {
+                if let Some(t) = gpu.pass_timer.as_ref() {
+                    t.begin($encoder, $eye as usize, $name);
+                }
+            }
+        };
+        ($encoder:expr, $eye:expr, $name:expr, end) => {
+            if native_vr {
+                if let Some(t) = gpu.pass_timer.as_ref() {
+                    t.end($encoder, $eye as usize, $name);
+                }
+            }
+        };
+    }
     for eye in 0..eyes {
         game.vr_eye = eye as usize;
         let encode_start = Instant::now();
@@ -8482,10 +8549,16 @@ fn redraw(
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         // Pass 0: advance the hull heat field (64x64, on the GPU).
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu_pass_mark!(&mut encoder, eye, "thermal", begin);
         gpu.passes
             .thermal
             .step(&gpu.queue, &mut encoder, &thermal_in);
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu_pass_mark!(&mut encoder, eye, "thermal", end);
         // Pass 0b: the cabin, at its own size.
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu_pass_mark!(&mut encoder, eye, "cabin", begin);
         if gpu.cfg.draws("cockpit") && game.settings.cockpit_frame {
             let (sw, sh) = gpu.scene.size();
             gpu.passes.cabin.ensure(&gpu.device, sw, sh);
@@ -8513,6 +8586,10 @@ fn redraw(
             }
             gpu.passes.cabin.update(&gpu.queue, &mut encoder, &cu, &bu);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu_pass_mark!(&mut encoder, eye, "cabin", end);
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu_pass_mark!(&mut encoder, eye, "world", begin);
         {
             // Pass 1: the expensive world, at whatever scale is set, in
             // radiance.
@@ -8573,6 +8650,10 @@ fn redraw(
                 gpu.passes.ghost.draw(&mut pass);
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu_pass_mark!(&mut encoder, eye, "world", end);
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu_pass_mark!(&mut encoder, eye, "post", begin);
         {
             // Pass 1b: the picture — bloom, exposure, tonemap and the
             // drive's distortion, done to the world — then the ship drawn
@@ -8618,6 +8699,10 @@ fn redraw(
                 gpu.passes.holo.draw(&mut pass);
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu_pass_mark!(&mut encoder, eye, "post", end);
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu_pass_mark!(&mut encoder, eye, "present", begin);
         {
             // Pass 2: upscale, then the HUD at native resolution.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -8658,6 +8743,8 @@ fn redraw(
             }
             gpu.pointer.draw(&mut pass);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        gpu_pass_mark!(&mut encoder, eye, "present", end);
         // Screenshot: recorded into the same command buffer, so it
         // captures exactly the frame that was just drawn. In native VR,
         // `frame` (the mirror window's own surface) is not drawn into
@@ -8689,6 +8776,12 @@ fn redraw(
             None
         };
 
+        #[cfg(not(target_arch = "wasm32"))]
+        if native_vr {
+            if let Some(t) = gpu.pass_timer.as_ref() {
+                t.resolve(&mut encoder);
+            }
+        }
         gpu.queue.submit([encoder.finish()]);
         // Genuine CPU work: simulation, uniform packing, encoding.
         cpu_seconds += encode_start.elapsed().as_secs_f64();
@@ -8766,10 +8859,9 @@ fn redraw(
     gpu.queue.present(frame);
     // render_ms (the VR bench stamp): CPU encode plus real GPU frame
     // time, measured by forcing the block gpu_sync already offers as an
-    // opt-in profiling knob, timed here — chosen over new timestamp-query
-    // infrastructure this session could not verify against real hardware,
-    // and gpu_sync's blocking poll is already a proven, if normally
-    // opt-in, way to make a CPU-side clock GPU-honest.
+    // opt-in profiling knob, timed here — gpu_sync's blocking poll is
+    // already a proven way to make a CPU-side clock GPU-honest, and this
+    // frame's own `render_ms` still comes from it, unchanged.
     let gpu_wait_seconds = if gpu.cfg.gpu_sync || native_vr {
         let start = Instant::now();
         let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
@@ -8777,6 +8869,16 @@ fn redraw(
     } else {
         0.0
     };
+    // PLAN item 1: the queue is now known idle (the poll just above,
+    // already paid for by every native-VR frame regardless), so reading
+    // this frame's resolved pass timings back adds no new stall — only
+    // the cost of servicing the map callback.
+    #[cfg(not(target_arch = "wasm32"))]
+    if native_vr {
+        if let Some(t) = gpu.pass_timer.as_mut() {
+            t.read_back(&gpu.device);
+        }
+    }
     // A benchmark stops itself. Left running, it is a frozen window
     // that looks exactly like the game and answers no controls.
     if gpu.cfg.bench {
