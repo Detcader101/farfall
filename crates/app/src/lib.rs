@@ -42,6 +42,8 @@ use warp::Warp;
 mod telemetry;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
+#[cfg(not(target_arch = "wasm32"))]
+mod xr;
 
 use glam::{DQuat, DVec3, Quat, Vec3};
 use std::sync::Arc;
@@ -665,6 +667,16 @@ struct Config {
     /// FARFALL_BENCH_SPIN=n: the head turns a full circle over the bench
     /// and n frames are captured on the way round.
     bench_spin: u32,
+    /// Born into a headset's Vulkan device this run, instead of the flat
+    /// one: VR HEADSET in the settings, overridden by `FARFALL_VR`. Read
+    /// only by the native `init_gpu` path — native VR has no web
+    /// equivalent (WebXR drives `Game::vr` from the page instead, see
+    /// `web.rs::xr_frame`), so this is dead weight on that build.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    vr: bool,
+    /// A factor on the OpenXR runtime's recommended per-eye render size.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    vr_scale: f32,
 }
 
 impl Config {
@@ -734,6 +746,21 @@ impl Config {
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(settings.scale)
             .clamp(0.25, 1.0);
+        // The profiler's own knob wins over the pilot's: a bench run never
+        // wants a headset, so `FARFALL_VR=0` overrides VR HEADSET without
+        // touching the file, and a bench forces it off outright.
+        let vr = !bench
+            && match std::env::var("FARFALL_VR").as_deref() {
+                Ok("1" | "on" | "true") => true,
+                Ok("0" | "off" | "false") => false,
+                _ => settings.vr_headset,
+            };
+        let vr_scale = std::env::var("FARFALL_VR_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|f| f.is_finite())
+            .unwrap_or(settings.vr_scale)
+            .clamp(settings::VR_SCALE_MIN, settings::VR_SCALE_MAX);
         Self {
             msaa,
             vsync,
@@ -741,6 +768,8 @@ impl Config {
             windowed,
             bench,
             bench_seconds,
+            vr,
+            vr_scale,
             bench_warp_at: std::env::var("FARFALL_BENCH_WARP")
                 .ok()
                 .and_then(|v| v.parse::<f64>().ok()),
@@ -883,6 +912,30 @@ impl Passes {
 }
 
 impl Gpu {
+    /// A native VR session's own eye size, decoupled from the mirror
+    /// window's — `None` on every build without one (always, on the
+    /// web build, which has no `xr` field at all). Kept as a method
+    /// rather than a bare field read so `redraw`'s VR branches need no
+    /// `#[cfg]` of their own.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn xr_eye_size(&self) -> Option<(u32, u32)> {
+        self.xr.as_ref().map(xr::XrSession::eye_size)
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn xr_eye_size(&self) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// The offscreen stereo pair's view, when native VR is drawing one.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn vr_pair_view(&self) -> Option<&wgpu::TextureView> {
+        self.vr_pair.as_ref().map(|p| &p.view)
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn vr_pair_view(&self) -> Option<&wgpu::TextureView> {
+        None
+    }
+
     /// The scene textures were recreated: point the post pass at the new
     /// world and the blit at the new ship target, or they sample a
     /// destroyed view.
@@ -925,12 +978,23 @@ impl Gpu {
 }
 
 struct Gpu {
+    /// The native VR session, when one is up: declared first so Rust's
+    /// field-order drop tears it down (and the swapchains/session bound
+    /// to `device` with it) before `device`/`queue` below are dropped.
+    #[cfg(not(target_arch = "wasm32"))]
+    xr: Option<xr::XrSession>,
     window: Arc<Window>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     scene: SceneTarget,
+    /// The stereo pair, offscreen, when native VR is active: each eye
+    /// drawn at its own symmetric frustum into its half, then cropped
+    /// into the headset's own swapchain images and mirrored into the
+    /// window (SPEC §5.3).
+    #[cfg(not(target_arch = "wasm32"))]
+    vr_pair: Option<VrPair>,
     /// The picture: bloom, exposure, tonemap and the drive's distortion,
     /// done to the world before the ship is drawn over it.
     post: PostPass,
@@ -964,6 +1028,55 @@ struct Gpu {
     bench_captured: bool,
     /// Spin frames taken so far.
     bench_spin_taken: u32,
+}
+
+/// Native VR's offscreen stereo pair and the two cut-out blits that read
+/// it: one per eye's OpenXR swapchain image (the true asymmetric crop),
+/// and one for the mirror window (the left eye's half, uncropped).
+#[cfg(not(target_arch = "wasm32"))]
+struct VrPair {
+    view: wgpu::TextureView,
+    /// (2 * one eye's width, one eye's height).
+    size: (u32, u32),
+    to_swapchain: farfall_render::blit_xr::XrBlitPass,
+    to_window: farfall_render::blit_xr::XrBlitPass,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl VrPair {
+    fn new(
+        device: &wgpu::Device,
+        surface_format: wgpu::TextureFormat,
+        xr_format: wgpu::TextureFormat,
+        eye_size: (u32, u32),
+    ) -> Self {
+        let size = (eye_size.0 * 2, eye_size.1);
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vr pair"),
+            size: wgpu::Extent3d {
+                width: size.0.max(1),
+                height: size.1.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: surface_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut to_swapchain = farfall_render::blit_xr::XrBlitPass::new(device, xr_format);
+        to_swapchain.rebind(device, &view);
+        let mut to_window = farfall_render::blit_xr::XrBlitPass::new(device, surface_format);
+        to_window.rebind(device, &view);
+        Self {
+            view,
+            size,
+            to_swapchain,
+            to_window,
+        }
+    }
 }
 
 impl Gpu {
@@ -1426,6 +1539,9 @@ struct Game {
     vr: Option<VrView>,
     /// Which of the headset's eyes is being drawn.
     vr_eye: usize,
+    /// Set by VR RECENTRE; consumed by the XR session's own frame code,
+    /// which owns the tracked space and clears it once re-seated.
+    vr_recentre: bool,
     params: sim::WorldParams,
     state: sim::WorldState,
     input: InputState,
@@ -1681,6 +1797,7 @@ impl Game {
         Self {
             vr: None,
             vr_eye: 0,
+            vr_recentre: false,
             params,
             state,
             input: InputState::default(),
@@ -5400,13 +5517,13 @@ struct PendingGpu {
     parts: GpuParts,
 }
 
-/// Ask for the adapter and device, and configure the surface for it.
-async fn request_gpu(
+/// The ordinary path: pick an adapter, open a device. Extracted so the VR
+/// path (a device already handed to us by `xr::init`) and the flat path
+/// (this) share the surface-configuration code below unchanged.
+async fn request_flat_device(
     instance: &wgpu::Instance,
     surface: &wgpu::Surface<'static>,
-    window: &Window,
-    cfg: &Config,
-) -> GpuParts {
+) -> (wgpu::Adapter, wgpu::Device, wgpu::Queue) {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -5429,11 +5546,45 @@ async fn request_gpu(
         })
         .await
         .expect("request device");
+    (adapter, device, queue)
+}
+
+/// Ask for the adapter and device, and configure the surface for it. In
+/// VR, `vr_device` is already a device the OpenXR runtime approved
+/// (`xr::init`): `request_adapter`/`request_device` are skipped, since
+/// picking a *different* adapter than the one the headset was born on
+/// would be a second GPU the runtime never agreed to.
+async fn request_gpu(
+    instance: &wgpu::Instance,
+    surface: &wgpu::Surface<'static>,
+    window: &Window,
+    cfg: &Config,
+    #[cfg(not(target_arch = "wasm32"))] vr_device: Option<(
+        wgpu::Adapter,
+        wgpu::Device,
+        wgpu::Queue,
+    )>,
+) -> GpuParts {
+    #[cfg(not(target_arch = "wasm32"))]
+    let vr_active = vr_device.is_some();
+    #[cfg(target_arch = "wasm32")]
+    let vr_active = false;
+    #[cfg(not(target_arch = "wasm32"))]
+    let (adapter, device, queue) = match vr_device {
+        Some((a, d, q)) => (a, d, q),
+        None => request_flat_device(instance, surface).await,
+    };
+    #[cfg(target_arch = "wasm32")]
+    let (adapter, device, queue) = request_flat_device(instance, surface).await;
     let size = window.inner_size();
     let mut config = surface
         .get_default_config(&adapter, size.width.max(1), size.height.max(1))
         .expect("surface unsupported by adapter");
-    config.present_mode = if cfg.vsync {
+    config.present_mode = if vr_active {
+        // The monitor's own refresh must never pace the headset's: the
+        // mirror is drawn whenever a VR frame lands, not on its own clock.
+        wgpu::PresentMode::AutoNoVsync
+    } else if cfg.vsync {
         wgpu::PresentMode::AutoVsync
     } else {
         wgpu::PresentMode::AutoNoVsync
@@ -5506,7 +5657,24 @@ impl App {
         let attrs = web::with_canvas(attrs);
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
 
+        // VR HEADSET (SPEC §5.3): the Vulkan device must be born from the
+        // OpenXR runtime, so this has to happen before wgpu's own instance
+        // does — `xr::init` never launches a runtime that isn't already
+        // running, and any failure here falls back to flat with a log line.
+        #[cfg(not(target_arch = "wasm32"))]
+        let xr_init = cfg.vr.then(|| xr::init(cfg.vr_scale)).flatten();
+
         let display_handle = event_loop.owned_display_handle();
+        #[cfg(not(target_arch = "wasm32"))]
+        let instance = match &xr_init {
+            Some((vr, _, _)) => vr.instance.clone(),
+            None => {
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(
+                    Box::new(display_handle),
+                ))
+            }
+        };
+        #[cfg(target_arch = "wasm32")]
         let instance = wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display_handle)),
         );
@@ -5516,8 +5684,16 @@ impl App {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let parts = pollster::block_on(request_gpu(&instance, &surface, &window, &cfg));
-            self.finish_init(window, surface, settings, cfg, parts);
+            let (vr_device, xr) = match xr_init {
+                Some((vr, session, format)) => (
+                    Some((vr.adapter, vr.device, vr.queue)),
+                    Some((session, format)),
+                ),
+                None => (None, None),
+            };
+            let parts =
+                pollster::block_on(request_gpu(&instance, &surface, &window, &cfg, vr_device));
+            self.finish_init(window, surface, settings, cfg, parts, xr);
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -5559,7 +5735,13 @@ impl App {
         settings: Settings,
         cfg: Config,
         parts: GpuParts,
+        #[cfg(not(target_arch = "wasm32"))] xr: Option<(xr::XrSession, wgpu::TextureFormat)>,
     ) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let (xr_session, xr_format) = match xr {
+            Some((s, f)) => (Some(s), Some(f)),
+            None => (None, None),
+        };
         let GpuParts {
             device,
             queue,
@@ -5638,13 +5820,22 @@ impl App {
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let vr_pair = xr_session
+            .as_ref()
+            .zip(xr_format)
+            .map(|(session, fmt)| VrPair::new(&device, config.format, fmt, session.eye_size()));
         self.gpu = Some(Gpu {
+            #[cfg(not(target_arch = "wasm32"))]
+            xr: xr_session,
             window,
             device,
             queue,
             surface,
             config,
             scene,
+            #[cfg(not(target_arch = "wasm32"))]
+            vr_pair,
             post,
             blit,
             passes,
@@ -6249,6 +6440,159 @@ impl App {
 /// One frame: tick the sim, draw the world into the scene target, upscale
 /// and lay the HUD over it, present. In VR the pair is drawn side by side
 /// into one surface, left eye first, each from its own eye.
+/// What [`xr_begin_frame`] found: whether the rest of `redraw` should
+/// draw this call at all.
+#[cfg(not(target_arch = "wasm32"))]
+enum XrGate {
+    /// No native session (never asked for one, or it isn't up yet): the
+    /// flat/WebXR path runs exactly as it always has.
+    NoVr,
+    /// A VR frame is open and `game.vr` holds this frame's eyes.
+    Rendering,
+    /// Nothing to draw this call — the runtime isn't ready for a frame,
+    /// or asked for one it doesn't want rendered.
+    SkipFrame,
+}
+
+/// Poll and open this frame's native VR session, if one is up. Must run
+/// before `game.tick()`, so a located pose drives the frame it was
+/// predicted for.
+#[cfg(not(target_arch = "wasm32"))]
+fn xr_begin_frame(gpu: &mut Gpu, game: &mut Game) -> XrGate {
+    let Some(session) = gpu.xr.as_mut() else {
+        return XrGate::NoVr;
+    };
+    match session.begin_frame() {
+        xr::Frame::Idle => {
+            game.vr = None;
+            XrGate::SkipFrame
+        }
+        xr::Frame::Lost => {
+            log::warn!("VR: the session is gone; falling back to the flat view");
+            gpu.xr = None;
+            gpu.vr_pair = None;
+            game.vr = None;
+            XrGate::NoVr
+        }
+        xr::Frame::Open {
+            should_render: false,
+            ..
+        } => {
+            session.skip_frame();
+            game.vr = None;
+            XrGate::SkipFrame
+        }
+        xr::Frame::Open {
+            should_render: true,
+            eyes,
+        } => {
+            if game.vr_recentre {
+                game.vr_recentre = false;
+                session.recentre(eyes[0]);
+            }
+            game.vr = Some(VrView { eyes });
+            XrGate::Rendering
+        }
+    }
+}
+
+/// The crop-and-mirror step native VR needs and WebXR gets for free from
+/// the browser's own compositor (`web/xr.js`): cut each eye's true
+/// asymmetric field back out of the wide symmetric pair just rendered
+/// (`xr::cutout_uv`) into that eye's OpenXR swapchain image, then mirror
+/// the left eye's half — letterboxed to the window's own shape — into
+/// `window_view`, and end the runtime's frame. Panics only on invariants
+/// this module itself maintains (`gpu.xr`/`gpu.vr_pair`/`game.vr` are
+/// all set together, by `xr_begin_frame`).
+#[cfg(not(target_arch = "wasm32"))]
+fn xr_composite(gpu: &mut Gpu, game: &Game, window_view: &wgpu::TextureView) {
+    let pair = gpu
+        .vr_pair
+        .as_ref()
+        .expect("xr_composite is only called with vr_pair set");
+    let eyes = game
+        .vr
+        .as_ref()
+        .expect("xr_composite is only called with game.vr set")
+        .eyes;
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("xr composite"),
+        });
+    let mut swapchain_views = Vec::with_capacity(2);
+    {
+        let session = gpu.xr.as_mut().expect("xr_composite implies gpu.xr");
+        for eye in 0..2 {
+            swapchain_views.push(session.acquire_eye(eye).clone());
+        }
+    }
+    for (eye, target) in swapchain_views.iter().enumerate() {
+        let local = xr::cutout_uv(eyes[eye].tan);
+        let eye_u0 = eye as f32 * 0.5;
+        let rect = [
+            eye_u0 + local[0] * 0.5,
+            local[1],
+            eye_u0 + local[2] * 0.5,
+            local[3],
+        ];
+        pair.to_swapchain.update(
+            &gpu.queue,
+            &farfall_render::blit_xr::XrBlitUniforms::new(rect),
+        );
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("xr eye crop"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pair.to_swapchain.draw(&mut pass);
+    }
+    {
+        // No further crop: the left eye's half, stretched to fill a
+        // letterboxed viewport of its own aspect within the window.
+        pair.to_window.update(
+            &gpu.queue,
+            &farfall_render::blit_xr::XrBlitUniforms::new([0.0, 0.0, 0.5, 1.0]),
+        );
+        let (eye_w, eye_h) = (pair.size.0 / 2, pair.size.1);
+        let (x, y, w, h) = xr::letterbox((gpu.config.width, gpu.config.height), (eye_w, eye_h));
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("xr mirror"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: window_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+        pair.to_window.draw(&mut pass);
+    }
+    gpu.queue.submit([encoder.finish()]);
+    gpu.xr
+        .as_mut()
+        .expect("xr_composite implies gpu.xr")
+        .end_frame();
+}
+
 fn redraw(
     gpu: &mut Gpu,
     game: &mut Game,
@@ -6268,6 +6612,15 @@ fn redraw(
             gpu.cfg.bench_warp_at = None;
             game.engage_warp();
         }
+    }
+    // Native VR (SPEC §5.3): wait for and open the runtime's frame before
+    // the sim ticks, so the predicted pose it hands back drives this
+    // frame — the same reason the WebXR bridge sets `game.vr` before
+    // `redraw` is called at all.
+    #[cfg(not(target_arch = "wasm32"))]
+    if matches!(xr_begin_frame(gpu, game), XrGate::SkipFrame) {
+        gpu.window.request_redraw();
+        return;
     }
     game.tick();
     if let Some(audio) = &audio {
@@ -6563,14 +6916,32 @@ fn redraw(
         }
     };
     let wait_seconds = acquire_start.elapsed().as_secs_f64();
-    let view = frame
+    let frame_view = frame
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
+    // Native VR draws the pair offscreen (its own eye size, decoupled
+    // from the mirror window's) and crops+mirrors it afterward; flat and
+    // WebXR draw straight into the surface, as they always have.
+    // `xr_eye_size`/`vr_pair_view` are `None` on every platform without a
+    // native session (always, on the web build), so this needs no cfg of
+    // its own.
+    let native_vr = gpu.xr_eye_size().is_some() && game.vr.is_some();
+    let view = if native_vr {
+        gpu.vr_pair_view()
+            .expect("vr_pair is created alongside gpu.xr")
+            .clone()
+    } else {
+        frame_view.clone()
+    };
 
     // In VR the surface is the stereo pair, side by side; each eye is a
     // full draw of its own, from its own seat, into its own half.
     let eyes: u32 = if game.vr.is_some() { 2 } else { 1 };
-    let (ew, eh) = (gpu.config.width / eyes, gpu.config.height);
+    let (ew, eh) = if native_vr {
+        gpu.xr_eye_size().expect("native_vr implies xr_eye_size")
+    } else {
+        (gpu.config.width / eyes, gpu.config.height)
+    };
     let mut cpu_seconds = sim_seconds;
     let mut captured: Option<Capture> = None;
     for eye in 0..eyes {
@@ -6878,6 +7249,16 @@ fn redraw(
         if pending.is_some() {
             captured = pending;
         }
+    }
+
+    // Native VR (SPEC §5.3): the pair just rendered above is a symmetric,
+    // wider-than-needed view of each eye; crop each eye's true asymmetric
+    // field back out of it into that eye's OpenXR swapchain image, then
+    // mirror the left eye's half (letterboxed) into the actual window
+    // surface, and hand the frame back to the runtime.
+    #[cfg(not(target_arch = "wasm32"))]
+    if native_vr {
+        xr_composite(gpu, game, &frame_view);
     }
 
     if let Some(capture) = captured {
@@ -7315,6 +7696,9 @@ impl App {
                     "holo3PP {}",
                     if game.settings.holo_view { "ON" } else { "OFF" }
                 );
+            }
+            c if pressed && !repeat && c == game.bind(Named::VrRecentre) => {
+                game.vr_recentre = true;
             }
             c if pressed && !repeat && c == game.bind(Named::Weapon1) => {
                 game.arms.select(arms::Weapon::Cannon);
