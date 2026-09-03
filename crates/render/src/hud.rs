@@ -64,6 +64,12 @@ pub struct HudBlock {
     pub scrollbar: Option<Scrollbar>,
     /// Rules under the header and over the footer, font-px rows.
     pub rules: [Option<f32>; 2],
+    /// No smoked-glass plate at all — just the glyph ink. A VR overlay
+    /// meant to read as a mark on the glass itself (SPEC §5.3), not a
+    /// panel floating in front of it: a backdrop at any real depth away
+    /// from the eye covers far more of the view than the text on it,
+    /// which reads as a close, obscuring plane.
+    pub no_backdrop: bool,
 }
 
 impl HudBlock {
@@ -80,6 +86,7 @@ impl HudBlock {
             extent: None,
             scrollbar: None,
             rules: [None; 2],
+            no_backdrop: false,
         }
     }
 }
@@ -184,8 +191,11 @@ impl HudPass {
             // Hologram cyan, matching the instrument cluster.
             color: [0.45, 0.92, 1.0, 0.96],
             // Smoked glass behind the text on the glass; a flat pause
-            // panel is a darker card, read over anything.
-            backdrop: if block.flat {
+            // panel is a darker card, read over anything; no_backdrop is
+            // just the ink, no plate at all.
+            backdrop: if block.no_backdrop {
+                [0.0, 0.0, 0.0, 0.0]
+            } else if block.flat {
                 [0.008, 0.018, 0.03, 0.84]
             } else {
                 [0.01, 0.03, 0.05, 0.42]
